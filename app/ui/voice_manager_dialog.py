@@ -130,12 +130,13 @@ class VoiceManagerDialog(QDialog):
         filters.addWidget(self.refresh_button)
         layout.addLayout(filters)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
             [
                 self.tr("status", "Status"),
                 self.tr("language", "Language"),
                 self.tr("voice", "Voice"),
+                self.tr("preview_voice", "Preview"),
                 self.tr("quality", "Quality"),
                 self.tr("download_size", "Size"),
             ]
@@ -167,6 +168,10 @@ class VoiceManagerDialog(QDialog):
         )
         self.table.horizontalHeader().setSectionResizeMode(
             4,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            5,
             QHeaderView.ResizeMode.ResizeToContents,
         )
         self.table.itemSelectionChanged.connect(self._selection_changed)
@@ -404,6 +409,12 @@ class VoiceManagerDialog(QDialog):
         )
         self.sample_player.play()
 
+    def _preview_row(self, row: int) -> None:
+        if not 0 <= row < len(self.visible_voices):
+            return
+        self.table.selectRow(row)
+        self._preview_selected()
+
     def _on_sample_playback_state(
         self,
         state: QMediaPlayer.PlaybackState,
@@ -507,10 +518,19 @@ class VoiceManagerDialog(QDialog):
                 format_bytes(voice.total_size),
             )
             for column, value in enumerate(values):
+                table_column = column if column < 3 else column + 1
                 item = QTableWidgetItem(value)
-                if column in {0, 4}:
+                if table_column in {0, 5}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, column, item)
+                self.table.setItem(row, table_column, item)
+            preview_button = QPushButton()
+            preview_button.setIcon(ui_icon("preview"))
+            preview_button.setToolTip(self.tr("preview_voice", "Preview"))
+            preview_button.setEnabled(voice.has_sample)
+            preview_button.clicked.connect(
+                lambda checked=False, row=row: self._preview_row(row)
+            )
+            self.table.setCellWidget(row, 3, preview_button)
             if voice.voice_id == selected_id:
                 selected_row = row
         if selected_row >= 0:

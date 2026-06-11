@@ -12,19 +12,22 @@ executable.
 - Paste text or import UTF-8/Windows text, Markdown, and DOCX files.
 - Recursive discovery of Piper `.onnx` voices with matching `.onnx.json` files.
 - Built-in manager for browsing, installing, and removing public Piper voices.
-- Streaming voice samples before a model is downloaded.
+- Streaming voice samples before a model is downloaded, from either the
+  per-row preview icon or the main preview button.
 - Language filtering and voice-speed control.
 - Safe chunk splitting or chapter/heading detection.
 - Detection of Markdown headings, English/Spanish chapter labels, and short
   uppercase headings.
-- One `course_full.mp3` file or numbered `chapter_001.mp3` files.
+- Consecutively numbered `podcast1.mp3`, `podcast2.mp3`, and so on, or
+  numbered chapter files.
 - Configurable pauses, MP3 bitrate, ID3 metadata, and optional loudness
   normalization through `config.json`.
 - Randomized paragraph pauses configurable directly from the interface.
 - Natural timing rules based on paragraph length and periodic reading breaks.
 - Optional podcast output with intro, looped background music, outro, fades,
   section gaps, -16 LUFS normalization, and basic sidechain ducking.
-- Background generation with live progress, visible logs, and cancellation.
+- Background generation with live progress, elapsed/estimated time, visible
+  logs, cancellation, and an open-output-folder action after completion.
 - Portable PyInstaller folder build; models and runtimes are not embedded.
 
 ## Project layout
@@ -136,7 +139,8 @@ python main.py
 
 Paste or import a `.txt`, `.md`, or `.docx` file with the single import
 button, then select a discovered voice and click **Generate Audio**. The
-default result is `output/course_full.mp3`.
+default result is `output/podcast1.mp3`. Existing files are never overwritten;
+the next free consecutive number is selected automatically.
 
 The interface language selector and **Settings** button are in the top-right
 header. The main generation view only contains the source editor, voice
@@ -202,8 +206,8 @@ Enable **Create podcast mix** to retain the clean narration and create a
 second produced file:
 
 ```text
-course_full.mp3
-course_podcast.mp3
+podcast1.mp3
+podcast1_mix.mp3
 ```
 
 Chapter export similarly creates `chapter_001.mp3` and

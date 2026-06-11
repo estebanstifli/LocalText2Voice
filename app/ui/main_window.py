@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt
+from PySide6.QtCore import QThread, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -52,6 +53,13 @@ class MainWindow(QMainWindow):
         self.voices: list[VoiceInfo] = []
         self.worker: GenerationWorker | None = None
         self.worker_thread: QThread | None = None
+        self.generation_started_at: float | None = None
+        self.progress_current = 0
+        self.progress_total = 0
+        self.last_output_folder: Path | None = None
+        self.generation_timer = QTimer(self)
+        self.generation_timer.setInterval(1000)
+        self.generation_timer.timeout.connect(self._update_generation_time)
 
         self.setWindowTitle(self.tr("app_title", "CourseToPodcast"))
         self.setMinimumSize(960, 720)
@@ -163,8 +171,19 @@ class MainWindow(QMainWindow):
         self.progress_bar.setTextVisible(True)
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.progress_bar)
+        self.time_label = QLabel()
+        self.time_label.setObjectName("helperLabel")
+        self.time_label.setVisible(False)
+        status_layout.addWidget(self.time_label)
 
         button_layout = QHBoxLayout()
+        self.open_output_button = QPushButton(
+            self.tr("open_output_folder", "Open output folder")
+        )
+        self.open_output_button.setIcon(ui_icon("folder"))
+        self.open_output_button.clicked.connect(self._open_last_output_folder)
+        self.open_output_button.setVisible(False)
+        button_layout.addWidget(self.open_output_button)
         button_layout.addStretch(1)
         self.cancel_button = QPushButton(self.tr("cancel", "Cancel"))
         self.cancel_button.setIcon(ui_icon("cancel"))
@@ -986,6 +1005,14 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(self.tr("starting", "Starting generation..."))
         self.progress_bar.setValue(0)
         self.status_label.setText(self.tr("preparing", "Preparing audio job..."))
+        self.generation_started_at = time.monotonic()
+        self.progress_current = 0
+        self.progress_total = 0
+        self.last_output_folder = None
+        self.open_output_button.setVisible(False)
+        self.time_label.setVisible(True)
+        self._update_generation_time()
+        self.generation_timer.start()
         self._set_running(True)
 
         thread = QThread(self)
@@ -1020,8 +1047,14 @@ class MainWindow(QMainWindow):
         percentage = int((current / total) * 100) if total else 0
         self.progress_bar.setValue(min(99, percentage))
         self.status_label.setText(status)
+        self.progress_current = current
+        self.progress_total = total
+        self._update_generation_time()
 
     def _on_finished(self, output_paths: list[str]) -> None:
+        self.generation_timer.stop()
+        self.progress_current = self.progress_total
+        self._update_generation_time()
         self.progress_bar.setValue(100)
         self.status_label.setText(
             self.tr(
@@ -1031,16 +1064,22 @@ class MainWindow(QMainWindow):
             )
         )
         self.log_view.append_event(self.status_label.text())
-        if self.open_folder_checkbox.isChecked() and output_paths:
-            folder = Path(output_paths[0]).parent
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if output_paths:
+            self.last_output_folder = Path(output_paths[0]).parent
+            self.open_output_button.setVisible(True)
+            if self.open_folder_checkbox.isChecked():
+                self._open_last_output_folder()
 
     def _on_failed(self, message: str) -> None:
+        self.generation_timer.stop()
+        self._update_generation_time()
         self.status_label.setText(self.tr("generation_failed", "Generation failed"))
         self.log_view.append_event(message)
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
 
     def _on_cancelled(self) -> None:
+        self.generation_timer.stop()
+        self._update_generation_time()
         self.status_label.setText(
             self.tr("generation_cancelled", "Generation cancelled")
         )
@@ -1049,13 +1088,53 @@ class MainWindow(QMainWindow):
         )
 
     def _clear_worker(self) -> None:
+        self.generation_timer.stop()
         self.worker = None
         self.worker_thread = None
         self._set_running(False)
 
+    def _update_generation_time(self) -> None:
+        if self.generation_started_at is None:
+            return
+        elapsed = max(0, round(time.monotonic() - self.generation_started_at))
+        if self.progress_current > 0 and self.progress_total > self.progress_current:
+            remaining = round(
+                elapsed
+                / self.progress_current
+                * (self.progress_total - self.progress_current)
+            )
+            remaining_text = self._format_duration(remaining)
+        elif self.progress_total > 0 and self.progress_current >= self.progress_total:
+            remaining_text = self._format_duration(0)
+        else:
+            remaining_text = self.tr("calculating", "Calculating...")
+        self.time_label.setText(
+            self.tr(
+                "generation_time_status",
+                "Elapsed: {elapsed} | Estimated remaining: {remaining}",
+                elapsed=self._format_duration(elapsed),
+                remaining=remaining_text,
+            )
+        )
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        hours, remainder = divmod(max(0, seconds), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _open_last_output_folder(self) -> None:
+        if self.last_output_folder is not None:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(self.last_output_folder))
+            )
+
     def _set_running(self, running: bool) -> None:
         self.generate_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
+        self.open_output_button.setEnabled(not running)
         self.text_editor.setReadOnly(running)
         for widget in (
             self.import_button,

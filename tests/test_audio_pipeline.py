@@ -62,8 +62,40 @@ class AudioPipelineTests(unittest.TestCase):
             )
 
             self.assertEqual(len(output_paths), 1)
-            self.assertEqual(output_paths[0].name, "course_full.mp3")
+            self.assertEqual(output_paths[0].name, "podcast1.mp3")
             self.assertGreater(output_paths[0].stat().st_size, 0)
+
+    def test_single_export_uses_next_available_podcast_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            output_dir = Path(temporary_name) / "output"
+            output_dir.mkdir()
+            (output_dir / "podcast1.mp3").write_bytes(b"existing")
+            options = AudioGenerationOptions(
+                output_dir=output_dir,
+                voice_config={"speed": 1.0},
+                ffmpeg_path=Path(shutil.which("ffmpeg") or "ffmpeg"),
+                chunk_size=300,
+            )
+
+            output_paths = AudioPipeline(FakeTTSEngine()).generate(
+                "A short paragraph for the second podcast.",
+                options,
+            )
+
+            self.assertEqual(output_paths[0].name, "podcast2.mp3")
+            self.assertEqual(
+                (output_dir / "podcast1.mp3").read_bytes(),
+                b"existing",
+            )
+
+    def test_podcast_mix_reserves_matching_consecutive_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            output_dir = Path(temporary_name)
+            (output_dir / "podcast1_mix.mp3").write_bytes(b"existing mix")
+
+            names = AudioPipeline._next_single_filenames(output_dir, True)
+
+            self.assertEqual(names, ("podcast2.mp3", "podcast2_mix.mp3"))
 
     def test_exports_numbered_chapter_mp3_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -215,6 +247,6 @@ class AudioPipelineTests(unittest.TestCase):
 
             self.assertEqual(
                 [path.name for path in outputs],
-                ["course_full.mp3", "course_podcast.mp3"],
+                ["podcast1.mp3", "podcast1_mix.mp3"],
             )
             self.assertTrue(all(path.stat().st_size > 0 for path in outputs))

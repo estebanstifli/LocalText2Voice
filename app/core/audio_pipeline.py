@@ -122,6 +122,9 @@ class AudioPipeline:
                 f"{options.paragraph_pause_min_ms}-"
                 f"{options.paragraph_pause_max_ms} ms"
             )
+            export_steps = len(groups) if options.export_mode == "chapters" else 1
+            podcast_steps = export_steps if options.podcast_enabled else 0
+            total_steps = total_chunks + export_steps + podcast_steps
 
             with tempfile.TemporaryDirectory(prefix="course_to_podcast_") as temp_name:
                 temp_dir = Path(temp_name)
@@ -131,11 +134,12 @@ class AudioPipeline:
                     options,
                     temp_dir,
                     total_chunks,
+                    total_steps,
                 )
                 self._check_cancelled()
                 self.progress_callback(
                     total_chunks,
-                    total_chunks,
+                    total_steps,
                     "Encoding MP3 output...",
                 )
                 if options.export_mode == "chapters":
@@ -158,6 +162,12 @@ class AudioPipeline:
                             pause_random,
                         )
                     ]
+                completed_steps = total_chunks + export_steps
+                self.progress_callback(
+                    completed_steps,
+                    total_steps,
+                    "MP3 narration created.",
+                )
                 outputs = [artifact.mp3_path for artifact in artifacts]
                 if options.podcast_enabled:
                     for artifact in artifacts:
@@ -169,6 +179,12 @@ class AudioPipeline:
                             runner,
                         )
                         outputs.append(podcast_path)
+                        completed_steps += 1
+                        self.progress_callback(
+                            completed_steps,
+                            total_steps,
+                            "Podcast mix created.",
+                        )
                 self._check_cancelled()
                 return outputs
         except (TTSCancelled, FFmpegCancelled) as exc:
@@ -248,6 +264,7 @@ class AudioPipeline:
         options: AudioGenerationOptions,
         temp_dir: Path,
         total_chunks: int,
+        total_steps: int,
     ) -> list[list[Path]]:
         rendered_groups: list[list[Path]] = []
         completed = 0
@@ -264,7 +281,7 @@ class AudioPipeline:
                     f"Generating block {completed}/{total_chunks}: "
                     f"{group.title}"
                 )
-                self.progress_callback(completed - 1, total_chunks, status)
+                self.progress_callback(completed - 1, total_steps, status)
                 self.log_callback(status)
 
                 output_wav = temp_dir / (
@@ -276,7 +293,7 @@ class AudioPipeline:
                     options.voice_config,
                 )
                 rendered_chunks.append(output_wav)
-                self.progress_callback(completed, total_chunks, status)
+                self.progress_callback(completed, total_steps, status)
             rendered_groups.append(rendered_chunks)
         return rendered_groups
 
@@ -312,9 +329,13 @@ class AudioPipeline:
                     self._create_silence(wav_path, silence, duration)
                     timeline.append(silence)
 
-        joined_wav = self._join_wavs(timeline, temp_dir / "course_full.wav", runner)
-        temporary_mp3 = temp_dir / "course_full.mp3"
-        self.log_callback("Encoding course_full.mp3")
+        filename, podcast_filename = self._next_single_filenames(
+            options.output_dir,
+            options.podcast_enabled,
+        )
+        joined_wav = self._join_wavs(timeline, temp_dir / "podcast.wav", runner)
+        temporary_mp3 = temp_dir / filename
+        self.log_callback(f"Encoding {filename}")
         self._encode_mp3(
             joined_wav,
             temporary_mp3,
@@ -322,14 +343,14 @@ class AudioPipeline:
             runner,
             options.metadata,
         )
-        final_path = options.output_dir / "course_full.mp3"
+        final_path = options.output_dir / filename
         temporary_mp3.replace(final_path)
         self.log_callback(f"Saved: {final_path}")
         return NarrationArtifact(
             wav_path=joined_wav,
             mp3_path=final_path,
             title=str(options.metadata.get("title", "Course")),
-            podcast_filename="course_podcast.mp3",
+            podcast_filename=podcast_filename,
         )
 
     def _export_chapters(
@@ -375,7 +396,11 @@ class AudioPipeline:
                 temp_dir / f"chapter_{group_index:03d}.wav",
                 runner,
             )
-            filename = f"chapter_{group_index:03d}.mp3"
+            filename, podcast_filename = self._next_chapter_filenames(
+                options.output_dir,
+                group_index,
+                options.podcast_enabled,
+            )
             temporary_mp3 = temp_dir / filename
             metadata = dict(options.metadata)
             metadata["title"] = group.title
@@ -394,11 +419,46 @@ class AudioPipeline:
                     wav_path=joined_wav,
                     mp3_path=final_path,
                     title=group.title,
-                    podcast_filename=f"chapter_{group_index:03d}_podcast.mp3",
+                    podcast_filename=podcast_filename,
                 )
             )
             self.log_callback(f"Saved: {final_path}")
         return outputs
+
+    @staticmethod
+    def _next_single_filenames(
+        output_dir: Path,
+        include_podcast_mix: bool,
+    ) -> tuple[str, str]:
+        index = 1
+        while True:
+            narration = f"podcast{index}.mp3"
+            podcast_mix = f"podcast{index}_mix.mp3"
+            if not (output_dir / narration).exists() and (
+                not include_podcast_mix
+                or not (output_dir / podcast_mix).exists()
+            ):
+                return narration, podcast_mix
+            index += 1
+
+    @staticmethod
+    def _next_chapter_filenames(
+        output_dir: Path,
+        group_index: int,
+        include_podcast_mix: bool,
+    ) -> tuple[str, str]:
+        suffix = 0
+        while True:
+            numbered_suffix = f"_{suffix}" if suffix else ""
+            stem = f"chapter_{group_index:03d}{numbered_suffix}"
+            narration = f"{stem}.mp3"
+            podcast_mix = f"{stem}_podcast.mp3"
+            if not (output_dir / narration).exists() and (
+                not include_podcast_mix
+                or not (output_dir / podcast_mix).exists()
+            ):
+                return narration, podcast_mix
+            suffix += 1
 
     def _export_podcast_mix(
         self,

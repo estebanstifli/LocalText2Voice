@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -25,6 +26,9 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "import_button"))
         self.assertFalse(hasattr(window, "refresh_voices_button"))
         self.assertFalse(window.import_button.icon().isNull())
+        self.assertFalse(window.time_label.isVisible())
+        self.assertFalse(window.open_output_button.isVisible())
+        self.assertEqual(window._format_duration(65), "01:05")
         author_credit = window.findChild(QLabel, "authorCreditLabel")
         self.assertIsNotNone(author_credit)
         self.assertTrue(author_credit.openExternalLinks())
@@ -36,6 +40,12 @@ class MainWindowUITests(unittest.TestCase):
 
         window.back_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 0)
+
+        window.generation_started_at = time.monotonic() - 60
+        window.progress_current = 1
+        window.progress_total = 2
+        window._update_generation_time()
+        self.assertIn("01:00", window.time_label.text())
 
 
 if __name__ == "__main__":
