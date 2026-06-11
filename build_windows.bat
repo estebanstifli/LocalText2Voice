@@ -34,12 +34,17 @@ if not exist "%DIST_DIR%\voices" mkdir "%DIST_DIR%\voices"
 if not exist "%DIST_DIR%\ffmpeg" mkdir "%DIST_DIR%\ffmpeg"
 if not exist "%DIST_DIR%\music" mkdir "%DIST_DIR%\music"
 if not exist "%DIST_DIR%\output" mkdir "%DIST_DIR%\output"
+if not exist "%DIST_DIR%\licenses" mkdir "%DIST_DIR%\licenses"
 
 xcopy /E /I /Y "engines" "%DIST_DIR%\engines" >nul
 xcopy /E /I /Y "voices" "%DIST_DIR%\voices" >nul
 xcopy /E /I /Y "ffmpeg" "%DIST_DIR%\ffmpeg" >nul
 xcopy /E /I /Y "music" "%DIST_DIR%\music" >nul
+xcopy /E /I /Y "licenses" "%DIST_DIR%\licenses" >nul
 copy /Y "config.example.json" "%DIST_DIR%\config.example.json" >nul
+copy /Y "README.md" "%DIST_DIR%\README.md" >nul
+copy /Y "LICENSE" "%DIST_DIR%\LICENSE" >nul
+copy /Y "THIRD_PARTY_NOTICES.md" "%DIST_DIR%\THIRD_PARTY_NOTICES.md" >nul
 
 echo.
 echo Build complete:
