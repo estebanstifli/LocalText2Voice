@@ -21,6 +21,7 @@ class MainWindowUITests(unittest.TestCase):
 
         self.assertEqual(window.page_stack.count(), 2)
         self.assertEqual(window.page_stack.currentIndex(), 0)
+        self.assertEqual(window.ui_language_combo.count(), 10)
         self.assertTrue(hasattr(window, "import_button"))
         self.assertFalse(hasattr(window, "refresh_voices_button"))
         self.assertFalse(window.import_button.icon().isNull())

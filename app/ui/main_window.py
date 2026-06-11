@@ -98,8 +98,12 @@ class MainWindow(QMainWindow):
         self.ui_language_combo.setToolTip(
             self.tr("interface_language", "Interface language")
         )
-        self.ui_language_combo.addItem(ui_icon("language"), "English", "en")
-        self.ui_language_combo.addItem(ui_icon("language"), "Español", "es")
+        for locale in Translator.available_languages():
+            self.ui_language_combo.addItem(
+                ui_icon("language"),
+                locale.name,
+                locale.code,
+            )
         self.ui_language_combo.currentIndexChanged.connect(
             self._change_ui_language
         )
@@ -115,6 +119,15 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self._build_settings_page())
         root_layout.addWidget(self.page_stack, 1)
         self.setCentralWidget(central_widget)
+        self._apply_language_direction()
+
+    def _apply_language_direction(self) -> None:
+        direction = (
+            Qt.LayoutDirection.RightToLeft
+            if self.translator.direction == "rtl"
+            else Qt.LayoutDirection.LeftToRight
+        )
+        self.setLayoutDirection(direction)
 
     def _build_generation_page(self) -> QWidget:
         widget = QWidget()

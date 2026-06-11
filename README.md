@@ -7,8 +7,8 @@ executable.
 
 ## Current features
 
-- Runtime-switchable PySide6 interface in English and Spanish, with UI strings
-  stored in JSON locale files.
+- Runtime-switchable PySide6 interface in 10 languages, with UI strings stored
+  in auto-discovered JSON locale files.
 - Paste text or import UTF-8/Windows text, Markdown, and DOCX files.
 - Recursive discovery of Piper `.onnx` voices with matching `.onnx.json` files.
 - Built-in manager for browsing, installing, and removing public Piper voices.
@@ -143,6 +143,13 @@ header. The main generation view only contains the source editor, voice
 language, voice selection, progress, and log. Output, narration, and podcast
 options live under **Settings > General**; natural pauses and detailed podcast
 controls live under **Settings > Advanced**.
+
+The interface is available in English, Spanish, French, German, Italian,
+Portuguese, Simplified Chinese, Japanese, Arabic, and Hindi. Arabic
+automatically switches the application to a right-to-left layout. Additional
+languages can be added by placing another complete JSON file in `locales/`;
+the selector discovers it automatically through its `language_name` and
+`language_direction` entries.
 
 ## Configuration
 
