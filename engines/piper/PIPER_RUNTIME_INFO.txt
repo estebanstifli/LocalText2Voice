@@ -1,0 +1,15 @@
+Piper runtime for Windows x64
+
+Source:
+  https://github.com/rhasspy/piper/releases/tag/2023.11.14-2
+
+Asset:
+  piper_windows_amd64.zip
+
+SHA-256:
+  F3C58906402B24F3A96D92145F58ACBA6D86C9B5DB896D207F78DC80811EFCEA
+
+The complete runtime is kept in this directory, including piper.exe,
+its DLL files, espeak-ng-data, pkgconfig, and the auxiliary model.
+
+The original Rhasspy Piper project is distributed under the MIT license.
