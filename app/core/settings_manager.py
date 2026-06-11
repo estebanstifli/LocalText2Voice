@@ -49,7 +49,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "metadata": {
         "title": "Course",
         "artist": "",
-        "album": "CourseToPodcast",
+        "album": "LocalText2Voice",
     },
 }
 

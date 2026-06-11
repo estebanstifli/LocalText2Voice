@@ -126,7 +126,7 @@ class AudioPipeline:
             podcast_steps = export_steps if options.podcast_enabled else 0
             total_steps = total_chunks + export_steps + podcast_steps
 
-            with tempfile.TemporaryDirectory(prefix="course_to_podcast_") as temp_name:
+            with tempfile.TemporaryDirectory(prefix="local_text_2_voice_") as temp_name:
                 temp_dir = Path(temp_name)
                 pause_random = random.Random()
                 rendered_groups = self._render_groups(

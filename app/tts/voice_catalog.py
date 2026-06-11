@@ -400,7 +400,7 @@ class HuggingFaceVoiceCatalog:
             url,
             headers={
                 "Accept": "application/json, application/octet-stream",
-                "User-Agent": "CourseToPodcast/0.2",
+                "User-Agent": "LocalText2Voice/0.2",
             },
         )
 

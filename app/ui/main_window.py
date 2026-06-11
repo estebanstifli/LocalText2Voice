@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QIcon, QPixmap
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -36,7 +36,7 @@ from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
 from app.tts.voice_manager import VoiceInfo, VoiceManager
 from app.utils.i18n import Translator
-from app.utils.paths import application_root, resolve_app_path
+from app.utils.paths import application_root, resolve_app_path, resource_root
 from app.workers.generation_worker import GenerationWorker
 
 from .icons import ui_icon
@@ -61,7 +61,9 @@ class MainWindow(QMainWindow):
         self.generation_timer.setInterval(1000)
         self.generation_timer.timeout.connect(self._update_generation_time)
 
-        self.setWindowTitle(self.tr("app_title", "CourseToPodcast"))
+        self.setWindowTitle(self.tr("app_title", "LocalText2Voice"))
+        logo_path = resource_root() / "assets" / "logotipo.png"
+        self.setWindowIcon(QIcon(str(logo_path)))
         self.setMinimumSize(960, 720)
         self.resize(1120, 820)
         self._build_ui()
@@ -80,9 +82,26 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(14)
 
         header_layout = QHBoxLayout()
+        brand_widget = QWidget()
+        brand_widget.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        brand_layout = QHBoxLayout(brand_widget)
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(12)
+        logo_label = QLabel()
+        logo_label.setObjectName("logoLabel")
+        logo_label.setFixedSize(64, 64)
+        logo_label.setPixmap(
+            QPixmap(str(resource_root() / "assets" / "logotipo.png")).scaled(
+                64,
+                64,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_layout = QVBoxLayout()
         title_layout.setSpacing(2)
-        title = QLabel(self.tr("app_title", "CourseToPodcast"))
+        title = QLabel(self.tr("app_title", "LocalText2Voice"))
         title.setObjectName("titleLabel")
         subtitle = QLabel(
             self.tr(
@@ -100,7 +119,9 @@ class MainWindow(QMainWindow):
         title_layout.addWidget(title)
         title_layout.addWidget(subtitle)
         title_layout.addWidget(author_credit)
-        header_layout.addLayout(title_layout, 1)
+        brand_layout.addWidget(logo_label)
+        brand_layout.addLayout(title_layout, 1)
+        header_layout.addWidget(brand_widget, 1)
 
         self.ui_language_combo = QComboBox()
         self.ui_language_combo.setToolTip(
@@ -860,7 +881,7 @@ class MainWindow(QMainWindow):
         self.translator.set_language(language)
 
         old_central = self.takeCentralWidget()
-        self.setWindowTitle(self.tr("app_title", "CourseToPodcast"))
+        self.setWindowTitle(self.tr("app_title", "LocalText2Voice"))
         self._build_ui()
         self._apply_style()
         self._load_voices()

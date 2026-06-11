@@ -20,13 +20,15 @@ echo Building portable application folder...
     --clean ^
     --windowed ^
     --onedir ^
-    --name CourseToPodcast ^
+    --name LocalText2Voice ^
+    --icon "assets\LocalText2Voice.ico" ^
     --paths "%CD%" ^
     --add-data "locales;locales" ^
+    --add-data "assets;assets" ^
     main.py
 if errorlevel 1 goto :error
 
-set "DIST_DIR=dist\CourseToPodcast"
+set "DIST_DIR=dist\LocalText2Voice"
 if not exist "%DIST_DIR%\engines\piper" mkdir "%DIST_DIR%\engines\piper"
 if not exist "%DIST_DIR%\voices" mkdir "%DIST_DIR%\voices"
 if not exist "%DIST_DIR%\ffmpeg" mkdir "%DIST_DIR%\ffmpeg"
@@ -41,7 +43,7 @@ copy /Y "config.example.json" "%DIST_DIR%\config.example.json" >nul
 
 echo.
 echo Build complete:
-echo   %CD%\%DIST_DIR%\CourseToPodcast.exe
+echo   %CD%\%DIST_DIR%\LocalText2Voice.exe
 echo.
 echo Piper, voice models, and FFmpeg stay outside the executable.
 exit /b 0

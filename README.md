@@ -1,6 +1,10 @@
-# CourseToPodcast
+<p align="center">
+  <img src="assets/logotipo.png" alt="LocalText2Voice logo" width="128">
+</p>
 
-CourseToPodcast is a lightweight Windows desktop application that converts long
+# LocalText2Voice
+
+LocalText2Voice is a lightweight Windows desktop application that converts long
 texts into one or more MP3 files using local Piper TTS and FFmpeg. Synthesis is
 offline, runs without a GPU, and keeps Piper voices outside the application
 executable.
@@ -33,7 +37,7 @@ executable.
 ## Project layout
 
 ```text
-course_to_podcast/
+local_text_2_voice/
 |-- main.py
 |-- requirements.txt
 |-- config.example.json
@@ -81,7 +85,7 @@ engines/piper/
 `-- pkgconfig/
 ```
 
-CourseToPodcast calls this executable directly with `subprocess`; Piper does
+LocalText2Voice calls this executable directly with `subprocess`; Piper does
 not need to be globally installed. Runtime source and checksum details are in
 `engines/piper/PIPER_RUNTIME_INFO.txt`.
 
@@ -222,7 +226,7 @@ Basic ducking uses FFmpeg's `sidechaincompress` filter so background music is
 reduced while the narration is speaking. Podcast normalization is enabled by
 default; clean-narration normalization remains independently configurable.
 
-Music is not bundled with CourseToPodcast. Only use tracks whose licenses
+Music is not bundled with LocalText2Voice. Only use tracks whose licenses
 permit the intended publication and redistribution.
 
 For a portable personal library, place tracks under `music/intro`,
@@ -253,8 +257,8 @@ PyInstaller in `--onedir` mode, and copies the external runtime folders. The
 result is:
 
 ```text
-dist/CourseToPodcast/
-|-- CourseToPodcast.exe
+dist/LocalText2Voice/
+|-- LocalText2Voice.exe
 |-- engines/
 |-- voices/
 |-- ffmpeg/
@@ -262,7 +266,7 @@ dist/CourseToPodcast/
 `-- config.example.json
 ```
 
-Piper, downloaded voices, and FFmpeg remain outside `CourseToPodcast.exe`,
+Piper, downloaded voices, and FFmpeg remain outside `LocalText2Voice.exe`,
 which keeps updates and voice changes manageable.
 
 ## Tests

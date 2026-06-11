@@ -1,7 +1,7 @@
 {
   "language_name": "日本語",
   "language_direction": "ltr",
-  "app_title": "CourseToPodcast",
+  "app_title": "LocalText2Voice",
   "app_subtitle": "長い文章をPiperでオフラインのMP3講座やポッドキャストに変換します。",
   "source_text": "元のテキスト",
   "import_text": "テキストを読み込む",

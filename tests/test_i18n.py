@@ -39,6 +39,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_spanish_translation_formats_values(self) -> None:
         translator = Translator("es")
+        self.assertEqual(translator.text("app_title"), "LocalText2Voice")
         self.assertEqual(translator.text("generate_audio"), "Generar audio")
         self.assertIn(
             "3",
