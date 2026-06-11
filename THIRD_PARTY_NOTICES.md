@@ -32,11 +32,13 @@ Review the individual `MODEL_CARD` before commercial use or redistribution.
 The public Windows release intentionally does not preinstall voice models.
 Users can preview and download a selected voice from the application.
 
-The Spanish demo in `docs/audio/localtext2voice-demo-es.mp3` was generated with:
+The English demo in `docs/audio/localtext2voice-demo-en.mp3` was generated with:
 
-- Model: `es_ES-davefx-medium`
-- Model card: https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_ES/davefx/medium/MODEL_CARD
-- Dataset license stated by the model card: CC0
+- Model: `en_GB-alan-medium`
+- Model card: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_GB/alan/medium/MODEL_CARD
+
+Review the model card and its linked dataset terms before redistributing the
+voice model or using generated audio commercially.
 
 ## FFmpeg
 
