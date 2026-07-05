@@ -62,7 +62,7 @@ class ChatterboxManagerTests(unittest.TestCase):
                 json.dumps(
                     {
                         "state": "installed",
-                        "runtime_version": "chatterbox-cuda-v1",
+                        "runtime_version": "chatterbox-cuda-v2",
                     }
                 ),
                 encoding="utf-8",

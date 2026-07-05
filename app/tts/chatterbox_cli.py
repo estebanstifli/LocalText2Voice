@@ -56,10 +56,7 @@ def _load_model(model_id: str, device: str):
     if model_id == "multilingual_v3":
         from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-        return ChatterboxMultilingualTTS.from_pretrained(
-            device=device,
-            t3_model="v3",
-        )
+        return ChatterboxMultilingualTTS.from_pretrained(device=device)
     if model_id == "english":
         from chatterbox.tts import ChatterboxTTS
 

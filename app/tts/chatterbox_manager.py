@@ -46,18 +46,18 @@ class ChatterboxLanguage:
 
 class ChatterboxManager:
     VERSION = "v1"
-    RUNTIME_VERSION = "chatterbox-cuda-v2"
+    RUNTIME_VERSION = "chatterbox-cuda-v3"
     INSTALL_FILENAME = "chatterbox-install.json"
     RUNTIME_INSTALL_FILENAME = "chatterbox-runtime-install.json"
     DEFAULT_RUNTIME_PACK_URL = (
         "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
-        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip"
+        "chatterbox-runtime-v3/LocalText2Voice-Chatterbox-CUDA.zip"
     )
     DEFAULT_RUNTIME_PACK_URLS = (
         "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
-        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip.part01",
+        "chatterbox-runtime-v3/LocalText2Voice-Chatterbox-CUDA.zip.part01",
         "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
-        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip.part02",
+        "chatterbox-runtime-v3/LocalText2Voice-Chatterbox-CUDA.zip.part02",
     )
     RUNTIME_PACK_MIN_SIZE = 100 * 1024 * 1024
 
