@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.core.settings_manager import DEFAULT_SETTINGS
 from app.core.settings_manager import SettingsManager
+from app.tts.base import TTSEngineError
 from app.tts.chatterbox_engine import ChatterboxTTSEngine
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import create_tts_engine, engine_ids
@@ -226,6 +227,9 @@ class ChatterboxManagerTests(unittest.TestCase):
                 def has_runtime(self) -> bool:
                     return True
 
+                def runtime_is_current(self) -> bool:
+                    return True
+
                 def runtime_command(self) -> list[str]:
                     import sys
 
@@ -251,6 +255,34 @@ class ChatterboxManagerTests(unittest.TestCase):
 
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
+
+    def test_engine_rejects_outdated_runtime_before_generation(self) -> None:
+        class OutdatedRuntimeManager(ChatterboxManager):
+            def has_runtime(self) -> bool:
+                return True
+
+            def runtime_is_current(self) -> bool:
+                return False
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            engine = ChatterboxTTSEngine(
+                OutdatedRuntimeManager(
+                    install_dir=Path(temporary_name) / "models",
+                    runtime_dir=Path(temporary_name) / "runtime",
+                )
+            )
+
+            with self.assertRaisesRegex(TTSEngineError, "outdated"):
+                engine.synthesize_to_wav(
+                    "hello",
+                    Path(temporary_name) / "out.wav",
+                    {
+                        "model": "multilingual_v3",
+                        "language": "en",
+                        "device": "auto",
+                        "reference_audio_path": "",
+                    },
+                )
 
 
 if __name__ == "__main__":

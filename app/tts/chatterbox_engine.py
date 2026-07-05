@@ -24,6 +24,12 @@ class ChatterboxTTSEngine(BaseTTSEngine):
                 f"found at {self.manager.runtime_path}. Build it with "
                 "build_chatterbox_engine.bat or install a runtime pack."
             )
+        if not self.manager.runtime_is_current():
+            raise TTSEngineError(
+                "The installed Chatterbox runtime is outdated. Open Settings > "
+                "General > Chatterbox and click Install to update the CUDA "
+                "runtime before generating audio."
+            )
         model = str(voice_config.get("model", "multilingual_v3"))
         reference = str(voice_config.get("reference_audio_path", "")).strip()
         if model == "turbo" and not reference:
