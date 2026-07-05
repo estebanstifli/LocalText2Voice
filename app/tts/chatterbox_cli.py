@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -106,6 +107,44 @@ def _generate(args: argparse.Namespace) -> None:
     print(f"Created {output_path}")
 
 
+def _cuda_info() -> dict[str, object]:
+    try:
+        import torch
+    except Exception as exc:
+        return {
+            "torch_available": False,
+            "cuda_available": False,
+            "device_count": 0,
+            "error": str(exc),
+        }
+
+    info: dict[str, object] = {
+        "torch_available": True,
+        "torch_version": getattr(torch, "__version__", ""),
+        "torch_cuda_version": getattr(torch.version, "cuda", None),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "device_count": int(torch.cuda.device_count()),
+        "devices": [],
+        "error": "",
+    }
+    devices: list[dict[str, object]] = []
+    for index in range(torch.cuda.device_count()):
+        try:
+            properties = torch.cuda.get_device_properties(index)
+            devices.append(
+                {
+                    "index": index,
+                    "name": torch.cuda.get_device_name(index),
+                    "total_memory_gb": properties.total_memory / (1024**3),
+                    "capability": f"{properties.major}.{properties.minor}",
+                }
+            )
+        except Exception as exc:
+            devices.append({"index": index, "error": str(exc)})
+    info["devices"] = devices
+    return info
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="LocalText2Voice Chatterbox engine")
     parser.add_argument("--input")
@@ -126,10 +165,14 @@ def main() -> int:
     parser.add_argument("--cfg-weight", type=float, default=0.5)
     parser.add_argument("--cache-dir", default="")
     parser.add_argument("--warmup", action="store_true")
+    parser.add_argument("--cuda-info", action="store_true")
     args = parser.parse_args()
 
     try:
         _configure_cache(args.cache_dir)
+        if args.cuda_info:
+            print(json.dumps(_cuda_info(), ensure_ascii=False))
+            return 0
         _generate(args)
     except Exception as exc:
         print(f"Chatterbox synthesis failed: {exc}", file=sys.stderr)

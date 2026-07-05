@@ -16,11 +16,15 @@ echo Installing Chatterbox engine dependencies...
 ".venv-chatterbox\Scripts\python.exe" -m pip install --upgrade pip
 if errorlevel 1 goto :error
 
-echo Installing PyTorch CUDA runtime. This can take a while...
-".venv-chatterbox\Scripts\python.exe" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
+".venv-chatterbox\Scripts\python.exe" -m pip install -r requirements-chatterbox-engine.txt
 if errorlevel 1 goto :error
 
-".venv-chatterbox\Scripts\python.exe" -m pip install -r requirements-chatterbox-engine.txt
+echo Forcing PyTorch CUDA runtime. This can take a while...
+".venv-chatterbox\Scripts\python.exe" -m pip install --upgrade --force-reinstall torch==2.6.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+if errorlevel 1 goto :error
+
+echo Verifying PyTorch CUDA visibility...
+".venv-chatterbox\Scripts\python.exe" -c "import torch, json; print(json.dumps({'torch': torch.__version__, 'cuda_compiled': torch.version.cuda, 'cuda_available': torch.cuda.is_available(), 'device_count': torch.cuda.device_count()}))"
 if errorlevel 1 goto :error
 
 echo Building Chatterbox engine folder...
@@ -36,6 +40,21 @@ echo Building Chatterbox engine folder...
     --collect-all transformers ^
     --collect-all tokenizers ^
     --collect-all huggingface_hub ^
+    --copy-metadata requests ^
+    --copy-metadata torch ^
+    --copy-metadata torchaudio ^
+    --copy-metadata chatterbox-tts ^
+    --copy-metadata transformers ^
+    --copy-metadata tokenizers ^
+    --copy-metadata huggingface_hub ^
+    --copy-metadata safetensors ^
+    --copy-metadata regex ^
+    --copy-metadata filelock ^
+    --copy-metadata fsspec ^
+    --copy-metadata tqdm ^
+    --copy-metadata numpy ^
+    --copy-metadata packaging ^
+    --copy-metadata PyYAML ^
     app\tts\chatterbox_cli.py
 if errorlevel 1 goto :error
 
@@ -46,17 +65,27 @@ rmdir /S /Q "dist\chatterbox_engine" >nul 2>nul
 
 if not exist "release_assets" mkdir "release_assets"
 if exist "release_assets\LocalText2Voice-Chatterbox-CUDA.zip" del /Q "release_assets\LocalText2Voice-Chatterbox-CUDA.zip"
+if exist "release_assets\LocalText2Voice-Chatterbox-CUDA.zip.part*" del /Q "release_assets\LocalText2Voice-Chatterbox-CUDA.zip.part*"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "Compress-Archive -Path 'engines\chatterbox\chatterbox_engine' -DestinationPath 'release_assets\LocalText2Voice-Chatterbox-CUDA.zip' -Force"
 if errorlevel 1 goto :error
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "Get-FileHash 'release_assets\LocalText2Voice-Chatterbox-CUDA.zip' -Algorithm SHA256 | ForEach-Object { $_.Hash } | Set-Content 'release_assets\LocalText2Voice-Chatterbox-CUDA.zip.sha256'"
+if errorlevel 1 goto :error
+
+echo Splitting Chatterbox runtime pack for GitHub Release upload...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$source='release_assets\LocalText2Voice-Chatterbox-CUDA.zip'; $partSize=1500MB; $buffer=New-Object byte[] (4MB); $input=[IO.File]::OpenRead($source); try { $index=1; while ($input.Position -lt $input.Length) { $part=('release_assets\LocalText2Voice-Chatterbox-CUDA.zip.part{0:D2}' -f $index); $output=[IO.File]::Create($part); try { $remaining=$partSize; while ($remaining -gt 0) { $toRead=[int][Math]::Min($buffer.Length,$remaining); $read=$input.Read($buffer,0,$toRead); if ($read -le 0) { break }; $output.Write($buffer,0,$read); $remaining -= $read } } finally { $output.Dispose() }; $index++ } } finally { $input.Dispose() }"
+if errorlevel 1 goto :error
 
 echo.
 echo Chatterbox engine build complete:
 echo   %CD%\engines\chatterbox\chatterbox_engine\chatterbox_engine.exe
 echo Runtime pack:
 echo   %CD%\release_assets\LocalText2Voice-Chatterbox-CUDA.zip
+echo Runtime pack parts for GitHub:
+echo   %CD%\release_assets\LocalText2Voice-Chatterbox-CUDA.zip.part01
+echo   %CD%\release_assets\LocalText2Voice-Chatterbox-CUDA.zip.part02
 echo.
 echo The model files are still downloaded on demand to %%LOCALAPPDATA%%\LocalText2Voice\models\chatterbox.
 exit /b 0

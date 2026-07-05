@@ -47,6 +47,9 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.engine_settings_stack.count(), 6)
         self.assertGreaterEqual(window.tts_engine_combo.findData("chatterbox"), 0)
         self.assertEqual(window.chatterbox_device_combo.currentData(), "auto")
+        self.assertTrue(hasattr(window, "chatterbox_hardware_label"))
+        self.assertTrue(hasattr(window, "chatterbox_detect_gpu_button"))
+        self.assertFalse(window.chatterbox_detect_gpu_button.icon().isNull())
         self.assertTrue(window.language_combo.isEnabled())
 
         window._select_combo_data(window.tts_engine_combo, "openai")

@@ -76,6 +76,38 @@ class ChatterboxManagerTests(unittest.TestCase):
                 "installed",
             )
 
+    def test_runtime_pack_can_be_downloaded_in_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            archive_path = root / "runtime.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr(
+                    "chatterbox_engine/chatterbox_engine.exe",
+                    b"runtime",
+                )
+            data = archive_path.read_bytes()
+            midpoint = max(1, len(data) // 2)
+            part_1 = root / "runtime.zip.part01"
+            part_2 = root / "runtime.zip.part02"
+            part_1.write_bytes(data[:midpoint])
+            part_2.write_bytes(data[midpoint:])
+
+            manager = ChatterboxManager(
+                install_dir=root / "models",
+                runtime_dir=root / "runtime",
+                runtime_pack_urls=[part_1.as_uri(), part_2.as_uri()],
+            )
+            manager.RUNTIME_PACK_MIN_SIZE = 1
+
+            destination = manager.install_runtime()
+
+            self.assertEqual(destination, manager.runtime_dir)
+            self.assertTrue(manager.has_runtime())
+            self.assertEqual(
+                manager.runtime_manifest()["urls"],
+                [part_1.as_uri(), part_2.as_uri()],
+            )
+
     def test_default_settings_include_chatterbox(self) -> None:
         settings = DEFAULT_SETTINGS["chatterbox"]
         self.assertEqual(settings["model"], "multilingual_v3")

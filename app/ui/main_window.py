@@ -43,7 +43,9 @@ from app.tts.kokoro_preview import kokoro_preview_text_for_language
 from app.tts.voice_manager import VoiceInfo, VoiceManager
 from app.utils.i18n import Translator
 from app.utils.paths import application_root, resolve_app_path, resource_root
+from app.utils.gpu_detection import detect_gpus, format_gpu_detection
 from app.workers.chatterbox_worker import (
+    ChatterboxHardwareWorker,
     ChatterboxInstallWorker,
     ChatterboxPreviewWorker,
 )
@@ -74,6 +76,8 @@ class MainWindow(QMainWindow):
         self.chatterbox_thread: QThread | None = None
         self.chatterbox_preview_worker: ChatterboxPreviewWorker | None = None
         self.chatterbox_preview_thread: QThread | None = None
+        self.chatterbox_hardware_worker: ChatterboxHardwareWorker | None = None
+        self.chatterbox_hardware_thread: QThread | None = None
         self.generation_started_at: float | None = None
         self.progress_current = 0
         self.progress_total = 0
@@ -800,6 +804,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.chatterbox_path_label)
         layout.addWidget(self.chatterbox_runtime_label)
 
+        hardware_frame = QFrame()
+        hardware_frame.setObjectName("inlineStatusFrame")
+        hardware_layout = QVBoxLayout(hardware_frame)
+        hardware_layout.setContentsMargins(12, 10, 12, 10)
+        hardware_title_row = QHBoxLayout()
+        hardware_title = QLabel(
+            self.tr("hardware_acceleration", "Hardware acceleration")
+        )
+        hardware_title.setObjectName("sectionLabel")
+        self.chatterbox_detect_gpu_button = QPushButton(
+            self.tr("detect_gpu", "Detect GPU")
+        )
+        self.chatterbox_detect_gpu_button.setIcon(ui_icon("refresh"))
+        self.chatterbox_detect_gpu_button.clicked.connect(
+            self._detect_chatterbox_hardware
+        )
+        hardware_title_row.addWidget(hardware_title)
+        hardware_title_row.addStretch(1)
+        hardware_title_row.addWidget(self.chatterbox_detect_gpu_button)
+        self.chatterbox_hardware_label = QLabel()
+        self.chatterbox_hardware_label.setObjectName("helperLabel")
+        self.chatterbox_hardware_label.setWordWrap(True)
+        hardware_layout.addLayout(hardware_title_row)
+        hardware_layout.addWidget(self.chatterbox_hardware_label)
+        layout.addWidget(hardware_frame)
+
         self.chatterbox_progress_bar = QProgressBar()
         self.chatterbox_progress_bar.setRange(0, 100)
         self.chatterbox_progress_bar.setValue(0)
@@ -911,8 +941,53 @@ class MainWindow(QMainWindow):
         helper.setWordWrap(True)
         helper.setObjectName("helperLabel")
         layout.addWidget(helper)
+        self._refresh_chatterbox_hardware_status()
         self._refresh_chatterbox_status()
         return panel
+
+    def _refresh_chatterbox_hardware_status(self) -> None:
+        if not hasattr(self, "chatterbox_hardware_label"):
+            return
+        self.chatterbox_hardware_label.setText(format_gpu_detection(detect_gpus()))
+
+    def _detect_chatterbox_hardware(self) -> None:
+        if self.chatterbox_hardware_thread is not None:
+            return
+        self.chatterbox_detect_gpu_button.setEnabled(False)
+        self.chatterbox_hardware_label.setText(
+            self.tr("detecting_gpu", "Detecting GPU and CUDA runtime...")
+        )
+        thread = QThread(self)
+        worker = ChatterboxHardwareWorker(
+            ChatterboxManager(),
+            include_runtime=True,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_chatterbox_hardware_ready)
+        worker.failed.connect(self._on_chatterbox_hardware_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_chatterbox_hardware_worker)
+        self.chatterbox_hardware_thread = thread
+        self.chatterbox_hardware_worker = worker
+        self._refresh_chatterbox_status()
+        thread.start()
+
+    def _on_chatterbox_hardware_ready(self, message: str) -> None:
+        self.chatterbox_hardware_label.setText(message)
+        self.log_view.append_event(message.replace("\n", " | "))
+
+    def _on_chatterbox_hardware_failed(self, message: str) -> None:
+        self.chatterbox_hardware_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _clear_chatterbox_hardware_worker(self) -> None:
+        self.chatterbox_hardware_worker = None
+        self.chatterbox_hardware_thread = None
+        self._refresh_chatterbox_status()
 
     def _refresh_chatterbox_status(self) -> None:
         if not hasattr(self, "chatterbox_status_label"):
@@ -960,6 +1035,9 @@ class MainWindow(QMainWindow):
             runtime_ready
             and self.chatterbox_preview_thread is None
             and not operation_running
+        )
+        self.chatterbox_detect_gpu_button.setEnabled(
+            self.chatterbox_hardware_thread is None and not operation_running
         )
         self.chatterbox_cancel_button.setVisible(operation_running)
         self.chatterbox_cancel_button.setEnabled(operation_running)
@@ -2445,6 +2523,7 @@ class MainWindow(QMainWindow):
             self.chatterbox_install_button,
             self.chatterbox_remove_button,
             self.chatterbox_test_button,
+            self.chatterbox_detect_gpu_button,
             self.openai_api_key_edit,
             self.openai_model_combo,
             self.openai_voice_combo,

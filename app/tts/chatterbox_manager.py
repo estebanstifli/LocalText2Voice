@@ -46,12 +46,18 @@ class ChatterboxLanguage:
 
 class ChatterboxManager:
     VERSION = "v1"
-    RUNTIME_VERSION = "chatterbox-cuda-v1"
+    RUNTIME_VERSION = "chatterbox-cuda-v2"
     INSTALL_FILENAME = "chatterbox-install.json"
     RUNTIME_INSTALL_FILENAME = "chatterbox-runtime-install.json"
     DEFAULT_RUNTIME_PACK_URL = (
         "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
-        "chatterbox-runtime-v1/LocalText2Voice-Chatterbox-CUDA.zip"
+        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip"
+    )
+    DEFAULT_RUNTIME_PACK_URLS = (
+        "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
+        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip.part01",
+        "https://github.com/estebanstifli/LocalText2Voice/releases/download/"
+        "chatterbox-runtime-v2/LocalText2Voice-Chatterbox-CUDA.zip.part02",
     )
     RUNTIME_PACK_MIN_SIZE = 100 * 1024 * 1024
 
@@ -93,6 +99,7 @@ class ChatterboxManager:
         runtime_path: Path | None = None,
         runtime_dir: Path | None = None,
         runtime_pack_url: str | None = None,
+        runtime_pack_urls: list[str] | tuple[str, ...] | None = None,
         runtime_pack_sha256: str = "",
         timeout_seconds: int = 60,
     ) -> None:
@@ -107,7 +114,17 @@ class ChatterboxManager:
             / "chatterbox_engine.exe"
         )
         self.runtime_path = runtime_path or self._default_runtime_path()
-        self.runtime_pack_url = runtime_pack_url or self.DEFAULT_RUNTIME_PACK_URL
+        if runtime_pack_urls is not None:
+            self.runtime_pack_urls = [url for url in runtime_pack_urls if url]
+        elif runtime_pack_url:
+            self.runtime_pack_urls = [runtime_pack_url]
+        else:
+            self.runtime_pack_urls = list(self.DEFAULT_RUNTIME_PACK_URLS)
+        self.runtime_pack_url = (
+            self.runtime_pack_urls[0]
+            if len(self.runtime_pack_urls) == 1
+            else self.DEFAULT_RUNTIME_PACK_URL
+        )
         self.runtime_pack_sha256 = runtime_pack_sha256.strip().lower()
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
@@ -259,6 +276,16 @@ class ChatterboxManager:
         engine = ChatterboxTTSEngine(self)
         return engine.synthesize_to_wav(text, output_path, voice_config)
 
+    def cuda_info(self) -> dict[str, Any]:
+        if not self.has_runtime():
+            return {}
+        try:
+            output = self._run_runtime(["--cuda-info"])
+            data = json.loads(output)
+        except (ChatterboxError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def cancel(self) -> None:
         self._cancel_requested.set()
         with self._lock:
@@ -298,8 +325,54 @@ class ChatterboxManager:
         progress: ChatterboxProgress,
         cancel_token: threading.Event | None,
     ) -> int:
+        if not self.runtime_pack_urls:
+            raise ChatterboxError("No Chatterbox runtime download URL is configured.")
+        if len(self.runtime_pack_urls) == 1:
+            return self._download_runtime_url(
+                self.runtime_pack_urls[0],
+                archive_path,
+                progress,
+                cancel_token,
+                "Downloading Chatterbox GPU runtime...",
+            )
+
+        downloaded_total = 0
+        part_paths: list[Path] = []
+        for index, url in enumerate(self.runtime_pack_urls, start=1):
+            part_path = archive_path.with_name(
+                f"{archive_path.name}.part{index:02d}.tmp"
+            )
+            part_paths.append(part_path)
+            downloaded_total += self._download_runtime_url(
+                url,
+                part_path,
+                progress,
+                cancel_token,
+                (
+                    "Downloading Chatterbox GPU runtime "
+                    f"part {index}/{len(self.runtime_pack_urls)}..."
+                ),
+                downloaded_total,
+            )
+        progress(downloaded_total, downloaded_total, "Joining Chatterbox runtime...")
+        with archive_path.open("wb") as output:
+            for part_path in part_paths:
+                self._check_cancelled(cancel_token)
+                with part_path.open("rb") as part:
+                    shutil.copyfileobj(part, output)
+        return downloaded_total
+
+    def _download_runtime_url(
+        self,
+        url: str,
+        archive_path: Path,
+        progress: ChatterboxProgress,
+        cancel_token: threading.Event | None,
+        message: str,
+        offset: int = 0,
+    ) -> int:
         request = urllib.request.Request(
-            self.runtime_pack_url,
+            url,
             headers={"User-Agent": "LocalText2Voice/0.5"},
         )
         downloaded = 0
@@ -314,7 +387,7 @@ class ChatterboxManager:
                         "The Chatterbox runtime pack reported an unexpectedly "
                         f"small size ({total} bytes)."
                     )
-                progress(0, total or 1, "Downloading Chatterbox GPU runtime...")
+                progress(offset, offset + total or 1, message)
                 with archive_path.open("wb") as output:
                     while True:
                         self._check_cancelled(cancel_token)
@@ -324,14 +397,14 @@ class ChatterboxManager:
                         output.write(chunk)
                         downloaded += len(chunk)
                         progress(
-                            downloaded,
-                            total or max(downloaded, 1),
-                            "Downloading Chatterbox GPU runtime...",
+                            offset + downloaded,
+                            offset + total or max(offset + downloaded, 1),
+                            message,
                         )
         except urllib.error.HTTPError as exc:
             raise ChatterboxError(
                 "Could not download the Chatterbox runtime pack. "
-                f"GitHub returned HTTP {exc.code}. URL: {self.runtime_pack_url}"
+                f"GitHub returned HTTP {exc.code}. URL: {url}"
             ) from exc
         except urllib.error.URLError as exc:
             raise ChatterboxError(
@@ -443,6 +516,7 @@ class ChatterboxManager:
             "state": state,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "url": self.runtime_pack_url,
+            "urls": self.runtime_pack_urls,
             "sha256": self.runtime_pack_sha256,
             "runtime_path": str(self.runtime_path),
         }

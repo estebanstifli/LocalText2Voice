@@ -116,7 +116,7 @@ voice-over drafts.
 ## Quick Start on Windows
 
 1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
-2. Download `LocalText2Voice-v0.4.1-windows-x64.zip`.
+2. Download `LocalText2Voice-v0.4.2-windows-x64.zip`.
 3. Extract the ZIP to a folder where you have write permission.
 4. Run `LocalText2Voice.exe`.
 5. Open **Manage voices**, preview a voice, and download it.
@@ -337,10 +337,13 @@ For end users, the Chatterbox **Install** button downloads the runtime pack from
 GitHub Releases:
 
 ```text
-https://github.com/estebanstifli/LocalText2Voice/releases/download/chatterbox-runtime-v1/LocalText2Voice-Chatterbox-CUDA.zip
+https://github.com/estebanstifli/LocalText2Voice/releases/tag/chatterbox-runtime-v2
 ```
 
-The runtime is installed to:
+The CUDA runtime is split into `LocalText2Voice-Chatterbox-CUDA.zip.part01`
+and `LocalText2Voice-Chatterbox-CUDA.zip.part02` because GitHub Release
+assets must stay under 2 GiB per file. The app downloads both parts, joins
+them locally, validates the final ZIP, and installs the runtime to:
 
 ```text
 %LOCALAPPDATA%/LocalText2Voice/runtimes/chatterbox/
@@ -362,6 +365,8 @@ The build also creates:
 
 ```text
 release_assets/LocalText2Voice-Chatterbox-CUDA.zip
+release_assets/LocalText2Voice-Chatterbox-CUDA.zip.part01
+release_assets/LocalText2Voice-Chatterbox-CUDA.zip.part02
 release_assets/LocalText2Voice-Chatterbox-CUDA.zip.sha256
 ```
 

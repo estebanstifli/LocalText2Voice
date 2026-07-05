@@ -12,6 +12,11 @@ from app.tts.chatterbox_manager import (
     ChatterboxError,
     ChatterboxManager,
 )
+from app.utils.gpu_detection import (
+    detect_gpus,
+    format_gpu_detection,
+    format_runtime_cuda_info,
+)
 
 
 class ChatterboxInstallWorker(QObject):
@@ -93,3 +98,32 @@ class ChatterboxPreviewWorker(QObject):
         except Exception as exc:
             traceback.print_exc()
             self.failed.emit(f"Unexpected Chatterbox preview error: {exc}")
+
+
+class ChatterboxHardwareWorker(QObject):
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        manager: ChatterboxManager,
+        include_runtime: bool,
+    ) -> None:
+        super().__init__()
+        self.manager = manager
+        self.include_runtime = include_runtime
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            system_text = format_gpu_detection(detect_gpus())
+            runtime_text = ""
+            if self.include_runtime:
+                runtime_text = format_runtime_cuda_info(self.manager.cuda_info())
+            if runtime_text:
+                self.finished.emit(f"{system_text}\n{runtime_text}")
+            else:
+                self.finished.emit(system_text)
+        except Exception as exc:
+            traceback.print_exc()
+            self.failed.emit(f"GPU detection failed: {exc}")
