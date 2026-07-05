@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QIcon, QPixmap
 from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -34,10 +36,19 @@ from PySide6.QtWidgets import (
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
+from app.tts.engine_registry import TTS_ENGINES
+from app.tts.chatterbox_manager import ChatterboxManager
+from app.tts.kokoro_manager import KokoroManager
+from app.tts.kokoro_preview import kokoro_preview_text_for_language
 from app.tts.voice_manager import VoiceInfo, VoiceManager
 from app.utils.i18n import Translator
 from app.utils.paths import application_root, resolve_app_path, resource_root
+from app.workers.chatterbox_worker import (
+    ChatterboxInstallWorker,
+    ChatterboxPreviewWorker,
+)
 from app.workers.generation_worker import GenerationWorker
+from app.workers.kokoro_worker import KokoroInstallWorker, KokoroPreviewWorker
 
 from .icons import ui_icon
 from .voice_manager_dialog import VoiceManagerDialog
@@ -50,9 +61,19 @@ class MainWindow(QMainWindow):
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
         self.translator = Translator(str(self.settings.get("ui_language", "en")))
+        self.kokoro_manager = KokoroManager()
+        self.chatterbox_manager = ChatterboxManager()
         self.voices: list[VoiceInfo] = []
         self.worker: GenerationWorker | None = None
         self.worker_thread: QThread | None = None
+        self.kokoro_worker: KokoroInstallWorker | None = None
+        self.kokoro_thread: QThread | None = None
+        self.kokoro_preview_worker: KokoroPreviewWorker | None = None
+        self.kokoro_preview_thread: QThread | None = None
+        self.chatterbox_worker: ChatterboxInstallWorker | None = None
+        self.chatterbox_thread: QThread | None = None
+        self.chatterbox_preview_worker: ChatterboxPreviewWorker | None = None
+        self.chatterbox_preview_thread: QThread | None = None
         self.generation_started_at: float | None = None
         self.progress_current = 0
         self.progress_total = 0
@@ -60,6 +81,18 @@ class MainWindow(QMainWindow):
         self.generation_timer = QTimer(self)
         self.generation_timer.setInterval(1000)
         self.generation_timer.timeout.connect(self._update_generation_time)
+        self.kokoro_audio_output = QAudioOutput(self)
+        self.kokoro_sample_player = QMediaPlayer(self)
+        self.kokoro_sample_player.setAudioOutput(self.kokoro_audio_output)
+        self.kokoro_sample_player.playbackStateChanged.connect(
+            self._on_kokoro_playback_state_changed
+        )
+        self.chatterbox_audio_output = QAudioOutput(self)
+        self.chatterbox_sample_player = QMediaPlayer(self)
+        self.chatterbox_sample_player.setAudioOutput(self.chatterbox_audio_output)
+        self.chatterbox_sample_player.playbackStateChanged.connect(
+            self._on_chatterbox_playback_state_changed
+        )
 
         self.setWindowTitle(self.tr("app_title", "LocalText2Voice"))
         logo_path = resource_root() / "assets" / "logotipo.png"
@@ -289,16 +322,16 @@ class MainWindow(QMainWindow):
         form.addRow(self.tr("voice", "Voice"), voice_row)
         layout.addLayout(form)
 
-        helper = QLabel(
+        self.voice_help_label = QLabel(
             self.tr(
                 "voice_help",
                 "Voices are discovered from voices/**/*.onnx when the matching "
                 ".onnx.json file is present.",
             )
         )
-        helper.setWordWrap(True)
-        helper.setObjectName("helperLabel")
-        layout.addWidget(helper)
+        self.voice_help_label.setWordWrap(True)
+        self.voice_help_label.setObjectName("helperLabel")
+        layout.addWidget(self.voice_help_label)
         layout.addStretch(1)
         return frame
 
@@ -350,6 +383,1043 @@ class MainWindow(QMainWindow):
         self.settings_button.setText(self.tr("settings", "Settings"))
         self.settings_button.setIcon(ui_icon("settings"))
 
+    def _build_tts_engine_settings(self) -> QGroupBox:
+        group = QGroupBox(
+            self.tr("voice_generation_engine", "Voice Generation Engine")
+        )
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.tts_engine_combo = QComboBox()
+        for engine in TTS_ENGINES:
+            self.tts_engine_combo.addItem(
+                ui_icon("voice"),
+                self._tts_engine_label(engine.engine_id),
+                engine.engine_id,
+            )
+        form.addRow(self.tr("tts_engine", "Generation engine"), self.tts_engine_combo)
+        layout.addLayout(form)
+
+        self.engine_settings_stack = QStackedWidget()
+        self.engine_stack_indexes: dict[str, int] = {}
+        for engine_id, panel in (
+            ("piper", self._build_piper_engine_panel()),
+            ("kokoro", self._build_kokoro_engine_panel()),
+            ("chatterbox", self._build_chatterbox_engine_panel()),
+            ("openai", self._build_openai_engine_panel()),
+            ("elevenlabs", self._build_elevenlabs_engine_panel()),
+            ("azure", self._build_azure_engine_panel()),
+        ):
+            self.engine_stack_indexes[engine_id] = self.engine_settings_stack.addWidget(
+                panel
+            )
+        layout.addWidget(self.engine_settings_stack)
+
+        note = QLabel(
+            self.tr(
+                "api_key_local_note",
+                "API keys are stored locally in config.json. Leave API engines "
+                "empty unless you want to use that provider.",
+            )
+        )
+        note.setWordWrap(True)
+        note.setObjectName("helperLabel")
+        layout.addWidget(note)
+        self.tts_engine_combo.currentIndexChanged.connect(
+            self._on_tts_engine_changed
+        )
+        return group
+
+    def _build_piper_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setSpacing(10)
+        self.piper_path_edit = QLineEdit()
+        self.piper_path_edit.setPlaceholderText("engines/piper/piper.exe")
+        form.addRow(
+            self.tr("piper_executable", "Piper executable"),
+            self.piper_path_edit,
+        )
+        helper = QLabel(
+            self.tr(
+                "piper_engine_help",
+                "Free and offline. Uses local .onnx voices from the voices folder.",
+            )
+        )
+        helper.setWordWrap(True)
+        helper.setObjectName("helperLabel")
+        form.addRow("", helper)
+        return panel
+
+    def _build_kokoro_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+
+        self.kokoro_status_label = QLabel()
+        self.kokoro_status_label.setObjectName("helperLabel")
+        self.kokoro_path_label = QLabel()
+        self.kokoro_path_label.setObjectName("helperLabel")
+        self.kokoro_path_label.setWordWrap(True)
+        self.kokoro_runtime_label = QLabel()
+        self.kokoro_runtime_label.setObjectName("helperLabel")
+        self.kokoro_runtime_label.setWordWrap(True)
+        layout.addWidget(self.kokoro_status_label)
+        layout.addWidget(self.kokoro_path_label)
+        layout.addWidget(self.kokoro_runtime_label)
+
+        self.kokoro_progress_bar = QProgressBar()
+        self.kokoro_progress_bar.setRange(0, 100)
+        self.kokoro_progress_bar.setValue(0)
+        self.kokoro_progress_bar.setVisible(False)
+        layout.addWidget(self.kokoro_progress_bar)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.kokoro_voice_combo = QComboBox()
+        for voice in self.kokoro_manager.list_voices():
+            self.kokoro_voice_combo.addItem(voice.display_name, voice.voice_id)
+        self.kokoro_provider_combo = QComboBox()
+        self.kokoro_provider_combo.addItem("CPU", "cpu")
+        self.kokoro_provider_combo.addItem("Auto (future)", "auto")
+        self.kokoro_provider_combo.addItem("CUDA (future)", "cuda")
+        self.kokoro_provider_combo.addItem("DirectML (future)", "directml")
+        form.addRow(self.tr("kokoro_voice", "Kokoro voice"), self.kokoro_voice_combo)
+        form.addRow(
+            self.tr("kokoro_provider", "Backend provider"),
+            self.kokoro_provider_combo,
+        )
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        self.kokoro_install_button = QPushButton(self.tr("install", "Install"))
+        self.kokoro_install_button.setIcon(ui_icon("apply"))
+        self.kokoro_install_button.clicked.connect(self._install_kokoro)
+        self.kokoro_remove_button = QPushButton(self.tr("remove", "Remove"))
+        self.kokoro_remove_button.setIcon(ui_icon("delete"))
+        self.kokoro_remove_button.clicked.connect(self._remove_kokoro)
+        self.kokoro_test_button = QPushButton(
+            self.tr("test_voice", "Test voice")
+        )
+        self.kokoro_test_button.setIcon(ui_icon("preview"))
+        self.kokoro_test_button.clicked.connect(self._test_kokoro_voice)
+        self.kokoro_cancel_button = QPushButton(self.tr("cancel", "Cancel"))
+        self.kokoro_cancel_button.setIcon(ui_icon("cancel"))
+        self.kokoro_cancel_button.setObjectName("secondaryButton")
+        self.kokoro_cancel_button.clicked.connect(self._cancel_kokoro_operation)
+        actions.addWidget(self.kokoro_install_button)
+        actions.addWidget(self.kokoro_remove_button)
+        actions.addWidget(self.kokoro_test_button)
+        actions.addWidget(self.kokoro_cancel_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self.kokoro_preview_frame = QFrame()
+        self.kokoro_preview_frame.setObjectName("inlineStatusFrame")
+        preview_layout = QHBoxLayout(self.kokoro_preview_frame)
+        preview_layout.setContentsMargins(12, 10, 12, 10)
+        preview_layout.setSpacing(10)
+        self.kokoro_preview_status_label = QLabel()
+        self.kokoro_preview_status_label.setObjectName("helperLabel")
+        self.kokoro_preview_bar = QProgressBar()
+        self.kokoro_preview_bar.setRange(0, 0)
+        self.kokoro_preview_bar.setTextVisible(False)
+        self.kokoro_preview_bar.setFixedWidth(140)
+        preview_layout.addWidget(self.kokoro_preview_status_label, 1)
+        preview_layout.addWidget(self.kokoro_preview_bar)
+        self.kokoro_preview_frame.setVisible(False)
+        layout.addWidget(self.kokoro_preview_frame)
+
+        helper = QLabel(
+            self.tr(
+                "kokoro_help",
+                "Optional local engine. Models are downloaded to your user "
+                "data folder, not bundled with the main app.",
+            )
+        )
+        helper.setWordWrap(True)
+        helper.setObjectName("helperLabel")
+        layout.addWidget(helper)
+        self._refresh_kokoro_status()
+        return panel
+
+    def _refresh_kokoro_status(self) -> None:
+        if not hasattr(self, "kokoro_status_label"):
+            return
+        installed = self.kokoro_manager.is_installed()
+        runtime_ready = self.kokoro_manager.has_runtime()
+        operation_running = self.kokoro_thread is not None
+        status_text = (
+            self.tr("installed", "Installed")
+            if installed
+            else self.tr("not_installed", "Not installed")
+        )
+        self.kokoro_status_label.setText(
+            self.tr("kokoro_status", "Kokoro status: {status}", status=status_text)
+        )
+        self.kokoro_path_label.setText(
+            self.tr(
+                "kokoro_model_path",
+                "Model path: {path}",
+                path=str(self.kokoro_manager.install_dir),
+            )
+        )
+        runtime_status = (
+            self.tr("installed", "Installed")
+            if runtime_ready
+            else self.tr("not_installed", "Not installed")
+        )
+        self.kokoro_runtime_label.setText(
+            self.tr(
+                "kokoro_runtime_status",
+                "Runtime: {status} ({path})",
+                status=runtime_status,
+                path=str(self.kokoro_manager.runtime_path),
+            )
+        )
+        self.kokoro_install_button.setEnabled(not installed and not operation_running)
+        self.kokoro_remove_button.setEnabled(installed and not operation_running)
+        self.kokoro_test_button.setEnabled(
+            installed
+            and runtime_ready
+            and self.kokoro_preview_thread is None
+            and not operation_running
+        )
+        self.kokoro_cancel_button.setVisible(operation_running)
+        self.kokoro_cancel_button.setEnabled(operation_running)
+
+    def _install_kokoro(self) -> None:
+        self._start_kokoro_operation("install")
+
+    def _remove_kokoro(self) -> None:
+        self._start_kokoro_operation("remove")
+
+    def _cancel_kokoro_operation(self) -> None:
+        if self.kokoro_worker is None:
+            return
+        self.kokoro_cancel_button.setEnabled(False)
+        self.log_view.append_event(self.tr("cancelling", "Cancelling generation..."))
+        self.kokoro_worker.request_cancel()
+
+    def _start_kokoro_operation(self, operation: str) -> None:
+        if self.kokoro_thread is not None:
+            return
+        self.kokoro_progress_bar.setVisible(True)
+        self.kokoro_progress_bar.setValue(0)
+        self.log_view.append_event(
+            self.tr(
+                "kokoro_installing",
+                "Kokoro operation started: {operation}",
+                operation=operation,
+            )
+        )
+        thread = QThread(self)
+        worker = KokoroInstallWorker(KokoroManager(), operation)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_kokoro_progress)
+        worker.finished.connect(self._on_kokoro_finished)
+        worker.failed.connect(self._on_kokoro_failed)
+        worker.cancelled.connect(self._on_kokoro_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_kokoro_worker)
+        self.kokoro_thread = thread
+        self.kokoro_worker = worker
+        self._refresh_kokoro_status()
+        thread.start()
+
+    def _on_kokoro_progress(self, current: int, total: int, message: str) -> None:
+        percentage = int((current / total) * 100) if total else 0
+        self.kokoro_progress_bar.setValue(max(0, min(100, percentage)))
+        self.kokoro_status_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _on_kokoro_finished(self, path: str) -> None:
+        self.kokoro_progress_bar.setValue(100)
+        self.log_view.append_event(
+            self.tr("kokoro_ready", "Kokoro ready: {path}", path=path)
+        )
+
+    def _on_kokoro_failed(self, message: str) -> None:
+        self.kokoro_progress_bar.setVisible(False)
+        if (
+            hasattr(self, "kokoro_preview_frame")
+            and self.kokoro_preview_thread is not None
+        ):
+            self._hide_kokoro_preview_status()
+        self.log_view.append_event(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_kokoro_cancelled(self) -> None:
+        self.kokoro_progress_bar.setVisible(False)
+        self.log_view.append_event(
+            self.tr("kokoro_cancelled", "Kokoro installation cancelled.")
+        )
+
+    def _clear_kokoro_worker(self) -> None:
+        self.kokoro_worker = None
+        self.kokoro_thread = None
+        self.kokoro_progress_bar.setVisible(False)
+        self.kokoro_manager = KokoroManager()
+        self._refresh_kokoro_status()
+
+    def _test_kokoro_voice(self) -> None:
+        if self.kokoro_preview_thread is not None:
+            return
+        if not self.kokoro_manager.is_installed():
+            self._show_error(
+                self.tr("missing_voice", "No voice selected"),
+                self.tr("kokoro_not_installed", "Kokoro is not installed yet."),
+            )
+            return
+        if not self.kokoro_manager.has_runtime():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "kokoro_runtime_missing",
+                    "kokoro_engine.exe is missing. Build it with "
+                    "build_kokoro_engine.bat and place it in engines/kokoro/.",
+                ),
+            )
+            return
+        voice_id = str(self.kokoro_voice_combo.currentData() or "af_heart")
+        lang = self._kokoro_language_for_voice(voice_id)
+        thread = QThread(self)
+        worker = KokoroPreviewWorker(
+            KokoroManager(),
+            voice_id,
+            lang,
+            self.speed_spin.value(),
+            kokoro_preview_text_for_language(lang),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_kokoro_preview_ready)
+        worker.failed.connect(self._on_kokoro_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_kokoro_preview_worker)
+        self.kokoro_preview_thread = thread
+        self.kokoro_preview_worker = worker
+        self._refresh_kokoro_status()
+        self._show_kokoro_preview_status(
+            self.tr("kokoro_preview_generating", "Generating Kokoro preview..."),
+            busy=True,
+        )
+        self.log_view.append_event(
+            self.tr("kokoro_preview_generating", "Generating Kokoro preview...")
+        )
+        thread.start()
+
+    def _on_kokoro_preview_ready(self, path: str) -> None:
+        self._show_kokoro_preview_status(
+            self.tr("kokoro_preview_ready", "Playing Kokoro preview."),
+            busy=False,
+        )
+        self.kokoro_sample_player.setSource(QUrl.fromLocalFile(path))
+        self.kokoro_sample_player.play()
+        self.log_view.append_event(
+            self.tr("kokoro_preview_ready", "Playing Kokoro preview.")
+        )
+
+    def _show_kokoro_preview_status(self, message: str, busy: bool) -> None:
+        if not hasattr(self, "kokoro_preview_frame"):
+            return
+        self.kokoro_preview_status_label.setText(message)
+        self.kokoro_preview_bar.setRange(0, 0 if busy else 100)
+        if not busy:
+            self.kokoro_preview_bar.setValue(100)
+        self.kokoro_preview_frame.setVisible(True)
+
+    def _hide_kokoro_preview_status(self) -> None:
+        if not hasattr(self, "kokoro_preview_frame"):
+            return
+        self.kokoro_preview_frame.setVisible(False)
+
+    def _on_kokoro_playback_state_changed(
+        self,
+        state: QMediaPlayer.PlaybackState,
+    ) -> None:
+        if not hasattr(self, "kokoro_preview_frame"):
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._show_kokoro_preview_status(
+                self.tr("kokoro_preview_ready", "Playing Kokoro preview."),
+                busy=False,
+            )
+        elif (
+            state == QMediaPlayer.PlaybackState.StoppedState
+            and self.kokoro_preview_thread is None
+        ):
+            QTimer.singleShot(800, self._hide_kokoro_preview_status)
+
+    def _clear_kokoro_preview_worker(self) -> None:
+        self.kokoro_preview_worker = None
+        self.kokoro_preview_thread = None
+        if (
+            hasattr(self, "kokoro_preview_frame")
+            and self.kokoro_sample_player.playbackState()
+            == QMediaPlayer.PlaybackState.StoppedState
+        ):
+            QTimer.singleShot(800, self._hide_kokoro_preview_status)
+        self._refresh_kokoro_status()
+
+    def _kokoro_language_for_voice(self, voice_id: str) -> str:
+        voice = next(
+            (
+                candidate
+                for candidate in self.kokoro_manager.list_voices()
+                if candidate.voice_id == voice_id
+            ),
+            None,
+        )
+        return voice.language if voice is not None else "en-us"
+
+    def _build_chatterbox_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+
+        self.chatterbox_status_label = QLabel()
+        self.chatterbox_status_label.setObjectName("helperLabel")
+        self.chatterbox_path_label = QLabel()
+        self.chatterbox_path_label.setObjectName("helperLabel")
+        self.chatterbox_path_label.setWordWrap(True)
+        self.chatterbox_runtime_label = QLabel()
+        self.chatterbox_runtime_label.setObjectName("helperLabel")
+        self.chatterbox_runtime_label.setWordWrap(True)
+        layout.addWidget(self.chatterbox_status_label)
+        layout.addWidget(self.chatterbox_path_label)
+        layout.addWidget(self.chatterbox_runtime_label)
+
+        self.chatterbox_progress_bar = QProgressBar()
+        self.chatterbox_progress_bar.setRange(0, 100)
+        self.chatterbox_progress_bar.setValue(0)
+        self.chatterbox_progress_bar.setVisible(False)
+        layout.addWidget(self.chatterbox_progress_bar)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.chatterbox_model_combo = QComboBox()
+        for model in self.chatterbox_manager.list_models():
+            self.chatterbox_model_combo.addItem(model.display_name, model.model_id)
+        self.chatterbox_language_combo = QComboBox()
+        for language in self.chatterbox_manager.list_languages():
+            self.chatterbox_language_combo.addItem(
+                language.display_name,
+                language.language_id,
+            )
+        self.chatterbox_device_combo = QComboBox()
+        self.chatterbox_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
+        self.chatterbox_device_combo.addItem("Auto", "auto")
+        self.chatterbox_device_combo.addItem("CPU fallback", "cpu")
+        self.chatterbox_device_combo.addItem("Apple MPS", "mps")
+        self.chatterbox_reference_picker = FilePicker(
+            self.tr("browse", "Browse"),
+            self.tr(
+                "audio_files_filter",
+                "Audio files (*.wav *.mp3 *.flac *.m4a);;All files (*.*)",
+            ),
+        )
+        self.chatterbox_consent_checkbox = QCheckBox(
+            self.tr(
+                "voice_clone_consent",
+                "I have permission to use this reference voice.",
+            )
+        )
+        self.chatterbox_exaggeration_spin = self._ratio_spin(0.5)
+        self.chatterbox_cfg_spin = self._ratio_spin(0.5)
+        form.addRow(
+            self.tr("chatterbox_model", "Chatterbox model"),
+            self.chatterbox_model_combo,
+        )
+        form.addRow(
+            self.tr("chatterbox_language", "Language"),
+            self.chatterbox_language_combo,
+        )
+        form.addRow(
+            self.tr("chatterbox_device", "GPU device"),
+            self.chatterbox_device_combo,
+        )
+        form.addRow(
+            self.tr("reference_audio", "Reference audio"),
+            self.chatterbox_reference_picker,
+        )
+        form.addRow("", self.chatterbox_consent_checkbox)
+        form.addRow(
+            self.tr("exaggeration", "Emotion exaggeration"),
+            self.chatterbox_exaggeration_spin,
+        )
+        form.addRow(self.tr("cfg_weight", "CFG weight"), self.chatterbox_cfg_spin)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        self.chatterbox_install_button = QPushButton(self.tr("install", "Install"))
+        self.chatterbox_install_button.setIcon(ui_icon("apply"))
+        self.chatterbox_install_button.clicked.connect(self._install_chatterbox)
+        self.chatterbox_remove_button = QPushButton(self.tr("remove", "Remove"))
+        self.chatterbox_remove_button.setIcon(ui_icon("delete"))
+        self.chatterbox_remove_button.clicked.connect(self._remove_chatterbox)
+        self.chatterbox_test_button = QPushButton(self.tr("test_voice", "Test voice"))
+        self.chatterbox_test_button.setIcon(ui_icon("preview"))
+        self.chatterbox_test_button.clicked.connect(self._test_chatterbox_voice)
+        self.chatterbox_cancel_button = QPushButton(self.tr("cancel", "Cancel"))
+        self.chatterbox_cancel_button.setIcon(ui_icon("cancel"))
+        self.chatterbox_cancel_button.setObjectName("secondaryButton")
+        self.chatterbox_cancel_button.clicked.connect(
+            self._cancel_chatterbox_operation
+        )
+        actions.addWidget(self.chatterbox_install_button)
+        actions.addWidget(self.chatterbox_remove_button)
+        actions.addWidget(self.chatterbox_test_button)
+        actions.addWidget(self.chatterbox_cancel_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self.chatterbox_preview_frame = QFrame()
+        self.chatterbox_preview_frame.setObjectName("inlineStatusFrame")
+        preview_layout = QHBoxLayout(self.chatterbox_preview_frame)
+        preview_layout.setContentsMargins(12, 10, 12, 10)
+        preview_layout.setSpacing(10)
+        self.chatterbox_preview_status_label = QLabel()
+        self.chatterbox_preview_status_label.setObjectName("helperLabel")
+        self.chatterbox_preview_bar = QProgressBar()
+        self.chatterbox_preview_bar.setRange(0, 0)
+        self.chatterbox_preview_bar.setTextVisible(False)
+        self.chatterbox_preview_bar.setFixedWidth(140)
+        preview_layout.addWidget(self.chatterbox_preview_status_label, 1)
+        preview_layout.addWidget(self.chatterbox_preview_bar)
+        self.chatterbox_preview_frame.setVisible(False)
+        layout.addWidget(self.chatterbox_preview_frame)
+
+        helper = QLabel(
+            self.tr(
+                "chatterbox_help",
+                "Advanced local GPU engine. Build or install the separate "
+                "Chatterbox runtime, then download model assets on demand. "
+                "CUDA/NVIDIA is recommended.",
+            )
+        )
+        helper.setWordWrap(True)
+        helper.setObjectName("helperLabel")
+        layout.addWidget(helper)
+        self._refresh_chatterbox_status()
+        return panel
+
+    def _refresh_chatterbox_status(self) -> None:
+        if not hasattr(self, "chatterbox_status_label"):
+            return
+        installed = self.chatterbox_manager.is_installed()
+        runtime_ready = self.chatterbox_manager.has_runtime()
+        operation_running = self.chatterbox_thread is not None
+        status_text = (
+            self.tr("installed", "Installed")
+            if installed
+            else self.tr("not_installed", "Not installed")
+        )
+        runtime_status = (
+            self.tr("installed", "Installed")
+            if runtime_ready
+            else self.tr("not_installed", "Not installed")
+        )
+        self.chatterbox_status_label.setText(
+            self.tr(
+                "chatterbox_status",
+                "Chatterbox status: {status}",
+                status=status_text,
+            )
+        )
+        self.chatterbox_path_label.setText(
+            self.tr(
+                "chatterbox_model_path",
+                "Model cache: {path}",
+                path=str(self.chatterbox_manager.cache_dir),
+            )
+        )
+        self.chatterbox_runtime_label.setText(
+            self.tr(
+                "chatterbox_runtime_status",
+                "Runtime: {status} ({path})",
+                status=runtime_status,
+                path=str(self.chatterbox_manager.runtime_path),
+            )
+        )
+        self.chatterbox_install_button.setEnabled(not operation_running)
+        self.chatterbox_remove_button.setEnabled(
+            installed and not operation_running
+        )
+        self.chatterbox_test_button.setEnabled(
+            runtime_ready
+            and self.chatterbox_preview_thread is None
+            and not operation_running
+        )
+        self.chatterbox_cancel_button.setVisible(operation_running)
+        self.chatterbox_cancel_button.setEnabled(operation_running)
+
+    def _install_chatterbox(self) -> None:
+        self._start_chatterbox_operation("install")
+
+    def _remove_chatterbox(self) -> None:
+        self._start_chatterbox_operation("remove")
+
+    def _cancel_chatterbox_operation(self) -> None:
+        if self.chatterbox_worker is None:
+            return
+        self.chatterbox_cancel_button.setEnabled(False)
+        self.log_view.append_event(self.tr("cancelling", "Cancelling generation..."))
+        self.chatterbox_worker.request_cancel()
+
+    def _start_chatterbox_operation(self, operation: str) -> None:
+        if self.chatterbox_thread is not None:
+            return
+        self.chatterbox_progress_bar.setVisible(True)
+        self.chatterbox_progress_bar.setRange(0, 0 if operation == "install" else 100)
+        self.chatterbox_progress_bar.setValue(0)
+        self.log_view.append_event(
+            self.tr(
+                "chatterbox_installing",
+                "Chatterbox operation started: {operation}",
+                operation=operation,
+            )
+        )
+        thread = QThread(self)
+        worker = ChatterboxInstallWorker(
+            ChatterboxManager(),
+            operation,
+            str(self.chatterbox_model_combo.currentData() or "multilingual_v3"),
+            str(self.chatterbox_device_combo.currentData() or "cuda"),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_chatterbox_progress)
+        worker.finished.connect(self._on_chatterbox_finished)
+        worker.failed.connect(self._on_chatterbox_failed)
+        worker.cancelled.connect(self._on_chatterbox_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_chatterbox_worker)
+        self.chatterbox_thread = thread
+        self.chatterbox_worker = worker
+        self._refresh_chatterbox_status()
+        thread.start()
+
+    def _on_chatterbox_progress(self, current: int, total: int, message: str) -> None:
+        if total:
+            self.chatterbox_progress_bar.setRange(0, 100)
+            percentage = int((current / total) * 100)
+            self.chatterbox_progress_bar.setValue(max(0, min(100, percentage)))
+        self.chatterbox_status_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _on_chatterbox_finished(self, path: str) -> None:
+        self.chatterbox_progress_bar.setRange(0, 100)
+        self.chatterbox_progress_bar.setValue(100)
+        self.log_view.append_event(
+            self.tr("chatterbox_ready", "Chatterbox ready: {path}", path=path)
+        )
+
+    def _on_chatterbox_failed(self, message: str) -> None:
+        self.chatterbox_progress_bar.setVisible(False)
+        if (
+            hasattr(self, "chatterbox_preview_frame")
+            and self.chatterbox_preview_thread is not None
+        ):
+            self._hide_chatterbox_preview_status()
+        self.log_view.append_event(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_chatterbox_cancelled(self) -> None:
+        self.chatterbox_progress_bar.setVisible(False)
+        self.log_view.append_event(
+            self.tr("chatterbox_cancelled", "Chatterbox operation cancelled.")
+        )
+
+    def _clear_chatterbox_worker(self) -> None:
+        self.chatterbox_worker = None
+        self.chatterbox_thread = None
+        self.chatterbox_progress_bar.setVisible(False)
+        self.chatterbox_manager = ChatterboxManager()
+        self._refresh_chatterbox_status()
+
+    def _test_chatterbox_voice(self) -> None:
+        if self.chatterbox_preview_thread is not None:
+            return
+        voice_config = self._chatterbox_voice_config_for_ui()
+        if voice_config is None:
+            return
+        thread = QThread(self)
+        worker = ChatterboxPreviewWorker(
+            ChatterboxManager(),
+            voice_config,
+            self._chatterbox_preview_text(
+                str(voice_config.get("language", "en"))
+            ),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_chatterbox_preview_ready)
+        worker.failed.connect(self._on_chatterbox_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_chatterbox_preview_worker)
+        self.chatterbox_preview_thread = thread
+        self.chatterbox_preview_worker = worker
+        self._refresh_chatterbox_status()
+        self._show_chatterbox_preview_status(
+            self.tr(
+                "chatterbox_preview_generating",
+                "Generating Chatterbox preview...",
+            ),
+            busy=True,
+        )
+        self.log_view.append_event(
+            self.tr(
+                "chatterbox_preview_generating",
+                "Generating Chatterbox preview...",
+            )
+        )
+        thread.start()
+
+    def _on_chatterbox_preview_ready(self, path: str) -> None:
+        self._show_chatterbox_preview_status(
+            self.tr("chatterbox_preview_ready", "Playing Chatterbox preview."),
+            busy=False,
+        )
+        self.chatterbox_sample_player.setSource(QUrl.fromLocalFile(path))
+        self.chatterbox_sample_player.play()
+        self.log_view.append_event(
+            self.tr("chatterbox_preview_ready", "Playing Chatterbox preview.")
+        )
+
+    def _show_chatterbox_preview_status(self, message: str, busy: bool) -> None:
+        if not hasattr(self, "chatterbox_preview_frame"):
+            return
+        self.chatterbox_preview_status_label.setText(message)
+        self.chatterbox_preview_bar.setRange(0, 0 if busy else 100)
+        if not busy:
+            self.chatterbox_preview_bar.setValue(100)
+        self.chatterbox_preview_frame.setVisible(True)
+
+    def _hide_chatterbox_preview_status(self) -> None:
+        if not hasattr(self, "chatterbox_preview_frame"):
+            return
+        self.chatterbox_preview_frame.setVisible(False)
+
+    def _on_chatterbox_playback_state_changed(
+        self,
+        state: QMediaPlayer.PlaybackState,
+    ) -> None:
+        if not hasattr(self, "chatterbox_preview_frame"):
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._show_chatterbox_preview_status(
+                self.tr("chatterbox_preview_ready", "Playing Chatterbox preview."),
+                busy=False,
+            )
+        elif (
+            state == QMediaPlayer.PlaybackState.StoppedState
+            and self.chatterbox_preview_thread is None
+        ):
+            QTimer.singleShot(800, self._hide_chatterbox_preview_status)
+
+    def _clear_chatterbox_preview_worker(self) -> None:
+        self.chatterbox_preview_worker = None
+        self.chatterbox_preview_thread = None
+        if (
+            hasattr(self, "chatterbox_preview_frame")
+            and self.chatterbox_sample_player.playbackState()
+            == QMediaPlayer.PlaybackState.StoppedState
+        ):
+            QTimer.singleShot(800, self._hide_chatterbox_preview_status)
+        self._refresh_chatterbox_status()
+
+    def _chatterbox_voice_config_for_ui(self) -> dict[str, object] | None:
+        if not self.chatterbox_manager.has_runtime():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "chatterbox_runtime_missing",
+                    "chatterbox_engine.exe is missing. Build it with "
+                    "build_chatterbox_engine.bat or install a runtime pack.",
+                ),
+            )
+            return None
+        reference_path = self.chatterbox_reference_picker.path()
+        reference_text = str(reference_path or "")
+        if reference_path is not None and not reference_path.is_file():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "reference_audio_missing",
+                    "Reference audio file not found: {path}",
+                    path=reference_text,
+                ),
+            )
+            return None
+        if reference_path is not None and not self.chatterbox_consent_checkbox.isChecked():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "voice_clone_consent_required",
+                    "Confirm that you have permission to use the reference voice.",
+                ),
+            )
+            return None
+        model = str(self.chatterbox_model_combo.currentData() or "multilingual_v3")
+        if model == "turbo" and reference_path is None:
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "chatterbox_turbo_reference_required",
+                    "Chatterbox Turbo requires a 5-20 second reference audio file.",
+                ),
+            )
+            return None
+        return {
+            "engine": "chatterbox",
+            "speed": self.speed_spin.value(),
+            "model": model,
+            "language": self.chatterbox_language_combo.currentData() or "en",
+            "device": self.chatterbox_device_combo.currentData() or "cuda",
+            "reference_audio_path": reference_text,
+            "exaggeration": self.chatterbox_exaggeration_spin.value(),
+            "cfg_weight": self.chatterbox_cfg_spin.value(),
+            "cache_dir": str(self.chatterbox_manager.cache_dir),
+        }
+
+    @staticmethod
+    def _chatterbox_preview_text(language: str) -> str:
+        texts = {
+            "de": "Der Mond ist heute Nacht wunderschon.",
+            "en": "The moon looks beautiful tonight.",
+            "es": "La luna esta preciosa esta noche.",
+            "fr": "La lune est magnifique ce soir.",
+            "it": "La luna e bellissima stasera.",
+            "ja": "今夜の月はとてもきれいです。",
+            "pt": "A lua esta linda esta noite.",
+            "zh": "今晚的月亮很美。",
+        }
+        return texts.get(language.lower(), texts["en"])
+
+    def _build_openai_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setSpacing(10)
+        self.openai_api_key_edit = self._password_edit()
+        self.openai_model_combo = QComboBox()
+        for model in ("gpt-4o-mini-tts", "tts-1", "tts-1-hd"):
+            self.openai_model_combo.addItem(model, model)
+        self.openai_voice_combo = QComboBox()
+        for voice in (
+            "marin",
+            "cedar",
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "nova",
+            "onyx",
+            "sage",
+            "shimmer",
+            "verse",
+        ):
+            self.openai_voice_combo.addItem(voice, voice)
+        self.openai_instructions_edit = QLineEdit()
+        self.openai_instructions_edit.setPlaceholderText(
+            self.tr(
+                "openai_instructions_placeholder",
+                "Optional: calm narrator, energetic course teacher...",
+            )
+        )
+
+        form.addRow(self.tr("api_key", "API key"), self.openai_api_key_edit)
+        form.addRow(self.tr("openai_model", "Model"), self.openai_model_combo)
+        form.addRow(self.tr("openai_voice", "Voice"), self.openai_voice_combo)
+        form.addRow(
+            self.tr("openai_instructions", "Style instructions"),
+            self.openai_instructions_edit,
+        )
+        return panel
+
+    def _build_elevenlabs_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setSpacing(10)
+        self.elevenlabs_api_key_edit = self._password_edit()
+        self.elevenlabs_voice_id_edit = QLineEdit()
+        self.elevenlabs_voice_id_edit.setPlaceholderText(
+            self.tr(
+                "elevenlabs_voice_id_placeholder",
+                "Paste a voice_id from your ElevenLabs account",
+            )
+        )
+        self.elevenlabs_model_combo = QComboBox()
+        for model in (
+            "eleven_flash_v2_5",
+            "eleven_multilingual_v2",
+            "eleven_v3",
+        ):
+            self.elevenlabs_model_combo.addItem(model, model)
+        self.elevenlabs_output_combo = QComboBox()
+        self.elevenlabs_output_combo.addItem(
+            self.tr("elevenlabs_pcm_24000", "PCM 24 kHz (recommended)"),
+            "pcm_24000",
+        )
+        self.elevenlabs_output_combo.addItem(
+            self.tr("elevenlabs_pcm_44100", "PCM 44.1 kHz"),
+            "pcm_44100",
+        )
+        self.elevenlabs_output_combo.addItem(
+            self.tr("elevenlabs_wav_44100", "WAV 44.1 kHz (Pro tier)"),
+            "wav_44100",
+        )
+        self.elevenlabs_stability_spin = self._ratio_spin(0.5)
+        self.elevenlabs_similarity_spin = self._ratio_spin(0.75)
+        self.elevenlabs_style_spin = self._ratio_spin(0.0)
+        self.elevenlabs_speaker_boost_checkbox = QCheckBox(
+            self.tr("speaker_boost", "Speaker boost")
+        )
+
+        form.addRow(self.tr("api_key", "API key"), self.elevenlabs_api_key_edit)
+        form.addRow(
+            self.tr("elevenlabs_voice_id", "Voice ID"),
+            self.elevenlabs_voice_id_edit,
+        )
+        form.addRow(
+            self.tr("elevenlabs_model", "Model"),
+            self.elevenlabs_model_combo,
+        )
+        form.addRow(
+            self.tr("elevenlabs_output_format", "Output format"),
+            self.elevenlabs_output_combo,
+        )
+        form.addRow(
+            self.tr("stability", "Stability"),
+            self.elevenlabs_stability_spin,
+        )
+        form.addRow(
+            self.tr("similarity", "Similarity"),
+            self.elevenlabs_similarity_spin,
+        )
+        form.addRow(
+            self.tr("style_exaggeration", "Style exaggeration"),
+            self.elevenlabs_style_spin,
+        )
+        form.addRow("", self.elevenlabs_speaker_boost_checkbox)
+        return panel
+
+    def _build_azure_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setSpacing(10)
+        self.azure_api_key_edit = self._password_edit()
+        self.azure_region_edit = QLineEdit()
+        self.azure_region_edit.setPlaceholderText(
+            self.tr("azure_region_placeholder", "Example: westeurope")
+        )
+        self.azure_voice_edit = QLineEdit()
+        self.azure_voice_edit.setPlaceholderText("en-US-JennyNeural")
+        self.azure_output_combo = QComboBox()
+        self.azure_output_combo.addItem(
+            "RIFF 24 kHz mono PCM",
+            "riff-24khz-16bit-mono-pcm",
+        )
+        self.azure_output_combo.addItem(
+            "RIFF 48 kHz mono PCM",
+            "riff-48khz-16bit-mono-pcm",
+        )
+        self.azure_style_edit = QLineEdit()
+        self.azure_style_edit.setPlaceholderText(
+            self.tr("azure_style_placeholder", "Optional: cheerful, sad, calm...")
+        )
+        form.addRow(self.tr("api_key", "API key"), self.azure_api_key_edit)
+        form.addRow(self.tr("azure_region", "Region"), self.azure_region_edit)
+        form.addRow(self.tr("azure_voice", "Voice name"), self.azure_voice_edit)
+        form.addRow(
+            self.tr("azure_output_format", "Output format"),
+            self.azure_output_combo,
+        )
+        form.addRow(self.tr("azure_style", "Style"), self.azure_style_edit)
+        return panel
+
+    def _on_tts_engine_changed(self) -> None:
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        index = self.engine_stack_indexes.get(engine_id, 0)
+        self.engine_settings_stack.setCurrentIndex(index)
+        self._update_voice_panel_for_engine()
+
+    def _update_voice_panel_for_engine(self) -> None:
+        if not hasattr(self, "language_combo"):
+            return
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        piper_selected = engine_id == "piper"
+        self.language_combo.setEnabled(piper_selected)
+        self.voice_combo.setEnabled(piper_selected)
+        self.manage_voices_button.setEnabled(piper_selected)
+        if piper_selected:
+            self.voice_help_label.setText(
+                self.tr(
+                    "voice_help",
+                    "Voices are discovered from voices/**/*.onnx when the matching "
+                    ".onnx.json file is present.",
+                )
+            )
+        else:
+            self.voice_help_label.setText(
+                self.tr(
+                    "api_voice_config_help",
+                    "This API engine uses the voice configured in Settings > General.",
+                )
+            )
+
+    @staticmethod
+    def _password_edit() -> QLineEdit:
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        edit.setPlaceholderText("sk-... / API key")
+        return edit
+
+    @staticmethod
+    def _ratio_spin(default: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 1.0)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(2)
+        spin.setValue(default)
+        return spin
+
+    def _tts_engine_label(self, engine_id: str) -> str:
+        labels = {
+            "piper": self.tr("tts_engine_piper", "Piper Local (offline, free)"),
+            "kokoro": self.tr(
+                "tts_engine_kokoro",
+                "Kokoro - Better local quality",
+            ),
+            "chatterbox": self.tr(
+                "tts_engine_chatterbox",
+                "Chatterbox - Advanced local GPU",
+            ),
+            "openai": self.tr("tts_engine_openai", "OpenAI TTS (API)"),
+            "elevenlabs": self.tr("tts_engine_elevenlabs", "ElevenLabs (API)"),
+            "azure": self.tr("tts_engine_azure", "Azure Speech (API)"),
+        }
+        return labels.get(engine_id, engine_id)
+
     def _build_general_settings(self) -> QWidget:
         widget = QWidget()
         grid = QGridLayout(widget)
@@ -357,6 +1427,7 @@ class MainWindow(QMainWindow):
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(10)
 
+        engine_group = self._build_tts_engine_settings()
         narration_group = QGroupBox(
             self.tr("narration_settings", "Narration and export")
         )
@@ -436,8 +1507,9 @@ class MainWindow(QMainWindow):
             self.background_picker,
         )
 
-        grid.addWidget(narration_group, 0, 0)
-        grid.addWidget(output_group, 0, 1)
+        grid.addWidget(engine_group, 0, 0, 1, 2)
+        grid.addWidget(narration_group, 1, 0)
+        grid.addWidget(output_group, 1, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -647,6 +1719,11 @@ class MainWindow(QMainWindow):
                 font-size: 12pt;
                 font-weight: 600;
             }
+            QFrame#inlineStatusFrame {
+                background: #f7f9fd;
+                border: 1px solid #dfe4ec;
+                border-radius: 8px;
+            }
             QTextEdit, QPlainTextEdit, QLineEdit, QComboBox, QDoubleSpinBox {
                 background: #ffffff;
                 border: 1px solid #ccd3df;
@@ -765,6 +1842,102 @@ class MainWindow(QMainWindow):
             )
 
     def _restore_settings(self) -> None:
+        self._select_combo_data(
+            self.tts_engine_combo,
+            self.settings.get("tts_engine", "piper"),
+        )
+        self.piper_path_edit.setText(
+            str(self.settings.get("piper_path", "engines/piper/piper.exe"))
+        )
+        api_tts = self._api_tts_settings()
+        openai = api_tts.get("openai", {})
+        self.openai_api_key_edit.setText(str(openai.get("api_key", "")))
+        self._select_combo_data(
+            self.openai_model_combo,
+            openai.get("model", "gpt-4o-mini-tts"),
+        )
+        self._select_combo_data(self.openai_voice_combo, openai.get("voice", "marin"))
+        self.openai_instructions_edit.setText(
+            str(openai.get("instructions", ""))
+        )
+
+        kokoro = self.settings.get("kokoro", {})
+        if not isinstance(kokoro, dict):
+            kokoro = {}
+        self._select_combo_data(
+            self.kokoro_voice_combo,
+            kokoro.get("voice", "af_heart"),
+        )
+        self._select_combo_data(
+            self.kokoro_provider_combo,
+            kokoro.get("provider", "cpu"),
+        )
+
+        chatterbox = self.settings.get("chatterbox", {})
+        if not isinstance(chatterbox, dict):
+            chatterbox = {}
+        self._select_combo_data(
+            self.chatterbox_model_combo,
+            chatterbox.get("model", "multilingual_v3"),
+        )
+        self._select_combo_data(
+            self.chatterbox_language_combo,
+            chatterbox.get("language", "en"),
+        )
+        self._select_combo_data(
+            self.chatterbox_device_combo,
+            chatterbox.get("device", "cuda"),
+        )
+        self.chatterbox_reference_picker.set_path(
+            str(chatterbox.get("reference_audio_path", ""))
+        )
+        self.chatterbox_consent_checkbox.setChecked(
+            bool(chatterbox.get("voice_clone_consent", False))
+        )
+        self.chatterbox_exaggeration_spin.setValue(
+            float(chatterbox.get("exaggeration", 0.5))
+        )
+        self.chatterbox_cfg_spin.setValue(
+            float(chatterbox.get("cfg_weight", 0.5))
+        )
+
+        elevenlabs = api_tts.get("elevenlabs", {})
+        self.elevenlabs_api_key_edit.setText(str(elevenlabs.get("api_key", "")))
+        self.elevenlabs_voice_id_edit.setText(
+            str(elevenlabs.get("voice_id", ""))
+        )
+        self._select_combo_data(
+            self.elevenlabs_model_combo,
+            elevenlabs.get("model_id", "eleven_flash_v2_5"),
+        )
+        self._select_combo_data(
+            self.elevenlabs_output_combo,
+            elevenlabs.get("output_format", "pcm_24000"),
+        )
+        self.elevenlabs_stability_spin.setValue(
+            float(elevenlabs.get("stability", 0.5))
+        )
+        self.elevenlabs_similarity_spin.setValue(
+            float(elevenlabs.get("similarity_boost", 0.75))
+        )
+        self.elevenlabs_style_spin.setValue(float(elevenlabs.get("style", 0.0)))
+        self.elevenlabs_speaker_boost_checkbox.setChecked(
+            bool(elevenlabs.get("use_speaker_boost", True))
+        )
+
+        azure = api_tts.get("azure", {})
+        self.azure_api_key_edit.setText(str(azure.get("api_key", "")))
+        self.azure_region_edit.setText(str(azure.get("region", "")))
+        self.azure_voice_edit.setText(
+            str(azure.get("voice", "en-US-JennyNeural"))
+        )
+        self._select_combo_data(
+            self.azure_output_combo,
+            azure.get("output_format", "riff-24khz-16bit-mono-pcm"),
+        )
+        self.azure_style_edit.setText(str(azure.get("style", "")))
+        self._on_tts_engine_changed()
+
         self.speed_spin.setValue(float(self.settings.get("speed", 1.0)))
         paragraph_min = max(
             0,
@@ -869,6 +2042,15 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _api_tts_settings(self) -> dict[str, dict[str, object]]:
+        value = self.settings.get("api_tts", {})
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): dict(item) if isinstance(item, dict) else {}
+            for key, item in value.items()
+        }
+
     def _change_ui_language(self) -> None:
         language = str(self.ui_language_combo.currentData() or "en")
         if language == self.translator.language:
@@ -924,6 +2106,95 @@ class MainWindow(QMainWindow):
         except DocumentImportError as exc:
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
 
+    def _current_voice_config(self) -> dict[str, object] | None:
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        speed = self.speed_spin.value()
+        if engine_id == "piper":
+            voice_id = self.voice_combo.currentData()
+            voice = next(
+                (
+                    candidate
+                    for candidate in self.voices
+                    if candidate.voice_id == voice_id
+                ),
+                None,
+            )
+            if voice is None:
+                self._show_error(
+                    self.tr("missing_voice", "No voice selected"),
+                    self.tr(
+                        "missing_voice_message",
+                        "Add a Piper .onnx model and its .onnx.json file to the "
+                        "voices folder.",
+                    ),
+                )
+                return None
+            config = voice.as_config(speed)
+            config["engine"] = "piper"
+            return config
+
+        if engine_id == "openai":
+            return {
+                "engine": "openai",
+                "speed": speed,
+                "api_key": self.openai_api_key_edit.text().strip(),
+                "model": self.openai_model_combo.currentData(),
+                "voice": self.openai_voice_combo.currentData(),
+                "instructions": self.openai_instructions_edit.text().strip(),
+            }
+        if engine_id == "kokoro":
+            voice_id = str(self.kokoro_voice_combo.currentData() or "af_heart")
+            provider = str(self.kokoro_provider_combo.currentData() or "cpu")
+            if provider != "cpu":
+                self._show_error(
+                    self.tr("generation_failed", "Generation failed"),
+                    self.tr(
+                        "kokoro_cpu_only",
+                        "Kokoro is currently enabled in CPU mode only.",
+                    ),
+                )
+                return None
+            return {
+                "engine": "kokoro",
+                "speed": speed,
+                "voice": voice_id,
+                "lang": self._kokoro_language_for_voice(voice_id),
+                "provider": provider,
+                "model_path": str(self.kokoro_manager.model_path),
+            }
+        if engine_id == "chatterbox":
+            return self._chatterbox_voice_config_for_ui()
+        if engine_id == "elevenlabs":
+            return {
+                "engine": "elevenlabs",
+                "speed": speed,
+                "api_key": self.elevenlabs_api_key_edit.text().strip(),
+                "voice_id": self.elevenlabs_voice_id_edit.text().strip(),
+                "model_id": self.elevenlabs_model_combo.currentData(),
+                "output_format": self.elevenlabs_output_combo.currentData(),
+                "stability": self.elevenlabs_stability_spin.value(),
+                "similarity_boost": self.elevenlabs_similarity_spin.value(),
+                "style": self.elevenlabs_style_spin.value(),
+                "use_speaker_boost": (
+                    self.elevenlabs_speaker_boost_checkbox.isChecked()
+                ),
+            }
+        if engine_id == "azure":
+            return {
+                "engine": "azure",
+                "speed": speed,
+                "api_key": self.azure_api_key_edit.text().strip(),
+                "region": self.azure_region_edit.text().strip(),
+                "voice": self.azure_voice_edit.text().strip(),
+                "output_format": self.azure_output_combo.currentData(),
+                "style": self.azure_style_edit.text().strip(),
+            }
+        self._show_error(
+            self.tr("generation_failed", "Generation failed"),
+            f"Unknown TTS engine: {engine_id}",
+        )
+        return None
+
     def _start_generation(self) -> None:
         if self.worker_thread is not None:
             return
@@ -936,19 +2207,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        voice_id = self.voice_combo.currentData()
-        voice = next(
-            (candidate for candidate in self.voices if candidate.voice_id == voice_id),
-            None,
-        )
-        if voice is None:
-            self._show_error(
-                self.tr("missing_voice", "No voice selected"),
-                self.tr(
-                    "missing_voice_message",
-                    "Add a Piper .onnx model and its .onnx.json file to the voices folder.",
-                ),
-            )
+        voice_config = self._current_voice_config()
+        if voice_config is None:
             return
 
         output_dir = self.output_picker.path()
@@ -965,7 +2225,7 @@ class MainWindow(QMainWindow):
 
         options = AudioGenerationOptions(
             output_dir=output_dir,
-            voice_config=voice.as_config(self.speed_spin.value()),
+            voice_config=voice_config,
             ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
             split_mode=str(self.split_combo.currentData()),
             export_mode=str(self.export_combo.currentData()),
@@ -1019,7 +2279,7 @@ class MainWindow(QMainWindow):
             metadata=dict(self.settings.get("metadata", {})),
         )
         piper_path = resolve_app_path(
-            self.settings.get("piper_path", "engines/piper/piper.exe")
+            self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
         )
         self._save_settings()
         self.log_view.clear()
@@ -1168,6 +2428,40 @@ class MainWindow(QMainWindow):
             self.split_combo,
             self.export_combo,
             self.ui_language_combo,
+            self.tts_engine_combo,
+            self.piper_path_edit,
+            self.kokoro_voice_combo,
+            self.kokoro_provider_combo,
+            self.kokoro_install_button,
+            self.kokoro_remove_button,
+            self.kokoro_test_button,
+            self.chatterbox_model_combo,
+            self.chatterbox_language_combo,
+            self.chatterbox_device_combo,
+            self.chatterbox_reference_picker,
+            self.chatterbox_consent_checkbox,
+            self.chatterbox_exaggeration_spin,
+            self.chatterbox_cfg_spin,
+            self.chatterbox_install_button,
+            self.chatterbox_remove_button,
+            self.chatterbox_test_button,
+            self.openai_api_key_edit,
+            self.openai_model_combo,
+            self.openai_voice_combo,
+            self.openai_instructions_edit,
+            self.elevenlabs_api_key_edit,
+            self.elevenlabs_voice_id_edit,
+            self.elevenlabs_model_combo,
+            self.elevenlabs_output_combo,
+            self.elevenlabs_stability_spin,
+            self.elevenlabs_similarity_spin,
+            self.elevenlabs_style_spin,
+            self.elevenlabs_speaker_boost_checkbox,
+            self.azure_api_key_edit,
+            self.azure_region_edit,
+            self.azure_voice_edit,
+            self.azure_output_combo,
+            self.azure_style_edit,
             self.paragraph_pause_min_spin,
             self.paragraph_pause_max_spin,
             self.adaptive_pause_checkbox,
@@ -1195,6 +2489,10 @@ class MainWindow(QMainWindow):
             self.open_folder_checkbox,
         ):
             widget.setEnabled(not running)
+        if not running:
+            self._update_voice_panel_for_engine()
+            self._refresh_kokoro_status()
+            self._refresh_chatterbox_status()
 
     def _save_settings(self) -> None:
         output_dir = self.output_picker.path()
@@ -1202,6 +2500,9 @@ class MainWindow(QMainWindow):
             {
                 "output_dir": str(output_dir),
                 "ui_language": self.ui_language_combo.currentData() or "en",
+                "tts_engine": self.tts_engine_combo.currentData() or "piper",
+                "piper_path": self.piper_path_edit.text().strip()
+                or "engines/piper/piper.exe",
                 "voice_id": self.voice_combo.currentData() or "",
                 "language": self.language_combo.currentData() or "",
                 "speed": self.speed_spin.value(),
@@ -1253,6 +2554,67 @@ class MainWindow(QMainWindow):
                 ),
                 "podcast_ducking": self.podcast_ducking_checkbox.isChecked(),
                 "open_output_on_finish": self.open_folder_checkbox.isChecked(),
+                "kokoro": {
+                    "voice": self.kokoro_voice_combo.currentData() or "af_heart",
+                    "lang": self._kokoro_language_for_voice(
+                        str(self.kokoro_voice_combo.currentData() or "af_heart")
+                    ),
+                    "provider": self.kokoro_provider_combo.currentData() or "cpu",
+                },
+                "chatterbox": {
+                    "model": (
+                        self.chatterbox_model_combo.currentData()
+                        or "multilingual_v3"
+                    ),
+                    "language": self.chatterbox_language_combo.currentData() or "en",
+                    "device": self.chatterbox_device_combo.currentData() or "cuda",
+                    "reference_audio_path": str(
+                        self.chatterbox_reference_picker.path() or ""
+                    ),
+                    "voice_clone_consent": (
+                        self.chatterbox_consent_checkbox.isChecked()
+                    ),
+                    "exaggeration": self.chatterbox_exaggeration_spin.value(),
+                    "cfg_weight": self.chatterbox_cfg_spin.value(),
+                },
+                "api_tts": {
+                    "openai": {
+                        "api_key": self.openai_api_key_edit.text().strip(),
+                        "model": self.openai_model_combo.currentData(),
+                        "voice": self.openai_voice_combo.currentData(),
+                        "instructions": (
+                            self.openai_instructions_edit.text().strip()
+                        ),
+                        "timeout_seconds": 120,
+                    },
+                    "elevenlabs": {
+                        "api_key": self.elevenlabs_api_key_edit.text().strip(),
+                        "voice_id": (
+                            self.elevenlabs_voice_id_edit.text().strip()
+                        ),
+                        "model_id": self.elevenlabs_model_combo.currentData(),
+                        "output_format": (
+                            self.elevenlabs_output_combo.currentData()
+                        ),
+                        "stability": self.elevenlabs_stability_spin.value(),
+                        "similarity_boost": (
+                            self.elevenlabs_similarity_spin.value()
+                        ),
+                        "style": self.elevenlabs_style_spin.value(),
+                        "use_speaker_boost": (
+                            self.elevenlabs_speaker_boost_checkbox.isChecked()
+                        ),
+                        "timeout_seconds": 120,
+                    },
+                    "azure": {
+                        "api_key": self.azure_api_key_edit.text().strip(),
+                        "region": self.azure_region_edit.text().strip(),
+                        "voice": self.azure_voice_edit.text().strip(),
+                        "output_format": self.azure_output_combo.currentData(),
+                        "style": self.azure_style_edit.text().strip(),
+                        "timeout_seconds": 120,
+                    },
+                },
             }
         )
         try:

@@ -11,7 +11,7 @@ from app.core.audio_pipeline import (
     AudioPipelineError,
     GenerationCancelled,
 )
-from app.tts.piper_engine import PiperTTSEngine
+from app.tts.engine_registry import create_tts_engine
 
 
 class GenerationWorker(QObject):
@@ -37,7 +37,8 @@ class GenerationWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            engine = PiperTTSEngine(self.piper_path)
+            engine_id = str(self.options.voice_config.get("engine", "piper"))
+            engine = create_tts_engine(engine_id, self.piper_path)
             pipeline = AudioPipeline(
                 engine,
                 progress_callback=self.progress.emit,

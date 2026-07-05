@@ -42,6 +42,16 @@ class MainWindowUITests(unittest.TestCase):
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
         self.assertEqual(window.settings_tabs.count(), 2)
+        self.assertEqual(window.tts_engine_combo.count(), 6)
+        self.assertEqual(window.tts_engine_combo.currentData(), "piper")
+        self.assertEqual(window.engine_settings_stack.count(), 6)
+        self.assertGreaterEqual(window.tts_engine_combo.findData("chatterbox"), 0)
+        self.assertTrue(window.language_combo.isEnabled())
+
+        window._select_combo_data(window.tts_engine_combo, "openai")
+        window._on_tts_engine_changed()
+        self.assertFalse(window.language_combo.isEnabled())
+        self.assertIn("General", window.voice_help_label.text())
 
         window.back_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 0)

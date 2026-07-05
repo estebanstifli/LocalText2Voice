@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 
@@ -30,3 +31,14 @@ def relative_to_app(path: str | Path) -> str:
         return str(resolved.relative_to(application_root()))
     except ValueError:
         return str(resolved)
+
+
+def app_data_root() -> Path:
+    """Return writable per-user app data for optional models and caches."""
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "LocalText2Voice"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LocalText2Voice"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "LocalText2Voice"

@@ -40,6 +40,43 @@ The English demo in `docs/audio/localtext2voice-demo-en.mp3` was generated with:
 Review the model card and its linked dataset terms before redistributing the
 voice model or using generated audio commercially.
 
+## Kokoro Runtime and Model Assets
+
+- Runtime wrapper used by this project: `engines/kokoro/kokoro_engine.exe`
+- Python package: `kokoro-onnx`
+- Upstream: https://github.com/thewh1teagle/kokoro-onnx
+- Backend: ONNX Runtime CPU
+- Model assets source: https://github.com/thewh1teagle/kokoro-onnx/releases
+
+The Windows portable build can include a CPU-only Kokoro runtime executable.
+The large Kokoro ONNX model and `voices-v1.0.bin` voice bundle are downloaded
+on demand to the user's local app data folder and are not embedded in the main
+application executable.
+
+The Kokoro runtime executable is built with PyInstaller and includes Python
+dependencies such as `kokoro-onnx`, `onnxruntime`, `soundfile`, `numpy`,
+`espeakng-loader`, `phonemizer-fork`, and `language-tags`. Their installed
+package metadata and upstream license files are authoritative. In particular,
+the installed `phonemizer-fork` package identifies itself as GPLv3; review its
+terms before redistributing a portable build.
+
+## Chatterbox Runtime and Model Assets
+
+- Project: Chatterbox TTS by Resemble AI
+- Upstream: https://github.com/resemble-ai/chatterbox
+- Model pages: https://huggingface.co/ResembleAI/chatterbox and
+  https://huggingface.co/ResembleAI/chatterbox-turbo
+- Package: `chatterbox-tts`
+
+Chatterbox is integrated as an optional advanced runtime. It is not required by
+the main application executable. A Chatterbox runtime pack can include PyTorch,
+Torchaudio, Transformers, Hugging Face Hub, and related dependencies; their
+package metadata and upstream license files are authoritative. Chatterbox model
+assets are downloaded on demand to the user's local app data folder.
+
+Chatterbox supports reference-audio voice cloning. Users are responsible for
+having permission to use any reference voice and generated audio.
+
 ## FFmpeg
 
 - Project: FFmpeg

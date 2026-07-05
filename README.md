@@ -68,6 +68,12 @@ voice-over drafts.
 ### Offline AI speech synthesis
 
 - Local neural TTS with Piper and ONNX voice models.
+- Optional API engines for OpenAI TTS, ElevenLabs, and Azure Speech.
+- Optional Kokoro local engine with on-demand model download to the user's
+  local app data folder. The Windows portable build includes the Kokoro CPU
+  runtime, but not the large Kokoro model assets.
+- Optional Chatterbox local GPU engine for advanced voice cloning and
+  expressive multilingual speech, installed as a separate runtime pack.
 - Built-in voice catalog with language/quality filters.
 - Remote voice sample playback before downloading a model.
 - Background downloads with cancellation, size validation, SHA-256 checks,
@@ -110,15 +116,16 @@ voice-over drafts.
 ## Quick Start on Windows
 
 1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
-2. Download `LocalText2Voice-v0.3.0-windows-x64.zip`.
+2. Download `LocalText2Voice-v0.4.0-windows-x64.zip`.
 3. Extract the ZIP to a folder where you have write permission.
 4. Run `LocalText2Voice.exe`.
 5. Open **Manage voices**, preview a voice, and download it.
 6. Paste or import your text, choose the voice, and select **Generate Audio**.
 
-The portable release includes the application, Piper runtime, and FFmpeg.
-Voice models are downloaded separately because their licenses and dataset
-conditions can differ.
+The portable release includes the application, Piper runtime, Kokoro CPU
+runtime, and FFmpeg. Piper voice models, Kokoro model assets, and optional
+Chatterbox GPU assets are downloaded or installed separately because their
+licenses, model cards, package size, and hardware requirements can differ.
 
 ### Audio example
 
@@ -171,6 +178,8 @@ workflows, internationalization, packaging, and automated testing.
 | Python 3.10+ | Application, processing pipeline, configuration, and tests |
 | PySide6 / Qt 6 | Native desktop interface, signals, threads, and i18n-ready UI |
 | Piper TTS | Fast local neural text-to-speech engine |
+| Kokoro ONNX | Optional higher-quality local CPU TTS engine |
+| Chatterbox TTS | Optional advanced local GPU TTS and voice cloning engine |
 | ONNX voice models | Portable pretrained speech models |
 | FFmpeg | WAV assembly, MP3 encoding, mixing, ducking, fades, and loudnorm |
 | PyInstaller | Portable Windows folder distribution |
@@ -190,6 +199,8 @@ LocalText2Voice/
 |   `-- llm/        # Future provider interface; no cloud integration yet
 |-- locales/        # Auto-discovered JSON translations
 |-- engines/piper/  # Portable Piper runtime
+|-- engines/kokoro/ # Portable Kokoro CPU runtime
+|-- engines/chatterbox/ # Optional Chatterbox GPU runtime pack
 |-- voices/         # External ONNX voice models
 |-- ffmpeg/         # Portable FFmpeg executable
 |-- music/          # Optional intro, background and outro library
@@ -198,8 +209,11 @@ LocalText2Voice/
 ```
 
 The audio pipeline depends on the abstract `BaseTTSEngine` contract. Piper is
-the first implementation; Kokoro, XTTS, ElevenLabs, OpenAI TTS, Azure TTS, or
-other providers can be added later without coupling them to the UI.
+the default local implementation. Kokoro is available as an optional local
+engine with an included CPU runtime and on-demand model download. Chatterbox is
+available as an advanced local GPU engine through a separate runtime pack.
+OpenAI TTS, ElevenLabs, and Azure Speech are available as API engines. Future
+local engines such as XTTS can be added later without coupling them to the UI.
 
 ## Run from Source
 
@@ -247,6 +261,11 @@ If the file is missing, safe defaults are created automatically.
 `config.example.json` documents the available values, including:
 
 - output folder, voice, language, speed, split mode, and export mode;
+- selected voice generation engine: Piper local, Kokoro local, OpenAI TTS,
+  ElevenLabs, or Azure Speech;
+- optional Kokoro voice and CPU provider settings;
+- API provider settings such as API keys, model IDs, voice IDs, Azure region,
+  output format, and style parameters;
 - Piper and FFmpeg paths;
 - chunk size and block/chapter pauses;
 - randomized and adaptive paragraph pause rules;
@@ -276,9 +295,95 @@ dist/LocalText2Voice/
 ```
 
 Piper, voices, and FFmpeg remain outside the main executable so they can be
-updated independently. Do not redistribute a voice until you have reviewed
-its model card and dataset license. Third-party license texts are copied into
-the portable folder under `licenses/`.
+updated independently. If `engines/kokoro/kokoro_engine.exe` exists, the
+portable folder also includes that CPU runtime while still downloading Kokoro
+model assets on demand. Do not redistribute a voice until you have reviewed its
+model card and dataset license. Third-party license texts are copied into the
+portable folder under `licenses/`.
+
+### Optional Kokoro Engine
+
+The Windows portable build can include `engines/kokoro/kokoro_engine.exe`, a
+CPU-only Kokoro runtime. The large Kokoro model assets are still not bundled;
+the application downloads the Kokoro ONNX model and voice bundle on demand to:
+
+```text
+%LOCALAPPDATA%/LocalText2Voice/models/kokoro/
+```
+
+The app expects the runtime at:
+
+```text
+engines/kokoro/kokoro_engine.exe
+```
+
+If it is missing from a development checkout, build it with:
+
+```bat
+build_kokoro_engine.bat
+```
+
+The Kokoro engine currently runs in CPU mode. The configuration and CLI already
+reserve `auto`, `cuda`, and `directml` provider names for future builds, but
+the included Windows runtime does not bundle GPU providers.
+
+### Optional Chatterbox GPU Engine
+
+Chatterbox is treated as an advanced local engine because it depends on
+PyTorch and benefits strongly from a CUDA-capable NVIDIA GPU. The main
+LocalText2Voice executable does not depend on Chatterbox.
+
+For end users, the Chatterbox **Install** button downloads the runtime pack from
+GitHub Releases:
+
+```text
+https://github.com/estebanstifli/LocalText2Voice/releases/download/chatterbox-runtime-v1/LocalText2Voice-Chatterbox-CUDA.zip
+```
+
+The runtime is installed to:
+
+```text
+%LOCALAPPDATA%/LocalText2Voice/runtimes/chatterbox/
+```
+
+For development or release preparation, build the runtime pack with:
+
+```bat
+build_chatterbox_engine.bat
+```
+
+Expected runtime path:
+
+```text
+engines/chatterbox/chatterbox_engine/chatterbox_engine.exe
+```
+
+The build also creates:
+
+```text
+release_assets/LocalText2Voice-Chatterbox-CUDA.zip
+release_assets/LocalText2Voice-Chatterbox-CUDA.zip.sha256
+```
+
+Model files are downloaded on demand to:
+
+```text
+%LOCALAPPDATA%/LocalText2Voice/models/chatterbox/
+```
+
+The Chatterbox panel supports:
+
+- Chatterbox Multilingual V3, English, and Turbo model modes;
+- CUDA, Auto, CPU fallback, and Apple MPS device choices;
+- optional reference audio for voice cloning;
+- consent checkbox for reference-voice usage;
+- emotion exaggeration and CFG weight controls.
+
+Turbo mode requires a reference audio file. For long-form content, the
+existing chunking pipeline is reused, but this first integration launches the
+external runtime per chunk. A later optimization should add a persistent
+Chatterbox worker/server mode to keep the model loaded during a full book or
+course generation.
 
 ## Tests
 
@@ -297,10 +402,12 @@ FFmpeg files.
 - [x] Downloadable voice catalog with remote previews
 - [x] Clean narration and music-backed podcast exports
 - [x] Natural pauses, progress, ETA, cancellation, and multilingual UI
+- [x] Optional API engines for OpenAI TTS, ElevenLabs, and Azure Speech
+- [x] Optional Kokoro local engine with dynamic model installation
+- [x] Optional Chatterbox local GPU engine scaffolding and runtime integration
 - [ ] Short product video and animated workflow demo
 - [ ] Visual chapter editor before synthesis
-- [ ] More local engines such as Kokoro and XTTS
-- [ ] Optional cloud providers such as OpenAI TTS, Azure, and ElevenLabs
+- [ ] More local engines such as XTTS
 - [ ] PDF and richer document import
 - [ ] Optional LLM-assisted lesson and course generation
 - [ ] Signed Windows installer, automatic updates, and release automation

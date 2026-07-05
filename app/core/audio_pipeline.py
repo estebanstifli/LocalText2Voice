@@ -100,6 +100,7 @@ class AudioPipeline:
         try:
             self._validate_options(options)
             self.tts_engine.validate(options.voice_config)
+            self._log_tts_engine(options.voice_config)
             groups = self._prepare_groups(text, options)
             total_chunks = sum(len(group.chunks) for group in groups)
             if total_chunks == 0:
@@ -204,6 +205,33 @@ class AudioPipeline:
             runner = self._ffmpeg_runner
         if runner is not None:
             runner.cancel_current()
+
+    def _log_tts_engine(self, voice_config: dict[str, Any]) -> None:
+        engine = str(voice_config.get("engine", "piper"))
+        if engine == "kokoro":
+            self.log_callback("Using TTS engine: Kokoro")
+            self.log_callback(
+                f"Kokoro voice: {voice_config.get('voice', 'unknown')}"
+            )
+            self.log_callback(
+                f"Kokoro backend: {voice_config.get('provider', 'cpu')}"
+            )
+            model_path = voice_config.get("model_path")
+            if model_path:
+                self.log_callback(f"Kokoro model: {model_path}")
+        elif engine == "chatterbox":
+            self.log_callback("Using TTS engine: Chatterbox")
+            self.log_callback(
+                f"Chatterbox model: {voice_config.get('model', 'unknown')}"
+            )
+            self.log_callback(
+                f"Chatterbox device: {voice_config.get('device', 'cuda')}"
+            )
+            self.log_callback(
+                f"Chatterbox language: {voice_config.get('language', 'en')}"
+            )
+        elif engine != "piper":
+            self.log_callback(f"Using TTS engine: {engine}")
 
     def _prepare_groups(
         self,

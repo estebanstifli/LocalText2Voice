@@ -37,6 +37,13 @@ if not exist "%DIST_DIR%\output" mkdir "%DIST_DIR%\output"
 if not exist "%DIST_DIR%\licenses" mkdir "%DIST_DIR%\licenses"
 
 xcopy /E /I /Y "engines" "%DIST_DIR%\engines" >nul
+if exist "engines\kokoro\kokoro_engine.exe" (
+    echo Including Kokoro CPU runtime in the portable folder.
+) else (
+    echo Kokoro CPU runtime not found. Run build_kokoro_engine.bat to include it.
+)
+if exist "%DIST_DIR%\engines\chatterbox\chatterbox_engine" rmdir /S /Q "%DIST_DIR%\engines\chatterbox\chatterbox_engine"
+echo Chatterbox GPU runtime is distributed as an optional GitHub Release pack.
 xcopy /E /I /Y "voices" "%DIST_DIR%\voices" >nul
 xcopy /E /I /Y "ffmpeg" "%DIST_DIR%\ffmpeg" >nul
 xcopy /E /I /Y "music" "%DIST_DIR%\music" >nul
@@ -50,7 +57,7 @@ echo.
 echo Build complete:
 echo   %CD%\%DIST_DIR%\LocalText2Voice.exe
 echo.
-echo Piper, voice models, and FFmpeg stay outside the executable.
+echo Piper, Kokoro CPU runtime, voice models, and FFmpeg stay outside the executable.
 exit /b 0
 
 :error

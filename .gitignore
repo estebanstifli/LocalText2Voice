@@ -1,9 +1,12 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-kokoro/
+.venv-chatterbox/
 venv/
 build/
 dist/
+release_assets/
 *.spec
 config.json
 logs/
@@ -11,6 +14,9 @@ output/*.mp3
 output/*.wav
 engines/piper/*
 !engines/piper/PIPER_RUNTIME_INFO.txt
+engines/kokoro/*.exe
+engines/chatterbox/*.exe
+engines/chatterbox/chatterbox_engine/
 voices/**/*.onnx
 voices/**/*.onnx.json
 ffmpeg/*.exe
