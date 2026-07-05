@@ -50,6 +50,32 @@ class ChatterboxManagerTests(unittest.TestCase):
             self.assertTrue(manager.has_runtime())
             self.assertEqual(manager.runtime_command(), [str(runtime)])
 
+    def test_old_appdata_runtime_is_not_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            runtime = root / "runtime" / "chatterbox_engine" / "chatterbox_engine.exe"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_bytes(b"runtime")
+            manifest = root / "runtime" / ChatterboxManager.RUNTIME_INSTALL_FILENAME
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "state": "installed",
+                        "runtime_version": "chatterbox-cuda-v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = ChatterboxManager(
+                install_dir=root / "models",
+                runtime_dir=root / "runtime",
+                runtime_path=runtime,
+            )
+
+            self.assertTrue(manager.has_runtime())
+            self.assertFalse(manager.runtime_is_current())
+
     def test_runtime_pack_is_downloaded_and_installed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
@@ -151,6 +177,9 @@ class ChatterboxManagerTests(unittest.TestCase):
 
             class FakeRuntimeManager(ChatterboxManager):
                 def has_runtime(self) -> bool:
+                    return True
+
+                def runtime_is_current(self) -> bool:
                     return True
 
                 def runtime_command(self) -> list[str]:

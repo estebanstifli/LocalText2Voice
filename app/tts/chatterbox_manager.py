@@ -152,6 +152,19 @@ class ChatterboxManager:
             and importlib.util.find_spec("torchaudio") is not None
         )
 
+    def runtime_is_current(self) -> bool:
+        if not self.has_runtime():
+            return False
+        if not self.runtime_path.is_file():
+            return True
+        if self.runtime_path == self.bundled_runtime_path:
+            return True
+        manifest = self.runtime_manifest()
+        return (
+            manifest.get("state") == "installed"
+            and manifest.get("runtime_version") == self.RUNTIME_VERSION
+        )
+
     def install_manifest(self) -> dict[str, Any]:
         return self._read_manifest(self.manifest_path)
 
@@ -167,7 +180,7 @@ class ChatterboxManager:
     ) -> Path:
         progress = progress_callback or (lambda current, total, message: None)
         self._cancel_requested.clear()
-        if not self.has_runtime():
+        if not self.has_runtime() or not self.runtime_is_current():
             self.install_runtime(progress, cancel_token)
         self.install_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

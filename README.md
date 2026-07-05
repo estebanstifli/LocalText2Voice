@@ -116,7 +116,7 @@ voice-over drafts.
 ## Quick Start on Windows
 
 1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
-2. Download `LocalText2Voice-v0.4.2-windows-x64.zip`.
+2. Download `LocalText2Voice-v0.4.3-windows-x64.zip`.
 3. Extract the ZIP to a folder where you have write permission.
 4. Run `LocalText2Voice.exe`.
 5. Open **Manage voices**, preview a voice, and download it.

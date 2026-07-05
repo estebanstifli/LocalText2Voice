@@ -994,6 +994,7 @@ class MainWindow(QMainWindow):
             return
         installed = self.chatterbox_manager.is_installed()
         runtime_ready = self.chatterbox_manager.has_runtime()
+        runtime_current = self.chatterbox_manager.runtime_is_current()
         operation_running = self.chatterbox_thread is not None
         status_text = (
             self.tr("installed", "Installed")
@@ -1002,6 +1003,8 @@ class MainWindow(QMainWindow):
         )
         runtime_status = (
             self.tr("installed", "Installed")
+            if runtime_ready and runtime_current
+            else self.tr("update_available", "Update available")
             if runtime_ready
             else self.tr("not_installed", "Not installed")
         )
