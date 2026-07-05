@@ -144,7 +144,7 @@ class ChatterboxManager:
     def install(
         self,
         model: str = "multilingual_v3",
-        device: str = "cuda",
+        device: str = "auto",
         progress_callback: ChatterboxProgress | None = None,
         cancel_token: threading.Event | None = None,
     ) -> Path:
@@ -157,11 +157,27 @@ class ChatterboxManager:
         self._write_manifest("installing", model, device)
         progress(1, 2, "Preparing Chatterbox model cache...")
         try:
-            self._run_runtime(
-                ["--warmup", "--model", model, "--device", device],
-                cancel_token,
-            )
-            self._write_manifest("installed", model, device)
+            resolved_device = device
+            try:
+                self._run_runtime(
+                    ["--warmup", "--model", model, "--device", device],
+                    cancel_token,
+                )
+            except ChatterboxError as exc:
+                if device == "cuda" and self._is_cuda_unavailable_error(str(exc)):
+                    resolved_device = "auto"
+                    progress(
+                        1,
+                        2,
+                        "CUDA GPU was not available. Retrying with Auto/CPU...",
+                    )
+                    self._run_runtime(
+                        ["--warmup", "--model", model, "--device", resolved_device],
+                        cancel_token,
+                    )
+                else:
+                    raise
+            self._write_manifest("installed", model, resolved_device)
             progress(2, 2, "Chatterbox is ready.")
             return self.install_dir
         except ChatterboxCancelled:
@@ -353,7 +369,7 @@ class ChatterboxManager:
         self,
         args: list[str],
         cancel_token: threading.Event | None = None,
-    ) -> None:
+    ) -> str:
         if not self.has_runtime():
             raise ChatterboxError(
                 "chatterbox_engine.exe was not found. Click Install to download "
@@ -404,6 +420,7 @@ class ChatterboxManager:
                 f"Chatterbox failed with exit code {process.returncode}: "
                 f"{details or 'No error details were returned.'}"
             )
+        return stdout.decode("utf-8", errors="replace").strip()
 
     def _write_manifest(self, state: str, model: str, device: str) -> None:
         self.install_dir.mkdir(parents=True, exist_ok=True)
@@ -497,3 +514,12 @@ class ChatterboxManager:
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
+
+    @staticmethod
+    def _is_cuda_unavailable_error(message: str) -> bool:
+        lowered = message.lower()
+        return "cuda was requested" in lowered and (
+            "cannot see a cuda gpu" in lowered
+            or "not available" in lowered
+            or "no cuda" in lowered
+        )

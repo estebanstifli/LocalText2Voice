@@ -225,7 +225,7 @@ class AudioPipeline:
                 f"Chatterbox model: {voice_config.get('model', 'unknown')}"
             )
             self.log_callback(
-                f"Chatterbox device: {voice_config.get('device', 'cuda')}"
+                f"Chatterbox device: {voice_config.get('device', 'auto')}"
             )
             self.log_callback(
                 f"Chatterbox language: {voice_config.get('language', 'en')}"

@@ -32,7 +32,7 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             )
         if reference and not Path(reference).expanduser().is_file():
             raise TTSEngineError(f"Reference audio file not found: {reference}")
-        device = str(voice_config.get("device", "cuda"))
+        device = str(voice_config.get("device", "auto"))
         if device not in {"auto", "cuda", "cpu", "mps"}:
             raise TTSEngineError(f"Unsupported Chatterbox device: {device}")
 
@@ -56,6 +56,34 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             input_file.write(text)
             input_path = Path(input_file.name)
 
+        synthesis_config = dict(voice_config)
+        try:
+            self._run_synthesis_process(input_path, output_wav, synthesis_config)
+        except TTSEngineError as exc:
+            if (
+                str(synthesis_config.get("device", "")).lower() == "cuda"
+                and self._is_cuda_unavailable_error(str(exc))
+            ):
+                output_wav.unlink(missing_ok=True)
+                synthesis_config["device"] = "auto"
+                self._run_synthesis_process(input_path, output_wav, synthesis_config)
+            else:
+                raise
+        finally:
+            input_path.unlink(missing_ok=True)
+
+        if not output_wav.is_file() or output_wav.stat().st_size == 0:
+            raise TTSEngineError(
+                "Chatterbox completed but did not create a valid WAV file."
+            )
+        return output_wav
+
+    def _run_synthesis_process(
+        self,
+        input_path: Path,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+    ) -> None:
         command = self._runtime_command(input_path, output_wav, voice_config)
         try:
             process = subprocess.Popen(
@@ -70,7 +98,6 @@ class ChatterboxTTSEngine(BaseTTSEngine):
                 ),
             )
         except OSError as exc:
-            input_path.unlink(missing_ok=True)
             raise TTSEngineError(f"Could not start Chatterbox: {exc}") from exc
 
         with self._lock:
@@ -88,7 +115,6 @@ class ChatterboxTTSEngine(BaseTTSEngine):
                 except subprocess.TimeoutExpired:
                     continue
         finally:
-            input_path.unlink(missing_ok=True)
             with self._lock:
                 if self._process is process:
                     self._process = None
@@ -101,11 +127,6 @@ class ChatterboxTTSEngine(BaseTTSEngine):
                 f"Chatterbox failed with exit code {process.returncode}: "
                 f"{details or 'No error details were returned.'}"
             )
-        if not output_wav.is_file() or output_wav.stat().st_size == 0:
-            raise TTSEngineError(
-                "Chatterbox completed but did not create a valid WAV file."
-            )
-        return output_wav
 
     def cancel_current(self) -> None:
         self._cancel_requested.set()
@@ -131,7 +152,7 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             "--language",
             str(voice_config.get("language", "en")),
             "--device",
-            str(voice_config.get("device", "cuda")),
+            str(voice_config.get("device", "auto")),
             "--exaggeration",
             f"{float(voice_config.get('exaggeration', 0.5)):.4f}",
             "--cfg-weight",
@@ -143,6 +164,15 @@ class ChatterboxTTSEngine(BaseTTSEngine):
         if reference:
             command.extend(["--reference", reference])
         return command
+
+    @staticmethod
+    def _is_cuda_unavailable_error(message: str) -> bool:
+        lowered = message.lower()
+        return "cuda was requested" in lowered and (
+            "cannot see a cuda gpu" in lowered
+            or "not available" in lowered
+            or "no cuda" in lowered
+        )
 
     @staticmethod
     def _terminate(process: subprocess.Popen[bytes]) -> None:

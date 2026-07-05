@@ -1,4 +1,5 @@
 {
+  "settings_schema_version": 2,
   "ui_language": "en",
   "output_dir": "output",
   "voice_id": "",
@@ -50,7 +51,7 @@
   "chatterbox": {
     "model": "multilingual_v3",
     "language": "en",
-    "device": "cuda",
+    "device": "auto",
     "reference_audio_path": "",
     "voice_clone_consent": false,
     "exaggeration": 0.5,

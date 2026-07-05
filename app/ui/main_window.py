@@ -818,9 +818,9 @@ class MainWindow(QMainWindow):
                 language.language_id,
             )
         self.chatterbox_device_combo = QComboBox()
+        self.chatterbox_device_combo.addItem("Auto (recommended)", "auto")
         self.chatterbox_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
-        self.chatterbox_device_combo.addItem("Auto", "auto")
-        self.chatterbox_device_combo.addItem("CPU fallback", "cpu")
+        self.chatterbox_device_combo.addItem("CPU only", "cpu")
         self.chatterbox_device_combo.addItem("Apple MPS", "mps")
         self.chatterbox_reference_picker = FilePicker(
             self.tr("browse", "Browse"),
@@ -846,7 +846,7 @@ class MainWindow(QMainWindow):
             self.chatterbox_language_combo,
         )
         form.addRow(
-            self.tr("chatterbox_device", "GPU device"),
+            self.tr("chatterbox_device", "Compute device"),
             self.chatterbox_device_combo,
         )
         form.addRow(
@@ -903,9 +903,9 @@ class MainWindow(QMainWindow):
         helper = QLabel(
             self.tr(
                 "chatterbox_help",
-                "Advanced local GPU engine. Build or install the separate "
-                "Chatterbox runtime, then download model assets on demand. "
-                "CUDA/NVIDIA is recommended.",
+                "Advanced local engine. Auto uses CUDA when available and "
+                "falls back to CPU on normal PCs. CUDA/NVIDIA is recommended "
+                "for speed, but not required.",
             )
         )
         helper.setWordWrap(True)
@@ -995,7 +995,7 @@ class MainWindow(QMainWindow):
             ChatterboxManager(),
             operation,
             str(self.chatterbox_model_combo.currentData() or "multilingual_v3"),
-            str(self.chatterbox_device_combo.currentData() or "cuda"),
+            str(self.chatterbox_device_combo.currentData() or "auto"),
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1193,7 +1193,7 @@ class MainWindow(QMainWindow):
             "speed": self.speed_spin.value(),
             "model": model,
             "language": self.chatterbox_language_combo.currentData() or "en",
-            "device": self.chatterbox_device_combo.currentData() or "cuda",
+            "device": self.chatterbox_device_combo.currentData() or "auto",
             "reference_audio_path": reference_text,
             "exaggeration": self.chatterbox_exaggeration_spin.value(),
             "cfg_weight": self.chatterbox_cfg_spin.value(),
@@ -1886,7 +1886,7 @@ class MainWindow(QMainWindow):
         )
         self._select_combo_data(
             self.chatterbox_device_combo,
-            chatterbox.get("device", "cuda"),
+            chatterbox.get("device", "auto"),
         )
         self.chatterbox_reference_picker.set_path(
             str(chatterbox.get("reference_audio_path", ""))
@@ -2567,7 +2567,7 @@ class MainWindow(QMainWindow):
                         or "multilingual_v3"
                     ),
                     "language": self.chatterbox_language_combo.currentData() or "en",
-                    "device": self.chatterbox_device_combo.currentData() or "cuda",
+                    "device": self.chatterbox_device_combo.currentData() or "auto",
                     "reference_audio_path": str(
                         self.chatterbox_reference_picker.path() or ""
                     ),

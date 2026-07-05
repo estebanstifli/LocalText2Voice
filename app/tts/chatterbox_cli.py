@@ -24,10 +24,12 @@ def _resolve_device(requested: str) -> str:
             return "mps"
         return "cpu"
     if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(
+        print(
             "CUDA was requested, but PyTorch cannot see a CUDA GPU. "
-            "Install the CUDA Chatterbox runtime or select CPU/Auto."
+            "Falling back to CPU.",
+            file=sys.stderr,
         )
+        return "cpu"
     if requested == "mps" and not (
         hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     ):

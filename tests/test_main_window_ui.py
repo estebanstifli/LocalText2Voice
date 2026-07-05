@@ -46,6 +46,7 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.tts_engine_combo.currentData(), "piper")
         self.assertEqual(window.engine_settings_stack.count(), 6)
         self.assertGreaterEqual(window.tts_engine_combo.findData("chatterbox"), 0)
+        self.assertEqual(window.chatterbox_device_combo.currentData(), "auto")
         self.assertTrue(window.language_combo.isEnabled())
 
         window._select_combo_data(window.tts_engine_combo, "openai")

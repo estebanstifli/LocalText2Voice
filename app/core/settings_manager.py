@@ -7,8 +7,11 @@ from typing import Any
 
 from app.utils.paths import application_root
 
+CURRENT_SETTINGS_SCHEMA_VERSION = 2
+
 
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
     "output_dir": "output",
     "voice_id": "",
@@ -60,7 +63,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "chatterbox": {
         "model": "multilingual_v3",
         "language": "en",
-        "device": "cuda",
+        "device": "auto",
         "reference_audio_path": "",
         "voice_clone_consent": False,
         "exaggeration": 0.5,
@@ -107,6 +110,31 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _settings_version(settings: dict[str, Any]) -> int:
+    try:
+        return int(settings.get("settings_schema_version", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _migrate_settings(
+    settings: dict[str, Any],
+    source_version: int | None = None,
+) -> dict[str, Any]:
+    result = deepcopy(settings)
+    version = _settings_version(result) if source_version is None else source_version
+
+    if version < 2:
+        chatterbox = result.get("chatterbox")
+        if isinstance(chatterbox, dict) and chatterbox.get("device") == "cuda":
+            # Older builds defaulted to strict CUDA, which failed on normal PCs.
+            # Auto still uses CUDA when available, but falls back to CPU.
+            chatterbox["device"] = "auto"
+
+    result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
+    return result
+
+
 class SettingsManager:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or application_root() / "config.json"
@@ -119,13 +147,18 @@ class SettingsManager:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
                 raise ValueError("The configuration root must be a JSON object.")
-            return _deep_merge(DEFAULT_SETTINGS, loaded)
+            return _migrate_settings(
+                _deep_merge(DEFAULT_SETTINGS, loaded),
+                _settings_version(loaded),
+            )
         except (OSError, json.JSONDecodeError, ValueError):
             return deepcopy(DEFAULT_SETTINGS)
 
     def save(self, values: dict[str, Any] | None = None) -> None:
         if values is not None:
-            self.settings = _deep_merge(DEFAULT_SETTINGS, values)
+            self.settings = _migrate_settings(_deep_merge(DEFAULT_SETTINGS, values))
+        else:
+            self.settings = _migrate_settings(self.settings)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = self.path.with_suffix(".json.tmp")
         temporary_path.write_text(
