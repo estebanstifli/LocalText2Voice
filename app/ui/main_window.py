@@ -992,13 +992,16 @@ class MainWindow(QMainWindow):
     def _refresh_chatterbox_status(self) -> None:
         if not hasattr(self, "chatterbox_status_label"):
             return
-        installed = self.chatterbox_manager.is_installed()
+        model_cache_installed = self.chatterbox_manager.is_installed()
         runtime_ready = self.chatterbox_manager.has_runtime()
         runtime_current = self.chatterbox_manager.runtime_is_current()
+        ready = runtime_ready and runtime_current
         operation_running = self.chatterbox_thread is not None
         status_text = (
             self.tr("installed", "Installed")
-            if installed
+            if ready
+            else self.tr("update_available", "Update available")
+            if runtime_ready
             else self.tr("not_installed", "Not installed")
         )
         runtime_status = (
@@ -1032,7 +1035,7 @@ class MainWindow(QMainWindow):
         )
         self.chatterbox_install_button.setEnabled(not operation_running)
         self.chatterbox_remove_button.setEnabled(
-            installed and not operation_running
+            (runtime_ready or model_cache_installed) and not operation_running
         )
         self.chatterbox_test_button.setEnabled(
             runtime_ready

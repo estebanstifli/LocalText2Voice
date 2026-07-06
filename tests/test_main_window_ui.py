@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -65,6 +66,30 @@ class MainWindowUITests(unittest.TestCase):
         window.progress_total = 2
         window._update_generation_time()
         self.assertIn("01:00", window.time_label.text())
+
+    def test_chatterbox_runtime_ready_is_shown_as_installed(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        class RuntimeReadyManager:
+            cache_dir = Path("C:/temp/chatterbox-cache")
+            runtime_path = Path("C:/temp/chatterbox_engine.exe")
+
+            def is_installed(self) -> bool:
+                return False
+
+            def has_runtime(self) -> bool:
+                return True
+
+            def runtime_is_current(self) -> bool:
+                return True
+
+        window.chatterbox_manager = RuntimeReadyManager()
+        window._refresh_chatterbox_status()
+
+        self.assertNotIn("Not installed", window.chatterbox_status_label.text())
+        self.assertNotIn("No instalado", window.chatterbox_status_label.text())
+        self.assertTrue(window.chatterbox_remove_button.isEnabled())
 
 
 if __name__ == "__main__":
