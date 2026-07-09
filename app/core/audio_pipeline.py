@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
+import unicodedata
 import wave
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
+from app.core.audio_mix import ducking_filter
+from app.core.audiobook_store import AudiobookStore, StoredAudiobook
 from app.utils.ffmpeg_utils import (
     FFmpegCancelled,
     FFmpegError,
@@ -16,6 +20,7 @@ from app.utils.ffmpeg_utils import (
     find_ffmpeg,
 )
 
+from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .text_processor import TextChunk, TextProcessor
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -55,16 +60,23 @@ class AudioGenerationOptions:
     background_enabled: bool = False
     background_path: Path | None = None
     background_loop: bool = True
-    background_volume_percent: int = 12
+    background_volume_percent: int = 45
+    voice_volume_db: float = 0.0
+    music_volume_db: float = -7.0
+    voice_start_offset_ms: int = 2000
+    music_tail_ms: int = 2000
     outro_enabled: bool = False
     outro_path: Path | None = None
-    music_fade_in_seconds: float = 1.5
-    music_fade_out_seconds: float = 2.0
+    music_fade_in_seconds: float = 1.0
+    music_fade_out_seconds: float = 1.0
     podcast_gap_ms: int = 500
     podcast_normalize: bool = True
     podcast_ducking: bool = True
+    ducking_strength: str = "low"
     mp3_bitrate: str = "128k"
     metadata: dict[str, str] = field(default_factory=dict)
+    project_audiobook_id: int | None = None
+    project_settings: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -87,32 +99,98 @@ class AudioPipeline:
         tts_engine: BaseTTSEngine,
         progress_callback: ProgressCallback | None = None,
         log_callback: LogCallback | None = None,
+        close_engine_on_finish: bool = True,
+        audiobook_store: AudiobookStore | None = None,
     ) -> None:
         self.tts_engine = tts_engine
         self.progress_callback = progress_callback or (lambda current, total, text: None)
         self.log_callback = log_callback or (lambda message: None)
+        self.close_engine_on_finish = close_engine_on_finish
+        self.audiobook_store = audiobook_store
         self._cancel_requested = threading.Event()
         self._ffmpeg_runner: FFmpegRunner | None = None
         self._runner_lock = threading.Lock()
+        self._markup_runtime_warning_keys: set[str] = set()
+        self._markup_voice_cache: dict[str, Any] = {}
+        self._active_audiobook: StoredAudiobook | None = None
+        self._segment_ids: dict[tuple[int, int], int] = {}
 
     def generate(self, text: str, options: AudioGenerationOptions) -> list[Path]:
+        generation_started = time.perf_counter()
         runner: FFmpegRunner | None = None
         try:
+            validation_started = time.perf_counter()
             self._validate_options(options)
             self.tts_engine.validate(options.voice_config)
             self._log_tts_engine(options.voice_config)
+            self.log_callback(
+                "Validation completed in "
+                f"{self._format_duration(time.perf_counter() - validation_started)}."
+            )
+
+            prepare_started = time.perf_counter()
             groups = self._prepare_groups(text, options)
             total_chunks = sum(len(group.chunks) for group in groups)
             if total_chunks == 0:
                 raise AudioPipelineError(
                     "The text does not contain anything to synthesize."
                 )
+            total_chars = sum(
+                len(chunk.text) for group in groups for chunk in group.chunks
+            )
+            self.log_callback(
+                "Text processing completed in "
+                f"{self._format_duration(time.perf_counter() - prepare_started)} "
+                f"({total_chars:,} chars, {total_chunks} block(s))."
+            )
+            if self.audiobook_store is not None:
+                project_title = (
+                    str(options.metadata.get("title", "")).strip()
+                    or "Audiobook"
+                )
+                existing = self.audiobook_store.get_audiobook(
+                    options.project_audiobook_id
+                )
+                if existing is None:
+                    self._active_audiobook = self.audiobook_store.create_audiobook(
+                        source_text=text,
+                        voice_config=options.voice_config,
+                        output_dir=options.output_dir,
+                        split_mode=options.split_mode,
+                        export_mode=options.export_mode,
+                        title=project_title,
+                        project_settings=options.project_settings,
+                    )
+                else:
+                    self._active_audiobook = self.audiobook_store.save_audiobook_project(
+                        existing.id,
+                        source_text=text,
+                        voice_config=options.voice_config,
+                        output_dir=options.output_dir,
+                        split_mode=options.split_mode,
+                        export_mode=options.export_mode,
+                        title=project_title,
+                        project_settings=options.project_settings,
+                    )
+                self._segment_ids = self.audiobook_store.replace_segments(
+                    self._active_audiobook,
+                    groups,
+                )
+                self.log_callback(
+                    "Audiobook project saved: "
+                    f"{self._active_audiobook.project_dir}"
+                )
 
             options.output_dir.mkdir(parents=True, exist_ok=True)
+            ffmpeg_started = time.perf_counter()
             ffmpeg_executable = find_ffmpeg(options.ffmpeg_path)
             runner = FFmpegRunner(ffmpeg_executable)
             with self._runner_lock:
                 self._ffmpeg_runner = runner
+            self.log_callback(
+                "FFmpeg resolved in "
+                f"{self._format_duration(time.perf_counter() - ffmpeg_started)}."
+            )
 
             self.log_callback(
                 f"Found {len(groups)} audio group(s) and {total_chunks} block(s)."
@@ -187,16 +265,42 @@ class AudioPipeline:
                             "Podcast mix created.",
                         )
                 self._check_cancelled()
+                if self.audiobook_store is not None and self._active_audiobook is not None:
+                    self.audiobook_store.complete_audiobook(
+                        self._active_audiobook.id,
+                        outputs,
+                    )
+                self.log_callback(
+                    "Generation pipeline completed in "
+                    f"{self._format_duration(time.perf_counter() - generation_started)}."
+                )
                 return outputs
         except (TTSCancelled, FFmpegCancelled) as exc:
+            if self.audiobook_store is not None and self._active_audiobook is not None:
+                self.audiobook_store.fail_audiobook(
+                    self._active_audiobook.id,
+                    "cancelled",
+                )
             raise GenerationCancelled("Generation cancelled.") from exc
         except GenerationCancelled:
+            if self.audiobook_store is not None and self._active_audiobook is not None:
+                self.audiobook_store.fail_audiobook(
+                    self._active_audiobook.id,
+                    "cancelled",
+                )
             raise
         except (TTSEngineError, FFmpegError, OSError, wave.Error) as exc:
+            if self.audiobook_store is not None and self._active_audiobook is not None:
+                self.audiobook_store.fail_audiobook(self._active_audiobook.id)
             raise AudioPipelineError(str(exc)) from exc
         finally:
             with self._runner_lock:
                 self._ffmpeg_runner = None
+            if self.close_engine_on_finish:
+                try:
+                    self.tts_engine.close()
+                except Exception as exc:
+                    self.log_callback(f"TTS engine cleanup warning: {exc}")
 
     def cancel(self) -> None:
         self._cancel_requested.set()
@@ -208,13 +312,11 @@ class AudioPipeline:
 
     def _log_tts_engine(self, voice_config: dict[str, Any]) -> None:
         engine = str(voice_config.get("engine", "piper"))
-        if engine == "kokoro":
+        if engine in {"kokoro", "kokoro_python"}:
             self.log_callback("Using TTS engine: Kokoro")
+            self.log_callback(f"Kokoro voice: {voice_config.get('voice', 'unknown')}")
             self.log_callback(
-                f"Kokoro voice: {voice_config.get('voice', 'unknown')}"
-            )
-            self.log_callback(
-                f"Kokoro backend: {voice_config.get('provider', 'cpu')}"
+                f"Kokoro backend: {voice_config.get('provider', 'auto')}"
             )
             model_path = voice_config.get("model_path")
             if model_path:
@@ -230,6 +332,26 @@ class AudioPipeline:
             self.log_callback(
                 f"Chatterbox language: {voice_config.get('language', 'en')}"
             )
+        elif engine == "qwen":
+            self.log_callback("Using TTS engine: Qwen3 TTS")
+            self.log_callback(f"Qwen3 model: {voice_config.get('model', 'unknown')}")
+            self.log_callback(
+                f"Qwen3 speaker: {voice_config.get('speaker', 'unknown')}"
+            )
+            self.log_callback(
+                f"Qwen3 language: {voice_config.get('language', 'Spanish')}"
+            )
+            self.log_callback(f"Qwen3 device: {voice_config.get('device', 'auto')}")
+            self.log_callback(f"Qwen3 dtype: {voice_config.get('dtype', 'auto')}")
+        elif engine == "gemini":
+            self.log_callback("Using TTS engine: Google Gemini TTS")
+            self.log_callback(f"Gemini model: {voice_config.get('model', 'unknown')}")
+            self.log_callback(f"Gemini voice: {voice_config.get('voice', 'unknown')}")
+        elif engine in {"openai", "elevenlabs", "azure"}:
+            self.log_callback(f"Using TTS engine: {engine}")
+            model = voice_config.get("model") or voice_config.get("model_id")
+            if model:
+                self.log_callback(f"API model: {model}")
         elif engine != "piper":
             self.log_callback(f"Using TTS engine: {engine}")
 
@@ -238,23 +360,39 @@ class AudioPipeline:
         text: str,
         options: AudioGenerationOptions,
     ) -> list[AudioGroup]:
+        if LTVMarkupParser.contains_markup(text):
+            backend = str(options.voice_config.get("engine", "piper"))
+            markup = LTVMarkupCompiler.compile(text, backend)
+            command_count = len(
+                [event for event in markup.events if event.type != "text"]
+            )
+            self.log_callback(
+                f"LTV Markup detected: {command_count} command(s), "
+                f"{len(markup.warnings)} warning(s)."
+            )
+            for warning in markup.warnings:
+                self.log_callback(f"LTV Markup warning: {warning}")
+            return self._prepare_markup_groups(markup.sections, options)
+
+        short_policy = self._short_chunk_policy(options)
+        if short_policy:
+            target_chars, max_chars, min_chars = short_policy
+            self.log_callback(
+                "Short sentence chunk policy enabled "
+                f"(target {target_chars} chars, max {max_chars}, min {min_chars})."
+            )
         if options.split_mode == "chapters":
             sections = TextProcessor.split_by_headings(text)
             return [
                 AudioGroup(
                     title=section.title,
-                    chunks=tuple(
-                        TextProcessor.split_paragraph_chunks(
-                            section.text,
-                            options.chunk_size,
-                        )
-                    ),
+                    chunks=tuple(self._split_tts_chunks(section.text, options)),
                 )
                 for section in sections
                 if section.text.strip()
             ]
 
-        chunks = TextProcessor.split_paragraph_chunks(text, options.chunk_size)
+        chunks = self._split_tts_chunks(text, options)
         if options.export_mode == "chapters":
             return [
                 AudioGroup(title=f"Block {index}", chunks=tuple(group_chunks))
@@ -264,6 +402,78 @@ class AudioPipeline:
                 )
             ]
         return [AudioGroup(title="Course", chunks=tuple(chunks))]
+
+    def _prepare_markup_groups(
+        self,
+        sections: list[LTVNarrationSection],
+        options: AudioGenerationOptions,
+    ) -> list[AudioGroup]:
+        groups: list[AudioGroup] = []
+        for section in sections:
+            chunks: list[TextChunk] = []
+            for segment in section.segments:
+                segment_chunks = self._split_tts_chunks(segment.text, options)
+                if not segment_chunks:
+                    continue
+                for index, chunk in enumerate(segment_chunks):
+                    chunks.append(
+                        replace(
+                            chunk,
+                            markup_pause_before_ms=(
+                                segment.pause_before_ms if index == 0 else 0
+                            ),
+                            markup_pause_after_ms=(
+                                segment.pause_after_ms
+                                if index == len(segment_chunks) - 1
+                                else None
+                            ),
+                            markup_state=dict(segment.state),
+                        )
+                    )
+            if chunks:
+                groups.append(AudioGroup(title=section.title, chunks=tuple(chunks)))
+
+        if (
+            options.export_mode == "chapters"
+            and len(groups) == 1
+            and groups[0].title == "Course"
+        ):
+            return [
+                AudioGroup(title=f"Block {index}", chunks=tuple(group_chunks))
+                for index, group_chunks in enumerate(
+                    self._group_safe_chunks(list(groups[0].chunks), options.chunk_size),
+                    start=1,
+                )
+            ]
+        return groups
+
+    @staticmethod
+    def _short_chunk_policy(
+        options: AudioGenerationOptions,
+    ) -> tuple[int, int, int] | None:
+        engine = str(options.voice_config.get("engine", "piper"))
+        if engine == "qwen":
+            return (420, 520, 80)
+        if engine == "chatterbox":
+            return (230, 300, 45)
+        return None
+
+    @classmethod
+    def _split_tts_chunks(
+        cls,
+        text: str,
+        options: AudioGenerationOptions,
+    ) -> list[TextChunk]:
+        short_policy = cls._short_chunk_policy(options)
+        if short_policy:
+            target_chars, max_chars, min_chars = short_policy
+            return TextProcessor.split_short_sentence_chunks(
+                text,
+                target_chars=target_chars,
+                max_chars=max_chars,
+                min_chars=min_chars,
+            )
+        return TextProcessor.split_paragraph_chunks(text, options.chunk_size)
 
     @staticmethod
     def _group_safe_chunks(
@@ -298,6 +508,7 @@ class AudioPipeline:
         completed = 0
 
         for group_index, group in enumerate(groups, start=1):
+            group_started = time.perf_counter()
             rendered_chunks: list[Path] = []
             self.log_callback(
                 f"Rendering group {group_index}/{len(groups)}: {group.title}"
@@ -312,18 +523,630 @@ class AudioPipeline:
                 self.progress_callback(completed - 1, total_steps, status)
                 self.log_callback(status)
 
-                output_wav = temp_dir / (
-                    f"group_{group_index:03d}_block_{chunk_index:04d}.wav"
+                output_wav = self._segment_output_wav(
+                    temp_dir,
+                    group_index,
+                    chunk_index,
                 )
-                self.tts_engine.synthesize_to_wav(
-                    chunk.text,
-                    output_wav,
+                chunk_voice_config = self._voice_config_for_chunk(
                     options.voice_config,
+                    chunk,
+                )
+                segment_id = self._segment_ids.get((group_index, chunk_index))
+                if (
+                    segment_id is not None
+                    and self.audiobook_store is not None
+                ):
+                    self.audiobook_store.mark_segment_rendering(
+                        segment_id,
+                        chunk_voice_config,
+                    )
+                block_started = time.perf_counter()
+                try:
+                    self.tts_engine.synthesize_to_wav(
+                        chunk.text,
+                        output_wav,
+                        chunk_voice_config,
+                    )
+                except Exception as exc:
+                    if (
+                        segment_id is not None
+                        and self.audiobook_store is not None
+                    ):
+                        self.audiobook_store.mark_segment_failed(
+                            segment_id,
+                            str(exc),
+                        )
+                    raise
+                block_duration = time.perf_counter() - block_started
+                if (
+                    segment_id is not None
+                    and self.audiobook_store is not None
+                ):
+                    self.audiobook_store.mark_segment_rendered(
+                        segment_id,
+                        output_wav,
+                        round(self._wav_duration_seconds(output_wav) * 1000),
+                        round(block_duration * 1000),
+                    )
+                self.log_callback(
+                    f"Generated block {completed}/{total_chunks} in "
+                    f"{self._format_duration(block_duration)} "
+                    f"({len(chunk.text):,} chars, "
+                    f"{self._format_file_size(output_wav)} WAV)."
                 )
                 rendered_chunks.append(output_wav)
                 self.progress_callback(completed, total_steps, status)
+            self.log_callback(
+                f"Rendered group {group_index}/{len(groups)} in "
+                f"{self._format_duration(time.perf_counter() - group_started)}."
+            )
             rendered_groups.append(rendered_chunks)
         return rendered_groups
+
+    def _segment_output_wav(
+        self,
+        temp_dir: Path,
+        group_index: int,
+        chunk_index: int,
+    ) -> Path:
+        if self._active_audiobook is not None and self.audiobook_store is not None:
+            return self.audiobook_store.segment_wav_path(
+                self._active_audiobook,
+                group_index,
+                chunk_index,
+            )
+        return temp_dir / f"group_{group_index:03d}_block_{chunk_index:04d}.wav"
+
+    def _voice_config_for_chunk(
+        self,
+        base_config: dict[str, Any],
+        chunk: TextChunk,
+    ) -> dict[str, Any]:
+        state = chunk.markup_state or {}
+        if not state:
+            return base_config
+
+        config = dict(base_config)
+        engine = str(config.get("engine", "piper")).casefold()
+
+        voice_value = str(state.get("voice", "")).strip()
+        if voice_value:
+            self._apply_markup_voice(config, engine, voice_value)
+
+        language_value = str(state.get("language", "")).strip()
+        if language_value:
+            self._apply_markup_language(config, engine, language_value)
+
+        if "speed" in state:
+            try:
+                config["speed"] = max(0.25, min(4.0, float(state["speed"])))
+            except (TypeError, ValueError):
+                self._log_markup_runtime_warning(
+                    "speed:invalid",
+                    f"LTV Markup warning: invalid speed value ignored: {state['speed']}",
+                )
+
+        if "emotion" in state:
+            config["emotion"] = state["emotion"]
+        if engine == "qwen":
+            self._apply_qwen_style_instruction(config, state)
+        if "volume_db" in state:
+            config["volume_db"] = state["volume_db"]
+        return config
+
+    def _apply_markup_voice(
+        self,
+        config: dict[str, Any],
+        engine: str,
+        voice_value: str,
+    ) -> None:
+        if self._is_default_marker(voice_value):
+            return
+        if engine == "chatterbox":
+            self._apply_chatterbox_voice(config, voice_value)
+        elif engine in {"kokoro", "kokoro_python"}:
+            self._apply_kokoro_voice(config, voice_value)
+        elif engine == "qwen":
+            self._apply_qwen_voice(config, voice_value)
+        elif engine == "piper":
+            self._apply_piper_voice(config, voice_value)
+        else:
+            self._log_markup_runtime_warning(
+                f"voice:unsupported:{engine}",
+                f"LTV Markup warning: voice switching is not supported for {engine}.",
+            )
+
+    def _apply_markup_language(
+        self,
+        config: dict[str, Any],
+        engine: str,
+        language_value: str,
+    ) -> None:
+        if self._is_default_marker(language_value):
+            return
+        if engine == "qwen":
+            language = self._qwen_language_name(language_value)
+            if language:
+                config["language"] = language
+            else:
+                self._warn_unknown_language(engine, language_value)
+            return
+        if engine in {"kokoro", "kokoro_python"}:
+            language = self._kokoro_language_code(language_value)
+            if language:
+                config["lang"] = language
+            else:
+                self._warn_unknown_language(engine, language_value)
+            return
+        if engine == "chatterbox":
+            language = self._language_code(language_value)
+            if language:
+                config["language"] = language
+            else:
+                self._warn_unknown_language(engine, language_value)
+            return
+        if engine == "piper":
+            self._log_markup_runtime_warning(
+                "language:piper",
+                "LTV Markup warning: {{lang}} does not change Piper language "
+                "by itself. Use {{voice \"...\"}} with a Piper voice instead.",
+            )
+            return
+        self._log_markup_runtime_warning(
+            f"language:unsupported:{engine}",
+            f"LTV Markup warning: language switching is not supported for {engine}.",
+        )
+
+    def _apply_chatterbox_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+    ) -> None:
+        try:
+            from app.tts.chatterbox_voice_manager import ChatterboxReferenceVoiceManager
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:chatterbox:import",
+                f"LTV Markup warning: could not load Chatterbox voices: {exc}",
+            )
+            return
+
+        cache_key = "chatterbox"
+        voices = self._markup_voice_cache.get(cache_key)
+        manager = self._markup_voice_cache.get("chatterbox_manager")
+        if voices is None or not isinstance(manager, ChatterboxReferenceVoiceManager):
+            manager = ChatterboxReferenceVoiceManager()
+            voices = manager.list_installed_voices()
+            self._markup_voice_cache[cache_key] = voices
+            self._markup_voice_cache["chatterbox_manager"] = manager
+
+        matched = self._match_named_item(
+            voice_value,
+            voices,
+            lambda voice: self._chatterbox_voice_names(voice),
+        )
+        if matched is None:
+            self._warn_unknown_voice("Chatterbox", voice_value)
+            return
+        path = manager.path_for(matched)
+        if not path.is_file():
+            self._log_markup_runtime_warning(
+                f"voice:chatterbox:missing:{self._lookup_key(voice_value)}",
+                "LTV Markup warning: Chatterbox reference voice is not installed: "
+                f"{matched.display_name}",
+            )
+            return
+        config["reference_audio_path"] = str(path)
+        self._log_markup_voice_once("Chatterbox", matched.display_name)
+
+    def _apply_kokoro_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+    ) -> None:
+        try:
+            from app.tts.kokoro_python_manager import KokoroPythonManager
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:kokoro:import",
+                f"LTV Markup warning: could not load Kokoro voices: {exc}",
+            )
+            return
+
+        cache_key = "kokoro"
+        voices = self._markup_voice_cache.get(cache_key)
+        if voices is None:
+            voices = KokoroPythonManager().list_voices()
+            self._markup_voice_cache[cache_key] = voices
+        matched = self._match_named_item(
+            voice_value,
+            voices,
+            lambda voice: self._kokoro_voice_names(voice),
+        )
+        if matched is None:
+            self._warn_unknown_voice("Kokoro", voice_value)
+            return
+        config["voice"] = matched.voice_id
+        config["lang"] = matched.language
+        self._log_markup_voice_once("Kokoro", matched.display_name)
+
+    def _apply_qwen_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+    ) -> None:
+        try:
+            from app.tts.qwen_manager import QwenManager
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:qwen:import",
+                f"LTV Markup warning: could not load Qwen voices: {exc}",
+            )
+            return
+
+        cache_key = "qwen"
+        voices = self._markup_voice_cache.get(cache_key)
+        languages = self._markup_voice_cache.get("qwen_languages")
+        if voices is None:
+            manager = QwenManager()
+            voices = manager.list_voices()
+            languages = manager.list_languages()
+            self._markup_voice_cache[cache_key] = voices
+            self._markup_voice_cache["qwen_languages"] = languages
+        if languages is None:
+            languages = QwenManager().list_languages()
+            self._markup_voice_cache["qwen_languages"] = languages
+
+        matched_pair = self._match_qwen_voice_language(voice_value, voices, languages)
+        if matched_pair is not None:
+            matched_voice, matched_language = matched_pair
+            config["speaker"] = matched_voice.voice_id
+            config["language"] = matched_language.language_id
+            self._log_markup_voice_once(
+                "Qwen3 TTS",
+                f"{matched_voice.display_name} - {matched_language.display_name}",
+            )
+            return
+
+        matched = self._match_named_item(
+            voice_value,
+            voices,
+            lambda voice: (voice.voice_id, voice.display_name),
+        )
+        if matched is None:
+            self._warn_unknown_voice("Qwen3 TTS", voice_value)
+            return
+        config["speaker"] = matched.voice_id
+        self._log_markup_voice_once("Qwen3 TTS", matched.display_name)
+
+    def _apply_qwen_style_instruction(
+        self,
+        config: dict[str, Any],
+        state: dict[str, Any],
+    ) -> None:
+        instructions: list[str] = []
+        base_instruction = str(config.get("instruct", "")).strip()
+        if base_instruction:
+            instructions.append(base_instruction)
+
+        emotion = str(state.get("emotion", "")).strip().casefold()
+        if emotion:
+            emotion_instruction = self._qwen_emotion_instruction(emotion)
+            if emotion_instruction:
+                instructions.append(emotion_instruction)
+
+        model_instruction = str(state.get("model_instruction", "")).strip()
+        if model_instruction:
+            instructions.append(self._qwen_model_instruction(model_instruction))
+
+        if instructions:
+            config["instruct"] = " ".join(instructions)
+
+    @staticmethod
+    def _qwen_emotion_instruction(emotion: str) -> str:
+        instructions = {
+            "happy": "Speak in a warm, happy, upbeat tone.",
+            "sad": "Speak in a soft, sad, reflective tone.",
+            "angry": "Speak with controlled anger and stronger emphasis.",
+            "scared": "Speak in a tense, frightened, cautious tone.",
+            "whisper": "Speak quietly, like a close whisper.",
+            "neutral": "Speak in a natural neutral tone.",
+        }
+        return instructions.get(emotion, "")
+
+    @staticmethod
+    def _qwen_model_instruction(value: str) -> str:
+        cleaned = value.strip()
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            cleaned = cleaned[1:-1].strip()
+        if not cleaned:
+            return ""
+        if cleaned.endswith((".", "!", "?")):
+            return cleaned
+        return f"Follow this speaking instruction: {cleaned}."
+
+    @classmethod
+    def _match_qwen_voice_language(
+        cls,
+        requested: str,
+        voices: Any,
+        languages: Any,
+    ) -> tuple[Any, Any] | None:
+        requested_key = cls._lookup_key(requested)
+        for voice in voices:
+            for language in languages:
+                candidate_names = (
+                    f"{voice.display_name} - {language.display_name}",
+                    f"{voice.display_name} {language.display_name}",
+                    f"{voice.voice_id} - {language.language_id}",
+                    f"{voice.voice_id} {language.language_id}",
+                )
+                if any(requested_key == cls._lookup_key(name) for name in candidate_names):
+                    return voice, language
+        return None
+
+    def _apply_piper_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+    ) -> None:
+        try:
+            from app.tts.voice_manager import VoiceManager
+            from app.utils.paths import application_root
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:piper:import",
+                f"LTV Markup warning: could not load Piper voices: {exc}",
+            )
+            return
+
+        cache_key = "piper"
+        voices = self._markup_voice_cache.get(cache_key)
+        if voices is None:
+            voices = VoiceManager(application_root() / "voices").discover()
+            self._markup_voice_cache[cache_key] = voices
+        matched = self._match_named_item(
+            voice_value,
+            voices,
+            lambda voice: (
+                voice.voice_id,
+                voice.display_name,
+                voice.language,
+                Path(voice.voice_id).stem,
+                Path(voice.voice_id).parent.as_posix(),
+            ),
+        )
+        if matched is None:
+            self._warn_unknown_voice("Piper", voice_value)
+            return
+        speed = float(config.get("speed", 1.0))
+        config.update(matched.as_config(speed))
+        config["engine"] = "piper"
+        self._log_markup_voice_once("Piper", matched.display_name)
+
+    @staticmethod
+    def _chatterbox_voice_names(voice: Any) -> tuple[str, ...]:
+        stem = Path(str(voice.file_name)).stem
+        voice_id = str(voice.voice_id)
+        return (
+            str(voice.display_name),
+            str(voice.file_name),
+            stem,
+            voice_id,
+            voice_id.removeprefix("chatterbox_"),
+            voice_id.removeprefix("local_"),
+        )
+
+    @staticmethod
+    def _kokoro_voice_names(voice: Any) -> tuple[str, ...]:
+        display_name = str(voice.display_name)
+        short_name = display_name.split(" - ", 1)[-1]
+        voice_id = str(voice.voice_id)
+        return (
+            voice_id,
+            display_name,
+            short_name,
+            voice_id.split("_", 1)[-1],
+        )
+
+    @classmethod
+    def _match_named_item(
+        cls,
+        requested: str,
+        items: Any,
+        names_callback: Callable[[Any], tuple[str, ...]],
+    ) -> Any | None:
+        requested_key = cls._lookup_key(requested)
+        for item in items:
+            for name in names_callback(item):
+                if requested_key == cls._lookup_key(name):
+                    return item
+        return None
+
+    @classmethod
+    def _language_code(cls, value: str) -> str:
+        aliases = {
+            "en": "en",
+            "eng": "en",
+            "english": "en",
+            "ingles": "en",
+            "es": "es",
+            "spa": "es",
+            "spanish": "es",
+            "espanol": "es",
+            "fr": "fr",
+            "fre": "fr",
+            "french": "fr",
+            "frances": "fr",
+            "de": "de",
+            "ger": "de",
+            "german": "de",
+            "aleman": "de",
+            "it": "it",
+            "ita": "it",
+            "italian": "it",
+            "italiano": "it",
+            "pt": "pt",
+            "por": "pt",
+            "portuguese": "pt",
+            "portugues": "pt",
+            "zh": "zh",
+            "cn": "zh",
+            "chinese": "zh",
+            "chino": "zh",
+            "ja": "ja",
+            "jp": "ja",
+            "japanese": "ja",
+            "japones": "ja",
+            "ko": "ko",
+            "korean": "ko",
+            "coreano": "ko",
+            "ru": "ru",
+            "russian": "ru",
+            "ruso": "ru",
+        }
+        key = cls._lookup_key(value)
+        if key in aliases:
+            return aliases[key]
+        compact = value.strip().casefold()
+        if len(compact) in {2, 3} and compact.isalpha():
+            return compact[:2]
+        return ""
+
+    @classmethod
+    def _kokoro_language_code(cls, value: str) -> str:
+        key = cls._lookup_key(value)
+        aliases = {
+            "en": "en-us",
+            "en us": "en-us",
+            "american english": "en-us",
+            "english": "en-us",
+            "ingles": "en-us",
+            "en gb": "en-gb",
+            "british english": "en-gb",
+            "es": "es",
+            "spanish": "es",
+            "espanol": "es",
+            "fr": "fr-fr",
+            "fr fr": "fr-fr",
+            "french": "fr-fr",
+            "frances": "fr-fr",
+            "it": "it",
+            "italian": "it",
+            "italiano": "it",
+            "pt": "pt-br",
+            "pt br": "pt-br",
+            "portuguese": "pt-br",
+            "portugues": "pt-br",
+            "zh": "zh",
+            "chinese": "zh",
+            "chino": "zh",
+            "hi": "hi",
+            "hindi": "hi",
+        }
+        if key in aliases:
+            return aliases[key]
+        raw = value.strip().casefold().replace("_", "-")
+        if raw in {"en-us", "en-gb", "es", "fr-fr", "it", "pt-br", "zh", "hi"}:
+            return raw
+        return ""
+
+    @classmethod
+    def _qwen_language_name(cls, value: str) -> str:
+        code = cls._language_code(value)
+        key = cls._lookup_key(value)
+        aliases = {
+            "zh": "Chinese",
+            "chinese": "Chinese",
+            "chino": "Chinese",
+            "en": "English",
+            "english": "English",
+            "ingles": "English",
+            "ja": "Japanese",
+            "japanese": "Japanese",
+            "japones": "Japanese",
+            "ko": "Korean",
+            "korean": "Korean",
+            "coreano": "Korean",
+            "de": "German",
+            "german": "German",
+            "aleman": "German",
+            "fr": "French",
+            "french": "French",
+            "frances": "French",
+            "ru": "Russian",
+            "russian": "Russian",
+            "ruso": "Russian",
+            "pt": "Portuguese",
+            "portuguese": "Portuguese",
+            "portugues": "Portuguese",
+            "es": "Spanish",
+            "spanish": "Spanish",
+            "espanol": "Spanish",
+            "it": "Italian",
+            "italian": "Italian",
+            "italiano": "Italian",
+        }
+        return aliases.get(key) or aliases.get(code, "")
+
+    @staticmethod
+    def _is_default_marker(value: str) -> bool:
+        return value.strip().casefold() in {"", "auto", "default", "narrator"}
+
+    @classmethod
+    def _lookup_key(cls, value: object) -> str:
+        text = str(value).strip().translate(
+            str.maketrans(
+                {
+                    "_": " ",
+                    "-": " ",
+                    "\u2010": " ",
+                    "\u2011": " ",
+                    "\u2012": " ",
+                    "\u2013": " ",
+                    "\u2014": " ",
+                    "\u2212": " ",
+                    "\u201c": "",
+                    "\u201d": "",
+                    "\u2018": "",
+                    "\u2019": "",
+                }
+            )
+        )
+        text = "".join(
+            character
+            for character in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(character)
+        )
+        return " ".join(text.split()).casefold()
+
+    def _warn_unknown_voice(self, engine_name: str, voice_value: str) -> None:
+        self._log_markup_runtime_warning(
+            f"voice:{engine_name.casefold()}:{self._lookup_key(voice_value)}",
+            f'LTV Markup warning: {engine_name} voice not found: "{voice_value}". '
+            "Using the selected default voice.",
+        )
+
+    def _warn_unknown_language(self, engine: str, language_value: str) -> None:
+        self._log_markup_runtime_warning(
+            f"language:{engine}:{self._lookup_key(language_value)}",
+            f'LTV Markup warning: language not recognized for {engine}: '
+            f'"{language_value}". Using the selected default language.',
+        )
+
+    def _log_markup_voice_once(self, engine_name: str, display_name: str) -> None:
+        key = f"voice:selected:{engine_name.casefold()}:{self._lookup_key(display_name)}"
+        if key in self._markup_runtime_warning_keys:
+            return
+        self._markup_runtime_warning_keys.add(key)
+        self.log_callback(f"LTV Markup: using {engine_name} voice: {display_name}")
+
+    def _log_markup_runtime_warning(self, key: str, message: str) -> None:
+        if key in self._markup_runtime_warning_keys:
+            return
+        self._markup_runtime_warning_keys.add(key)
+        self.log_callback(message)
 
     def _export_single(
         self,
@@ -336,40 +1159,80 @@ class AudioPipeline:
     ) -> NarrationArtifact:
         timeline: list[Path] = []
         pause_index = 0
+        total_pause_ms = 0
 
         for group_index, rendered_chunks in enumerate(rendered_groups):
             for chunk_index, wav_path in enumerate(rendered_chunks):
+                chunk = groups[group_index].chunks[chunk_index]
+                segment_id = self._segment_ids.get((group_index + 1, chunk_index + 1))
+                before_duration = max(0, chunk.markup_pause_before_ms)
+                if chunk.markup_pause_before_ms > 0:
+                    pause_index += 1
+                    total_pause_ms += chunk.markup_pause_before_ms
+                    silence = temp_dir / f"pause_{pause_index:04d}_before.wav"
+                    self._create_silence(
+                        wav_path,
+                        silence,
+                        chunk.markup_pause_before_ms,
+                    )
+                    timeline.append(silence)
                 timeline.append(wav_path)
                 is_last_chunk = chunk_index == len(rendered_chunks) - 1
                 is_last_group = group_index == len(rendered_groups) - 1
-                if is_last_chunk and not is_last_group:
+                if chunk.markup_pause_after_ms is not None:
+                    duration = chunk.markup_pause_after_ms
+                elif is_last_chunk and not is_last_group:
                     duration = options.pause_between_chapters_ms
                 else:
                     duration = self._chunk_pause_ms(
-                        groups[group_index].chunks[chunk_index],
+                        chunk,
                         is_last_chunk and is_last_group,
                         options,
                         pause_random,
                     )
                 if duration > 0:
                     pause_index += 1
+                    total_pause_ms += duration
                     silence = temp_dir / f"pause_{pause_index:04d}.wav"
                     self._create_silence(wav_path, silence, duration)
                     timeline.append(silence)
+                if segment_id is not None and self.audiobook_store is not None:
+                    self.audiobook_store.update_segment_pause(
+                        segment_id,
+                        before_duration,
+                        duration,
+                    )
 
         filename, podcast_filename = self._next_single_filenames(
             options.output_dir,
             options.podcast_enabled,
         )
+        self.log_callback(
+            f"Prepared narration timeline with {len(timeline)} segment(s), "
+            f"{pause_index} pause(s), "
+            f"{self._format_duration(total_pause_ms / 1000)} total silence."
+        )
+        join_started = time.perf_counter()
         joined_wav = self._join_wavs(timeline, temp_dir / "podcast.wav", runner)
+        self.log_callback(
+            "Joined WAV narration in "
+            f"{self._format_duration(time.perf_counter() - join_started)} "
+            f"({self._format_file_size(joined_wav)})."
+        )
         temporary_mp3 = temp_dir / filename
         self.log_callback(f"Encoding {filename}")
+        encode_started = time.perf_counter()
         self._encode_mp3(
             joined_wav,
             temporary_mp3,
             options,
             runner,
             options.metadata,
+        )
+        self.log_callback(
+            f"Encoded {filename} in "
+            f"{self._format_duration(time.perf_counter() - encode_started)} "
+            f"({self._format_file_size(temporary_mp3)})."
         )
         final_path = options.output_dir / filename
         temporary_mp3.replace(final_path)
@@ -397,11 +1260,30 @@ class AudioPipeline:
         ):
             self._check_cancelled()
             timeline: list[Path] = []
+            pause_count = 0
+            total_pause_ms = 0
             for chunk_index, wav_path in enumerate(rendered_chunks):
+                chunk = group.chunks[chunk_index]
+                segment_id = self._segment_ids.get((group_index, chunk_index + 1))
+                before_duration = max(0, chunk.markup_pause_before_ms)
+                if chunk.markup_pause_before_ms > 0:
+                    pause_count += 1
+                    total_pause_ms += chunk.markup_pause_before_ms
+                    silence = temp_dir / (
+                        f"chapter_{group_index:03d}_pause_{chunk_index:04d}_before.wav"
+                    )
+                    self._create_silence(
+                        wav_path,
+                        silence,
+                        chunk.markup_pause_before_ms,
+                    )
+                    timeline.append(silence)
                 timeline.append(wav_path)
-                if chunk_index < len(rendered_chunks) - 1:
+                if chunk.markup_pause_after_ms is not None:
+                    duration = chunk.markup_pause_after_ms
+                elif chunk_index < len(rendered_chunks) - 1:
                     duration = self._chunk_pause_ms(
-                        group.chunks[chunk_index],
+                        chunk,
                         False,
                         options,
                         pause_random,
@@ -409,6 +1291,8 @@ class AudioPipeline:
                 else:
                     duration = 0
                 if duration > 0:
+                    pause_count += 1
+                    total_pause_ms += duration
                     silence = temp_dir / (
                         f"chapter_{group_index:03d}_pause_{chunk_index:04d}.wav"
                     )
@@ -418,11 +1302,28 @@ class AudioPipeline:
                         duration,
                     )
                     timeline.append(silence)
+                if segment_id is not None and self.audiobook_store is not None:
+                    self.audiobook_store.update_segment_pause(
+                        segment_id,
+                        before_duration,
+                        duration,
+                    )
 
+            self.log_callback(
+                f"Prepared chapter {group_index:03d} timeline with "
+                f"{len(timeline)} segment(s), {pause_count} pause(s), "
+                f"{self._format_duration(total_pause_ms / 1000)} total silence."
+            )
+            join_started = time.perf_counter()
             joined_wav = self._join_wavs(
                 timeline,
                 temp_dir / f"chapter_{group_index:03d}.wav",
                 runner,
+            )
+            self.log_callback(
+                f"Joined chapter {group_index:03d} WAV in "
+                f"{self._format_duration(time.perf_counter() - join_started)} "
+                f"({self._format_file_size(joined_wav)})."
             )
             filename, podcast_filename = self._next_chapter_filenames(
                 options.output_dir,
@@ -433,12 +1334,18 @@ class AudioPipeline:
             metadata = dict(options.metadata)
             metadata["title"] = group.title
             self.log_callback(f"Encoding {filename}: {group.title}")
+            encode_started = time.perf_counter()
             self._encode_mp3(
                 joined_wav,
                 temporary_mp3,
                 options,
                 runner,
                 metadata,
+            )
+            self.log_callback(
+                f"Encoded {filename} in "
+                f"{self._format_duration(time.perf_counter() - encode_started)} "
+                f"({self._format_file_size(temporary_mp3)})."
             )
             final_path = options.output_dir / filename
             temporary_mp3.replace(final_path)
@@ -495,7 +1402,20 @@ class AudioPipeline:
         temp_dir: Path,
         runner: FFmpegRunner,
     ) -> Path:
+        mix_started = time.perf_counter()
         self.log_callback(f"Creating podcast mix: {artifact.podcast_filename}")
+        self.log_callback(
+            "Podcast mix options: "
+            f"intro={'on' if options.intro_enabled else 'off'}, "
+            f"background={'on' if options.background_enabled else 'off'}, "
+            f"outro={'on' if options.outro_enabled else 'off'}, "
+            f"ducking={'on' if options.podcast_ducking else 'off'}, "
+            f"normalization={'on' if options.podcast_normalize else 'off'}, "
+            f"voice={options.voice_volume_db:.1f} dB, "
+            f"music={options.music_volume_db:.1f} dB, "
+            f"voice offset={options.voice_start_offset_ms} ms, "
+            f"music tail={options.music_tail_ms} ms."
+        )
         temporary_output = temp_dir / artifact.podcast_filename
         arguments = [
             "-y",
@@ -523,6 +1443,15 @@ class AudioPipeline:
             input_indexes["outro"] = next_index
 
         narration_duration = self._wav_duration_seconds(artifact.wav_path)
+        voice_offset_seconds = options.voice_start_offset_ms / 1000
+        voice_trim_seconds = max(0.0, -voice_offset_seconds)
+        voice_delay_seconds = max(0.0, voice_offset_seconds)
+        body_duration = max(
+            0.1,
+            voice_delay_seconds
+            + max(0.01, narration_duration - voice_trim_seconds)
+            + max(0, options.music_tail_ms) / 1000,
+        )
         audio_format = (
             "aresample=44100,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo"
@@ -531,13 +1460,12 @@ class AudioPipeline:
 
         if "background" in input_indexes:
             background_index = input_indexes["background"]
-            volume = options.background_volume_percent / 100
             background_filters = [
                 audio_format,
-                f"apad=whole_dur={narration_duration:.3f}",
-                f"atrim=0:{narration_duration:.3f}",
+                f"apad=whole_dur={body_duration:.3f}",
+                f"atrim=0:{body_duration:.3f}",
                 "asetpts=N/SR/TB",
-                f"volume={volume:.4f}",
+                f"volume={options.music_volume_db:.2f}dB",
             ]
             if options.music_fade_in_seconds > 0:
                 background_filters.append(
@@ -560,25 +1488,97 @@ class AudioPipeline:
                 + "[background]"
             )
             if options.podcast_ducking:
-                filters.append(f"[0:a]{audio_format},asplit=2[voice_mix][voice_side]")
+                voice_filters = [
+                    audio_format,
+                ]
+                if voice_trim_seconds > 0:
+                    voice_filters.extend(
+                        [
+                            f"atrim=start={voice_trim_seconds:.3f}",
+                            "asetpts=N/SR/TB",
+                        ]
+                    )
+                voice_filters.append(f"volume={options.voice_volume_db:.2f}dB")
+                if voice_delay_seconds > 0:
+                    voice_filters.append(
+                        f"adelay={round(voice_delay_seconds * 1000)}:all=1"
+                    )
+                voice_filters.extend(
+                    [
+                        f"apad=whole_dur={body_duration:.3f}",
+                        f"atrim=0:{body_duration:.3f}",
+                        "asetpts=N/SR/TB",
+                    ]
+                )
+                filters.append(
+                    "[0:a]" + ",".join(voice_filters) + ","
+                    "asplit=2[voice_mix][voice_side]"
+                )
                 filters.append(
                     "[background][voice_side]"
-                    "sidechaincompress="
-                    "threshold=0.025:ratio=8:attack=20:release=500"
-                    "[ducked_background]"
+                    + ducking_filter(options.ducking_strength)
+                    + "[ducked_background]"
                 )
                 filters.append(
                     "[voice_mix][ducked_background]"
                     "amix=inputs=2:duration=first:normalize=0[body]"
                 )
             else:
-                filters.append(f"[0:a]{audio_format}[voice]")
+                voice_filters = [
+                    audio_format,
+                ]
+                if voice_trim_seconds > 0:
+                    voice_filters.extend(
+                        [
+                            f"atrim=start={voice_trim_seconds:.3f}",
+                            "asetpts=N/SR/TB",
+                        ]
+                    )
+                voice_filters.append(f"volume={options.voice_volume_db:.2f}dB")
+                if voice_delay_seconds > 0:
+                    voice_filters.append(
+                        f"adelay={round(voice_delay_seconds * 1000)}:all=1"
+                    )
+                voice_filters.extend(
+                    [
+                        f"apad=whole_dur={body_duration:.3f}",
+                        f"atrim=0:{body_duration:.3f}",
+                        "asetpts=N/SR/TB",
+                    ]
+                )
+                filters.append(
+                    "[0:a]" + ",".join(voice_filters) + "[voice]"
+                )
                 filters.append(
                     "[voice][background]"
                     "amix=inputs=2:duration=first:normalize=0[body]"
                 )
         else:
-            filters.append(f"[0:a]{audio_format}[body]")
+            voice_filters = [
+                audio_format,
+            ]
+            if voice_trim_seconds > 0:
+                voice_filters.extend(
+                    [
+                        f"atrim=start={voice_trim_seconds:.3f}",
+                        "asetpts=N/SR/TB",
+                    ]
+                )
+            voice_filters.append(f"volume={options.voice_volume_db:.2f}dB")
+            if voice_delay_seconds > 0:
+                voice_filters.append(
+                    f"adelay={round(voice_delay_seconds * 1000)}:all=1"
+                )
+            voice_filters.extend(
+                [
+                    f"apad=whole_dur={body_duration:.3f}",
+                    f"atrim=0:{body_duration:.3f}",
+                    "asetpts=N/SR/TB",
+                ]
+            )
+            filters.append(
+                "[0:a]" + ",".join(voice_filters) + "[body]"
+            )
 
         segments: list[str] = []
         if "intro" in input_indexes:
@@ -648,11 +1648,21 @@ class AudioPipeline:
             if value:
                 arguments.extend(["-metadata", f"{key}={value}"])
         arguments.append(str(temporary_output))
+        encode_started = time.perf_counter()
         runner.run(arguments)
+        self.log_callback(
+            f"Podcast mix FFmpeg render completed in "
+            f"{self._format_duration(time.perf_counter() - encode_started)} "
+            f"({self._format_file_size(temporary_output)})."
+        )
 
         final_path = options.output_dir / artifact.podcast_filename
         temporary_output.replace(final_path)
         self.log_callback(f"Saved: {final_path}")
+        self.log_callback(
+            f"Podcast mix completed in "
+            f"{self._format_duration(time.perf_counter() - mix_started)}."
+        )
         return final_path
 
     @staticmethod
@@ -817,6 +1827,27 @@ class AudioPipeline:
             raise GenerationCancelled("Generation cancelled.")
 
     @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds < 1:
+            return f"{seconds * 1000:.0f} ms"
+        if seconds < 60:
+            return f"{seconds:.2f} s"
+        minutes, remaining_seconds = divmod(seconds, 60)
+        return f"{int(minutes)} min {remaining_seconds:.1f} s"
+
+    @staticmethod
+    def _format_file_size(path: Path) -> str:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return "unknown size"
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
+
+    @staticmethod
     def _validate_options(options: AudioGenerationOptions) -> None:
         if options.split_mode not in {"safe_chunks", "chapters"}:
             raise AudioPipelineError(f"Unknown split mode: {options.split_mode}")
@@ -850,6 +1881,16 @@ class AudioPipeline:
             )
         if not 0 <= options.background_volume_percent <= 100:
             raise AudioPipelineError("Background music volume must be from 0 to 100.")
+        if not -12 <= options.voice_volume_db <= 6:
+            raise AudioPipelineError("Voice mix volume must be from -12 dB to +6 dB.")
+        if not -36 <= options.music_volume_db <= 0:
+            raise AudioPipelineError("Music mix volume must be from -36 dB to 0 dB.")
+        if not -300000 <= options.voice_start_offset_ms <= 300000:
+            raise AudioPipelineError("Voice start offset must be within 5 minutes.")
+        if not 0 <= options.music_tail_ms <= 600000:
+            raise AudioPipelineError("Music tail must be from 0 to 10 minutes.")
+        if options.ducking_strength not in {"low", "medium", "high"}:
+            raise AudioPipelineError("Ducking strength must be low, medium, or high.")
         if options.music_fade_in_seconds < 0 or options.music_fade_out_seconds < 0:
             raise AudioPipelineError("Music fade duration cannot be negative.")
         if options.podcast_gap_ms < 0:

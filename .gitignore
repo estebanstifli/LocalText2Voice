@@ -1,11 +1,15 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 .venv-kokoro/
 .venv-chatterbox/
 venv/
 build/
 dist/
+dist_next/
+dist_ui_patch/
+dist_sidebar_patch/
 release_assets/
 *.spec
 config.json

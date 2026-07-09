@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import http.client
 import json
@@ -349,3 +350,148 @@ class AzureTTSEngine(HttpTTSEngine):
     def _speed_to_rate(speed: float) -> str:
         percentage = round((max(0.5, min(2.0, speed)) - 1.0) * 100)
         return f"{percentage:+d}%"
+
+
+class GeminiTTSEngine(HttpTTSEngine):
+    host = "generativelanguage.googleapis.com"
+
+    DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
+    DEFAULT_VOICE = "Kore"
+
+    def validate(self, voice_config: dict[str, Any]) -> None:
+        if not self._api_key(voice_config):
+            raise TTSEngineError(
+                "Google Gemini TTS is selected, but no API key is configured."
+            )
+        if not str(voice_config.get("model", "")).strip():
+            raise TTSEngineError("Google Gemini TTS requires a model.")
+        if not str(voice_config.get("voice", "")).strip():
+            raise TTSEngineError("Google Gemini TTS requires a voice.")
+
+    def synthesize_to_wav(
+        self,
+        text: str,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+    ) -> Path:
+        self.validate(voice_config)
+        payload = {
+            "model": str(voice_config.get("model", self.DEFAULT_MODEL)),
+            "input": self._input_text(text, voice_config),
+            "response_format": {"type": "audio"},
+            "generation_config": {
+                "speech_config": [
+                    {"voice": str(voice_config.get("voice", self.DEFAULT_VOICE))}
+                ]
+            },
+        }
+        response, _ = self._post(
+            "/v1beta/interactions",
+            self._json_body(payload),
+            {
+                "x-goog-api-key": self._api_key(voice_config),
+                "Content-Type": "application/json",
+                "Api-Revision": "2026-05-20",
+            },
+            self._timeout(voice_config),
+        )
+        audio_bytes, mime_type = self._extract_audio(response)
+        if audio_bytes.startswith(b"RIFF"):
+            return self._write_wav_bytes(audio_bytes, output_wav)
+        return self._write_pcm_wav(
+            audio_bytes,
+            output_wav,
+            self._sample_rate_from_mime_type(mime_type),
+        )
+
+    @staticmethod
+    def _api_key(voice_config: dict[str, Any]) -> str:
+        return str(
+            voice_config.get("api_key")
+            or os.environ.get("GEMINI_API_KEY", "")
+            or os.environ.get("GOOGLE_API_KEY", "")
+        ).strip()
+
+    @staticmethod
+    def _input_text(text: str, voice_config: dict[str, Any]) -> str:
+        prompt = str(
+            voice_config.get("prompt")
+            or voice_config.get("instructions")
+            or ""
+        ).strip()
+        if not prompt:
+            return text
+        return f"{prompt}\n\nTranscript:\n{text}"
+
+    @classmethod
+    def _extract_audio(cls, response_body: bytes) -> tuple[bytes, str]:
+        try:
+            data = json.loads(response_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise TTSEngineError(
+                "Google Gemini TTS returned a response that was not valid JSON."
+            ) from exc
+        audio_blocks = cls._audio_blocks(data)
+        for block in reversed(audio_blocks):
+            encoded = block.get("data") or block.get("audio")
+            if not encoded:
+                continue
+            try:
+                return (
+                    base64.b64decode(str(encoded)),
+                    str(
+                        block.get("mime_type")
+                        or block.get("mimeType")
+                        or block.get("mime")
+                        or ""
+                    ),
+                )
+            except (TypeError, ValueError) as exc:
+                raise TTSEngineError(
+                    "Google Gemini TTS returned audio data that could not be decoded."
+                ) from exc
+        raise TTSEngineError("Google Gemini TTS did not return audio data.")
+
+    @classmethod
+    def _audio_blocks(cls, data: Any) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        if not isinstance(data, dict):
+            return blocks
+
+        output_audio = data.get("output_audio")
+        if isinstance(output_audio, dict):
+            blocks.append(output_audio)
+
+        steps = data.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            content = step.get("content", [])
+            if not isinstance(content, list):
+                content = []
+            for item in content:
+                if isinstance(item, dict) and str(item.get("type", "")) == "audio":
+                    blocks.append(item)
+
+        outputs = data.get("outputs", [])
+        if not isinstance(outputs, list):
+            outputs = []
+        for item in outputs:
+            if isinstance(item, dict) and str(item.get("type", "")) == "audio":
+                blocks.append(item)
+        return blocks
+
+    @staticmethod
+    def _sample_rate_from_mime_type(mime_type: str) -> int:
+        lowered = mime_type.lower()
+        for marker in ("rate=", "rate:"):
+            if marker not in lowered:
+                continue
+            value = lowered.split(marker, 1)[1].split(";", 1)[0].strip()
+            try:
+                return int(value)
+            except ValueError:
+                break
+        return 24000

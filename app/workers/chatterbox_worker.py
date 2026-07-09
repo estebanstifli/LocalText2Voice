@@ -12,11 +12,13 @@ from app.tts.chatterbox_manager import (
     ChatterboxError,
     ChatterboxManager,
 )
+from app.tts.chatterbox_voice_manager import ChatterboxReferenceVoiceManager
 from app.utils.gpu_detection import (
     detect_gpus,
     format_gpu_detection,
     format_runtime_cuda_info,
 )
+from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
 
 
 class ChatterboxInstallWorker(QObject):
@@ -47,6 +49,21 @@ class ChatterboxInstallWorker(QObject):
                     self.device,
                     self.progress.emit,
                 )
+                try:
+                    voice_manager = ChatterboxReferenceVoiceManager()
+                    voice_manager.install_default_pack(
+                        lambda current, total, message: self.progress.emit(
+                            current,
+                            total,
+                            message,
+                        )
+                    )
+                except Exception as exc:
+                    self.progress.emit(
+                        100,
+                        100,
+                        f"Chatterbox installed. Sample voices were skipped: {exc}",
+                    )
                 self.finished.emit(str(destination))
             elif self.operation == "remove":
                 self.manager.uninstall()
@@ -54,9 +71,9 @@ class ChatterboxInstallWorker(QObject):
                 self.finished.emit(str(self.manager.install_dir))
             else:
                 raise ChatterboxError("Unknown Chatterbox operation.")
-        except ChatterboxCancelled:
+        except (ChatterboxCancelled, PythonRuntimeCancelled):
             self.cancelled.emit()
-        except (ChatterboxError, TTSEngineError) as exc:
+        except (ChatterboxError, PythonRuntimeError, TTSEngineError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()

@@ -7,12 +7,13 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 2
+CURRENT_SETTINGS_SCHEMA_VERSION = 4
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
+    "current_project_id": None,
     "output_dir": "output",
     "voice_id": "",
     "language": "",
@@ -23,6 +24,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "piper_path": "engines/piper/piper.exe",
     "ffmpeg_path": "ffmpeg/ffmpeg.exe",
     "chunk_size": 2500,
+    "editor_syntax_highlighting": True,
     "pause_between_blocks_ms": 350,
     "pause_between_chapters_ms": 900,
     "paragraph_pause_min_ms": 450,
@@ -37,18 +39,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "podcast_enabled": False,
     "intro_enabled": False,
     "intro_path": "",
-    "background_enabled": False,
-    "background_path": "",
+    "background_enabled": True,
+    "background_path": "music/background/relax1.mp3",
     "background_loop": True,
-    "background_volume_percent": 12,
+    "background_volume_percent": 45,
+    "voice_volume_db": 0.0,
+    "music_volume_db": -7.0,
+    "voice_start_offset_ms": 2000,
+    "music_tail_ms": 2000,
     "outro_enabled": False,
     "outro_path": "",
-    "music_fade_in_seconds": 1.5,
-    "music_fade_out_seconds": 2.0,
+    "music_fade_in_seconds": 1.0,
+    "music_fade_out_seconds": 1.0,
     "podcast_gap_ms": 500,
     "podcast_normalize": True,
     "podcast_ducking": True,
-    "open_output_on_finish": True,
+    "ducking_strength": "low",
+    "open_output_on_finish": False,
     "mp3_bitrate": "128k",
     "metadata": {
         "title": "Course",
@@ -58,7 +65,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "kokoro": {
         "voice": "af_heart",
         "lang": "en-us",
-        "provider": "cpu",
+        "provider": "auto",
     },
     "chatterbox": {
         "model": "multilingual_v3",
@@ -68,6 +75,26 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "voice_clone_consent": False,
         "exaggeration": 0.5,
         "cfg_weight": 0.5,
+    },
+    "qwen": {
+        "model": "custom_voice_0_6b",
+        "language": "Spanish",
+        "speaker": "Serena",
+        "device": "auto",
+        "dtype": "auto",
+        "instruct": "",
+    },
+    "review": {
+        "enabled": False,
+        "auto_verify_after_generation": False,
+        "model": "small",
+        "device": "cpu",
+        "compute_type": "int8",
+        "language": "auto",
+        "beam_size": 1,
+        "approve_threshold": 92.0,
+        "max_retries": 0,
+        "preload_model": False,
     },
     "api_tts": {
         "openai": {
@@ -87,6 +114,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "style": 0.0,
             "use_speaker_boost": True,
             "timeout_seconds": 120,
+        },
+        "gemini": {
+            "api_key": "",
+            "model": "gemini-3.1-flash-tts-preview",
+            "voice": "Kore",
+            "prompt": "",
+            "timeout_seconds": 180,
         },
         "azure": {
             "api_key": "",
@@ -130,6 +164,25 @@ def _migrate_settings(
             # Older builds defaulted to strict CUDA, which failed on normal PCs.
             # Auto still uses CUDA when available, but falls back to CPU.
             chatterbox["device"] = "auto"
+
+    if version < 4:
+        if not result.get("background_path"):
+            result["background_path"] = "music/background/relax1.mp3"
+            result["background_enabled"] = True
+        if result.get("music_volume_db") == -18.0:
+            result["music_volume_db"] = -7.0
+        if result.get("background_volume_percent") == 12:
+            result["background_volume_percent"] = 45
+        if result.get("voice_start_offset_ms") == 0:
+            result["voice_start_offset_ms"] = 2000
+        if result.get("music_tail_ms") == 0:
+            result["music_tail_ms"] = 2000
+        if result.get("music_fade_in_seconds") == 1.5:
+            result["music_fade_in_seconds"] = 1.0
+        if result.get("music_fade_out_seconds") == 2.0:
+            result["music_fade_out_seconds"] = 1.0
+        if result.get("ducking_strength") == "medium":
+            result["ducking_strength"] = "low"
 
     result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
     return result

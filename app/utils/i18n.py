@@ -27,7 +27,7 @@ class Translator:
     @staticmethod
     def _read_locale(path: Path) -> dict[str, str]:
         try:
-            data: Any = json.loads(path.read_text(encoding="utf-8"))
+            data: Any = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return {}
         if not isinstance(data, dict):

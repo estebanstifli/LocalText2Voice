@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import json
 import math
 import struct
@@ -13,6 +14,7 @@ from typing import Any
 from app.tts.api_engines import (
     AzureTTSEngine,
     ElevenLabsTTSEngine,
+    GeminiTTSEngine,
     OpenAITTSEngine,
 )
 from app.tts.base import TTSEngineError
@@ -70,6 +72,40 @@ class FakeElevenLabsEngine(ElevenLabsTTSEngine):
         self.payload = json.loads(body.decode("utf-8"))
         pcm = struct.pack("<h", 0) * 2400
         return pcm, "application/octet-stream"
+
+
+class FakeGeminiEngine(GeminiTTSEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.path = ""
+        self.payload: dict[str, Any] = {}
+
+    def _post(
+        self,
+        path: str,
+        body: bytes,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> tuple[bytes, str]:
+        self.path = path
+        self.headers = headers
+        self.payload = json.loads(body.decode("utf-8"))
+        pcm = struct.pack("<h", 0) * 2400
+        response = {
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {
+                            "type": "audio",
+                            "data": base64.b64encode(pcm).decode("ascii"),
+                            "mime_type": "audio/L16;codec=pcm;rate=24000",
+                        }
+                    ],
+                }
+            ]
+        }
+        return json.dumps(response).encode("utf-8"), "application/json"
 
 
 class ApiTTSEngineTests(unittest.TestCase):
@@ -149,6 +185,46 @@ class ApiTTSEngineTests(unittest.TestCase):
         self.assertIn('rate="+20%"', ssml)
         self.assertIn("Hello &lt;world&gt;.", ssml)
 
+    def test_gemini_engine_wraps_interactions_pcm_as_wav(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            engine = FakeGeminiEngine()
+            output = Path(temporary_name) / "gemini.wav"
+
+            result = engine.synthesize_to_wav(
+                "Hola desde Gemini.",
+                output,
+                {
+                    "api_key": "test-key",
+                    "model": "gemini-3.1-flash-tts-preview",
+                    "voice": "Kore",
+                    "prompt": "Say this warmly.",
+                },
+            )
+
+            self.assertEqual(result, output)
+            self.assertEqual(engine.path, "/v1beta/interactions")
+            self.assertEqual(engine.headers["x-goog-api-key"], "test-key")
+            self.assertEqual(engine.headers["Api-Revision"], "2026-05-20")
+            self.assertEqual(engine.payload["response_format"], {"type": "audio"})
+            self.assertEqual(
+                engine.payload["generation_config"]["speech_config"][0]["voice"],
+                "Kore",
+            )
+            self.assertIn("Transcript:", engine.payload["input"])
+            with wave.open(str(output), "rb") as audio:
+                self.assertEqual(audio.getframerate(), 24000)
+                self.assertEqual(audio.getnchannels(), 1)
+
+    def test_gemini_engine_requires_api_key(self) -> None:
+        engine = GeminiTTSEngine()
+        with self.assertRaisesRegex(TTSEngineError, "API key"):
+            engine.validate(
+                {
+                    "model": "gemini-3.1-flash-tts-preview",
+                    "voice": "Kore",
+                }
+            )
+
     def test_registry_keeps_piper_and_api_engines_separate(self) -> None:
         self.assertIsInstance(
             create_tts_engine("piper", Path("piper.exe")),
@@ -157,6 +233,10 @@ class ApiTTSEngineTests(unittest.TestCase):
         self.assertIsInstance(
             create_tts_engine("openai", Path("piper.exe")),
             OpenAITTSEngine,
+        )
+        self.assertIsInstance(
+            create_tts_engine("gemini", Path("piper.exe")),
+            GeminiTTSEngine,
         )
 
 

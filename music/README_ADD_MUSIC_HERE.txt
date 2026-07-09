@@ -1,9 +1,9 @@
 Optional portable music library.
 
-Suggested layout:
-  music/intro/       Short opening themes
-  music/background/ Ambient loops and beds
-  music/outro/       Closing themes
+Library layout:
+  music/background/  MP3 or WAV tracks available inside the Music page.
 
-The application can also select MP3 or WAV files from any other folder.
+Use the Music page to import, rename, delete, preview, and select a default
+track. The same library can be used later for intro, background, or outro
+sections.
 Only use music whose license permits your intended publication.

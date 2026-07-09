@@ -17,6 +17,8 @@ class VoiceInfo:
     def as_config(self, speed: float = 1.0) -> dict[str, Any]:
         return {
             "voice_id": self.voice_id,
+            "voice": self.display_name,
+            "language": self.language,
             "model_path": str(self.model_path),
             "config_path": str(self.config_path),
             "speed": speed,

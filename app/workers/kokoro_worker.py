@@ -13,6 +13,7 @@ from app.tts.kokoro_manager import (
 )
 from app.tts.base import TTSEngineError
 from app.tts.kokoro_preview import kokoro_preview_text_for_language
+from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
 
 
 class KokoroInstallWorker(QObject):
@@ -37,9 +38,9 @@ class KokoroInstallWorker(QObject):
                 self.finished.emit(str(self.manager.install_dir))
             else:
                 raise KokoroError("Unknown Kokoro operation.")
-        except KokoroDownloadCancelled:
+        except (KokoroDownloadCancelled, PythonRuntimeCancelled):
             self.cancelled.emit()
-        except (KokoroError, TTSEngineError) as exc:
+        except (KokoroError, PythonRuntimeError, TTSEngineError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()
@@ -78,10 +79,10 @@ class KokoroPreviewWorker(QObject):
                 self.lang,
                 self.speed,
                 output_path,
-                "cpu",
+                "auto",
             )
             self.finished.emit(str(output_path))
-        except (KokoroError, TTSEngineError) as exc:
+        except (KokoroError, PythonRuntimeError, TTSEngineError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()

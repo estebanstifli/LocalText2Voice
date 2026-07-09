@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 2,
+  "settings_schema_version": 4,
   "ui_language": "en",
   "output_dir": "output",
   "voice_id": "",
@@ -11,6 +11,7 @@
   "piper_path": "engines/piper/piper.exe",
   "ffmpeg_path": "ffmpeg/ffmpeg.exe",
   "chunk_size": 2500,
+  "editor_syntax_highlighting": true,
   "pause_between_blocks_ms": 350,
   "pause_between_chapters_ms": 900,
   "paragraph_pause_min_ms": 450,
@@ -25,18 +26,23 @@
   "podcast_enabled": false,
   "intro_enabled": false,
   "intro_path": "",
-  "background_enabled": false,
-  "background_path": "",
+  "background_enabled": true,
+  "background_path": "music/background/relax1.mp3",
   "background_loop": true,
-  "background_volume_percent": 12,
+  "background_volume_percent": 45,
+  "voice_volume_db": 0.0,
+  "music_volume_db": -7.0,
+  "voice_start_offset_ms": 2000,
+  "music_tail_ms": 2000,
   "outro_enabled": false,
   "outro_path": "",
-  "music_fade_in_seconds": 1.5,
-  "music_fade_out_seconds": 2.0,
+  "music_fade_in_seconds": 1.0,
+  "music_fade_out_seconds": 1.0,
   "podcast_gap_ms": 500,
   "podcast_normalize": true,
   "podcast_ducking": true,
-  "open_output_on_finish": true,
+  "ducking_strength": "low",
+  "open_output_on_finish": false,
   "mp3_bitrate": "128k",
   "metadata": {
     "title": "Course",
@@ -46,7 +52,7 @@
   "kokoro": {
     "voice": "af_heart",
     "lang": "en-us",
-    "provider": "cpu"
+    "provider": "auto"
   },
   "chatterbox": {
     "model": "multilingual_v3",
@@ -56,6 +62,26 @@
     "voice_clone_consent": false,
     "exaggeration": 0.5,
     "cfg_weight": 0.5
+  },
+  "qwen": {
+    "model": "custom_voice_0_6b",
+    "language": "Spanish",
+    "speaker": "Serena",
+    "device": "auto",
+    "dtype": "auto",
+    "instruct": ""
+  },
+  "review": {
+    "enabled": false,
+    "auto_verify_after_generation": false,
+    "model": "small",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "auto",
+    "beam_size": 1,
+    "approve_threshold": 92.0,
+    "max_retries": 0,
+    "preload_model": false
   },
   "api_tts": {
     "openai": {
@@ -75,6 +101,13 @@
       "style": 0.0,
       "use_speaker_boost": true,
       "timeout_seconds": 120
+    },
+    "gemini": {
+      "api_key": "",
+      "model": "gemini-3.1-flash-tts-preview",
+      "voice": "Kore",
+      "prompt": "",
+      "timeout_seconds": 180
     },
     "azure": {
       "api_key": "",

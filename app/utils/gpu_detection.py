@@ -118,9 +118,12 @@ def format_gpu_detection(result: GPUDetectionResult) -> str:
     return "\n".join(lines)
 
 
-def format_runtime_cuda_info(info: dict[str, object]) -> str:
+def format_runtime_cuda_info(
+    info: dict[str, object],
+    engine_name: str = "Chatterbox",
+) -> str:
     if not info:
-        return "Runtime CUDA: not available until the Chatterbox runtime is installed."
+        return f"Runtime CUDA: not available until the {engine_name} runtime is installed."
     if info.get("error"):
         return f"Runtime CUDA: could not test PyTorch ({info.get('error')})."
     torch_version = str(info.get("torch_version", "unknown"))

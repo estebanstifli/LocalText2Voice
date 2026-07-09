@@ -100,7 +100,13 @@ def _generate(args: argparse.Namespace) -> None:
         wav = model.generate(text, **generation_kwargs)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    ta.save(str(output_path), wav, model.sr)
+    ta.save(
+        str(output_path),
+        wav,
+        model.sr,
+        encoding="PCM_S",
+        bits_per_sample=16,
+    )
     print(f"Created {output_path}")
 
 

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import tempfile
 import textwrap
 import unittest
-import zipfile
 from pathlib import Path
 
 from app.core.settings_manager import DEFAULT_SETTINGS
 from app.core.settings_manager import SettingsManager
 from app.tts.base import TTSEngineError
 from app.tts.chatterbox_engine import ChatterboxTTSEngine
-from app.tts.chatterbox_manager import ChatterboxManager
+from app.tts.chatterbox_manager import CHATTERBOX_PYTHON_CLI, ChatterboxManager
 from app.tts.engine_registry import create_tts_engine, engine_ids
 
 
@@ -34,111 +35,98 @@ class ChatterboxManagerTests(unittest.TestCase):
             {language.language_id for language in manager.list_languages()},
         )
 
-    def test_runtime_detection_supports_onedir_layout(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_name:
-            runtime = (
-                Path(temporary_name)
-                / "engines"
-                / "chatterbox"
-                / "chatterbox_engine"
-                / "chatterbox_engine.exe"
-            )
-            runtime.parent.mkdir(parents=True)
-            runtime.write_bytes(b"runtime")
-
-            manager = ChatterboxManager(runtime_path=runtime)
-
-            self.assertTrue(manager.has_runtime())
-            self.assertEqual(manager.runtime_command(), [str(runtime)])
-
-    def test_old_appdata_runtime_is_not_current(self) -> None:
+    def test_runtime_detection_uses_embedded_python_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
-            runtime = root / "runtime" / "chatterbox_engine" / "chatterbox_engine.exe"
-            runtime.parent.mkdir(parents=True)
-            runtime.write_bytes(b"runtime")
-            manifest = root / "runtime" / ChatterboxManager.RUNTIME_INSTALL_FILENAME
+
+            class FakePythonRuntime:
+                runtime_dir = root / "runtime"
+                python_exe = Path(sys.executable)
+
+                def is_installed(self) -> bool:
+                    return True
+
+                def cancel(self) -> None:
+                    pass
+
+            manager = ChatterboxManager(
+                install_dir=root / "models",
+                python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
+            )
+            manager._write_cli()
+            manager._write_runtime_manifest(
+                "installed",
+                ["chatterbox-tts==0.1.7"],
+                "cpu",
+                "System GPU: no compatible GPU detected.",
+                {"cuda_available": False},
+            )
+
+            self.assertTrue(manager.has_runtime())
+            self.assertEqual(manager.runtime_command(), [sys.executable, str(manager.cli_path)])
+
+    def test_old_runtime_manifest_is_not_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            runtime_dir = root / "runtime"
+            manifest = runtime_dir / "engine-deps" / ChatterboxManager.RUNTIME_INSTALL_FILENAME
+            manifest.parent.mkdir(parents=True)
             manifest.write_text(
                 json.dumps(
                     {
                         "state": "installed",
-                        "runtime_version": "chatterbox-cuda-v2",
+                        "runtime_version": "chatterbox-python-deps-old",
                     }
                 ),
                 encoding="utf-8",
             )
 
+            class FakePythonRuntime:
+                runtime_dir = root / "runtime"
+                python_exe = Path(sys.executable)
+
+                def is_installed(self) -> bool:
+                    return True
+
+                def cancel(self) -> None:
+                    pass
+
             manager = ChatterboxManager(
                 install_dir=root / "models",
-                runtime_dir=root / "runtime",
-                runtime_path=runtime,
+                python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
             )
+            manager._write_cli()
 
-            self.assertTrue(manager.has_runtime())
             self.assertFalse(manager.runtime_is_current())
-
-    def test_runtime_pack_is_downloaded_and_installed(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_name:
-            root = Path(temporary_name)
-            archive_path = root / "runtime.zip"
-            with zipfile.ZipFile(archive_path, "w") as archive:
-                archive.writestr(
-                    "chatterbox_engine/chatterbox_engine.exe",
-                    b"runtime",
-                )
-
-            manager = ChatterboxManager(
-                install_dir=root / "models",
-                runtime_dir=root / "runtime",
-                runtime_pack_url=archive_path.as_uri(),
-            )
-            manager.RUNTIME_PACK_MIN_SIZE = 1
-
-            destination = manager.install_runtime()
-
-            self.assertEqual(destination, manager.runtime_dir)
-            self.assertTrue(manager.has_runtime())
-            self.assertEqual(
-                manager.runtime_manifest()["state"],
-                "installed",
-            )
-
-    def test_runtime_pack_can_be_downloaded_in_parts(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_name:
-            root = Path(temporary_name)
-            archive_path = root / "runtime.zip"
-            with zipfile.ZipFile(archive_path, "w") as archive:
-                archive.writestr(
-                    "chatterbox_engine/chatterbox_engine.exe",
-                    b"runtime",
-                )
-            data = archive_path.read_bytes()
-            midpoint = max(1, len(data) // 2)
-            part_1 = root / "runtime.zip.part01"
-            part_2 = root / "runtime.zip.part02"
-            part_1.write_bytes(data[:midpoint])
-            part_2.write_bytes(data[midpoint:])
-
-            manager = ChatterboxManager(
-                install_dir=root / "models",
-                runtime_dir=root / "runtime",
-                runtime_pack_urls=[part_1.as_uri(), part_2.as_uri()],
-            )
-            manager.RUNTIME_PACK_MIN_SIZE = 1
-
-            destination = manager.install_runtime()
-
-            self.assertEqual(destination, manager.runtime_dir)
-            self.assertTrue(manager.has_runtime())
-            self.assertEqual(
-                manager.runtime_manifest()["urls"],
-                [part_1.as_uri(), part_2.as_uri()],
-            )
 
     def test_default_settings_include_chatterbox(self) -> None:
         settings = DEFAULT_SETTINGS["chatterbox"]
         self.assertEqual(settings["model"], "multilingual_v3")
         self.assertEqual(settings["device"], "auto")
+
+    def test_runtime_error_prefers_structured_fatal_over_stderr_noise(self) -> None:
+        stdout = "\n".join(
+            [
+                '{"type":"timing","label":"dependency import","elapsed":1.2}',
+                '{"type":"fatal","message":"Chatterbox model load failed: missing dependency"}',
+            ]
+        )
+        stderr = "\n".join(
+            [
+                "Fetching 6 files: 100%|##########| 6/6",
+                "FutureWarning: LoRACompatibleLinear is deprecated",
+            ]
+        )
+
+        self.assertEqual(
+            ChatterboxManager._runtime_json_error(stdout),
+            "Chatterbox model load failed: missing dependency",
+        )
+        self.assertEqual(ChatterboxManager._clean_runtime_stderr(stderr), "")
+
+    def test_worker_writes_pcm_wav_for_pipeline_compatibility(self) -> None:
+        self.assertIn('encoding="PCM_S"', CHATTERBOX_PYTHON_CLI)
+        self.assertIn("bits_per_sample=16", CHATTERBOX_PYTHON_CLI)
 
     def test_legacy_cuda_setting_is_migrated_to_auto(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -150,7 +138,7 @@ class ChatterboxManagerTests(unittest.TestCase):
 
             settings = SettingsManager(config_path).settings
 
-            self.assertEqual(settings["settings_schema_version"], 2)
+            self.assertEqual(settings["settings_schema_version"], 4)
             self.assertEqual(settings["chatterbox"]["device"], "auto")
 
     def test_install_retries_with_auto_when_cuda_is_unavailable(self) -> None:
@@ -160,9 +148,16 @@ class ChatterboxManagerTests(unittest.TestCase):
             runtime_script.write_text(
                 textwrap.dedent(
                     """
+                    import argparse
                     import sys
 
-                    device = sys.argv[sys.argv.index("--device") + 1]
+                    parser = argparse.ArgumentParser()
+                    parser.add_argument("--warmup", action="store_true")
+                    parser.add_argument("--model")
+                    parser.add_argument("--device")
+                    parser.add_argument("--cache-dir")
+                    args = parser.parse_args()
+                    device = args.device
                     if device == "cuda":
                         print(
                             "Chatterbox synthesis failed: CUDA was requested, "
@@ -184,13 +179,25 @@ class ChatterboxManagerTests(unittest.TestCase):
                     return True
 
                 def runtime_command(self) -> list[str]:
-                    import sys
-
                     return [sys.executable, str(runtime_script)]
+
+                def _install_runtime_dependencies(self, progress, cancel_token):
+                    self._write_cli()
+
+            class FakePythonRuntime:
+                runtime_dir = root / "runtime"
+                python_exe = Path(sys.executable)
+
+                def is_installed(self) -> bool:
+                    return True
+
+                def cancel(self) -> None:
+                    pass
 
             manager = FakeRuntimeManager(
                 install_dir=root / "models",
                 runtime_dir=root / "runtime",
+                python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
             )
 
             manager.install(device="cuda")
@@ -198,30 +205,52 @@ class ChatterboxManagerTests(unittest.TestCase):
             self.assertEqual(manager.install_manifest()["state"], "installed")
             self.assertEqual(manager.install_manifest()["device"], "auto")
 
-    def test_engine_retries_with_auto_when_cuda_is_unavailable(self) -> None:
+    def test_engine_reuses_worker_for_multiple_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
             runtime_script = root / "fake_chatterbox_runtime.py"
             runtime_script.write_text(
                 textwrap.dedent(
                     """
+                    import argparse
+                    import json
+                    import os
                     import sys
                     from pathlib import Path
 
-                    device = sys.argv[sys.argv.index("--device") + 1]
-                    if device == "cuda":
-                        print(
-                            "Chatterbox synthesis failed: CUDA was requested, "
-                            "but PyTorch cannot see a CUDA GPU.",
-                            file=sys.stderr,
-                        )
-                        raise SystemExit(5)
-                    output = Path(sys.argv[sys.argv.index("--output") + 1])
-                    output.write_bytes(b"fallback wav")
+                    parser = argparse.ArgumentParser()
+                    parser.add_argument("--worker", action="store_true")
+                    parser.add_argument("--model", required=True)
+                    parser.add_argument("--device", required=True)
+                    parser.add_argument("--cache-dir", required=True)
+                    parser.parse_args()
+
+                    count = Path(os.environ["FAKE_CHATTERBOX_COUNT"])
+                    count.write_text(
+                        str(int(count.read_text() or "0") + 1)
+                        if count.exists()
+                        else "1",
+                        encoding="utf-8",
+                    )
+
+                    def emit(payload):
+                        print(json.dumps(payload), flush=True)
+
+                    emit({"type": "ready", "model": "multilingual_v3", "device": "cpu"})
+                    for raw_line in sys.stdin:
+                        request = json.loads(raw_line)
+                        if request.get("type") == "shutdown":
+                            emit({"type": "shutdown"})
+                            break
+                        output = Path(request["output"])
+                        output.write_bytes(b"fake wav")
+                        emit({"type": "timing", "id": request["id"], "label": "synthesis", "elapsed": 0.1})
+                        emit({"type": "result", "id": request["id"], "output": str(output)})
                     """
                 ).strip(),
                 encoding="utf-8",
             )
+            count_path = root / "starts.txt"
 
             class FakeRuntimeManager(ChatterboxManager):
                 def has_runtime(self) -> bool:
@@ -231,9 +260,12 @@ class ChatterboxManagerTests(unittest.TestCase):
                     return True
 
                 def runtime_command(self) -> list[str]:
-                    import sys
-
                     return [sys.executable, str(runtime_script)]
+
+                def runtime_environment(self) -> dict[str, str]:
+                    env = dict(os.environ)
+                    env["FAKE_CHATTERBOX_COUNT"] = str(count_path)
+                    return env
 
             manager = FakeRuntimeManager(
                 install_dir=root / "models",
@@ -241,48 +273,26 @@ class ChatterboxManagerTests(unittest.TestCase):
             )
             engine = ChatterboxTTSEngine(manager)
             output = root / "out.wav"
+            output_2 = root / "out2.wav"
 
-            engine.synthesize_to_wav(
-                "hello",
-                output,
-                {
-                    "model": "multilingual_v3",
-                    "language": "en",
-                    "device": "cuda",
-                    "reference_audio_path": "",
-                },
-            )
+            config = {
+                "model": "multilingual_v3",
+                "language": "en",
+                "device": "auto",
+                "reference_audio_path": "",
+            }
+            try:
+                engine.synthesize_to_wav("hello", output, config)
+                engine.synthesize_to_wav("again", output_2, config)
+            finally:
+                engine.close()
 
             self.assertTrue(output.is_file())
-            self.assertGreater(output.stat().st_size, 0)
-
-    def test_engine_rejects_outdated_runtime_before_generation(self) -> None:
-        class OutdatedRuntimeManager(ChatterboxManager):
-            def has_runtime(self) -> bool:
-                return True
-
-            def runtime_is_current(self) -> bool:
-                return False
-
-        with tempfile.TemporaryDirectory() as temporary_name:
-            engine = ChatterboxTTSEngine(
-                OutdatedRuntimeManager(
-                    install_dir=Path(temporary_name) / "models",
-                    runtime_dir=Path(temporary_name) / "runtime",
-                )
+            self.assertTrue(output_2.is_file())
+            self.assertEqual(
+                count_path.read_text(encoding="utf-8"),
+                "1",
             )
-
-            with self.assertRaisesRegex(TTSEngineError, "outdated"):
-                engine.synthesize_to_wav(
-                    "hello",
-                    Path(temporary_name) / "out.wav",
-                    {
-                        "model": "multilingual_v3",
-                        "language": "en",
-                        "device": "auto",
-                        "reference_audio_path": "",
-                    },
-                )
 
 
 if __name__ == "__main__":

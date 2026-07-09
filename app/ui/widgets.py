@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from html import escape
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -8,7 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QPushButton,
-    QPlainTextEdit,
+    QTextEdit,
     QWidget,
 )
 
@@ -97,13 +100,63 @@ class FilePicker(QWidget):
             self.set_path(selected)
 
 
-class LogView(QPlainTextEdit):
+class LogView(QTextEdit):
+    TIMESTAMP_PATTERN = re.compile(r"^\[\d{2}:\d{2}:\d{2}(?:\.\d{3})?\]")
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setMaximumBlockCount(1500)
+        self.document().setMaximumBlockCount(1500)
 
     def append_event(self, message: str) -> None:
-        self.appendPlainText(message)
+        for line in self._timestamp_message(message).splitlines() or [""]:
+            self.append(
+                f'<span style="color:{self._line_color(line)}">'
+                f"{escape(line)}</span>"
+            )
         scroll_bar = self.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
+
+    @classmethod
+    def _timestamp_message(cls, message: str) -> str:
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        lines = str(message).splitlines() or [""]
+        stamped_lines: list[str] = []
+        for line in lines:
+            if cls.TIMESTAMP_PATTERN.match(line):
+                stamped_lines.append(line)
+            else:
+                stamped_lines.append(f"[{timestamp}] {line}")
+        return "\n".join(stamped_lines)
+
+    @staticmethod
+    def _line_color(line: str) -> str:
+        normalized = line.casefold()
+        error_markers = (
+            " error",
+            "failed",
+            "failure",
+            "fatal",
+            "exception",
+            "traceback",
+            "missing",
+            "could not",
+            "not found",
+            "invalid",
+        )
+        warning_markers = (
+            " warning",
+            "warn",
+            "ignored",
+            "fallback",
+            "falling back",
+            "skipped",
+            "unknown",
+            "unsupported",
+            "deprecated",
+        )
+        if any(marker in normalized for marker in error_markers):
+            return "#b91c1c"
+        if any(marker in normalized for marker in warning_markers):
+            return "#92400e"
+        return "#111827"

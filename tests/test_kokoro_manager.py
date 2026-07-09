@@ -5,12 +5,12 @@ import unittest
 from pathlib import Path
 
 from app.tts.engine_registry import create_tts_engine
-from app.tts.kokoro_engine import KokoroTTSEngine
 from app.tts.kokoro_manager import (
     KokoroAsset,
     KokoroDownloadCancelled,
     KokoroManager,
 )
+from app.tts.kokoro_python_engine import KokoroPythonTTSEngine
 from app.tts.kokoro_preview import kokoro_preview_text_for_language
 
 
@@ -91,13 +91,13 @@ class KokoroManagerTests(unittest.TestCase):
     def test_registry_creates_kokoro_engine(self) -> None:
         self.assertIsInstance(
             create_tts_engine("kokoro", Path("piper.exe")),
-            KokoroTTSEngine,
+            KokoroPythonTTSEngine,
         )
 
     def test_preview_text_matches_voice_language(self) -> None:
         self.assertEqual(
             kokoro_preview_text_for_language("es"),
-            "La luna esta preciosa esta noche.",
+            "La luna esta preciosa esta noche. Esta es una prueba breve de voz.",
         )
         self.assertIn("moon", kokoro_preview_text_for_language("en-gb").lower())
         self.assertEqual(

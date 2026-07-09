@@ -64,6 +64,35 @@ Second chapter body.
         self.assertTrue(chunks[-2].ends_paragraph)
         self.assertTrue(chunks[-1].ends_paragraph)
 
+    def test_short_sentence_chunks_group_small_sentences_safely(self) -> None:
+        chunks = TextProcessor.split_short_sentence_chunks(
+            "Yes. No. Hello. This longer sentence gives the model enough context. "
+            "Another complete sentence follows naturally.",
+            target_chars=90,
+            max_chars=120,
+            min_chars=35,
+        )
+
+        self.assertTrue(all(0 < len(chunk.text) <= 120 for chunk in chunks))
+        self.assertNotIn("Yes.", [chunk.text for chunk in chunks])
+        self.assertIn("Yes. No. Hello.", chunks[0].text)
+
+    def test_short_sentence_chunks_split_long_sentence_by_clauses(self) -> None:
+        source = (
+            "This is a long sentence, with several natural clauses, designed to "
+            "be split safely, before it becomes too large for a generative voice "
+            "model, while still keeping readable speech units."
+        )
+        chunks = TextProcessor.split_short_sentence_chunks(
+            source,
+            target_chars=80,
+            max_chars=100,
+            min_chars=35,
+        )
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk.text) <= 100 for chunk in chunks))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,9 @@ from app.core.audio_pipeline import (
     AudioPipelineError,
     GenerationCancelled,
 )
+from app.core.audiobook_store import AudiobookStore
 from app.tts.engine_registry import create_tts_engine
+from app.tts.base import BaseTTSEngine
 
 
 class GenerationWorker(QObject):
@@ -26,11 +28,13 @@ class GenerationWorker(QObject):
         text: str,
         options: AudioGenerationOptions,
         piper_path: Path,
+        tts_engine: BaseTTSEngine | None = None,
     ) -> None:
         super().__init__()
         self.text = text
         self.options = options
         self.piper_path = piper_path
+        self.tts_engine = tts_engine
         self._pipeline: AudioPipeline | None = None
         self._cancel_requested = False
 
@@ -38,11 +42,14 @@ class GenerationWorker(QObject):
     def run(self) -> None:
         try:
             engine_id = str(self.options.voice_config.get("engine", "piper"))
-            engine = create_tts_engine(engine_id, self.piper_path)
+            engine = self.tts_engine or create_tts_engine(engine_id, self.piper_path)
+            engine.set_log_callback(self.log.emit)
             pipeline = AudioPipeline(
                 engine,
                 progress_callback=self.progress.emit,
                 log_callback=self.log.emit,
+                close_engine_on_finish=self.tts_engine is None,
+                audiobook_store=AudiobookStore(),
             )
             self._pipeline = pipeline
             if self._cancel_requested:

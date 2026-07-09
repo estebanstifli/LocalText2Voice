@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import re
+
+from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+
+
+class LTVMarkupHighlighter(QSyntaxHighlighter):
+    """Soft syntax highlighting for LocalText2Voice source text commands."""
+
+    COMMAND_PATTERN = re.compile(r"\{\{\s*([A-Za-z]+)(?:\.[A-Za-z]+)?(?:\s+.*?)?\}\}")
+    STRING_PATTERN = re.compile(r'"[^"\n]*"')
+    BRACKET_COMMAND_PATTERN = re.compile(r"(?<!\[)\[[A-Za-z][A-Za-z0-9_.:\- ]{0,79}\](?!\])")
+
+    COMMAND_COLORS = {
+        "alias": "#7c3aed",
+        "chapter": "#2563eb",
+        "cmd": "#c2410c",
+        "emotion": "#be123c",
+        "lang": "#0f766e",
+        "mark": "#4b5563",
+        "music": "#047857",
+        "pause": "#92400e",
+        "reset": "#64748b",
+        "sendcomand": "#c2410c",
+        "sendcommand": "#c2410c",
+        "sfx": "#047857",
+        "speed": "#7c2d12",
+        "voice": "#6d28d9",
+        "volume": "#0369a1",
+    }
+
+    def __init__(self, document) -> None:
+        super().__init__(document)
+        self._enabled = True
+        self._delimiter_format = self._format("#9a3412")
+        self._delimiter_format.setBackground(QColor("#fff7ed"))
+        self._string_format = self._format("#475569")
+        self._string_format.setFontItalic(True)
+        self._bracket_format = self._format("#166534")
+        self._bracket_format.setBackground(QColor("#f0fdf4"))
+        self._bracket_format.setFontWeight(QFont.Weight.DemiBold)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self.rehighlight()
+
+    def highlightBlock(self, text: str) -> None:  # noqa: N802 - Qt API name
+        if not self._enabled:
+            return
+
+        for match in self.COMMAND_PATTERN.finditer(text):
+            start, end = match.span()
+            self.setFormat(start, end - start, self._delimiter_format)
+
+            command = match.group(1)
+            command_start = match.start(1)
+            command_format = self._command_format(command)
+            self.setFormat(command_start, len(command), command_format)
+
+            for string_match in self.STRING_PATTERN.finditer(match.group(0)):
+                string_start = start + string_match.start()
+                self.setFormat(
+                    string_start,
+                    string_match.end() - string_match.start(),
+                    self._string_format,
+                )
+
+        for match in self.BRACKET_COMMAND_PATTERN.finditer(text):
+            self.setFormat(match.start(), match.end() - match.start(), self._bracket_format)
+
+    @classmethod
+    def _command_format(cls, command: str) -> QTextCharFormat:
+        normalized = command.casefold()
+        text_format = cls._format(cls.COMMAND_COLORS.get(normalized, "#9a3412"))
+        text_format.setFontWeight(QFont.Weight.Bold)
+        return text_format
+
+    @staticmethod
+    def _format(color: str) -> QTextCharFormat:
+        text_format = QTextCharFormat()
+        text_format.setForeground(QColor(color))
+        return text_format

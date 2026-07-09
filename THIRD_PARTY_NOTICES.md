@@ -42,22 +42,21 @@ voice model or using generated audio commercially.
 
 ## Kokoro Runtime and Model Assets
 
-- Runtime wrapper used by this project: `engines/kokoro/kokoro_engine.exe`
 - Python package: `kokoro-onnx`
 - Upstream: https://github.com/thewh1teagle/kokoro-onnx
 - Backend: ONNX Runtime CPU
 - Model assets source: https://github.com/thewh1teagle/kokoro-onnx/releases
 
-The Windows portable build can include a CPU-only Kokoro runtime executable.
-The large Kokoro ONNX model and `voices-v1.0.bin` voice bundle are downloaded
-on demand to the user's local app data folder and are not embedded in the main
+Kokoro runs through the embedded Python runtime. The large
+Kokoro ONNX model and `voices-v1.0.bin` voice bundle are downloaded on demand
+to the user's local app data folder and are not embedded in the main
 application executable.
 
-The Kokoro runtime executable is built with PyInstaller and includes Python
-dependencies such as `kokoro-onnx`, `onnxruntime`, `soundfile`, `numpy`,
-`espeakng-loader`, `phonemizer-fork`, and `language-tags`. Their installed
-package metadata and upstream license files are authoritative. In particular,
-the installed `phonemizer-fork` package identifies itself as GPLv3; review its
+The Kokoro installer adds Python dependencies such as `kokoro-onnx`,
+`onnxruntime`, `soundfile`, `numpy`, `espeakng-loader`, `phonemizer-fork`, and
+`language-tags` into the private runtime. Their installed package metadata and
+upstream license files are authoritative. In particular, the installed
+`phonemizer-fork` package identifies itself as GPLv3; review its
 terms before redistributing a portable build.
 
 ## Chatterbox Runtime and Model Assets
@@ -69,13 +68,44 @@ terms before redistributing a portable build.
 - Package: `chatterbox-tts`
 
 Chatterbox is integrated as an optional advanced runtime. It is not required by
-the main application executable. A Chatterbox runtime pack can include PyTorch,
-Torchaudio, Transformers, Hugging Face Hub, and related dependencies; their
-package metadata and upstream license files are authoritative. Chatterbox model
-assets are downloaded on demand to the user's local app data folder.
+the main application executable. The app can install `chatterbox-tts`, PyTorch,
+Torchaudio, Transformers, Hugging Face Hub, and related dependencies into its
+private embedded Python runtime; their installed package metadata and upstream
+license files are authoritative. Chatterbox model assets are downloaded on
+demand to the user's local app data folder.
 
 Chatterbox supports reference-audio voice cloning. Users are responsible for
 having permission to use any reference voice and generated audio.
+
+## Qwen3 TTS Runtime and Model Assets
+
+- Project: Qwen3 TTS by QwenLM / Alibaba Cloud
+- Upstream: https://github.com/QwenLM/Qwen3-TTS
+- Fast runtime wrapper: https://github.com/andimarafioti/faster-qwen3-tts
+- Model page: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+- Python packages: `qwen-tts`, `faster-qwen3-tts`
+
+Qwen3 TTS is integrated as an optional advanced local runtime. It is not
+required by the main application executable. The app can install
+`faster-qwen3-tts`, `qwen-tts`, PyTorch, Torchaudio, Transformers, Accelerate,
+SoundFile, ONNX Runtime, and related dependencies into an isolated folder under
+the private embedded Python runtime; their installed package metadata and
+upstream license files are authoritative.
+
+Qwen3 TTS model assets are downloaded on demand to the user's local app data
+folder through Hugging Face tooling. Review the model card, license, and usage
+terms before redistributing model files or using generated audio commercially.
+
+## Google Gemini TTS API
+
+- Product documentation: https://ai.google.dev/gemini-api/docs/speech-generation
+- Cloud Text-to-Speech Gemini-TTS documentation:
+  https://docs.cloud.google.com/text-to-speech/docs/gemini-tts
+
+Google Gemini TTS is integrated as an optional remote API provider. No Gemini
+model files are bundled with LocalText2Voice. Users must provide their own API
+key and are responsible for Google API terms, billing, regional availability,
+data handling, safety policies, and permitted usage of generated audio.
 
 ## FFmpeg
 

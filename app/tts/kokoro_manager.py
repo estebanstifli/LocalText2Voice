@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.paths import app_data_root, application_root
+from app.utils.paths import app_data_root
 
 
 class KokoroError(RuntimeError):
@@ -41,20 +41,32 @@ class KokoroVoice:
 
 
 class KokoroManager:
-    VERSION = "v1.0-int8"
+    VERSION = "v1.0-auto-cpu-gpu"
     INSTALL_FILENAME = "kokoro-install.json"
-    MODEL_FILENAME = "kokoro-v1.0.int8.onnx"
+    CPU_MODEL_FILENAME = "kokoro-v1.0.int8.onnx"
+    GPU_MODEL_FILENAME = "kokoro-v1.0.fp16-gpu.onnx"
+    MODEL_FILENAME = CPU_MODEL_FILENAME
     VOICES_FILENAME = "voices-v1.0.bin"
     ASSETS: tuple[KokoroAsset, ...] = (
         KokoroAsset(
-            name="Kokoro ONNX model",
-            filename=MODEL_FILENAME,
+            name="Kokoro CPU ONNX model",
+            filename=CPU_MODEL_FILENAME,
             url=(
                 "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
                 "model-files-v1.0/kokoro-v1.0.int8.onnx"
             ),
             minimum_size=80 * 1024 * 1024,
             expected_size=92361271,
+        ),
+        KokoroAsset(
+            name="Kokoro GPU ONNX model",
+            filename=GPU_MODEL_FILENAME,
+            url=(
+                "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+                "model-files-v1.0/kokoro-v1.0.fp16-gpu.onnx"
+            ),
+            minimum_size=160 * 1024 * 1024,
+            expected_size=177464787,
         ),
         KokoroAsset(
             name="Kokoro voices",
@@ -95,14 +107,9 @@ class KokoroManager:
     def __init__(
         self,
         install_dir: Path | None = None,
-        runtime_path: Path | None = None,
         timeout_seconds: int = 30,
     ) -> None:
         self.install_dir = install_dir or app_data_root() / "models" / "kokoro"
-        self.runtime_path = (
-            runtime_path
-            or application_root() / "engines" / "kokoro" / "kokoro_engine.exe"
-        )
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
         self._external_cancel_token: threading.Event | None = None
@@ -113,13 +120,16 @@ class KokoroManager:
             return False
         if manifest.get("version") != self.VERSION:
             return False
-        return all((self.install_dir / asset.filename).is_file() for asset in self.ASSETS)
+        return all(
+            (self.install_dir / asset.filename).is_file()
+            for asset in self.ASSETS
+        )
 
     def isInstalled(self) -> bool:
         return self.is_installed()
 
     def has_runtime(self) -> bool:
-        return self.runtime_path.is_file()
+        return False
 
     def install_manifest(self) -> dict[str, Any]:
         path = self.manifest_path
@@ -150,16 +160,24 @@ class KokoroManager:
         try:
             self._write_manifest("installing", [])
             for asset in self.ASSETS:
-                temporary = downloads_dir / f"{asset.filename}.tmp"
-                completed = self._download_asset(
-                    asset,
-                    temporary,
-                    completed,
-                    total_size,
-                    progress,
-                )
                 target = self.install_dir / asset.filename
-                temporary.replace(target)
+                if self._asset_is_valid(asset, target):
+                    completed += asset.expected_size
+                    progress(
+                        completed,
+                        total_size,
+                        f"Using existing {asset.name}.",
+                    )
+                else:
+                    temporary = downloads_dir / f"{asset.filename}.tmp"
+                    completed = self._download_asset(
+                        asset,
+                        temporary,
+                        completed,
+                        total_size,
+                        progress,
+                    )
+                    temporary.replace(target)
                 files.append(
                     {
                         "name": asset.name,
@@ -201,19 +219,9 @@ class KokoroManager:
         output_path: Path,
         provider: str = "cpu",
     ) -> Path:
-        from .kokoro_engine import KokoroTTSEngine
-
-        engine = KokoroTTSEngine(self)
-        return engine.synthesize_to_wav(
-            text,
-            output_path,
-            {
-                "engine": "kokoro",
-                "voice": voice,
-                "lang": lang,
-                "speed": speed,
-                "provider": provider,
-            },
+        raise KokoroError(
+            "The dedicated Kokoro executable engine has been removed. "
+            "Use KokoroPythonManager for synthesis."
         )
 
     def cancel(self) -> None:
@@ -228,8 +236,32 @@ class KokoroManager:
         return self.install_dir / self.MODEL_FILENAME
 
     @property
+    def cpu_model_path(self) -> Path:
+        return self.install_dir / self.CPU_MODEL_FILENAME
+
+    @property
+    def gpu_model_path(self) -> Path:
+        return self.install_dir / self.GPU_MODEL_FILENAME
+
+    @property
     def voices_path(self) -> Path:
         return self.install_dir / self.VOICES_FILENAME
+
+    def model_path_for_provider(self, provider: str = "auto") -> Path:
+        requested = provider.lower().strip()
+        if requested == "cuda":
+            if self.gpu_model_path.is_file():
+                return self.gpu_model_path
+            return self.cpu_model_path
+        if requested == "auto":
+            manifest = self.runtime_dependency_manifest()
+            backend = str(manifest.get("backend", "")).lower()
+            if "cuda" in backend and self.gpu_model_path.is_file():
+                return self.gpu_model_path
+        return self.cpu_model_path
+
+    def runtime_dependency_manifest(self) -> dict[str, Any]:
+        return {}
 
     def _download_asset(
         self,
@@ -264,6 +296,12 @@ class KokoroManager:
                 )
                 time.sleep(min(2, attempt))
         raise KokoroError(f"Could not download {asset.name}: {last_error}")
+
+    def _asset_is_valid(self, asset: KokoroAsset, path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size >= asset.minimum_size
+        except OSError:
+            return False
 
     def _download_once(
         self,
@@ -315,7 +353,9 @@ class KokoroManager:
             "version": self.VERSION,
             "state": state,
             "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "provider": "cpu",
+            "provider": "auto",
+            "cpu_model": self.CPU_MODEL_FILENAME,
+            "gpu_model": self.GPU_MODEL_FILENAME,
             "files": files,
         }
         temporary = self.manifest_path.with_suffix(".json.tmp")
