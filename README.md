@@ -5,205 +5,293 @@
 <h1 align="center">LocalText2Voice</h1>
 
 <p align="center">
-  <strong>Open-source, offline AI text-to-speech for long-form content.</strong><br>
-  Convert documents into MP3 narration, podcasts, audiobooks, lessons, and course audio on Windows.
+  <strong>Free, open-source AI voice and audio production for long-form text.</strong><br>
+  Turn books, lessons, articles, notes, and courses into MP3 audiobooks and podcast-style audio on Windows.
 </p>
 
 <p align="center">
   <a href="https://github.com/estebanstifli/LocalText2Voice/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/estebanstifli/LocalText2Voice?display_name=tag&sort=semver"></a>
   <a href="https://github.com/estebanstifli/LocalText2Voice/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/estebanstifli/LocalText2Voice"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows">
-  <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
-  <img alt="Offline and local" src="https://img.shields.io/badge/AI-local%20%26%20offline-5C2D91">
+  <img alt="Python and PySide6" src="https://img.shields.io/badge/Python%20%2B%20PySide6-desktop-3776AB?logo=python&logoColor=white">
+  <img alt="Local AI" src="https://img.shields.io/badge/AI-local%20models%20%2B%20cloud%20APIs-5C2D91">
+  <img alt="Offline capable" src="https://img.shields.io/badge/offline-capable-16A34A">
 </p>
 
 <p align="center">
   <a href="https://github.com/estebanstifli/LocalText2Voice/releases/latest"><strong>Download for Windows</strong></a>
   ·
-  <a href="https://github.com/estebanstifli/LocalText2Voice/raw/main/docs/audio/localtext2voice-demo-en.mp3"><strong>Listen to an MP3 demo</strong></a>
+  <a href="https://github.com/estebanstifli/LocalText2Voice/raw/main/docs/audio/localtext2voice-demo-en.mp3"><strong>Listen to MP3 demo</strong></a>
+  ·
+  <a href="docs/LTV_MARKUP.md"><strong>Markup manual</strong></a>
   ·
   <a href="https://andromedanova.com"><strong>AndromedaNova.com</strong></a>
 </p>
 
-LocalText2Voice is a lightweight Python and PySide6 desktop application that
-runs neural text-to-speech locally with [Piper TTS](https://github.com/rhasspy/piper).
-It is designed for long documents, works without a GPU, and uses
-[FFmpeg](https://ffmpeg.org/) to produce clean narration or a complete podcast
-mix with music, fades, loudness normalization, and ducking.
+LocalText2Voice is a desktop app for creating long-form spoken audio with AI text-to-speech. It can run fully local and offline with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, and OmniVoice, while also leaving room for optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, and Azure Speech.
 
-> **Resumen en español:** aplicación de escritorio open source que convierte
-> textos largos en voz y podcasts MP3 mediante inteligencia artificial local.
-> Funciona sin conexión, sin GPU y con voces Piper descargables desde la propia
-> interfaz.
+The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
+
+> **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts MP3 usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
+
+## Why It Matters
+
+- **Free local workflow:** no subscription is required for local TTS engines.
+- **Privacy-first:** with local engines, your texts and generated audio stay on your PC.
+- **Works on normal computers:** Piper and Kokoro can run without a powerful GPU.
+- **Scales up on strong PCs:** Chatterbox, Qwen3 TTS, and OmniVoice can use NVIDIA CUDA when available.
+- **Long-form first:** built for chapters, lessons, audiobooks, courses, and large documents.
+- **Review loop included:** optional Faster Whisper verification compares generated audio against the original text.
+- **Podcast-ready:** export clean narration and then create an Audio Mix with background music.
+- **Extensible AI architecture:** local engines and cloud providers are isolated from the UI.
 
 ## Screenshots
 
-### Generate long-form audio without freezing the interface
+### Generate Long-Form Audio
 
-![LocalText2Voice offline AI text-to-speech desktop app generating an MP3 podcast with Piper TTS](capturas/generating.png)
+![LocalText2Voice AI text-to-speech desktop app generating an MP3 audiobook podcast](capturas/generating.png)
 
-### Browse, preview, download, and manage multilingual Piper voices
+### Manage And Preview Voices
 
-![LocalText2Voice Piper voice manager with downloadable multilingual neural TTS models and voice previews](capturas/voice_manager.png)
+![LocalText2Voice voice manager with downloadable neural TTS voices and previews](capturas/voice_manager.png)
 
-## Why LocalText2Voice?
+More screenshots and a 1-minute product video are planned for the next public release.
 
-- **Private by default:** text and speech synthesis stay on the computer.
-- **Built for long content:** safe text chunking, chapter detection, paragraph
-  pauses, and sequential output files.
-- **No GPU required:** Piper provides fast neural TTS inference on normal CPUs.
-- **Podcast-ready:** keep clean narration and optionally create a second mix
-  with intro, background music, outro, fades, normalization, and ducking.
-- **Visual mix preview:** inspect voice, music, and combined waveforms before
-  rendering another podcast mix.
-- **Portable Windows app:** extract a folder, run the executable, and download
-  a voice from the built-in manager.
-- **Open architecture:** new local or cloud TTS engines can implement one
-  stable interface without rewriting the application.
+## Complete Workflow
 
-Typical uses include course narration, study materials, accessibility,
-podcasts, audiobooks, training content, articles, documentation, and
-voice-over drafts.
-
-## Features
-
-### AI speech synthesis
-
-- Local neural TTS with Piper and ONNX voice models.
-- Optional API engines for OpenAI TTS, ElevenLabs, Google Gemini TTS, and
-  Azure Speech.
-- Optional Kokoro local engine with on-demand model download to the user's
-  local app data folder. It uses the bundled Python runtime internally and
-  can automatically use CUDA through ONNX Runtime when supported.
-- Optional Chatterbox local GPU engine for advanced voice cloning and
-  expressive multilingual speech, installed into the embedded Python runtime.
-- Optional Qwen3 TTS local neural engine with on-demand model cache and
-  isolated Python dependencies. On NVIDIA GPUs it uses `faster-qwen3-tts`
-  with CUDA Graphs for much faster synthesis.
-- Built-in voice catalog with language/quality filters.
-- Remote voice sample playback before downloading a model.
-- Background downloads with cancellation, size validation, SHA-256 checks,
-  and atomic installation.
-- Voice speed control and automatic discovery of installed models.
-- The default local workflow requires no cloud account, API key, GPU, or
-  global Piper installation.
-
-### Long-form text processing
-
-- Paste text or import `.txt`, `.md`, and `.docx` files.
-- Normalize whitespace and unsupported characters.
-- Preserve paragraph boundaries and split long text into TTS-safe blocks.
-- Detect Markdown headings, chapters, lessons, modules, and short uppercase
-  headings.
-- Export one MP3 or one MP3 per chapter.
-- Natural randomized paragraph pauses with adaptive timing after long
-  paragraphs and periodic reading breaks.
-
-### Podcast production
-
-- Export clean narration as `podcast1.mp3`, `podcast2.mp3`, and so on without
-  overwriting previous work.
-- Create a separate podcast mix while retaining the clean narration.
-- Optional intro, looped background music, and outro from MP3 or WAV files.
-- Voice/music volume in dB, fade in/out, and silence between sections.
-- Voice start offset in milliseconds, useful for leaving a music-only intro
-  before narration starts.
-- Optional music tail after narration for a more natural ending.
-- Basic FFmpeg sidechain ducking while the voice is speaking.
-- Optional loudness normalization to `-16 LUFS`.
-- Configurable MP3 bitrate and ID3 title, artist, and album metadata.
-- Post-generation **Audio Mix Preview** page with three lightweight waveform
-  graphs: Voice, Music, and Mix Preview.
-- Timeline zoom and horizontal scrolling so long audiobooks can be inspected
-  without compressing the whole project into one tiny waveform.
-- The preview panel can render and play a temporary 15-second mix, then render
-  a new full podcast mix without running TTS again.
-
-### Desktop experience
-
-- Responsive PySide6 interface with worker-thread generation.
-- Live block progress, elapsed time, estimated remaining time, and visible log.
-- Safe cancellation of the active Piper process and temporary-file cleanup.
-- Open-output-folder action after generation.
-- English, Spanish, French, German, Italian, Portuguese, Simplified Chinese,
-  Japanese, Arabic, and Hindi interface translations.
-- Right-to-left layout support for Arabic.
-
-## Quick Start on Windows
-
-1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
-2. Download `LocalText2Voice-v0.4.6-windows-x64.zip`.
-3. Extract the ZIP to a folder where you have write permission.
-4. Run `LocalText2Voice.exe`.
-5. Open **Manage voices**, preview a voice, and download it.
-6. Paste or import your text, choose the voice, and select **Generate Audio**.
-
-The portable release includes the application, Piper runtime, embedded Python
-runtime, and FFmpeg. Piper voice models, Kokoro model assets and dependencies,
-and optional Chatterbox/Qwen3 GPU assets are downloaded or installed
-separately because their licenses, model cards, package size, and hardware
-requirements can differ. Remote API engines only need provider credentials in
-Settings > TTS Engines.
-
-### Audio example
-
-[Listen to the English MP3 demo generated locally with Piper TTS](https://github.com/estebanstifli/LocalText2Voice/raw/main/docs/audio/localtext2voice-demo-en.mp3)
-
-The demo was generated by LocalText2Voice with the `en_GB-alan-medium` Piper
-voice. It contains no cloud-generated speech.
-
-## How It Works
+LocalText2Voice is no longer just "text to speech". It is becoming a complete local audiobook and podcast production pipeline.
 
 ```mermaid
-flowchart LR
-    A["TXT, Markdown, DOCX, or pasted text"] --> B["Text normalization and heading detection"]
-    B --> C["Safe chunks and natural pause plan"]
-    C --> D["Selected TTS engine: Piper, Kokoro, Chatterbox, Qwen3, or API"]
-    D --> E["Temporary WAV blocks"]
-    E --> F["FFmpeg assembly and MP3 encoding"]
-    F --> G["Clean narration"]
-    F --> H["Optional podcast mix"]
+flowchart TD
+    A["1. Input text<br>Paste text or import TXT / MD / DOCX"] --> B["2. Smart text processing<br>Paragraphs, chapters, safe chunks"]
+    B --> C["3. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
+    C --> D["4. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, or API"]
+    D --> E["5. Clean WAV/MP3 narration<br>Non-destructive audio output"]
+    E --> F["6. Optional Whisper review<br>Transcript, similarity score, retry workflow"]
+    F --> G["7. Manual fixes if needed<br>Edit, regenerate, approve, rebuild"]
+    G --> H["8. Audio Mix<br>Background music, volume, fades, ducking, normalization"]
+    H --> I["9. Export<br>podcast1.mp3, podcast2.mp3, review rebuilds, remix files"]
 ```
 
-## AI Engineering Highlights
+## Main Features
 
-LocalText2Voice is an applied AI engineering project rather than a model
-training project. It integrates pretrained neural speech models into a
-reliable end-user workflow:
+### AI Text-To-Speech Engines
 
-- **Local model inference:** orchestrates Piper ONNX voices through an isolated
-  subprocess adapter with executable and model validation.
-- **Model lifecycle management:** discovers a remote model catalog, previews
-  samples, validates downloads, and installs voices atomically.
-- **NLP-oriented preprocessing:** applies language-agnostic text cleanup,
-  sentence-aware chunking, heading heuristics, and prosody-oriented pause
-  planning for long-form synthesis.
-- **Production concurrency:** keeps the GUI responsive with Qt worker threads,
-  progress signals, ETA calculation, cancellation, and child-process cleanup.
-- **Audio DSP pipeline:** composes narration and music with FFmpeg filters for
-  looping, fading, sidechain compression, metadata, and loudness normalization.
-- **Extensible providers:** isolates TTS behind `BaseTTSEngine` and reserves a
-  provider interface for future LLM-assisted course generation.
+LocalText2Voice supports multiple voice generation engines through a modular TTS architecture.
 
-This demonstrates practical experience with AI model integration, ONNX-based
-inference, desktop product engineering, multimedia processing, asynchronous
-workflows, internationalization, packaging, and automated testing.
+| Engine | Type | Best For | Notes |
+| --- | --- | --- | --- |
+| Piper | Local/offline CPU | Fast, reliable narration on modest PCs | Default stable engine |
+| Kokoro | Local/offline CPU/CUDA | Better local quality with on-demand model install | Uses embedded Python runtime |
+| Chatterbox | Local GPU/CPU | Advanced voice cloning and expressive speech | CUDA recommended |
+| Qwen3 TTS | Local GPU/CPU | Multilingual preset speakers and expressive neural TTS | Faster path through `faster-qwen3-tts` |
+| OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand, CUDA recommended |
+| OpenAI TTS | Cloud API | High-quality remote TTS | Optional API key |
+| ElevenLabs | Cloud API | Commercial voices and voice design workflows | Optional API key |
+| Google Gemini TTS | Cloud API | Gemini voices and style prompts | Optional API key |
+| Azure Speech | Cloud API | Enterprise voices and Azure regions | Optional API key |
+| Custom HTTP TTS | Local or remote HTTP | Connect private servers such as local TTS APIs | URL, headers, body template, and response format are configurable |
+
+The base app stays lightweight. Heavy models and Python dependencies are installed on demand into the user's local app data folder.
+
+### Voice Library
+
+- Manage voices from the selected engine.
+- Preview available voice samples instantly before installing when the catalog provides audio.
+- Sync the external voice catalog from [LocalText2Voice-VoiceGallery](https://github.com/estebanstifli/LocalText2Voice-VoiceGallery).
+- Store voice catalog metadata in a local SQLite cache for fast browsing.
+- Download only the reference voices you want into the user app data folder.
+- Download Piper voices directly from the app.
+- Import Chatterbox or OmniVoice reference voices from your own WAV/MP3 files.
+- Select the default voice for generation.
+- Use flexible voice matching in markup, so `{{voice "edu"}}` can select a longer voice name such as `Eduardo - es`.
+
+### Long-Form Text Processing
+
+- Paste long text directly into the editor.
+- Import `.txt`, `.md`, and `.docx`.
+- Detect chapters, lessons, modules, Markdown headings, and uppercase short headings.
+- Split text into safe TTS chunks.
+- Preserve paragraph boundaries.
+- Add natural paragraph pauses with randomized ranges.
+- Use shorter sentence-aware chunks for engines that behave better with compact prompts.
+
+### LocalText2Voice Markup
+
+LTV Markup lets you control narration from inside the source text:
+
+```text
+{{chapter "Lesson 1"}}
+{{voice "Serena - Spanish"}}
+Bienvenido a esta lección.
+
+{{pause 900ms}}
+{{voice "Sohee - English"}}
+Now listen to the same idea in English.
+
+{{speed 0.92}}
+{{volume 80%}}
+This part is slower and softer.
+```
+
+Supported commands include:
+
+- `{{voice "..."}}`
+- `{{lang es}}`
+- `{{pause 700ms}}`
+- `{{speed 0.9}}`
+- `{{volume 0.8}}`, `{{volume -3db}}`, `{{volume.normalize -16}}`
+- `{{cmd "..."}}` for selected model-specific instructions
+- `{{reset}}`
+
+The editor includes optional syntax highlighting, contextual help, and a removable Markup Toolbar.
+
+Full manual: [docs/LTV_MARKUP.md](docs/LTV_MARKUP.md)
+
+Technical addon roadmap: [docs/ARCHITECTURE_ADDONS.md](docs/ARCHITECTURE_ADDONS.md)
+
+Voice gallery architecture: [docs/VOICE_GALLERY.md](docs/VOICE_GALLERY.md)
+
+### Whisper Review And Quality Control
+
+Optional Faster Whisper review can validate generated segments:
+
+- Transcribes each generated WAV segment.
+- Compares transcript against the original text.
+- Calculates similarity, WER, and CER.
+- Marks segments as approved, needs review, or needs retry.
+- Supports automatic retry loops.
+- Keeps the best generated candidate when multiple retries are attempted.
+- Allows manual segment editing, regeneration, preview, approve/discard, and rebuild.
+- Stores word-level timestamps from Whisper for future subtitles, video sync, music cues, and sound effect synchronization.
+
+This makes LocalText2Voice useful not only for quick TTS, but also for quality-controlled audiobook production.
+
+### Audio Mix
+
+After generating clean narration, the Audio Mix page lets you produce a podcast-style version:
+
+- Keep the clean narration MP3 untouched.
+- Choose default background music from the Music Library.
+- Preview voice, music, and mix waveforms.
+- Play the mixed preview from the cursor or from the start.
+- Render a full mix without running TTS again.
+- Set voice volume and music volume in dB.
+- Add voice start offset for music-only intro time.
+- Add music tail after the voice ends.
+- Configure fade in and fade out.
+- Enable ducking so music drops while narration is speaking.
+- Normalize final mix to podcast-friendly loudness.
+- Open the output folder directly when rendering finishes.
+
+### Music Library
+
+- Store MP3/WAV music files under `music/background/`.
+- Play, stop, rename, remove, and select default music from the UI.
+- The app can ship with default music tracks.
+- The selected default music is used by Audio Mix.
+
+### Project And Review Data
+
+LocalText2Voice stores project data in SQLite and a portable project manifest:
+
+- Audiobook/project metadata.
+- Source text.
+- Segment list.
+- Segment WAV paths.
+- Voice/language/config per segment.
+- Review transcript and similarity metrics.
+- Word-level Whisper timestamps as JSON.
+- Rebuild state for edited or regenerated segments.
+
+This prepares the project for future features such as subtitles, video generation, sound effects, timeline editing, and advanced postproduction.
+
+## What Is Free?
+
+LocalText2Voice itself is free and open source under the MIT License.
+
+The local workflow can be free to run:
+
+- Piper local voices: free/offline, depending on each model license.
+- Kokoro local models: downloaded on demand, license depends on the model.
+- Chatterbox/Qwen/OmniVoice local engines: free to run locally when installed, subject to their upstream licenses and hardware requirements.
+- FFmpeg: bundled or local, subject to FFmpeg licensing.
+
+Cloud APIs are optional and may be paid:
+
+- OpenAI TTS
+- ElevenLabs
+- Google Gemini TTS
+- Azure Speech
+
+You choose the engine. The app does not force subscriptions.
+
+## Quick Start On Windows
+
+1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
+2. Download `LocalText2Voice-Setup-1.0.0.exe`.
+3. Run the installer.
+4. Choose the setup profile:
+   - **CPU light**: fast offline Piper workflow.
+   - **Powerful GPU**: prepares OmniVoice and Faster Whisper on first launch.
+5. Open **Settings > TTS Engines** and choose or install an engine.
+6. For Piper, open **Voices** or **Manage voices** and download a voice.
+7. Paste or import text.
+8. Click **Generate Audio**.
+9. Review segments if Whisper review is enabled.
+10. Open **Audio Mix** to create the podcast version.
+
+The Windows installer is the recommended distribution artifact. LocalText2Voice still uses a folder-style app internally, so models, voices, FFmpeg, Python runtime assets, and optional engine dependencies remain easy to update and download on demand.
+
+Unsigned build note: early public builds may be unsigned until the open source code-signing process is ready. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
+
+## Audio Demo
+
+[Listen to an English MP3 demo generated with LocalText2Voice](https://github.com/estebanstifli/LocalText2Voice/raw/main/docs/audio/localtext2voice-demo-en.mp3)
+
+Demo text:
+
+```text
+Welcome to LocalText2Voice, a free and open-source desktop app for turning long text into audio.
+Paste a lesson, article, book chapter, or complete course, choose a voice, and generate clean MP3 narration on your own computer.
+Local engines keep your text private, while optional cloud APIs are available when you need them.
+```
+
+## Technical Highlights For AI Engineering
+
+LocalText2Voice is an applied AI engineering project focused on productizing voice models into a real desktop workflow.
+
+- Multi-engine TTS abstraction through `BaseTTSEngine`.
+- Local model lifecycle management: install, validate, remove, cache, and run.
+- Persistent Python workers for heavy local models to avoid reloading on every segment.
+- Embedded Python runtime for optional engines without requiring users to install Python globally.
+- External voice gallery with JSON indexes, SQLite cache, remote previews, and per-voice downloads.
+- CUDA/CPU auto-selection where supported.
+- Long-form text chunking and chapter-aware preprocessing.
+- Custom markup language for voice, language, pauses, speed, volume, and model instructions.
+- Faster Whisper verification pipeline with similarity scoring and retry logic.
+- SQLite persistence for projects, segments, transcripts, review status, and word timestamps.
+- FFmpeg audio DSP pipeline for joining, MP3 encoding, speed/volume postprocessing, loudnorm, fades, ducking, and podcast mixing.
+- PySide6 desktop UI with background workers, progress, cancellation, logs, translation files, and portable packaging.
 
 ## Technology Stack
 
 | Technology | Role |
 | --- | --- |
-| Python 3.10+ | Application, processing pipeline, configuration, and tests |
-| PySide6 / Qt 6 | Native desktop interface, signals, threads, and i18n-ready UI |
-| Piper TTS | Fast local neural text-to-speech engine |
-| Kokoro ONNX | Optional higher-quality local CPU TTS engine |
-| Chatterbox TTS | Optional advanced local GPU TTS and voice cloning engine |
-| Qwen3 TTS | Optional advanced local neural TTS engine with preset speakers |
-| OpenAI / ElevenLabs / Gemini / Azure APIs | Optional cloud TTS providers |
-| ONNX voice models | Portable pretrained speech models |
-| FFmpeg | WAV assembly, MP3 encoding, mixing, ducking, fades, and loudnorm |
-| PyInstaller | Portable Windows folder distribution |
-| python-docx | Optional Microsoft Word document import |
+| Python | Application, orchestration, workers, tests |
+| PySide6 / Qt | Native Windows desktop UI |
+| QtAwesome | Scalable icon system |
+| Piper TTS | Fast offline CPU TTS |
+| Kokoro ONNX | Optional local neural TTS |
+| Chatterbox TTS | Optional advanced local voice/reference engine |
+| Qwen3 TTS | Optional local multilingual neural TTS |
+| OmniVoice | Optional local zero-shot TTS with voice design/cloning |
+| Faster Whisper | Optional transcription and generation review |
+| FFmpeg | Audio conversion, MP3 export, mixing, filters |
+| SQLite | Project, segment, transcript, and review data |
+| Mutagen | Fast music metadata/duration reading |
+| PyInstaller | Windows portable build |
+| python-docx | DOCX import |
 
 ## Architecture
 
@@ -211,34 +299,29 @@ workflows, internationalization, packaging, and automated testing.
 LocalText2Voice/
 |-- main.py
 |-- app/
-|   |-- core/       # Text processing, settings, project and audio pipeline
-|   |-- tts/        # Engine interface, Piper adapter and voice management
-|   |-- ui/         # PySide6 windows and reusable widgets
-|   |-- workers/    # Background generation and download workers
-|   |-- utils/      # Paths, logging and FFmpeg helpers
-|   `-- llm/        # Future provider interface; no cloud integration yet
-|-- locales/        # Auto-discovered JSON translations
-|-- engines/piper/  # Portable Piper runtime
-|-- engines/chatterbox/ # Reserved for future native runtimes
-|-- runtimes/python311/ # Bundled embedded Python runtime for Python engines
-|-- voices/         # External ONNX voice models
-|-- ffmpeg/         # Portable FFmpeg executable
-|-- music/          # Optional intro, background and outro library
+|   |-- core/          # Text processing, markup, audio pipeline, projects, SQLite store
+|   |-- tts/           # TTS engines, managers, voice catalogs, local/API providers
+|   |-- verification/  # Faster Whisper runtime and persistent verifier
+|   |-- ui/            # PySide6 windows, pages, Audio Mix, widgets
+|   |-- workers/       # Background generation, install, verification workers
+|   |-- utils/         # Paths, FFmpeg, GPU detection, logging
+|   `-- llm/           # Future LLM provider interface
+|-- docs/
+|-- locales/           # JSON UI translations
+|-- engines/piper/     # Portable Piper runtime
+|-- voices/            # Piper voice models
+|-- music/background/  # Music library
+|-- ffmpeg/            # Portable FFmpeg
+|-- runtimes/          # Embedded Python runtime in portable builds
 |-- tests/
 `-- output/
 ```
 
-The audio pipeline depends on the abstract `BaseTTSEngine` contract. Piper is
-the default local implementation. Kokoro is the optional local neural TTS
-implementation and uses the bundled embedded Python runtime internally with
-on-demand model download and automatic CPU/CUDA backend selection. Chatterbox
-is available as an advanced local GPU engine through the embedded Python runtime.
-Qwen3 TTS is available as a separate local neural engine with isolated
-dependencies and a Hugging Face model cache. OpenAI TTS, ElevenLabs, Google
-Gemini TTS, and Azure Speech are available as API engines. Future local engines
-such as XTTS can be added later without coupling them to the UI.
+Voice previews and downloadable reference voices live outside the main code repository in
+[LocalText2Voice-VoiceGallery](https://github.com/estebanstifli/LocalText2Voice-VoiceGallery).
+The desktop app syncs that JSON catalog into a local SQLite cache and downloads audio assets on demand.
 
-## Run from Source
+## Run From Source
 
 Python 3.10 or newer is recommended:
 
@@ -252,57 +335,21 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-The repository excludes large third-party binaries and voice models. Place the
-Windows Piper runtime in `engines/piper/` and FFmpeg in `ffmpeg/`, or point the
-application settings at compatible local installations. Voices can be
-installed from **Manage voices**.
+For faster local testing without rebuilding the EXE:
 
-Expected Piper files:
-
-```text
-engines/piper/
-|-- piper.exe
-|-- required DLL files
-`-- espeak-ng-data/
+```bat
+run_dev.bat
 ```
 
-Expected voice pair:
+The repository does not include large third-party models. Use the UI installers or place runtime files manually when needed.
 
-```text
-voices/es_ES/davefx/medium/
-|-- es_ES-davefx-medium.onnx
-`-- es_ES-davefx-medium.onnx.json
-```
-
-FFmpeg is resolved from `ffmpeg/ffmpeg.exe` first and then from the Windows
-`PATH`. MP3 export requires the `libmp3lame` encoder.
-
-## Configuration
-
-The application creates `config.json` beside the executable or source project.
-If the file is missing, safe defaults are created automatically.
-`config.example.json` documents the available values, including:
-
-- output folder, voice, language, speed, split mode, and export mode;
-- selected voice generation engine: Piper local, Kokoro local, Chatterbox,
-  Qwen3 TTS, OpenAI TTS, ElevenLabs, Google Gemini TTS, or Azure Speech;
-- optional Kokoro voice settings;
-- API provider settings such as API keys, model IDs, voice IDs, Azure region,
-  output format, and style parameters;
-- Piper and FFmpeg paths;
-- chunk size and block/chapter pauses;
-- randomized and adaptive paragraph pause rules;
-- MP3 bitrate, metadata, and clean-audio normalization;
-- voice/music dB levels, intro, background, outro, fades, gaps, ducking,
-  visual mix preview, and podcast normalization.
-
-## Build the Portable App
+## Portable Build
 
 ```bat
 build_windows.bat
 ```
 
-The build uses PyInstaller `--onedir` mode and creates:
+The build creates a portable folder under:
 
 ```text
 dist/LocalText2Voice/
@@ -319,171 +366,138 @@ dist/LocalText2Voice/
 `-- THIRD_PARTY_NOTICES.md
 ```
 
-Piper, voices, FFmpeg, and the embedded Python runtime remain outside the main
-executable so they can be updated independently. Do not redistribute a voice
-until you have reviewed its model card and dataset license. Third-party
-license texts are copied into the portable folder under `licenses/`.
+Large models and optional engine dependencies should stay outside the main executable and be downloaded on demand.
 
-### Embedded Python Runtime
+## Windows Installer Build
 
-LocalText2Voice includes an embedded Python runtime in the Windows portable
-build. It is copied into the distribution under:
+The Inno Setup installer is built from the portable `dist/LocalText2Voice/` folder. The local installer tooling lives in `.util_instalador_y_firmas/`, which is intentionally ignored by Git because it may later contain signing tools and temporary artifacts.
 
-```text
-dist/LocalText2Voice/runtimes/python311/
+```powershell
+& .\.util_instalador_y_firmas\InnoSetup\ISCC.exe .\.util_instalador_y_firmas\installer\LocalText2Voice.iss
 ```
 
-In development builds, the runtime manager can also install the same private
-runtime under `%LOCALAPPDATA%/LocalText2Voice/runtimes/python311/` if a bundled
-copy is not present. The installer downloads the official Windows embedded
-Python ZIP, enables `site-packages`, bootstraps `pip`, and installs a small
-core package set for model download workflows such as Hugging Face Hub access.
-This runtime is the foundation for Python-native TTS providers without
-requiring users to install Python globally.
-
-### Optional Kokoro Engine
-
-Kokoro is the supported local neural TTS path in LocalText2Voice. It installs
-Python dependencies into the embedded runtime:
+The generated installer is:
 
 ```text
-kokoro-onnx
-soundfile
-onnxruntime-gpu[cuda,cudnn]   # installed automatically when NVIDIA CUDA is detected
+.util_instalador_y_firmas/output/LocalText2Voice-Setup-1.0.0.exe
 ```
 
-Its model files are downloaded independently to:
+Installer details, first-run GPU setup behavior, validation notes, and future signing plan are documented in [docs/WINDOWS_INSTALLER_AND_SIGNING.md](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
+
+## Configuration
+
+The app creates `config.json` automatically if it does not exist.
+
+Important settings include:
+
+- Selected TTS engine.
+- Output folder.
+- UI language.
+- Markup Toolbar visibility.
+- Editor syntax highlighting.
+- Default voice.
+- Default music.
+- Paragraph pause rules.
+- Review/Faster Whisper settings.
+- Audio Mix settings.
+- API credentials for optional cloud providers.
+
+## Internationalization
+
+The UI is designed for translation through JSON locale files.
+
+Current languages:
+
+- English
+- Spanish
+- French
+- German
+- Italian
+- Portuguese
+- Simplified Chinese
+- Japanese
+- Arabic
+- Hindi
+
+## GitHub SEO Keywords
+
+`text-to-speech`, `tts`, `ai-voice`, `offline-tts`, `local-ai`, `piper-tts`, `kokoro-tts`, `chatterbox-tts`, `qwen-tts`, `faster-whisper`, `audiobook`, `podcast`, `mp3`, `python`, `pyside6`, `ffmpeg`, `open-source`, `education`, `course-generator`, `voice-ai`, `speech-synthesis`
+
+Recommended GitHub topics:
 
 ```text
-%LOCALAPPDATA%/LocalText2Voice/models/kokoro/
+text-to-speech
+tts
+ai-voice
+offline-tts
+local-ai
+piper
+kokoro
+chatterbox
+qwen
+faster-whisper
+podcast
+audiobook
+mp3
+python
+pyside6
+ffmpeg
+open-source
+education
+ai-tools
+course-generator
 ```
 
-At runtime Kokoro starts in automatic backend mode. If ONNX Runtime exposes
-`CUDAExecutionProvider`, the app uses CUDA and writes it in the logs; otherwise
-it falls back to CPU without user setup.
+## Roadmap
 
-### Optional Chatterbox GPU Engine
-
-Chatterbox is treated as an advanced local engine because it depends on
-PyTorch and benefits strongly from a CUDA-capable NVIDIA GPU. The main
-LocalText2Voice executable does not depend on Chatterbox.
-
-For end users, the Chatterbox **Install** button installs the Python
-dependencies into LocalText2Voice's private embedded Python runtime. When an
-NVIDIA GPU is detected, the installer first tries the CUDA PyTorch runtime and
-falls back to CPU if it cannot be validated. Dependency metadata is stored in:
-
-```text
-%LOCALAPPDATA%/LocalText2Voice/runtimes/python311/engine-deps/
-```
-
-Model files are downloaded on demand to:
-
-```text
-%LOCALAPPDATA%/LocalText2Voice/models/chatterbox/
-```
-
-The Chatterbox panel supports:
-
-- Chatterbox Multilingual V3, English, and Turbo model modes;
-- CUDA, Auto, CPU fallback, and Apple MPS device choices;
-- optional reference audio for voice cloning;
-- consent checkbox for reference-voice usage;
-- emotion exaggeration and CFG weight controls.
-
-Turbo mode requires a reference audio file. For long-form content, the
-existing chunking pipeline is reused, and Chatterbox runs as a persistent
-Python worker so the selected model stays loaded while the blocks render.
-
-### Optional Qwen3 TTS Engine
-
-Qwen3 TTS is integrated as an advanced local neural TTS provider. It is not
-included in the base portable ZIP. The **Install** button creates an isolated
-dependency folder under the embedded Python runtime and downloads the model
-cache on demand:
-
-```text
-%LOCALAPPDATA%/LocalText2Voice/models/qwen/
-%LOCALAPPDATA%/LocalText2Voice/runtimes/python311/engine-deps/qwen/
-```
-
-The first supported model is `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`, selected
-because it exposes built-in speakers such as Serena, Vivian, Ryan, Eric, and
-Dylan without requiring reference audio. The runtime tries CUDA automatically
-when an NVIDIA GPU is visible, using `faster-qwen3-tts` with CUDA Graphs for
-the fast path, and falls back to CPU when CUDA cannot be used.
-
-For long-form content, LocalText2Voice still splits text into safe blocks.
-Qwen3 runs as a persistent JSON-lines worker so the model loads once per
-generation job and then receives synthesis requests for each block.
-
-### Optional Google Gemini TTS API Engine
-
-Google Gemini TTS is available as a remote API provider. It does not install
-models locally; add a Gemini API key in **Settings > TTS Engines**, select a
-Gemini TTS model, choose one of the built-in Gemini voices, and optionally add
-a style prompt such as "Say this as a warm podcast narrator."
-
-The first configured models are:
-
-- `gemini-3.1-flash-tts-preview`
-- `gemini-2.5-flash-tts`
-- `gemini-2.5-flash-lite-preview-tts`
-- `gemini-2.5-pro-tts`
-
-LocalText2Voice calls the Gemini Interactions API directly, decodes the
-returned audio block, wraps PCM output as WAV, and then reuses the normal
-FFmpeg pipeline for MP3 export, podcast mixing, and normalization.
+- [x] Offline Piper TTS generation.
+- [x] Voice manager with download and preview.
+- [x] Multiple local engines: Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice.
+- [x] External voice gallery repository with previews and per-voice install flow.
+- [x] Optional cloud engines: OpenAI, ElevenLabs, Gemini, Azure.
+- [x] Audio Mix page with waveform preview and full mix render.
+- [x] Custom LTV Markup.
+- [x] Faster Whisper review and segment similarity scoring.
+- [x] SQLite project/segment persistence.
+- [x] Word-level timestamps for future subtitle and timeline features.
+- [ ] Sound effects and music timeline commands from markup.
+- [ ] Subtitle export from Whisper timestamps.
+- [ ] Video/audio cover workflow.
+- [ ] Visual chapter and segment editor.
+- [x] Windows installer with CPU/GPU setup profiles.
+- [ ] Signed Windows installer and auto-update system.
+- [ ] macOS/Linux packaging experiments.
+- [ ] Optional LLM-assisted course/script generation.
 
 ## Tests
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
-The test suite covers text normalization, safe splitting, chapter detection,
-settings, output naming, natural pauses, localization, and voice catalog
-behavior. End-to-end synthesis additionally requires real Piper, voice, and
-FFmpeg files.
-
-## Roadmap
-
-- [x] Offline Piper TTS generation for long-form text
-- [x] Downloadable voice catalog with remote previews
-- [x] Clean narration and music-backed podcast exports
-- [x] Natural pauses, progress, ETA, cancellation, and multilingual UI
-- [x] Optional API engines for OpenAI TTS, ElevenLabs, Gemini TTS, and Azure Speech
-- [x] Optional Kokoro local engine with dynamic model installation
-- [x] Optional Chatterbox local GPU engine scaffolding and runtime integration
-- [x] Bundled Python runtime manager for future Python-native engines
-- [x] Persistent Kokoro worker with automatic CPU/CUDA backend selection
-- [x] Optional Qwen3 TTS engine with isolated on-demand runtime installation
-- [ ] User-configurable custom HTTP/local-server TTS providers
-- [ ] Short product video and animated workflow demo
-- [ ] Visual chapter editor before synthesis
-- [ ] More local engines such as XTTS
-- [ ] PDF and richer document import
-- [ ] Optional LLM-assisted lesson and course generation
-- [ ] Signed Windows installer, automatic updates, and release automation
+The tests cover text processing, markup parsing, audio pipeline behavior, review storage, i18n, engine managers, and UI structure. Real synthesis requires the relevant external models/runtimes.
 
 ## Contributing
 
-Issues, feature proposals, translations, and pull requests are welcome. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change. Please never add
-large voice models, copyrighted music, API keys, or generated build folders to
-the repository.
+Issues, feature ideas, translations, docs, and pull requests are welcome.
+
+Please do not commit:
+
+- Large model files.
+- API keys.
+- Generated build folders.
+- Copyrighted music or voice assets without permission.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes.
 
 ## License
 
 LocalText2Voice source code is released under the [MIT License](LICENSE).
-Piper, FFmpeg, PySide6/Qt, voice models, and other dependencies keep their own
-licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before
-redistributing a portable build.
+
+Third-party engines, models, voices, FFmpeg, Qt/PySide6, music files, and API providers keep their own licenses. Always check model cards and redistribution terms before publishing a packaged build.
 
 ## Author
 
-Created by [Esteban](https://andromedanova.com) at
-[AndromedaNova.com](https://andromedanova.com).
+Created by [Esteban](https://andromedanova.com) at [AndromedaNova.com](https://andromedanova.com).
 
-If LocalText2Voice helps your work, starring the repository makes the project
-easier to discover.
+If LocalText2Voice helps you, please star the repository. It makes the project easier to discover for people looking for free local AI voice tools.

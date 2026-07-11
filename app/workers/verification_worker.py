@@ -269,6 +269,9 @@ class SegmentVerificationWorker(QObject):
             compute_type=self.compute_type,
         )
         transcript = str(result.get("text", "")).strip()
+        word_timestamps = result.get("words", [])
+        if not isinstance(word_timestamps, list):
+            word_timestamps = []
         metrics = similarity_metrics(segment.source_text, transcript)
         score = float(metrics["similarity_score"])
         status = verification_status(score, self.approve_threshold)
@@ -279,6 +282,10 @@ class SegmentVerificationWorker(QObject):
             "wer": float(metrics["wer"]),
             "cer": float(metrics["cer"]),
             "status": status,
+            "word_timestamps_json": json.dumps(
+                word_timestamps,
+                ensure_ascii=False,
+            ),
             "transcription_ms": round((time.perf_counter() - started) * 1000),
         }
 
@@ -295,6 +302,7 @@ class SegmentVerificationWorker(QObject):
             float(result["cer"]),
             str(result["status"]),
             int(result["transcription_ms"]),
+            str(result.get("word_timestamps_json", "[]")),
         )
         self.log.emit(
             f"Segment {segment.sequence_index}: {float(result['score']):.1f}% "

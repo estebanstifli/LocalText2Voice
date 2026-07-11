@@ -60,10 +60,29 @@ class AudiobookStoreTests(unittest.TestCase):
 
             wav_path = root / "segment.wav"
             store.mark_segment_rendered(segments[0].id, wav_path, 1000, 250)
+            words = [
+                {
+                    "word": "Hello",
+                    "start": 0.0,
+                    "end": 0.42,
+                    "probability": 0.99,
+                }
+            ]
+            store.update_segment_verification(
+                segments[0].id,
+                "Hello world.",
+                100.0,
+                0.0,
+                0.0,
+                "approved",
+                123,
+                json.dumps(words),
+            )
             rendered = store.get_segment(segments[0].id)
             self.assertIsNotNone(rendered)
             assert rendered is not None
             self.assertTrue(rendered.needs_rebuild)
+            self.assertEqual(json.loads(rendered.word_timestamps_json), words)
 
             store.complete_audiobook(audiobook.id, [root / "output" / "podcast1.mp3"])
             clean_path, mix_path = store.audiobook_output_paths(audiobook.id)
@@ -128,6 +147,24 @@ class AudiobookStoreTests(unittest.TestCase):
             segment_wav.parent.mkdir(parents=True, exist_ok=True)
             segment_wav.write_bytes(b"fake wav")
             store.mark_segment_rendered(segment.id, segment_wav, 1000, 250)
+            words = [
+                {
+                    "word": "Original",
+                    "start": 0.0,
+                    "end": 0.5,
+                    "probability": 0.98,
+                }
+            ]
+            store.update_segment_verification(
+                segment.id,
+                "Original text.",
+                100.0,
+                0.0,
+                0.0,
+                "approved",
+                120,
+                json.dumps(words),
+            )
 
             saved = store.save_audiobook_project(
                 audiobook.id,
@@ -152,6 +189,7 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertEqual(manifest["schema"], "localtext2voice.project")
             self.assertEqual(manifest["title"], "Updated")
             self.assertEqual(len(manifest["segments"]), 1)
+            self.assertEqual(manifest["segments"][0]["word_timestamps"], words)
 
             clone = store.clone_audiobook(
                 saved.id,
@@ -168,6 +206,7 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertEqual(len(cloned_segments), 1)
             self.assertNotEqual(cloned_segments[0].wav_path, str(segment_wav))
             self.assertTrue(Path(cloned_segments[0].wav_path).is_file())
+            self.assertEqual(json.loads(cloned_segments[0].word_timestamps_json), words)
             self.assertEqual(
                 Path(cloned_segments[0].wav_path).read_bytes(),
                 b"fake wav",
@@ -183,6 +222,7 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertEqual(len(imported_segments), 1)
             self.assertEqual(imported_segments[0].source_text, "Original text.")
             self.assertTrue(Path(imported_segments[0].wav_path).is_file())
+            self.assertEqual(json.loads(imported_segments[0].word_timestamps_json), words)
 
 
 if __name__ == "__main__":

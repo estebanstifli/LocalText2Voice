@@ -50,6 +50,7 @@ class StoredSegment:
     similarity_score: float | None
     verification_status: str
     transcript_text: str
+    word_timestamps_json: str = "[]"
     voice: str = ""
     language: str = ""
     paragraph_index: int = 0
@@ -261,6 +262,7 @@ class AudiobookStore:
                        source_text, normalized_source_text, markup_state_json,
                        voice, language, status, wav_path, duration_ms,
                        attempt_count, transcript_text, normalized_transcript_text,
+                       word_timestamps_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
                        error_message, needs_rebuild
@@ -287,11 +289,12 @@ class AudiobookStore:
                         normalized_source_text, markup_state_json, voice,
                         language, status, wav_path, duration_ms, attempt_count,
                         transcript_text, normalized_transcript_text,
+                        word_timestamps_json,
                         similarity_score, wer, cer, verification_status,
                         synthesis_ms, transcription_ms, engine_config_json,
                         error_message, needs_rebuild, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         clone.id,
@@ -316,6 +319,7 @@ class AudiobookStore:
                         row["attempt_count"],
                         row["transcript_text"],
                         row["normalized_transcript_text"],
+                        row["word_timestamps_json"],
                         row["similarity_score"],
                         row["wer"],
                         row["cer"],
@@ -441,11 +445,12 @@ class AudiobookStore:
                             normalized_source_text, markup_state_json, voice,
                             language, status, wav_path, duration_ms, attempt_count,
                             transcript_text, normalized_transcript_text,
+                            word_timestamps_json,
                             similarity_score, wer, cer, verification_status,
                             synthesis_ms, transcription_ms, engine_config_json,
                             error_message, needs_rebuild, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             audiobook_id,
@@ -478,6 +483,10 @@ class AudiobookStore:
                             self._manifest_int(segment.get("attempt_count")),
                             str(segment.get("transcript_text") or ""),
                             str(segment.get("normalized_transcript_text") or ""),
+                            json.dumps(
+                                self._json_to_list(segment.get("word_timestamps", [])),
+                                ensure_ascii=False,
+                            ),
                             self._manifest_float(segment.get("similarity_score")),
                             self._manifest_float(segment.get("wer")),
                             self._manifest_float(segment.get("cer")),
@@ -615,6 +624,7 @@ class AudiobookStore:
                 SET status = ?, wav_path = ?, duration_ms = ?,
                     synthesis_ms = ?, attempt_count = attempt_count + 1,
                     transcript_text = '', normalized_transcript_text = '',
+                    word_timestamps_json = '[]',
                     similarity_score = NULL, wer = NULL, cer = NULL,
                     verification_status = 'not_verified',
                     error_message = '', needs_rebuild = 1, updated_at = ?
@@ -657,7 +667,8 @@ class AudiobookStore:
                 UPDATE audiobook_segments
                 SET source_text = ?, normalized_source_text = ?,
                     status = ?, transcript_text = '',
-                    normalized_transcript_text = '', similarity_score = NULL,
+                    normalized_transcript_text = '', word_timestamps_json = '[]',
+                    similarity_score = NULL,
                     wer = NULL, cer = NULL,
                     verification_status = 'not_verified',
                     error_message = '', needs_rebuild = 1, updated_at = ?
@@ -683,6 +694,7 @@ class AudiobookStore:
                        markup_pause_after_ms, resolved_pause_before_ms,
                        resolved_pause_after_ms, source_text, wav_path, status,
                        similarity_score, verification_status, transcript_text,
+                       word_timestamps_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
                        attempt_count, error_message, needs_rebuild
@@ -778,6 +790,7 @@ class AudiobookStore:
                        markup_pause_after_ms, resolved_pause_before_ms,
                        resolved_pause_after_ms, source_text, wav_path, status,
                        similarity_score, verification_status, transcript_text,
+                       word_timestamps_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
                        attempt_count, error_message, needs_rebuild
@@ -789,6 +802,60 @@ class AudiobookStore:
             ).fetchall()
         return [self._row_to_segment(row) for row in rows]
 
+    def segment_wav_cache_stats(self, audiobook_id: int | None = None) -> tuple[int, int]:
+        paths = self._segment_wav_cache_paths(audiobook_id)
+        total_bytes = 0
+        existing_count = 0
+        for path in paths:
+            try:
+                total_bytes += path.stat().st_size
+            except OSError:
+                continue
+            existing_count += 1
+        return existing_count, total_bytes
+
+    def cleanup_segment_wav_cache(self, audiobook_id: int | None = None) -> tuple[int, int]:
+        paths = self._segment_wav_cache_paths(audiobook_id)
+        deleted_count = 0
+        deleted_bytes = 0
+        for path in paths:
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                continue
+            deleted_count += 1
+            deleted_bytes += size
+        with self._connect() as connection:
+            if audiobook_id is None:
+                connection.execute("UPDATE audiobook_segments SET wav_path = ''")
+                connection.execute("UPDATE segment_attempts SET wav_path = ''")
+            else:
+                connection.execute(
+                    "UPDATE audiobook_segments SET wav_path = '' WHERE audiobook_id = ?",
+                    (audiobook_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE segment_attempts
+                    SET wav_path = ''
+                    WHERE segment_id IN (
+                        SELECT id FROM audiobook_segments WHERE audiobook_id = ?
+                    )
+                    """,
+                    (audiobook_id,),
+                )
+        if audiobook_id is None:
+            for audiobook in self.list_audiobooks():
+                self._write_project_manifest(audiobook)
+        else:
+            audiobook = self.get_audiobook(audiobook_id)
+            if audiobook is not None:
+                self._write_project_manifest(audiobook)
+        return deleted_count, deleted_bytes
+
     def update_segment_verification(
         self,
         segment_id: int,
@@ -798,12 +865,14 @@ class AudiobookStore:
         cer: float,
         verification_status: str,
         transcription_ms: int,
+        word_timestamps_json: str = "[]",
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE audiobook_segments
                 SET transcript_text = ?, normalized_transcript_text = ?,
+                    word_timestamps_json = ?,
                     similarity_score = ?, wer = ?, cer = ?,
                     verification_status = ?, transcription_ms = ?,
                     updated_at = ?
@@ -812,6 +881,7 @@ class AudiobookStore:
                 (
                     transcript_text,
                     normalize_for_similarity(transcript_text),
+                    word_timestamps_json,
                     similarity_score,
                     wer,
                     cer,
@@ -822,6 +892,49 @@ class AudiobookStore:
                 ),
             )
         self._write_project_manifest_for_segment(segment_id)
+
+    def _segment_wav_cache_paths(self, audiobook_id: int | None = None) -> list[Path]:
+        paths: set[Path] = set()
+        if audiobook_id is None:
+            audiobooks = self.list_audiobooks()
+        else:
+            audiobook = self.get_audiobook(audiobook_id)
+            audiobooks = [audiobook] if audiobook is not None else []
+        for audiobook in audiobooks:
+            segments_dir = audiobook.project_dir / "segments"
+            if segments_dir.is_dir():
+                paths.update(
+                    path for path in segments_dir.glob("*.wav") if path.is_file()
+                )
+        with self._connect() as connection:
+            if audiobook_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT wav_path FROM audiobook_segments WHERE wav_path != ''
+                    UNION
+                    SELECT wav_path FROM segment_attempts WHERE wav_path != ''
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT wav_path FROM audiobook_segments
+                    WHERE audiobook_id = ? AND wav_path != ''
+                    UNION
+                    SELECT segment_attempts.wav_path
+                    FROM segment_attempts
+                    JOIN audiobook_segments
+                        ON audiobook_segments.id = segment_attempts.segment_id
+                    WHERE audiobook_segments.audiobook_id = ?
+                        AND segment_attempts.wav_path != ''
+                    """,
+                    (audiobook_id, audiobook_id),
+                ).fetchall()
+        for row in rows:
+            path = Path(str(row["wav_path"] or ""))
+            if path.suffix.lower() == ".wav" and path.is_file():
+                paths.add(path)
+        return sorted(paths)
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
@@ -886,6 +999,7 @@ class AudiobookStore:
                     attempt_count INTEGER DEFAULT 0,
                     transcript_text TEXT DEFAULT '',
                     normalized_transcript_text TEXT DEFAULT '',
+                    word_timestamps_json TEXT DEFAULT '[]',
                     similarity_score REAL,
                     wer REAL,
                     cer REAL,
@@ -939,6 +1053,7 @@ class AudiobookStore:
             "resolved_pause_before_ms": "INTEGER",
             "resolved_pause_after_ms": "INTEGER",
             "needs_rebuild": "INTEGER DEFAULT 0",
+            "word_timestamps_json": "TEXT DEFAULT '[]'",
         }
         for name, definition in columns.items():
             if name not in existing:
@@ -978,6 +1093,7 @@ class AudiobookStore:
             ),
             verification_status=str(row["verification_status"] or "not_verified"),
             transcript_text=str(row["transcript_text"] or ""),
+            word_timestamps_json=str(row["word_timestamps_json"] or "[]"),
             voice=str(row["voice"] or ""),
             language=str(row["language"] or ""),
             paragraph_index=int(row["paragraph_index"] or 0),
@@ -1054,6 +1170,7 @@ class AudiobookStore:
                        source_text, normalized_source_text, markup_state_json,
                        voice, language, status, wav_path, duration_ms,
                        attempt_count, transcript_text, normalized_transcript_text,
+                       word_timestamps_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
                        error_message, needs_rebuild
@@ -1089,6 +1206,9 @@ class AudiobookStore:
                     "transcript_text": str(row["transcript_text"] or ""),
                     "normalized_transcript_text": str(
                         row["normalized_transcript_text"] or ""
+                    ),
+                    "word_timestamps": self._json_to_list(
+                        row["word_timestamps_json"]
                     ),
                     "similarity_score": row["similarity_score"],
                     "wer": row["wer"],
@@ -1147,6 +1267,16 @@ class AudiobookStore:
         except json.JSONDecodeError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _json_to_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     @staticmethod
     def _manifest_int(value: Any, default: int = 0) -> int:

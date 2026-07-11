@@ -87,14 +87,31 @@ def transcribe_file(model, audio_path: Path, language: str, beam_size: int):
     kwargs = {
         "beam_size": beam_size,
         "vad_filter": False,
+        "word_timestamps": True,
     }
     if language and language != "auto":
         kwargs["language"] = language
     segments, info = model.transcribe(str(audio_path), **kwargs)
     parts = []
+    words = []
     for segment in segments:
         parts.append(str(segment.text).strip())
-    return " ".join(part for part in parts if part), info
+        for word in getattr(segment, "words", None) or []:
+            text = str(getattr(word, "word", "") or "").strip()
+            if not text:
+                continue
+            words.append(
+                {
+                    "word": text,
+                    "start": round(float(getattr(word, "start", 0.0) or 0.0), 3),
+                    "end": round(float(getattr(word, "end", 0.0) or 0.0), 3),
+                    "probability": round(
+                        float(getattr(word, "probability", 0.0) or 0.0),
+                        4,
+                    ),
+                }
+            )
+    return " ".join(part for part in parts if part), words, info
 
 
 def main() -> int:
@@ -163,7 +180,7 @@ def main() -> int:
             audio_path = Path(str(request["audio"]))
             if not audio_path.is_file():
                 raise FileNotFoundError(str(audio_path))
-            text, info = transcribe_file(
+            text, words, info = transcribe_file(
                 model,
                 audio_path,
                 str(request.get("language", "auto")),
@@ -174,6 +191,7 @@ def main() -> int:
                 "type": "result",
                 "id": request_id,
                 "text": text,
+                "words": words,
                 "language": str(getattr(info, "language", "")),
                 "language_probability": float(getattr(info, "language_probability", 0.0) or 0.0),
             })
@@ -535,6 +553,7 @@ class FasterWhisperVerifier:
                 "audio": str(audio_path),
                 "language": language,
                 "beam_size": beam_size,
+                "word_timestamps": True,
             },
         )
         return self._wait_for_response(process, request_id)

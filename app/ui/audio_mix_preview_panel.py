@@ -5,17 +5,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPoint, QSize, QThread, QUrl, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QSize, QThread, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollBar,
     QSizePolicy,
@@ -35,6 +37,7 @@ from app.core.waveform_preview import WaveformEnvelope, db_to_gain, generate_wav
 from .icons import ICON_DANGER, ui_icon
 
 WaveformSeries = tuple[WaveformEnvelope, QColor, float, float, bool]
+MIX_PREVIEW_DURATION_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -58,25 +61,28 @@ class WaveformLoadWorker(QObject):
         music_path: Path | None,
         ffmpeg_path: str | Path,
         temp_dir: Path,
+        max_duration_seconds: float,
     ) -> None:
         super().__init__()
         self.voice_path = voice_path
         self.music_path = music_path
         self.ffmpeg_path = ffmpeg_path
         self.temp_dir = temp_dir
+        self.max_duration_seconds = max_duration_seconds
 
     @Slot()
     def run(self) -> None:
         try:
             started = time.perf_counter()
-            self.log.emit(f"Audio Mix Preview: loading voice waveform from {self.voice_path}")
+            self.log.emit(f"Audio Mix: loading voice waveform from {self.voice_path}")
             voice = generate_waveform_preview(
                 self.voice_path,
                 self.ffmpeg_path,
                 self.temp_dir,
+                max_duration_seconds=self.max_duration_seconds,
             )
             self.log.emit(
-                "Audio Mix Preview: voice waveform loaded in "
+                "Audio Mix: voice waveform loaded in "
                 f"{time.perf_counter() - started:.2f} s "
                 f"({len(voice.times)} points, {voice.duration_seconds:.2f} s)."
             )
@@ -84,20 +90,21 @@ class WaveformLoadWorker(QObject):
             if self.music_path is not None:
                 music_started = time.perf_counter()
                 self.log.emit(
-                    f"Audio Mix Preview: loading music waveform from {self.music_path}"
+                    f"Audio Mix: loading music waveform from {self.music_path}"
                 )
                 music = generate_waveform_preview(
                     self.music_path,
                     self.ffmpeg_path,
                     self.temp_dir,
+                    max_duration_seconds=self.max_duration_seconds,
                 )
                 self.log.emit(
-                    "Audio Mix Preview: music waveform loaded in "
+                    "Audio Mix: music waveform loaded in "
                     f"{time.perf_counter() - music_started:.2f} s "
                     f"({len(music.times)} points, {music.duration_seconds:.2f} s)."
                 )
             else:
-                self.log.emit("Audio Mix Preview: no background music selected.")
+                self.log.emit("Audio Mix: no background music selected.")
             self.finished.emit(voice, music)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -114,19 +121,22 @@ class PreviewRenderWorker(QObject):
         settings: AudioMixSettings,
         output_path: Path,
         start_seconds: float,
+        duration_seconds: float = MIX_PREVIEW_DURATION_SECONDS,
     ) -> None:
         super().__init__()
         self.context = context
         self.settings = settings
         self.output_path = output_path
         self.start_seconds = start_seconds
+        self.duration_seconds = duration_seconds
 
     @Slot()
     def run(self) -> None:
         try:
             started = time.perf_counter()
             self.log.emit(
-                "Audio Mix Preview: rendering 15 second preview with FFmpeg."
+                "Audio Mix: rendering playable mix segment with FFmpeg "
+                f"from {self.start_seconds:.2f}s for {self.duration_seconds:.2f}s."
             )
             result = render_audio_preview_segment(
                 voice_path=self.context.voice_path,
@@ -135,10 +145,10 @@ class PreviewRenderWorker(QObject):
                 settings=self.settings,
                 music_path=self.context.music_path,
                 start_seconds=self.start_seconds,
-                duration_seconds=15,
+                duration_seconds=self.duration_seconds,
             )
             self.log.emit(
-                "Audio Mix Preview: 15 second preview rendered in "
+                "Audio Mix: playable mix segment rendered in "
                 f"{time.perf_counter() - started:.2f} s: {result}"
             )
             self.finished.emit(str(result))
@@ -169,7 +179,7 @@ class FinalMixRenderWorker(QObject):
         try:
             started = time.perf_counter()
             self.log.emit(
-                f"Audio Mix Preview: rendering full mix with FFmpeg to {self.output_path}"
+                f"Audio Mix: rendering full mix with FFmpeg to {self.output_path}"
             )
             result = render_audio_mix(
                 voice_path=self.context.voice_path,
@@ -181,7 +191,7 @@ class FinalMixRenderWorker(QObject):
                 metadata=self.context.metadata,
             )
             self.log.emit(
-                "Audio Mix Preview: full mix rendered in "
+                "Audio Mix: full mix rendered in "
                 f"{time.perf_counter() - started:.2f} s: {result}"
             )
             self.finished.emit(str(result))
@@ -546,11 +556,18 @@ class AudioMixPreviewPanel(QWidget):
         self.render_thread: QThread | None = None
         self.render_worker: QObject | None = None
         self.total_duration_seconds = 1.0
+        self.voice_source_duration_seconds = 1.0
         self.view_start_seconds = 0.0
-        self.view_window_seconds = 60.0
-        self.zoom_levels_seconds = [15.0, 30.0, 60.0, 300.0, 900.0, 0.0]
+        self.view_window_seconds = MIX_PREVIEW_DURATION_SECONDS
+        self.zoom_levels_seconds = [15.0, 30.0, MIX_PREVIEW_DURATION_SECONDS]
         self.zoom_level_index = 2
+        self.cursor_seconds = 0.0
         self.preview_start_seconds = 0.0
+        self.preview_render_path: Path | None = None
+        self.preview_render_signature: tuple[object, ...] | None = None
+        self.pending_preview_signature: tuple[object, ...] | None = None
+        self.pending_preview_position_seconds = 0.0
+        self.preview_render_dirty = True
         self.preview_player = QMediaPlayer(self)
         self.preview_audio = QAudioOutput(self)
         self.preview_player.setAudioOutput(self.preview_audio)
@@ -558,6 +575,11 @@ class AudioMixPreviewPanel(QWidget):
             self._on_playback_state_changed
         )
         self.preview_player.positionChanged.connect(self._on_preview_position_changed)
+        self.full_mix_dialog: QDialog | None = None
+        self.full_mix_dialog_status_label: QLabel | None = None
+        self.full_mix_dialog_progress: QProgressBar | None = None
+        self.full_mix_dialog_open_button: QPushButton | None = None
+        self.full_mix_dialog_close_button: QPushButton | None = None
         self.voice_color = QColor("#2563eb")
         self.music_color = QColor("#f97316")
         self._build_ui()
@@ -591,7 +613,7 @@ class AudioMixPreviewPanel(QWidget):
             self.tr("no_music_selected", "No background music selected."),
         )
         self.mix_graph = WaveformGraph(
-            self.tr("mix_preview_waveform", "Mix Preview"),
+            self.tr("mix_preview_waveform", "Mix"),
             self.tr("waveform_loading", "Loading waveform..."),
         )
         self.voice_graph.cursorChanged.connect(self._set_shared_cursor)
@@ -607,6 +629,30 @@ class AudioMixPreviewPanel(QWidget):
         card_layout.addWidget(self.music_graph)
         self.mix_graph.cursorChanged.connect(self._set_shared_cursor)
         card_layout.addWidget(self.mix_graph)
+        playback_row = QHBoxLayout()
+        playback_row.setSpacing(8)
+        playback_row.addStretch(1)
+        self.play_cursor_button = QPushButton(self.tr("play", "Play"))
+        self.play_cursor_button.setIcon(ui_icon("play"))
+        self.play_cursor_button.setIconSize(QSize(18, 18))
+        self.play_cursor_button.clicked.connect(self._play_preview)
+        self.pause_button = QPushButton(self.tr("pause", "Pause"))
+        self.pause_button.setIcon(ui_icon("pause"))
+        self.pause_button.setIconSize(QSize(18, 18))
+        self.pause_button.clicked.connect(self._pause_playback)
+        self.stop_button = QPushButton(self.tr("stop", "Stop"))
+        self.stop_button.setIcon(ui_icon("stop", color=ICON_DANGER))
+        self.stop_button.setIconSize(QSize(18, 18))
+        self.stop_button.setObjectName("dangerButton")
+        self.stop_button.clicked.connect(self._stop_playback)
+        for button in (
+            self.play_cursor_button,
+            self.pause_button,
+            self.stop_button,
+        ):
+            button.setEnabled(False)
+            playback_row.addWidget(button)
+        card_layout.addLayout(playback_row)
         layout.addWidget(card, 1)
 
         controls = QFrame()
@@ -722,17 +768,6 @@ class AudioMixPreviewPanel(QWidget):
 
         button_row = QHBoxLayout()
         button_row.setSpacing(12)
-        self.preview_button = QPushButton(
-            self.tr("preview_15_seconds", "Preview 15 seconds")
-        )
-        self.preview_button.setIcon(ui_icon("play"))
-        self.preview_button.setIconSize(QSize(18, 18))
-        self.preview_button.clicked.connect(self._render_preview)
-        self.stop_button = QPushButton(self.tr("stop_preview", "Stop preview"))
-        self.stop_button.setIcon(ui_icon("stop", color=ICON_DANGER))
-        self.stop_button.setIconSize(QSize(18, 18))
-        self.stop_button.setObjectName("dangerButton")
-        self.stop_button.clicked.connect(self.preview_player.stop)
         self.render_button = QPushButton(
             self.tr("render_full_mix", "Render full mix")
         )
@@ -741,8 +776,6 @@ class AudioMixPreviewPanel(QWidget):
         self.render_button.setObjectName("primaryButton")
         self.render_button.clicked.connect(self._render_full_mix)
         button_row.addStretch(1)
-        button_row.addWidget(self.preview_button)
-        button_row.addWidget(self.stop_button)
         button_row.addWidget(self.render_button)
         controls_layout.addLayout(button_row, 6, 0, 1, 5)
         layout.addWidget(controls)
@@ -830,6 +863,9 @@ class AudioMixPreviewPanel(QWidget):
         self.context = context
         self.voice_envelope = None
         self.music_envelope = None
+        self.voice_source_duration_seconds = 1.0
+        self.cursor_seconds = 0.0
+        self._mark_preview_dirty(clear_cached_file=True)
         self._apply_settings(context.settings)
         self.info_label.setText(
             self.tr(
@@ -841,7 +877,7 @@ class AudioMixPreviewPanel(QWidget):
         self.voice_graph.set_waveforms([], 1)
         self.music_graph.set_waveforms([], 1)
         self.mix_graph.set_waveforms([], 1)
-        self.preview_button.setEnabled(False)
+        self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
         self._load_waveforms()
 
@@ -850,6 +886,9 @@ class AudioMixPreviewPanel(QWidget):
         self.context = None
         self.voice_envelope = None
         self.music_envelope = None
+        self.voice_source_duration_seconds = 1.0
+        self.cursor_seconds = 0.0
+        self._mark_preview_dirty(clear_cached_file=True)
         self.info_label.setText(
             self.tr(
                 "mix_preview_no_audio",
@@ -859,7 +898,7 @@ class AudioMixPreviewPanel(QWidget):
         self.voice_graph.set_waveforms([], 1)
         self.music_graph.set_waveforms([], 1)
         self.mix_graph.set_waveforms([], 1)
-        self.preview_button.setEnabled(False)
+        self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
 
     def current_settings(self) -> AudioMixSettings:
@@ -923,6 +962,7 @@ class AudioMixPreviewPanel(QWidget):
             self.context.music_path,
             self.context.ffmpeg_path,
             Path(self.temp_dir.name),
+            MIX_PREVIEW_DURATION_SECONDS,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -943,9 +983,12 @@ class AudioMixPreviewPanel(QWidget):
         voice: WaveformEnvelope,
         music: WaveformEnvelope | None,
     ) -> None:
-        self.log.emit("Audio Mix Preview: waveform data ready for drawing.")
+        self.log.emit("Audio Mix: waveform data ready for drawing.")
         self.voice_envelope = voice
         self.music_envelope = music
+        self.voice_source_duration_seconds = (
+            voice.source_duration_seconds or voice.duration_seconds
+        )
         self.info_label.setText(
             self.tr(
                 "mix_preview_ready",
@@ -953,19 +996,20 @@ class AudioMixPreviewPanel(QWidget):
             )
         )
         self._update_waveforms()
-        self.preview_button.setEnabled(True)
+        self._set_playback_controls_enabled(True)
         self.render_button.setEnabled(True)
 
     def _on_waveform_failed(self, message: str) -> None:
-        self.log.emit(f"Audio Mix Preview: waveform loading failed: {message}")
+        self.log.emit(f"Audio Mix: waveform loading failed: {message}")
         self.info_label.setText(
             self.tr("mix_preview_error", "Waveform preview failed: {message}", message=message)
         )
         self.errorOccurred.emit(message)
-        self.preview_button.setEnabled(True)
+        self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
 
     def _on_controls_changed(self, *_args) -> None:
+        self._mark_preview_dirty()
         self.settingsChanged.emit(self.current_settings())
         self._update_waveforms()
 
@@ -987,7 +1031,10 @@ class AudioMixPreviewPanel(QWidget):
             duration += max(0.0, settings.music_tail_ms / 1000)
             if not settings.loop_background:
                 duration = max(duration, self.music_envelope.duration_seconds)
-        self.total_duration_seconds = max(0.01, duration)
+        self.total_duration_seconds = max(
+            0.01,
+            min(MIX_PREVIEW_DURATION_SECONDS, duration),
+        )
         self.voice_graph.set_waveforms(
             [(self.voice_envelope, self.voice_color, voice_gain, voice_offset, False)],
             self.total_duration_seconds,
@@ -1042,8 +1089,9 @@ class AudioMixPreviewPanel(QWidget):
         self._apply_view_to_graphs()
 
     def _set_shared_cursor(self, seconds: float) -> None:
+        self.cursor_seconds = max(0.0, min(seconds, self.total_duration_seconds))
         for graph in (self.voice_graph, self.music_graph, self.mix_graph):
-            graph.set_cursor(seconds)
+            graph.set_cursor(self.cursor_seconds)
 
     def _on_zoom_out(self) -> None:
         if self.zoom_level_index < len(self.zoom_levels_seconds) - 1:
@@ -1113,45 +1161,202 @@ class AudioMixPreviewPanel(QWidget):
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
-    def _render_preview(self) -> None:
+    def _mark_preview_dirty(self, clear_cached_file: bool = False) -> None:
+        self.preview_render_dirty = True
+        self.pending_preview_signature = None
+        self.pending_preview_position_seconds = 0.0
+        if clear_cached_file:
+            self.preview_player.stop()
+            self.preview_player.setSource(QUrl())
+            self.preview_render_path = None
+            self.preview_render_signature = None
+
+    def _current_preview_signature(self) -> tuple[object, ...] | None:
+        if self.context is None:
+            return None
+        settings = self.current_settings()
+        return (
+            "mix-preview-v1",
+            self._file_signature(self.context.voice_path),
+            self._file_signature(self.context.music_path),
+            str(self.context.ffmpeg_path),
+            round(settings.voice_volume_db, 3),
+            round(settings.music_volume_db, 3),
+            settings.voice_start_offset_ms,
+            settings.music_tail_ms,
+            round(settings.music_fade_in_seconds, 3),
+            round(settings.music_fade_out_seconds, 3),
+            settings.ducking_enabled,
+            settings.ducking_strength,
+            settings.loop_background,
+            settings.normalize,
+            settings.mp3_bitrate,
+            round(self.total_duration_seconds, 3),
+        )
+
+    @staticmethod
+    def _file_signature(path: Path | None) -> tuple[str, int, int] | None:
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return (str(path), 0, 0)
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+
+    def _can_reuse_preview_render(
+        self,
+        signature: tuple[object, ...] | None,
+    ) -> bool:
+        return (
+            signature is not None
+            and not self.preview_render_dirty
+            and self.preview_render_signature == signature
+            and self.preview_render_path is not None
+            and self.preview_render_path.is_file()
+        )
+
+    def _play_cached_preview(self, position_seconds: float) -> None:
+        if self.preview_render_path is None or not self.preview_render_path.is_file():
+            self._mark_preview_dirty(clear_cached_file=True)
+            self._play_mix_from(position_seconds)
+            return
+        play_position = max(
+            0.0,
+            min(position_seconds, max(0.0, self.total_duration_seconds - 0.1)),
+        )
+        self.preview_start_seconds = 0.0
+        self._set_shared_cursor(play_position)
+        self.info_label.setText(self.tr("playing_mix", "Playing mix preview..."))
+        self.log.emit(
+            "Audio Mix: reusing cached 1 minute preview "
+            f"from {play_position:.2f}s."
+        )
+        source = QUrl.fromLocalFile(str(self.preview_render_path))
+        if self.preview_player.source() != source:
+            self.preview_player.setSource(source)
+
+        def start_playback() -> None:
+            self.preview_player.setPosition(round(play_position * 1000))
+            self.preview_player.play()
+
+        QTimer.singleShot(0, start_playback)
+
+    def _play_preview(self) -> None:
+        self._play_mix_from(self.cursor_seconds)
+
+    def _play_mix_from(self, start_seconds: float) -> None:
         if self.context is None:
             return
-        self.preview_start_seconds = self.view_start_seconds
-        self._set_shared_cursor(self.preview_start_seconds)
-        output = Path(self.temp_dir.name) / (
-            f"mix_preview_15s_{round(time.time() * 1000)}.wav"
+        play_position = max(
+            0.0,
+            min(start_seconds, max(0.0, self.total_duration_seconds - 0.1)),
         )
+        self.preview_start_seconds = 0.0
+        self._set_shared_cursor(play_position)
+        signature = self._current_preview_signature()
+        if self._can_reuse_preview_render(signature):
+            self._play_cached_preview(play_position)
+            return
+        duration_seconds = max(
+            0.1,
+            min(
+                MIX_PREVIEW_DURATION_SECONDS,
+                max(0.1, self.total_duration_seconds),
+            ),
+        )
+        output = Path(self.temp_dir.name) / (
+            f"mix_play_{round(time.time() * 1000)}.mp3"
+        )
+        self.pending_preview_signature = signature
+        self.pending_preview_position_seconds = play_position
         self._start_render_worker(
             PreviewRenderWorker(
                 self.context,
                 self.current_settings(),
                 output,
-                self.preview_start_seconds,
+                0.0,
+                duration_seconds,
             ),
             self._on_preview_rendered,
         )
         self.info_label.setText(
-            self.tr("rendering_preview", "Rendering 15 second preview...")
+            self.tr(
+                "rendering_playback_mix",
+                "Preparing 1 minute mix preview...",
+            )
         )
 
     def _render_full_mix(self) -> None:
         if self.context is None or self.voice_envelope is None:
             return
         output_path = self._next_mix_filename(self.context.output_dir)
+        self._show_full_mix_dialog(output_path)
         self._start_render_worker(
             FinalMixRenderWorker(
                 self.context,
                 self.current_settings(),
-                self.voice_envelope.duration_seconds,
+                self.voice_source_duration_seconds,
                 output_path,
             ),
             self._on_full_mix_rendered,
         )
         self.info_label.setText(self.tr("rendering_mix", "Rendering full mix..."))
 
+    def _show_full_mix_dialog(self, output_path: Path) -> None:
+        if self.full_mix_dialog is not None:
+            self.full_mix_dialog.close()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr("audio_mix", "Audio Mix"))
+        dialog.setModal(True)
+        dialog.setMinimumWidth(780)
+        dialog.resize(860, 260)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        title = QLabel(self.tr("rendering_mix", "Rendering full mix..."))
+        title.setObjectName("sectionLabel")
+        status = QLabel(
+            self.tr(
+                "mix_rendering_files",
+                "Rendering mixed podcast file:\n{mix}\n\nClean voice file kept:\n{voice}",
+                mix=str(output_path),
+                voice=str(self.context.voice_path) if self.context else "",
+            )
+        )
+        status.setWordWrap(True)
+        status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+
+        button_row = QHBoxLayout()
+        open_button = QPushButton(self.tr("open_output_folder", "Open output folder"))
+        open_button.setIcon(ui_icon("folder"))
+        open_button.setEnabled(False)
+        open_button.clicked.connect(self.openFolderRequested.emit)
+        close_button = QPushButton(self.tr("close", "Close"))
+        close_button.setEnabled(False)
+        close_button.clicked.connect(dialog.accept)
+        button_row.addStretch(1)
+        button_row.addWidget(open_button)
+        button_row.addWidget(close_button)
+
+        layout.addWidget(title)
+        layout.addWidget(status)
+        layout.addWidget(progress)
+        layout.addLayout(button_row)
+        dialog.finished.connect(self._clear_full_mix_dialog)
+
+        self.full_mix_dialog = dialog
+        self.full_mix_dialog_status_label = status
+        self.full_mix_dialog_progress = progress
+        self.full_mix_dialog_open_button = open_button
+        self.full_mix_dialog_close_button = close_button
+        dialog.show()
+
     def _start_render_worker(self, worker: QObject, success_slot) -> None:  # noqa: ANN001
         self._finish_render_thread()
-        self.preview_button.setEnabled(False)
+        self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -1169,9 +1374,25 @@ class AudioMixPreviewPanel(QWidget):
         thread.start()
 
     def _on_preview_rendered(self, path: str) -> None:
-        self.info_label.setText(self.tr("playing_preview", "Playing preview..."))
-        self.preview_player.setSource(QUrl.fromLocalFile(path))
-        self.preview_player.play()
+        rendered_signature = self.pending_preview_signature
+        play_position = self.pending_preview_position_seconds
+        self.pending_preview_signature = None
+        self.pending_preview_position_seconds = 0.0
+        self.preview_render_path = Path(path)
+        self.preview_render_signature = rendered_signature
+        self.preview_render_dirty = (
+            rendered_signature is None
+            or rendered_signature != self._current_preview_signature()
+        )
+        if self.preview_render_dirty:
+            self.info_label.setText(
+                self.tr(
+                    "mix_preview_outdated",
+                    "Preview rendered, but settings changed. Press Play again to refresh.",
+                )
+            )
+            return
+        self._play_cached_preview(play_position)
 
     def _on_preview_position_changed(self, milliseconds: int) -> None:
         if (
@@ -1186,19 +1407,52 @@ class AudioMixPreviewPanel(QWidget):
         self.info_label.setText(
             self.tr("mix_saved", "Mix saved: {path}", path=path)
         )
+        if self.full_mix_dialog_status_label is not None:
+            self.full_mix_dialog_status_label.setText(
+                self.tr(
+                    "mix_render_complete",
+                    "Mix render complete.\n\nMixed podcast file:\n{path}\n\nClean voice file kept:\n{voice}",
+                    path=path,
+                    voice=str(self.context.voice_path) if self.context else "",
+                )
+            )
+        if self.full_mix_dialog_progress is not None:
+            self.full_mix_dialog_progress.setRange(0, 100)
+            self.full_mix_dialog_progress.setValue(100)
+        if self.full_mix_dialog_open_button is not None:
+            self.full_mix_dialog_open_button.setEnabled(True)
+        if self.full_mix_dialog_close_button is not None:
+            self.full_mix_dialog_close_button.setEnabled(True)
         self.renderFinished.emit(path)
 
     def _on_render_failed(self, message: str) -> None:
         self.info_label.setText(
             self.tr("mix_preview_error", "Waveform preview failed: {message}", message=message)
         )
+        if self.full_mix_dialog_status_label is not None:
+            self.full_mix_dialog_status_label.setText(
+                self.tr("mix_render_failed", "Mix render failed:\n{message}", message=message)
+            )
+        if self.full_mix_dialog_progress is not None:
+            self.full_mix_dialog_progress.setRange(0, 100)
+            self.full_mix_dialog_progress.setValue(0)
+        if self.full_mix_dialog_close_button is not None:
+            self.full_mix_dialog_close_button.setEnabled(True)
         self.errorOccurred.emit(message)
+
+    def _clear_full_mix_dialog(self, _result: int = 0) -> None:
+        self.full_mix_dialog = None
+        self.full_mix_dialog_status_label = None
+        self.full_mix_dialog_progress = None
+        self.full_mix_dialog_open_button = None
+        self.full_mix_dialog_close_button = None
 
     def _render_thread_finished(self) -> None:
         self.render_thread = None
         self.render_worker = None
-        self.preview_button.setEnabled(True)
-        self.render_button.setEnabled(True)
+        has_audio = self.context is not None and self.voice_envelope is not None
+        self._set_playback_controls_enabled(has_audio)
+        self.render_button.setEnabled(has_audio)
 
     def _waveform_thread_finished(self) -> None:
         self.waveform_thread = None
@@ -1206,7 +1460,7 @@ class AudioMixPreviewPanel(QWidget):
 
     def _on_playback_state_changed(self, state) -> None:  # noqa: ANN001
         if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.info_label.setText(self.tr("playing_preview", "Playing preview..."))
+            self.info_label.setText(self.tr("playing_mix", "Playing mix preview..."))
         elif self.context is not None and self.voice_envelope is not None:
             self.info_label.setText(
                 self.tr(
@@ -1214,6 +1468,23 @@ class AudioMixPreviewPanel(QWidget):
                     "Move the volume sliders to check whether music competes with the voice.",
                 )
             )
+
+    def _pause_playback(self) -> None:
+        self.preview_player.pause()
+
+    def _stop_playback(self) -> None:
+        self.preview_player.stop()
+        self.preview_player.setPosition(0)
+        self.preview_start_seconds = 0.0
+        self._set_shared_cursor(0.0)
+
+    def _set_playback_controls_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.play_cursor_button,
+            self.pause_button,
+            self.stop_button,
+        ):
+            button.setEnabled(enabled)
 
     @staticmethod
     def _next_mix_filename(output_dir: Path) -> Path:

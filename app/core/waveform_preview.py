@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import re
+import subprocess
 import sys
 import wave
 from array import array
@@ -16,6 +18,7 @@ class WaveformEnvelope:
     minimums: tuple[float, ...]
     maximums: tuple[float, ...]
     duration_seconds: float
+    source_duration_seconds: float = 0.0
 
     @property
     def is_empty(self) -> bool:
@@ -30,8 +33,9 @@ def generate_waveform_preview(
     audio_path: Path,
     ffmpeg_path: str | Path,
     temp_dir: Path,
-    target_sample_rate: int = 22050,
-    max_points: int = 5000,
+    target_sample_rate: int = 8000,
+    max_points: int = 24000,
+    max_duration_seconds: float | None = None,
 ) -> WaveformEnvelope:
     """Create a lightweight min/max envelope for UI drawing.
 
@@ -45,15 +49,20 @@ def generate_waveform_preview(
         raise FileNotFoundError(f"Audio file not found: {source}")
     temp_dir.mkdir(parents=True, exist_ok=True)
     preview_wav = temp_dir / f"{source.stem[:40]}_waveform_{abs(hash(source))}.wav"
-    runner = FFmpegRunner(find_ffmpeg(ffmpeg_path))
-    runner.run(
-        [
+    ffmpeg = find_ffmpeg(ffmpeg_path)
+    source_duration = probe_audio_duration(source, ffmpeg)
+    arguments = [
             "-y",
             "-hide_banner",
             "-loglevel",
             "error",
             "-i",
             str(source),
+    ]
+    if max_duration_seconds is not None and max_duration_seconds > 0:
+        arguments.extend(["-t", f"{max_duration_seconds:.3f}"])
+    arguments.extend(
+        [
             "-vn",
             "-ac",
             "1",
@@ -64,12 +73,19 @@ def generate_waveform_preview(
             str(preview_wav),
         ]
     )
-    return build_waveform_envelope(preview_wav, max_points=max_points)
+    runner = FFmpegRunner(ffmpeg)
+    runner.run(arguments)
+    return build_waveform_envelope(
+        preview_wav,
+        max_points=max_points,
+        source_duration_seconds=source_duration,
+    )
 
 
 def build_waveform_envelope(
     wav_path: Path,
     max_points: int = 5000,
+    source_duration_seconds: float = 0.0,
 ) -> WaveformEnvelope:
     with wave.open(str(wav_path), "rb") as audio:
         frame_count = audio.getnframes()
@@ -78,7 +94,7 @@ def build_waveform_envelope(
         sample_width = audio.getsampwidth()
 
         if frame_count <= 0 or sample_rate <= 0:
-            return WaveformEnvelope((), (), (), 0.0)
+            return WaveformEnvelope((), (), (), 0.0, source_duration_seconds)
         if sample_width != 2:
             raise ValueError("Waveform preview expects 16-bit PCM WAV data.")
 
@@ -118,7 +134,32 @@ def build_waveform_envelope(
         tuple(value / scale for value in minimums),
         tuple(value / scale for value in maximums),
         duration,
+        source_duration_seconds or duration,
     )
+
+
+def probe_audio_duration(audio_path: Path, ffmpeg_path: str | Path) -> float:
+    ffmpeg = find_ffmpeg(ffmpeg_path)
+    creation_flags = (
+        subprocess.CREATE_NO_WINDOW
+        if hasattr(subprocess, "CREATE_NO_WINDOW")
+        else 0
+    )
+    process = subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-i", str(audio_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creation_flags,
+        check=False,
+    )
+    output = process.stderr.decode("utf-8", errors="replace")
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+    if not match:
+        return 0.0
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def _mix_interleaved_to_mono(values: array, channels: int) -> array:

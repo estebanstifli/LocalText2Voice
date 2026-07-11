@@ -17,6 +17,7 @@ ICON_LIGHT = "#ffffff"
 
 
 _QTAWESOME_ICONS = {
+    "add": "fa5s.plus",
     "apply": "fa5s.check",
     "back": "fa5s.arrow-left",
     "cancel": "fa5s.times",
@@ -61,6 +62,7 @@ _QTAWESOME_ICONS = {
 
 
 _FALLBACK_ICONS = {
+    "add": QStyle.StandardPixmap.SP_FileDialogNewFolder,
     "apply": QStyle.StandardPixmap.SP_DialogApplyButton,
     "back": QStyle.StandardPixmap.SP_ArrowBack,
     "cancel": QStyle.StandardPixmap.SP_DialogCancelButton,

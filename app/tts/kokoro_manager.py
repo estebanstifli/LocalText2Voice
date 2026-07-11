@@ -101,7 +101,6 @@ class KokoroManager:
         KokoroVoice("im_nicola", "Italian - Nicola", "it"),
         KokoroVoice("pf_dora", "Portuguese - Dora", "pt-br"),
         KokoroVoice("pm_alex", "Portuguese - Alex", "pt-br"),
-        KokoroVoice("zf_xiaobei", "Chinese - Xiaobei", "zh"),
     )
 
     def __init__(

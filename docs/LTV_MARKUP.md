@@ -7,7 +7,6 @@ Example:
 ```text
 The house had been empty for years.
 {{pause.long}}
-{{emotion whisper}}
 I do not like this place.
 ```
 
@@ -33,8 +32,16 @@ Command names are case-insensitive. These are equivalent:
 {{Voice "LUCIA"}}
 ```
 
-Voice matching is also case-insensitive when LocalText2Voice can map the name to
-an installed voice for the selected engine.
+Voice matching is also case-insensitive and flexible when LocalText2Voice can
+map the name to an installed voice for the selected engine. Exact matches are
+preferred, but short fragments are accepted:
+
+```text
+{{voice "edu"}}
+```
+
+If the selected engine has a voice named `Eduardo - es`, the app can select it
+and write a warning in the log so you know an approximate match was used.
 
 Quoted values are supported:
 
@@ -52,31 +59,31 @@ Unknown or malformed commands do not stop generation. They are ignored and writt
 
 Some commands are handled by LocalText2Voice before the text is sent to TTS. Those commands work with every engine because the TTS model never sees them. Engine-specific commands are only marked where the selected backend actually receives and uses the instruction today.
 
-| Command | Piper | Kokoro | Chatterbox | Qwen3 TTS | OpenAI | ElevenLabs | Gemini | Azure | Notes |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | --- |
-| `{{pause ...}}` | * | * | * | * | * | * | * | * | App inserts real silence between segments. |
-| `{{chapter "..."}}` | * | * | * | * | * | * | * | * | App creates named internal groups before generation. |
-| `{{alias "A" "B"}}` | * | * | * | * | * | * | * | * | App replaces later text before TTS. |
-| `{{reset}}` | * | * | * | * | * | * | * | * | App resets active markup state. |
-| `{{voice "..."}}` | * | * | * | * |  |  |  |  | Switches installed/local voices or Qwen speaker/language aliases. |
-| `{{lang ...}}` |  | * | * | * |  |  |  |  | Piper language is tied to the selected voice model. |
-| `{{speed ...}}` | * | * |  |  | * |  |  | * | Only engines with connected speed/rate parameters are marked. |
-| `{{emotion ...}}` |  |  |  | * |  |  |  |  | Qwen maps emotion to natural-language `instruct`. |
-| `{{cmd "..."}}` |  |  | * | * |  |  |  |  | Chatterbox receives compatible tags as text; Qwen receives them as `instruct`. |
-| `{{sendcommand "..."}}` |  |  | * | * |  |  |  |  | Alias of `cmd`. |
-| `{{sendcomand "..."}}` |  |  | * | * |  |  |  |  | Tolerant misspelling alias of `sendcommand`. |
-| `{{volume ...}}` |  |  |  |  |  |  |  |  | Parsed for future postproduction; not active yet. |
-| `{{music "..."}}` |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{music.stop}}` |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{music.volume ...}}` |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{sfx "..."}}` |  |  |  |  |  |  |  |  | Parsed/reserved for future sound effects. |
-| `{{mark "..."}}` |  |  |  |  |  |  |  |  | Parsed/reserved for future editing/navigation markers. |
+| Command | Piper | Kokoro | Chatterbox | Qwen3 TTS | OmniVoice | OpenAI | ElevenLabs | Gemini | Azure | Custom HTTP | Notes |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | --- |
+| `{{pause ...}}` | * | * | * | * | * | * | * | * | * | * | App inserts real silence between segments. |
+| `{{chapter "..."}}` | * | * | * | * | * | * | * | * | * | * | App creates named internal groups before generation. |
+| `{{alias "A" "B"}}` | * | * | * | * | * | * | * | * | * | * | App replaces later text before TTS. |
+| `{{reset}}` | * | * | * | * | * | * | * | * | * | * | App resets active markup state. |
+| `{{voice "..."}}` | * | * | * | * | * |  |  |  |  | * | Switches installed/local voices, Qwen aliases, OmniVoice reference voices, or custom template voice value. |
+| `{{lang ...}}` |  | * | * | * | * |  |  |  |  | * | Custom HTTP receives the literal language value in `{{language}}` / `{{lang}}`. |
+| `{{speed ...}}` | * | * | * | * | * | * | * | * | * | * | App can apply speed after generation with FFmpeg when the engine has no native speed control. |
+| `{{cmd ...}}` | * | * | * | * | * | * | * | * | * | * | App attaches TTS parameters to the next segment only. Engines ignore unsupported keys. |
+| `{{preset ...}}` | * | * | * | * | * | * | * | * | * | * | App attaches TTS parameters to every following segment until `{{reset.preset}}`. |
+| `{{sendcommand ...}}` | * | * | * | * | * | * | * | * | * | * | Alias of one-shot `cmd`. |
+| `{{sendcomand ...}}` | * | * | * | * | * | * | * | * | * | * | Tolerant misspelling alias of `sendcommand`. |
+| `{{volume ...}}` | * | * | * | * | * | * | * | * | * | * | App applies voice gain or loudness normalization after generation with FFmpeg. |
+| `{{music "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
+| `{{music.stop}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
+| `{{music.volume ...}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
+| `{{sfx "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future sound effects. |
+| `{{mark "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future editing/navigation markers. |
 
 Recommended mental model:
 
 - App-level commands shape the audiobook timeline and are safe with every TTS engine.
 - Voice/language commands are chunk boundaries; LocalText2Voice will not mix two voices or languages in one request.
-- Qwen style control should use `{{emotion ...}}` or `{{cmd "natural language instruction"}}`, not raw `[tags]` in the text.
+- Qwen and other engines with request parameters should use `{{cmd ...}}` for one segment or `{{preset ...}}` for persistent parameters, not raw `[tags]` unless the selected model explicitly documents bracket tags.
 
 ## Pauses
 
@@ -139,9 +146,18 @@ Current behavior:
 | Kokoro | Looks for a Kokoro voice id or display name |
 | Chatterbox | Looks for an installed reference voice by display name or filename |
 | Qwen3 TTS | Looks for a Qwen speaker by id/display name, or a UI-style `Speaker - Language` alias such as `Serena - Spanish` |
+| Custom HTTP | Sends the literal value to the custom engine config as `voice`, so templates can use `{{voice}}` |
 
-If a voice is not found, LocalText2Voice writes a warning and keeps using the
-voice selected in the UI.
+If a voice is not found exactly, LocalText2Voice tries to find the closest
+compatible voice for the selected engine. When an approximate match is used,
+the log includes a warning similar to:
+
+```text
+LTV Markup warning: voice "edu" was not found exactly. Closest voice selected: Eduardo - es
+```
+
+If no compatible voice can be found, the app writes a warning and keeps using
+the voice selected in the UI.
 
 Qwen note: the UI displays combinations such as `Serena - Spanish`, but Qwen
 internally receives two separate values: `speaker=Serena` and
@@ -154,7 +170,10 @@ internally receives two separate values: `speaker=Serena` and
 
 ## Speed
 
-Speed commands are parsed as active narration state.
+Speed commands are parsed as active narration state. If the selected engine
+supports speed natively, the engine can receive it directly. Otherwise
+LocalText2Voice post-processes the generated WAV with FFmpeg, so the command is
+usable across engines.
 
 ```text
 {{speed 0.9}}
@@ -173,86 +192,94 @@ Preset values:
 
 ## Volume
 
-Volume commands are parsed for future postproduction support.
+Volume commands adjust the generated narration audio after TTS. They are useful
+when one character, engine, or paragraph sounds louder than the rest.
 
 ```text
-{{volume -3}}
+{{volume 0.8}}
+{{volume 80%}}
+{{volume -3db}}
+{{volume.db -3}}
+{{volume.normalize -16}}
+{{volume.lufs -16}}
 {{volume.normal}}
 ```
 
-Values are in dB.
+Supported forms:
 
-## Emotion
-
-Emotion commands are parsed as active narration state.
-
-```text
-{{emotion happy}}
-{{emotion sad}}
-{{emotion angry}}
-{{emotion scared}}
-{{emotion whisper}}
-{{emotion.neutral}}
-```
-
-Current behavior depends on the TTS engine:
-
-| Engine | Current behavior |
+| Form | Meaning |
 | --- | --- |
-| Piper | Ignored with warning |
-| Kokoro | Parsed, reserved for supported backends |
-| Chatterbox | Parsed, reserved for future prompt/tag support |
-| Qwen | Converted into a natural-language `instruct` value for the current chunk |
+| `{{volume 0.8}}` | Multiplier; `0.8` is converted to about `-1.94 dB` |
+| `{{volume 80%}}` | Percentage multiplier |
+| `{{volume -3db}}` | Direct gain in dB |
+| `{{volume.db -3}}` | Direct gain in dB |
+| `{{volume.normalize -16}}` | Normalize the segment to `-16 LUFS` |
+| `{{volume.lufs -16}}` | Alias for LUFS normalization |
+| `{{volume.normal}}` | Reset volume processing |
 
-Example:
+## TTS Parameters: One-Shot And Persistent
+
+`cmd` attaches parameters to the next segment only. `preset` attaches
+parameters to every following segment until it is changed or reset.
 
 ```text
-{{emotion whisper}}
-Do not make a sound.
+{{cmd
+"instruct": "Say this sentence with surprise.",
+"temperature": 0.7,
+"top_p": 0.9
+}}
 
-{{emotion.neutral}}
-The narrator continues normally.
+Only this sentence uses the one-shot parameters.
 ```
 
-## Direct Model Commands
+`sendcommand` and the tolerant misspelling `sendcomand` are accepted as aliases
+of one-shot `cmd`.
 
-Direct model commands are only sent to engines that can use them safely.
+Use `preset` for a style that should continue:
+
+```text
+{{preset
+"instruct": "Speak with a calm, warm audiobook narrator tone.",
+"temperature": 0.6,
+"top_p": 0.9
+}}
+
+This paragraph uses the preset.
+
+This paragraph uses it too.
+
+{{cmd
+"instruct": "Say this sentence as a quick excited aside."
+}}
+
+Only this sentence overrides the preset.
+
+The next paragraph returns to the preset.
+
+{{reset.preset}}
+Back to normal engine settings.
+```
+
+Unsupported keys are ignored by engines that do not understand them. Reserved
+internal keys such as `engine` and file paths are ignored for safety.
+
+Legacy shorthand still works:
 
 ```text
 {{cmd "[laugh]"}}
-{{sendcommand "[gasp]"}}
-{{sendcomand "[sigh]"}}
 ```
 
-`sendcomand` is accepted as a tolerant alias of `sendcommand`.
-
-Current behavior:
-
-| Engine | Behavior |
-| --- | --- |
-| Piper | Ignored with warning |
-| Kokoro | Ignored with warning |
-| Chatterbox | Inserted into the text sent to the model |
-| Qwen | Converted into a natural-language `instruct` value for the current chunk |
-
-Example:
+This is interpreted as:
 
 ```text
-This is funny.
-{{cmd "[laugh]"}}
-But nobody laughed for long.
+{{cmd
+"instruct": "[laugh]"
+}}
 ```
 
-For Qwen, prefer natural-language instructions because the model's documented
-style control uses the `instruct` parameter:
-
-```text
-{{cmd "Speak with a warm, encouraging teacher tone."}}
-Now repeat the phrase slowly.
-```
-
-Raw bracket text such as `[happy]` written directly in the paragraph is treated
-as normal transcript text and may be spoken aloud.
+Raw bracket text such as `[happy]` written directly in the paragraph is
+transparent to LocalText2Voice and may be spoken aloud unless the selected TTS
+engine has its own documented bracket syntax.
 
 ## Language
 
@@ -354,7 +381,6 @@ Reset returns narration state to defaults.
 {{reset}}
 {{reset.voice}}
 {{reset.audio}}
-{{reset.emotion}}
 ```
 
 Defaults:
@@ -364,7 +390,6 @@ Defaults:
 | Voice | `default` |
 | Speed | `1.0` |
 | Volume | `0 dB` |
-| Emotion | `neutral` |
 | Language | `auto` |
 
 ## Complete Example
@@ -379,11 +404,9 @@ The house had been abandoned for years.
 
 {{pause.long}}
 {{voice.character "Lucia"}}
-{{emotion whisper}}
 I do not like this place.
 
 {{voice.character "Pedro"}}
-{{emotion.neutral}}
 It will only take a minute.
 
 {{sfx "door_creak.wav"}}
@@ -393,7 +416,6 @@ It will only take a minute.
 The door opened slowly.
 
 {{voice.character "Lucia"}}
-{{emotion scared}}
 Did you hear that?
 
 {{cmd "[gasp]"}}
@@ -407,17 +429,23 @@ No one answered.
 
 ## What Is Sent To TTS
 
-Commands such as `pause`, `voice`, `emotion`, `music`, `sfx`, `chapter`, `mark`, and `reset` are not sent as text to the TTS engine.
+Commands such as `pause`, `voice`, `music`, `sfx`, `chapter`, `mark`, and `reset` are not sent as text to the TTS engine.
 
-Only direct model commands may be sent, and only for compatible engines:
+TTS parameter commands are not sent as transcript text. They are added to the
+request configuration for the next segment (`cmd`) or all following segments
+(`preset`):
 
 ```text
-{{cmd "[laugh]"}}
+{{preset
+"instruct": "Warm narrator tone."
+}}
+
+{{cmd
+"temperature": 0.8
+}}
 ```
 
-For Piper and Kokoro, direct model commands are ignored with a warning. For
-Qwen, direct model commands are converted into the request's `instruct`
-parameter instead of being sent as transcript text.
+Engines use the keys they support and ignore the rest.
 
 ## Current Implementation Status
 
@@ -429,11 +457,14 @@ Implemented now:
 - Real silence for `pause`.
 - Pronunciation aliases.
 - Chapter grouping.
-- Direct model commands for compatible engines.
-- Voice switching for Piper, Kokoro, Chatterbox, and Qwen3 TTS.
-- Language switching for Kokoro, Chatterbox, and Qwen3 TTS.
+- One-shot TTS parameter overrides with `cmd`.
+- Persistent TTS parameter presets with `preset`.
+- Voice switching for Piper, Kokoro, Chatterbox, Qwen3 TTS, and OmniVoice.
+- Language switching for Kokoro, Chatterbox, Qwen3 TTS, and OmniVoice.
 - Qwen `Speaker - Language` voice aliases such as `Serena - Spanish`.
-- Qwen emotion and direct command mapping to `instruct`.
+- OmniVoice voice-design attributes are controlled values such as `female`,
+  `young adult`, `middle-aged`, `high pitch`, `whisper`, or `british accent`;
+  arbitrary style words are not valid OmniVoice `instruct` items.
 - Case-insensitive command parsing and voice matching.
 - Smart quotes and Unicode dash normalization inside commands.
 - Safe fallback for unsupported commands.
@@ -441,6 +472,5 @@ Implemented now:
 Planned later:
 
 - UI help panel and quick insert buttons.
-- Emotion mapping per engine.
 - Timeline music and SFX mixing from markup events.
 - Visual markup validation before generation.

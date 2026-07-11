@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import json
+import math
 import random
 import re
 import shlex
@@ -77,11 +79,11 @@ class LTVMarkupParser:
         "alias",
         "chapter",
         "cmd",
-        "emotion",
         "lang",
         "mark",
         "music",
         "pause",
+        "preset",
         "reset",
         "sendcomand",
         "sendcommand",
@@ -148,6 +150,26 @@ class LTVMarkupParser:
         content = cls._normalize_command_text(content)
         if not content:
             return None
+        command_match = re.match(
+            r"^\s*([A-Za-z][\w-]*)(?:\.([A-Za-z][\w-]*))?\b(?P<body>.*)$",
+            content,
+            re.DOTALL,
+        )
+        if command_match:
+            raw_command = command_match.group(1).lower()
+            if raw_command in {"cmd", "sendcommand", "sendcomand", "preset"}:
+                if raw_command not in cls._known_commands:
+                    return None
+                event = cls._parse_model_command(
+                    command_match.group("body").strip(),
+                    raw,
+                    position,
+                    "config_preset" if raw_command == "preset" else "config_override",
+                )
+                if event.type == "warning":
+                    warnings.append(str(event.value))
+                return event, warnings
+
         try:
             tokens = shlex.split(content, posix=True)
         except ValueError as exc:
@@ -177,10 +199,20 @@ class LTVMarkupParser:
             event = cls._parse_speed(modifier, args, raw, position)
         elif command == "volume":
             event = cls._parse_volume(modifier, args, raw, position)
-        elif command == "emotion":
-            event = cls._parse_emotion(modifier, args, raw, position)
         elif command in {"cmd", "sendcommand", "sendcomand"}:
-            event = cls._parse_model_command(args, raw, position)
+            event = cls._parse_model_command(
+                " ".join(args),
+                raw,
+                position,
+                "config_override",
+            )
+        elif command == "preset":
+            event = cls._parse_model_command(
+                " ".join(args),
+                raw,
+                position,
+                "config_preset",
+            )
         elif command == "lang":
             event = cls._parse_language(modifier, args, raw, position)
         elif command == "alias":
@@ -256,15 +288,19 @@ class LTVMarkupParser:
             return LTVMarkupEvent(
                 "voice",
                 raw=raw,
-                value=" ".join(args),
-                attrs={"role": "character"},
+                value=args[0] if len(args) == 2 else " ".join(args),
+                attrs={
+                    "role": "character",
+                    "language": args[1] if len(args) == 2 else "",
+                },
                 position=position,
             )
         if not modifier and args:
             return LTVMarkupEvent(
                 "voice",
                 raw=raw,
-                value=" ".join(args),
+                value=args[0] if len(args) == 2 else " ".join(args),
+                attrs={"language": args[1] if len(args) == 2 else ""},
                 position=position,
             )
         return LTVMarkupParser._warning(raw, position, "Malformed voice command ignored.")
@@ -296,46 +332,114 @@ class LTVMarkupParser:
         position: int,
     ) -> LTVMarkupEvent:
         if modifier == "normal" and not args:
-            return LTVMarkupEvent("volume", raw=raw, value=0.0, position=position)
-        if not modifier and len(args) == 1:
+            return LTVMarkupEvent(
+                "volume",
+                raw=raw,
+                value=0.0,
+                attrs={"mode": "gain_db"},
+                position=position,
+            )
+        if modifier in {"normalize", "lufs"} and len(args) == 1:
+            try:
+                target = float(str(args[0]).casefold().removesuffix("lufs"))
+            except ValueError:
+                target = 0.0
+            if -40.0 <= target <= -6.0:
+                return LTVMarkupEvent(
+                    "volume",
+                    raw=raw,
+                    value=target,
+                    attrs={"mode": "normalize_lufs"},
+                    position=position,
+                )
+        if modifier == "db" and len(args) == 1:
             try:
                 return LTVMarkupEvent(
                     "volume",
                     raw=raw,
-                    value=float(args[0]),
+                    value=float(str(args[0]).casefold().removesuffix("db")),
+                    attrs={"mode": "gain_db"},
+                    position=position,
+                )
+            except ValueError:
+                pass
+        if not modifier and len(args) == 1:
+            raw_value = str(args[0]).strip().casefold()
+            try:
+                if raw_value.endswith("db"):
+                    return LTVMarkupEvent(
+                        "volume",
+                        raw=raw,
+                        value=float(raw_value.removesuffix("db")),
+                        attrs={"mode": "gain_db"},
+                        position=position,
+                    )
+                if raw_value.endswith("%"):
+                    percent = float(raw_value.removesuffix("%"))
+                    if 0.0 < percent <= 400.0:
+                        return LTVMarkupEvent(
+                            "volume",
+                            raw=raw,
+                            value=20.0 * math.log10(percent / 100.0),
+                            attrs={"mode": "gain_db"},
+                            position=position,
+                        )
+                value = float(raw_value)
+                if 0.0 < value <= 4.0:
+                    value = 20.0 * math.log10(value)
+                return LTVMarkupEvent(
+                    "volume",
+                    raw=raw,
+                    value=value,
+                    attrs={"mode": "gain_db"},
                     position=position,
                 )
             except ValueError:
                 pass
         return LTVMarkupParser._warning(raw, position, "Malformed volume command ignored.")
 
-    @staticmethod
-    def _parse_emotion(
-        modifier: str,
-        args: list[str],
+    @classmethod
+    def _parse_model_command(
+        cls,
+        body: str,
         raw: str,
         position: int,
+        event_type: str = "config_override",
     ) -> LTVMarkupEvent:
-        allowed = {"happy", "sad", "angry", "scared", "whisper", "neutral"}
-        value = modifier or (args[0].lower() if len(args) == 1 else "")
-        if value in allowed:
-            return LTVMarkupEvent("emotion", raw=raw, value=value, position=position)
-        return LTVMarkupParser._warning(raw, position, "Malformed emotion command ignored.")
+        body = body.strip()
+        if body:
+            overrides = cls._parse_model_command_overrides(body)
+            if overrides:
+                return LTVMarkupEvent(
+                    event_type,
+                    raw=raw,
+                    value=overrides,
+                    position=position,
+                )
+        return LTVMarkupParser._warning(raw, position, "Malformed model command ignored.")
 
     @staticmethod
-    def _parse_model_command(
-        args: list[str],
-        raw: str,
-        position: int,
-    ) -> LTVMarkupEvent:
-        if args:
-            return LTVMarkupEvent(
-                "model_command",
-                raw=raw,
-                value=" ".join(args),
-                position=position,
-            )
-        return LTVMarkupParser._warning(raw, position, "Malformed model command ignored.")
+    def _parse_model_command_overrides(body: str) -> dict[str, Any]:
+        candidates = [body]
+        if not body.startswith("{"):
+            candidates.append("{" + body + "}")
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return {str(key): value for key, value in parsed.items()}
+            if isinstance(parsed, str) and parsed.strip():
+                return {"instruct": parsed.strip()}
+        try:
+            tokens = shlex.split(body, posix=True)
+        except ValueError:
+            tokens = []
+        cleaned = " ".join(tokens).strip() if tokens else body.strip()
+        if cleaned:
+            return {"instruct": cleaned}
+        return {}
 
     @staticmethod
     def _parse_language(
@@ -474,9 +578,6 @@ class LTVMarkupParser:
 
 
 class LTVMarkupCompiler:
-    _model_command_backends = {"chatterbox", "qwen", "orpheus", "omnivoice"}
-    _direct_emotion_backends = {"chatterbox", "qwen", "orpheus", "omnivoice"}
-
     @classmethod
     def compile(
         cls,
@@ -504,6 +605,8 @@ class LTVMarkupCompiler:
         explicit_state: set[str] = set()
         aliases: dict[str, str] = {}
         pending_pause_before_ms = 0
+        pending_config_overrides: dict[str, Any] = {}
+        persistent_config_overrides: dict[str, Any] = {}
         buffer: list[str] = []
 
         def current_section() -> LTVNarrationSection:
@@ -517,16 +620,24 @@ class LTVMarkupCompiler:
                 if pause_after_ms:
                     pending_pause_before_ms += pause_after_ms
                 return
+            segment_state = {
+                key: state[key]
+                for key in explicit_state
+                if key in state
+            }
+            if persistent_config_overrides:
+                segment_state["config_overrides"] = dict(persistent_config_overrides)
+            if pending_config_overrides:
+                merged_overrides = dict(segment_state.get("config_overrides", {}))
+                merged_overrides.update(pending_config_overrides)
+                segment_state["config_overrides"] = merged_overrides
+                pending_config_overrides.clear()
             current_section().segments.append(
                 LTVNarrationSegment(
                     text=text_value,
                     pause_before_ms=pending_pause_before_ms,
                     pause_after_ms=pause_after_ms,
-                    state={
-                        key: state[key]
-                        for key in explicit_state
-                        if key in state
-                    },
+                    state=segment_state,
                 )
             )
             pending_pause_before_ms = 0
@@ -543,7 +654,14 @@ class LTVMarkupCompiler:
                 sections.append(LTVNarrationSection(title, []))
             elif event.type == "voice":
                 flush_text()
-                state["voice"] = event.value
+                language = str(event.attrs.get("language", "")).strip()
+                voice_value = str(event.value or "")
+                if not language:
+                    voice_value, language = cls._split_voice_language_suffix(voice_value)
+                state["voice"] = voice_value
+                if language:
+                    state["voice_language"] = language
+                    explicit_state.add("voice_language")
                 explicit_state.add("voice")
             elif event.type == "speed":
                 flush_text()
@@ -551,8 +669,12 @@ class LTVMarkupCompiler:
                 explicit_state.add("speed")
             elif event.type == "volume":
                 flush_text()
-                state["volume_db"] = event.value
-                explicit_state.add("volume_db")
+                if event.attrs.get("mode") == "normalize_lufs":
+                    state["normalize_lufs"] = event.value
+                    explicit_state.add("normalize_lufs")
+                else:
+                    state["volume_db"] = event.value
+                    explicit_state.add("volume_db")
                 cls._ignore_backend_command(
                     event,
                     backend,
@@ -560,33 +682,14 @@ class LTVMarkupCompiler:
                     warnings,
                     "volume commands are reserved for postproduction",
                 )
-            elif event.type == "emotion":
+            elif event.type == "config_override":
                 flush_text()
-                state["emotion"] = event.value
-                explicit_state.add("emotion")
-                if backend not in cls._direct_emotion_backends:
-                    cls._ignore_backend_command(
-                        event,
-                        backend,
-                        ignored_commands,
-                        warnings,
-                        "emotion is not supported by this backend yet",
-                    )
-            elif event.type == "model_command":
-                if backend == "qwen":
-                    flush_text()
-                    state["model_instruction"] = event.value
-                    explicit_state.add("model_instruction")
-                elif backend in cls._model_command_backends:
-                    buffer.append(f" {event.value} ")
-                else:
-                    cls._ignore_backend_command(
-                        event,
-                        backend,
-                        ignored_commands,
-                        warnings,
-                        "direct model commands are disabled for this backend",
-                    )
+                if isinstance(event.value, dict):
+                    pending_config_overrides.update(event.value)
+            elif event.type == "config_preset":
+                flush_text()
+                if isinstance(event.value, dict):
+                    persistent_config_overrides.update(event.value)
             elif event.type == "language":
                 flush_text()
                 state["language"] = event.value
@@ -611,18 +714,22 @@ class LTVMarkupCompiler:
                 cls._reset_state(state, aliases, scope)
                 if scope in {"all", ""}:
                     explicit_state.clear()
+                    pending_config_overrides.clear()
+                    persistent_config_overrides.clear()
                 elif scope == "voice":
                     explicit_state.discard("voice")
+                    explicit_state.discard("voice_language")
                 elif scope == "audio":
                     explicit_state.discard("volume_db")
-                elif scope == "emotion":
-                    explicit_state.discard("emotion")
+                    explicit_state.discard("normalize_lufs")
                 elif scope == "language":
                     explicit_state.discard("language")
                 elif scope == "speed":
                     explicit_state.discard("speed")
                 elif scope in {"cmd", "command", "instruction", "instructions"}:
-                    explicit_state.discard("model_instruction")
+                    pending_config_overrides.clear()
+                elif scope in {"preset", "presets", "default", "defaults"}:
+                    persistent_config_overrides.clear()
             elif event.type == "warning":
                 continue
 
@@ -679,9 +786,7 @@ class LTVMarkupCompiler:
             "voice": "default",
             "speed": 1.0,
             "volume_db": 0.0,
-            "emotion": "neutral",
             "language": "auto",
-            "model_instruction": "",
         }
 
     @staticmethod
@@ -729,12 +834,55 @@ class LTVMarkupCompiler:
         defaults = cls._default_state()
         if scope in {"all", ""}:
             state.update(defaults)
+            state.pop("voice_language", None)
+            state.pop("normalize_lufs", None)
             aliases.clear()
         elif scope == "voice":
             state["voice"] = defaults["voice"]
+            state.pop("voice_language", None)
         elif scope == "audio":
             state["volume_db"] = defaults["volume_db"]
-        elif scope == "emotion":
-            state["emotion"] = defaults["emotion"]
-        elif scope in {"cmd", "command", "instruction", "instructions"}:
-            state["model_instruction"] = defaults["model_instruction"]
+            state.pop("normalize_lufs", None)
+        elif scope == "language":
+            state["language"] = defaults["language"]
+        elif scope == "speed":
+            state["speed"] = defaults["speed"]
+
+    @staticmethod
+    def _split_voice_language_suffix(value: str) -> tuple[str, str]:
+        parts = re.split(r"\s*[-\u2010-\u2015\u2212]\s*", value.strip(), maxsplit=1)
+        if len(parts) != 2:
+            return value.strip(), ""
+        voice, language = (part.strip(" -\u2010\u2011\u2012\u2013\u2014\u2015\u2212") for part in parts)
+        language_key = language.casefold()
+        known_languages = {
+            "en",
+            "eng",
+            "english",
+            "es",
+            "spa",
+            "spanish",
+            "fr",
+            "fre",
+            "french",
+            "de",
+            "ger",
+            "german",
+            "it",
+            "ita",
+            "italian",
+            "pt",
+            "por",
+            "portuguese",
+            "zh",
+            "chinese",
+            "ja",
+            "japanese",
+            "ko",
+            "korean",
+            "ru",
+            "russian",
+        }
+        if voice and language_key in known_languages:
+            return voice, language
+        return value.strip(), ""

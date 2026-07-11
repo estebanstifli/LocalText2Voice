@@ -7,7 +7,7 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 4
+CURRENT_SETTINGS_SCHEMA_VERSION = 7
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -24,7 +24,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "piper_path": "engines/piper/piper.exe",
     "ffmpeg_path": "ffmpeg/ffmpeg.exe",
     "chunk_size": 2500,
+    "engine_chunk_sizes": {
+        "piper": 0,
+        "kokoro": 0,
+        "chatterbox": 0,
+        "qwen": 0,
+        "omnivoice": 0,
+    },
     "editor_syntax_highlighting": True,
+    "show_markup_toolbar": True,
+    "markup_corrector_enabled": True,
     "pause_between_blocks_ms": 350,
     "pause_between_chapters_ms": 900,
     "paragraph_pause_min_ms": 450,
@@ -37,8 +46,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "periodic_pause_max_ms": 750,
     "normalize_audio": False,
     "podcast_enabled": False,
-    "intro_enabled": False,
-    "intro_path": "",
     "background_enabled": True,
     "background_path": "music/background/relax1.mp3",
     "background_loop": True,
@@ -47,14 +54,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "music_volume_db": -7.0,
     "voice_start_offset_ms": 2000,
     "music_tail_ms": 2000,
-    "outro_enabled": False,
-    "outro_path": "",
     "music_fade_in_seconds": 1.0,
     "music_fade_out_seconds": 1.0,
     "podcast_gap_ms": 500,
     "podcast_normalize": True,
     "podcast_ducking": True,
     "ducking_strength": "low",
+    "auto_delete_segment_wavs_after_mix": False,
     "open_output_on_finish": False,
     "mp3_bitrate": "128k",
     "metadata": {
@@ -72,7 +78,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "language": "en",
         "device": "auto",
         "reference_audio_path": "",
-        "voice_clone_consent": False,
         "exaggeration": 0.5,
         "cfg_weight": 0.5,
     },
@@ -83,6 +88,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "device": "auto",
         "dtype": "auto",
         "instruct": "",
+    },
+    "omnivoice": {
+        "model": "omnivoice",
+        "mode": "clone",
+        "language": "auto",
+        "device": "auto",
+        "dtype": "auto",
+        "instruct": "",
+        "reference_audio_path": "",
+        "reference_text": "",
+        "num_step": 32,
+        "speed": 1.0,
+        "duration": 0.0,
     },
     "review": {
         "enabled": False,
@@ -130,6 +148,22 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "style": "",
             "timeout_seconds": 120,
         },
+    },
+    "custom_tts_engines": [],
+    "voice_gallery": {
+        "catalog_url": (
+            "https://raw.githubusercontent.com/estebanstifli/"
+            "LocalText2Voice-VoiceGallery/main/catalog.json"
+        ),
+        "local_catalog_path": "",
+        "auto_sync": False,
+        "last_sync_at": "",
+    },
+    "installer_setup": {
+        "profile": "",
+        "pending_installs": [],
+        "completed": False,
+        "completed_at": "",
     },
 }
 

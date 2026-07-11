@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app.ui.main_window import MainWindow
 
@@ -29,6 +29,24 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "import_button"))
         self.assertFalse(hasattr(window, "refresh_voices_button"))
         self.assertFalse(window.import_button.icon().isNull())
+        self.assertTrue(hasattr(window, "markup_toolbar"))
+        self.assertTrue(hasattr(window, "markup_toolbar_action"))
+        window._set_markup_toolbar_visible(True)
+        self.assertFalse(window.markup_toolbar.isHidden())
+        self.assertTrue(window.markup_toolbar_action.isChecked())
+        markup_buttons = window.markup_toolbar.findChildren(
+            QPushButton,
+            "markupCommandButton",
+        )
+        self.assertGreaterEqual(len(markup_buttons), 6)
+        window.text_editor.clear()
+        markup_buttons[0].click()
+        self.assertEqual(window.text_editor.toPlainText(), "{{pause }}")
+        self.assertEqual(window.text_editor.textCursor().position(), len("{{pause "))
+        window.markup_toolbar_action.setChecked(False)
+        self.assertTrue(window.markup_toolbar.isHidden())
+        window.markup_toolbar_action.setChecked(True)
+        self.assertFalse(window.markup_toolbar.isHidden())
         self.assertEqual(window.windowTitle(), "LocalText2Voice")
         self.assertTrue(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
         self.assertTrue(hasattr(window, "app_menu_bar"))
@@ -63,7 +81,8 @@ class MainWindowUITests(unittest.TestCase):
         window._show_voices_page()
         self.assertEqual(window.page_stack.currentIndex(), 5)
         self.assertTrue(hasattr(window, "voices_table"))
-        self.assertEqual(window.voices_table.columnCount(), 6)
+        self.assertEqual(window.voices_table.columnCount(), 10)
+        self.assertTrue(hasattr(window, "voices_filter_edit"))
         self.assertIn("Piper", window.voices_engine_label.text())
 
         window._show_review_page()
@@ -80,10 +99,10 @@ class MainWindowUITests(unittest.TestCase):
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
         self.assertEqual(window.settings_tabs.count(), 4)
-        self.assertEqual(window.tts_engine_combo.count(), 8)
+        self.assertGreaterEqual(window.tts_engine_combo.count(), 9)
         self.assertEqual(window.tts_engine_combo.currentData(), "piper")
         self.assertTrue(hasattr(window, "tts_engine_table"))
-        self.assertEqual(window.tts_engine_table.rowCount(), 8)
+        self.assertGreaterEqual(window.tts_engine_table.rowCount(), 9)
         self.assertEqual(window.tts_engine_table.columnCount(), 8)
         self.assertIn("Piper", window.tts_engine_table.item(0, 1).text())
         self.assertIn(
@@ -92,7 +111,7 @@ class MainWindowUITests(unittest.TestCase):
         )
         self.assertFalse(hasattr(window, "python_runtime_status_label"))
         self.assertFalse(hasattr(window, "python_runtime_install_button"))
-        self.assertEqual(window.engine_settings_stack.count(), 8)
+        self.assertGreaterEqual(window.engine_settings_stack.count(), 10)
         self.assertGreaterEqual(window.tts_engine_combo.findData("chatterbox"), 0)
         self.assertGreaterEqual(window.tts_engine_combo.findData("kokoro"), 0)
         self.assertGreaterEqual(window.tts_engine_combo.findData("qwen"), 0)
@@ -116,6 +135,9 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "whisper_install_button"))
         self.assertEqual(window.review_model_combo.currentData(), "small")
         self.assertTrue(window.language_combo.isEnabled())
+        self.assertTrue(hasattr(window, "markup_toolbar_checkbox"))
+        self.assertTrue(window.markup_toolbar_checkbox.isChecked())
+        self.assertIn("min-width", window._markup_help_card("{{pause}}", "Example."))
 
         window._select_tts_engine("openai")
         self.assertFalse(window.language_combo.isEnabled())

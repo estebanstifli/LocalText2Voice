@@ -53,6 +53,8 @@ class FasterWhisperManagerTests(unittest.TestCase):
 
     def test_worker_cli_uses_persistent_json_protocol(self) -> None:
         self.assertIn("WhisperModel", FASTER_WHISPER_CLI)
+        self.assertIn('"word_timestamps": True', FASTER_WHISPER_CLI)
+        self.assertIn('"words": words', FASTER_WHISPER_CLI)
         self.assertIn('"type": "ready"', FASTER_WHISPER_CLI)
         self.assertIn('"type": "result"', FASTER_WHISPER_CLI)
 

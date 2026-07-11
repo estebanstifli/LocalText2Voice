@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .api_engines import (
     AzureTTSEngine,
+    CustomHTTPTTSEngine,
     ElevenLabsTTSEngine,
     GeminiTTSEngine,
     OpenAITTSEngine,
@@ -14,6 +15,8 @@ from .chatterbox_engine import ChatterboxTTSEngine
 from .chatterbox_manager import ChatterboxManager
 from .kokoro_python_engine import KokoroPythonTTSEngine
 from .kokoro_python_manager import KokoroPythonManager
+from .omnivoice_engine import OmniVoiceTTSEngine
+from .omnivoice_manager import OmniVoiceManager
 from .piper_engine import PiperTTSEngine
 from .qwen_engine import QwenTTSEngine
 from .qwen_manager import QwenManager
@@ -31,6 +34,7 @@ TTS_ENGINES: tuple[TTSEngineDefinition, ...] = (
     TTSEngineDefinition("kokoro", "Kokoro", True),
     TTSEngineDefinition("chatterbox", "Chatterbox", True),
     TTSEngineDefinition("qwen", "Qwen3 TTS", True),
+    TTSEngineDefinition("omnivoice", "OmniVoice", True),
     TTSEngineDefinition("openai", "OpenAI TTS (API)", False),
     TTSEngineDefinition("elevenlabs", "ElevenLabs (API)", False),
     TTSEngineDefinition("gemini", "Google Gemini TTS (API)", False),
@@ -51,6 +55,8 @@ def create_tts_engine(engine_id: str, piper_path: Path) -> BaseTTSEngine:
         return ChatterboxTTSEngine(ChatterboxManager())
     if engine_id == "qwen":
         return QwenTTSEngine(QwenManager())
+    if engine_id == "omnivoice":
+        return OmniVoiceTTSEngine(OmniVoiceManager())
     if engine_id == "openai":
         return OpenAITTSEngine()
     if engine_id == "elevenlabs":
@@ -59,4 +65,6 @@ def create_tts_engine(engine_id: str, piper_path: Path) -> BaseTTSEngine:
         return GeminiTTSEngine()
     if engine_id == "azure":
         return AzureTTSEngine()
+    if engine_id.startswith("custom:"):
+        return CustomHTTPTTSEngine()
     raise TTSEngineError(f"Unknown TTS engine: {engine_id}")

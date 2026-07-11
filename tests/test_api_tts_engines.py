@@ -13,6 +13,7 @@ from typing import Any
 
 from app.tts.api_engines import (
     AzureTTSEngine,
+    CustomHTTPTTSEngine,
     ElevenLabsTTSEngine,
     GeminiTTSEngine,
     OpenAITTSEngine,
@@ -106,6 +107,31 @@ class FakeGeminiEngine(GeminiTTSEngine):
             ]
         }
         return json.dumps(response).encode("utf-8"), "application/json"
+
+
+class FakeCustomHTTPEngine(CustomHTTPTTSEngine):
+    def __init__(self, response: bytes, content_type: str = "audio/wav") -> None:
+        super().__init__()
+        self.response = response
+        self.content_type = content_type
+        self.method = ""
+        self.url = ""
+        self.body = b""
+        self.headers: dict[str, str] = {}
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> tuple[bytes, str]:
+        self.method = method
+        self.url = url
+        self.body = body
+        self.headers = headers
+        return self.response, self.content_type
 
 
 class ApiTTSEngineTests(unittest.TestCase):
@@ -225,6 +251,117 @@ class ApiTTSEngineTests(unittest.TestCase):
                 }
             )
 
+    def test_custom_http_engine_builds_template_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            engine = FakeCustomHTTPEngine(wav_bytes())
+            output = Path(temporary_name) / "custom.wav"
+
+            result = engine.synthesize_to_wav(
+                "Hello \"custom\".",
+                output,
+                {
+                    "engine": "custom:demo",
+                    "name": "Demo",
+                    "url": "http://127.0.0.1:7851/api/tts",
+                    "method": "POST",
+                    "voice": "demo-voice",
+                    "language": "en",
+                    "speed": 0.9,
+                    "headers_json": '{"X-Test": "{{voice}}"}',
+                    "body_template": (
+                        '{"text":"{{text}}","voice":"{{voice}}",'
+                        '"language":"{{language}}","speed":{{speed}}}'
+                    ),
+                    "response_mode": "audio_wav",
+                    "timeout_seconds": 30,
+                },
+            )
+
+            self.assertEqual(result, output)
+            self.assertEqual(engine.method, "POST")
+            self.assertEqual(engine.headers["X-Test"], "demo-voice")
+            payload = json.loads(engine.body.decode("utf-8"))
+            self.assertEqual(payload["text"], 'Hello "custom".')
+            self.assertEqual(payload["voice"], "demo-voice")
+            self.assertEqual(payload["speed"], 0.9)
+            with wave.open(str(output), "rb") as audio:
+                self.assertEqual(audio.getframerate(), 16000)
+
+    def test_custom_http_engine_reads_json_base64_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            pcm = struct.pack("<h", 0) * 1200
+            response = json.dumps(
+                {"audio": {"data": base64.b64encode(pcm).decode("ascii")}}
+            ).encode("utf-8")
+            engine = FakeCustomHTTPEngine(response, "application/json")
+            output = Path(temporary_name) / "custom-json.wav"
+
+            engine.synthesize_to_wav(
+                "Hola.",
+                output,
+                {
+                    "engine": "custom:json",
+                    "name": "JSON Demo",
+                    "url": "http://localhost:5000/tts",
+                    "response_mode": "json_base64",
+                    "json_audio_path": "audio.data",
+                    "sample_rate": 22050,
+                },
+            )
+
+            with wave.open(str(output), "rb") as audio:
+                self.assertEqual(audio.getframerate(), 22050)
+                self.assertEqual(audio.getnchannels(), 1)
+
+    def test_custom_http_engine_urlencodes_form_body_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            response = json.dumps({"output_file_url": "/audio/result.wav"}).encode("utf-8")
+            engine = FakeCustomHTTPEngine(response, "application/json")
+            engine.response = wav_bytes()
+            first_body = {"value": ""}
+
+            def request(
+                method: str,
+                url: str,
+                body: bytes,
+                headers: dict[str, str],
+                timeout_seconds: int,
+            ) -> tuple[bytes, str]:
+                engine.method = method
+                engine.url = url
+                engine.body = body
+                engine.headers = headers
+                if url.endswith("/audio/result.wav"):
+                    return wav_bytes(), "audio/wav"
+                first_body["value"] = body.decode("utf-8")
+                return response, "application/json"
+
+            engine._request = request  # type: ignore[method-assign]
+            output = Path(temporary_name) / "alltalk.wav"
+
+            engine.synthesize_to_wav(
+                'A&B = "test"',
+                output,
+                {
+                    "engine": "custom:alltalk",
+                    "name": "AllTalk",
+                    "url": "http://127.0.0.1:7851/api/tts-generate",
+                    "headers_json": (
+                        '{"Content-Type":"application/x-www-form-urlencoded"}'
+                    ),
+                    "body_template": "text_input={{text}}&language={{language}}",
+                    "response_mode": "json_url",
+                    "json_audio_path": "output_file_url",
+                    "language": "en",
+                },
+            )
+
+            self.assertEqual(
+                first_body["value"],
+                "text_input=A%26B%20%3D%20%22test%22&language=en",
+            )
+            self.assertTrue(output.exists())
+
     def test_registry_keeps_piper_and_api_engines_separate(self) -> None:
         self.assertIsInstance(
             create_tts_engine("piper", Path("piper.exe")),
@@ -237,6 +374,10 @@ class ApiTTSEngineTests(unittest.TestCase):
         self.assertIsInstance(
             create_tts_engine("gemini", Path("piper.exe")),
             GeminiTTSEngine,
+        )
+        self.assertIsInstance(
+            create_tts_engine("custom:demo", Path("piper.exe")),
+            CustomHTTPTTSEngine,
         )
 
 

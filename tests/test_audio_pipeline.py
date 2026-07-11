@@ -7,10 +7,13 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
 from app.tts.base import BaseTTSEngine
+from app.tts.voice_gallery_manager import GalleryVoice
 
 
 class FakeTTSEngine(BaseTTSEngine):
@@ -68,6 +71,199 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
         self.assertEqual(config["speaker"], "Serena")
         self.assertEqual(config["language"], "Spanish")
 
+    def test_qwen_partial_voice_name_selects_closest_voice_and_logs_warning(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        logs: list[str] = []
+        pipeline = AudioPipeline(FakeTTSEngine(), log_callback=logs.append)
+        config = pipeline._voice_config_for_chunk(
+            {
+                "engine": "qwen",
+                "speaker": "Sohee",
+                "language": "English",
+                "instruct": "",
+            },
+            TextChunk(
+                text="Hola.",
+                ends_paragraph=True,
+                markup_state={"voice": "ser spa"},
+            ),
+        )
+
+        self.assertEqual(config["speaker"], "Serena")
+        self.assertEqual(config["language"], "Spanish")
+        self.assertTrue(any("Closest Qwen3 TTS voice selected" in log for log in logs))
+
+    def test_omnivoice_voice_markup_disambiguates_by_language_suffix(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        english_path = root / "english.wav"
+        spanish_path = root / "spanish.wav"
+        english_path.write_bytes(b"english")
+        spanish_path.write_bytes(b"spanish")
+
+        class FakeGalleryManager:
+            def ensure_seed_loaded(self) -> None:
+                return
+
+            def list_voices(self, engine: str) -> list[GalleryVoice]:
+                assert engine == "omnivoice"
+                return [
+                    GalleryVoice(
+                        voice_id="mini_en",
+                        engine="omnivoice",
+                        name="Mini",
+                        language="en",
+                        language_name="English",
+                        voice_type="Designed voice",
+                        install_type="engine_builtin",
+                        preview_path=str(english_path),
+                        ref_text="English reference.",
+                        tags=("english",),
+                    ),
+                    GalleryVoice(
+                        voice_id="mini_es",
+                        engine="omnivoice",
+                        name="Mini",
+                        language="es",
+                        language_name="Spanish",
+                        voice_type="Designed voice",
+                        install_type="engine_builtin",
+                        preview_path=str(spanish_path),
+                        ref_text="Referencia espanola.",
+                        tags=("spanish",),
+                    ),
+                ]
+
+            def preview_source(self, voice: GalleryVoice) -> str:
+                return voice.preview_path
+
+            def ensure_voice_audio(self, voice: GalleryVoice) -> Path:
+                return spanish_path if voice.language_name == "Spanish" else english_path
+
+        pipeline = AudioPipeline(FakeTTSEngine())
+        with patch("app.tts.voice_gallery_manager.VoiceGalleryManager", FakeGalleryManager):
+            config = pipeline._voice_config_for_chunk(
+                {
+                    "engine": "omnivoice",
+                    "mode": "clone",
+                    "language": "auto",
+                    "reference_audio_path": "",
+                    "reference_text": "",
+                },
+                TextChunk(
+                    text="Hola.",
+                    ends_paragraph=True,
+                    markup_state={"voice": "Mini - Spa"},
+                ),
+            )
+
+        self.assertEqual(config["reference_audio_path"], str(spanish_path))
+        self.assertEqual(config["reference_text"], "Referencia espanola.")
+        self.assertEqual(config["language"], "Spanish")
+
+    def test_chatterbox_voice_markup_uses_compatible_gallery_voice_fuzzy_match(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        lucia_path = root / "lucia.wav"
+        lucia_path.write_bytes(b"lucia")
+
+        class FakeGalleryManager:
+            def ensure_seed_loaded(self) -> None:
+                return
+
+            def list_voices(self, engine: str) -> list[GalleryVoice]:
+                assert engine == "chatterbox"
+                return [
+                    GalleryVoice(
+                        voice_id="chatterbox_lucia_documental",
+                        engine="chatterbox",
+                        name="Lucia",
+                        language="es",
+                        language_name="Spanish",
+                        voice_type="Reference voice",
+                        install_type="reference_audio",
+                        preview_path=str(lucia_path),
+                        ref_text="Referencia de Lucia.",
+                        tags=("spanish", "chatterbox-compatible"),
+                    )
+                ]
+
+            def preview_source(self, voice: GalleryVoice) -> str:
+                return voice.preview_path
+
+            def ensure_voice_audio(self, voice: GalleryVoice) -> Path:
+                return lucia_path
+
+        logs: list[str] = []
+        pipeline = AudioPipeline(FakeTTSEngine(), log_callback=logs.append)
+        with patch("app.tts.voice_gallery_manager.VoiceGalleryManager", FakeGalleryManager):
+            config = pipeline._voice_config_for_chunk(
+                {
+                    "engine": "chatterbox",
+                    "language": "en",
+                    "reference_audio_path": "",
+                },
+                TextChunk(
+                    text="Hola.",
+                    ends_paragraph=True,
+                    markup_state={"voice": "Luc"},
+                ),
+            )
+
+        self.assertEqual(config["reference_audio_path"], str(lucia_path))
+        self.assertEqual(config["language"], "es")
+        self.assertTrue(any("Closest Chatterbox voice selected" in log for log in logs))
+
+    def test_custom_http_markup_voice_and_language_are_passed_to_template_config(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        logs: list[str] = []
+        pipeline = AudioPipeline(FakeTTSEngine(), log_callback=logs.append)
+        config = pipeline._voice_config_for_chunk(
+            {
+                "engine": "custom:alltalk",
+                "name": "AllTalk Local",
+                "voice": "female_01.wav",
+                "language": "en",
+            },
+            TextChunk(
+                text="Hola.",
+                ends_paragraph=True,
+                markup_state={
+                    "voice": "male_01.wav",
+                    "language": "es",
+                },
+            ),
+        )
+
+        self.assertEqual(config["voice"], "male_01.wav")
+        self.assertEqual(config["language"], "es")
+        self.assertEqual(config["lang"], "es")
+        self.assertFalse(any("not supported for custom:alltalk" in log for log in logs))
+
+    def test_partial_voice_matching_prefers_prefixes(self) -> None:
+        voices = [
+            SimpleNamespace(display_name="Jhony - uk"),
+            SimpleNamespace(display_name="Eduardo - es"),
+        ]
+
+        match = AudioPipeline._match_named_item(
+            "edu",
+            voices,
+            lambda voice: (voice.display_name,),
+        )
+
+        self.assertIsNotNone(match)
+        self.assertFalse(match.exact)
+        self.assertEqual(match.item.display_name, "Eduardo - es")
+
     def test_qwen_markup_instruction_uses_instruct_not_text_tag(self) -> None:
         from app.core.text_processor import TextChunk
 
@@ -83,15 +279,36 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
                 text="Hola.",
                 ends_paragraph=True,
                 markup_state={
-                    "emotion": "happy",
-                    "model_instruction": "[smiling]",
+                    "config_overrides": {"instruct": "[smiling]"},
                 },
             ),
         )
 
         self.assertIn("Narrate clearly.", config["instruct"])
-        self.assertIn("happy", config["instruct"])
         self.assertIn("smiling", config["instruct"])
+
+    def test_markup_speed_and_volume_are_postprocess_settings(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        pipeline = AudioPipeline(FakeTTSEngine())
+        config = pipeline._voice_config_for_chunk(
+            {"engine": "chatterbox", "speed": 1.0},
+            TextChunk(
+                text="Test.",
+                ends_paragraph=True,
+                markup_state={
+                    "speed": 0.85,
+                    "volume_db": -3.0,
+                    "normalize_lufs": -16.0,
+                },
+            ),
+        )
+
+        self.assertEqual(config["speed"], 1.0)
+        self.assertEqual(config["_postprocess_speed"], 0.85)
+        self.assertEqual(config["_postprocess_volume_db"], -3.0)
+        self.assertEqual(config["_postprocess_normalize_lufs"], -16.0)
+        self.assertEqual(AudioPipeline._atempo_filters(4.0), ["atempo=2.000", "atempo=2.000"])
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for this test")
@@ -253,7 +470,10 @@ class AudioPipelineTests(unittest.TestCase):
         combined = " ".join(chunk.text for chunk in chunks)
         self.assertNotIn("[laugh]", combined)
         self.assertNotIn("{{cmd", combined)
-        self.assertEqual(chunks[1].markup_state["model_instruction"], "[laugh]")
+        self.assertEqual(
+            chunks[1].markup_state["config_overrides"],
+            {"instruct": "[laugh]"},
+        )
 
     def test_ltv_markup_voice_and_language_state_are_applied_per_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -363,25 +583,17 @@ class AudioPipelineTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
-            intro = root / "intro.wav"
             background = root / "background.wav"
-            outro = root / "outro.wav"
-            create_tone(intro, 0.20, 330)
             create_tone(background, 0.12, 110)
-            create_tone(outro, 0.20, 440)
             options = AudioGenerationOptions(
                 output_dir=root / "output",
                 voice_config={"speed": 1.0},
                 ffmpeg_path=Path(shutil.which("ffmpeg") or "ffmpeg"),
                 podcast_enabled=True,
-                intro_enabled=True,
-                intro_path=intro,
                 background_enabled=True,
                 background_path=background,
                 background_loop=True,
                 background_volume_percent=12,
-                outro_enabled=True,
-                outro_path=outro,
                 podcast_gap_ms=100,
                 podcast_normalize=True,
                 podcast_ducking=True,

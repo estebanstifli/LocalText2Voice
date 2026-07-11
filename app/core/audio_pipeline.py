@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+import re
 import tempfile
 import threading
 import time
@@ -55,8 +57,6 @@ class AudioGenerationOptions:
     periodic_pause_max_ms: int = 750
     normalize_audio: bool = False
     podcast_enabled: bool = False
-    intro_enabled: bool = False
-    intro_path: Path | None = None
     background_enabled: bool = False
     background_path: Path | None = None
     background_loop: bool = True
@@ -65,8 +65,6 @@ class AudioGenerationOptions:
     music_volume_db: float = -7.0
     voice_start_offset_ms: int = 2000
     music_tail_ms: int = 2000
-    outro_enabled: bool = False
-    outro_path: Path | None = None
     music_fade_in_seconds: float = 1.0
     music_fade_out_seconds: float = 1.0
     podcast_gap_ms: int = 500
@@ -91,6 +89,13 @@ class NarrationArtifact:
     mp3_path: Path
     title: str
     podcast_filename: str
+
+
+@dataclass(frozen=True)
+class VoiceMatch:
+    item: Any
+    matched_name: str
+    exact: bool
 
 
 class AudioPipeline:
@@ -214,6 +219,7 @@ class AudioPipeline:
                     temp_dir,
                     total_chunks,
                     total_steps,
+                    runner,
                 )
                 self._check_cancelled()
                 self.progress_callback(
@@ -343,6 +349,21 @@ class AudioPipeline:
             )
             self.log_callback(f"Qwen3 device: {voice_config.get('device', 'auto')}")
             self.log_callback(f"Qwen3 dtype: {voice_config.get('dtype', 'auto')}")
+        elif engine == "omnivoice":
+            self.log_callback("Using TTS engine: OmniVoice")
+            self.log_callback(
+                f"OmniVoice model: {voice_config.get('model', 'unknown')}"
+            )
+            self.log_callback(
+                f"OmniVoice mode: {voice_config.get('mode', 'clone')}"
+            )
+            self.log_callback(
+                f"OmniVoice language: {voice_config.get('language', 'auto')}"
+            )
+            self.log_callback(
+                f"OmniVoice device: {voice_config.get('device', 'auto')}"
+            )
+            self.log_callback(f"OmniVoice dtype: {voice_config.get('dtype', 'auto')}")
         elif engine == "gemini":
             self.log_callback("Using TTS engine: Google Gemini TTS")
             self.log_callback(f"Gemini model: {voice_config.get('model', 'unknown')}")
@@ -352,6 +373,17 @@ class AudioPipeline:
             model = voice_config.get("model") or voice_config.get("model_id")
             if model:
                 self.log_callback(f"API model: {model}")
+        elif engine.startswith("custom:"):
+            self.log_callback(
+                "Using TTS engine: "
+                f"Custom HTTP - {voice_config.get('name', engine)}"
+            )
+            self.log_callback(
+                f"Custom endpoint: {voice_config.get('url', 'unknown')}"
+            )
+            response_mode = voice_config.get("response_mode")
+            if response_mode:
+                self.log_callback(f"Custom response mode: {response_mode}")
         elif engine != "piper":
             self.log_callback(f"Using TTS engine: {engine}")
 
@@ -503,6 +535,7 @@ class AudioPipeline:
         temp_dir: Path,
         total_chunks: int,
         total_steps: int,
+        runner: FFmpegRunner,
     ) -> list[list[Path]]:
         rendered_groups: list[list[Path]] = []
         completed = 0
@@ -548,6 +581,14 @@ class AudioPipeline:
                         output_wav,
                         chunk_voice_config,
                     )
+                    self._postprocess_chunk_wav(
+                        output_wav,
+                        chunk_voice_config,
+                        runner,
+                        temp_dir,
+                        group_index,
+                        chunk_index,
+                    )
                 except Exception as exc:
                     if (
                         segment_id is not None
@@ -584,6 +625,73 @@ class AudioPipeline:
             rendered_groups.append(rendered_chunks)
         return rendered_groups
 
+    def _postprocess_chunk_wav(
+        self,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+        runner: FFmpegRunner,
+        temp_dir: Path,
+        group_index: int,
+        chunk_index: int,
+    ) -> None:
+        filters: list[str] = []
+        speed = float(voice_config.get("_postprocess_speed", 1.0) or 1.0)
+        if abs(speed - 1.0) > 0.001:
+            filters.extend(self._atempo_filters(speed))
+
+        if "_postprocess_volume_db" in voice_config:
+            volume_db = float(voice_config.get("_postprocess_volume_db", 0.0) or 0.0)
+            if abs(volume_db) > 0.001:
+                filters.append(f"volume={volume_db:.3f}dB")
+
+        if "_postprocess_normalize_lufs" in voice_config:
+            target_lufs = float(
+                voice_config.get("_postprocess_normalize_lufs", -16.0) or -16.0
+            )
+            filters.append(f"loudnorm=I={target_lufs:.1f}:LRA=11:TP=-1.5")
+
+        if not filters:
+            return
+
+        self._check_cancelled()
+        processed = temp_dir / (
+            f"group_{group_index:03d}_block_{chunk_index:04d}_processed.wav"
+        )
+        arguments = [
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(output_wav),
+            "-filter:a",
+            ",".join(filters),
+            "-codec:a",
+            "pcm_s16le",
+            str(processed),
+        ]
+        started = time.perf_counter()
+        runner.run(arguments)
+        processed.replace(output_wav)
+        self.log_callback(
+            "LTV Markup postprocess applied in "
+            f"{self._format_duration(time.perf_counter() - started)} "
+            f"({', '.join(filters)})."
+        )
+
+    @staticmethod
+    def _atempo_filters(speed: float) -> list[str]:
+        remaining = max(0.25, min(4.0, speed))
+        filters: list[str] = []
+        while remaining > 2.0:
+            filters.append("atempo=2.000")
+            remaining /= 2.0
+        while remaining < 0.5:
+            filters.append("atempo=0.500")
+            remaining /= 0.5
+        filters.append(f"atempo={remaining:.3f}")
+        return filters
+
     def _segment_output_wav(
         self,
         temp_dir: Path,
@@ -612,27 +720,36 @@ class AudioPipeline:
 
         voice_value = str(state.get("voice", "")).strip()
         if voice_value:
-            self._apply_markup_voice(config, engine, voice_value)
+            self._apply_markup_voice(
+                config,
+                engine,
+                voice_value,
+                str(state.get("voice_language", "")).strip(),
+            )
 
         language_value = str(state.get("language", "")).strip()
         if language_value:
             self._apply_markup_language(config, engine, language_value)
 
+        overrides = state.get("config_overrides")
+        if isinstance(overrides, dict) and overrides:
+            self._apply_config_overrides(config, overrides)
+
         if "speed" in state:
             try:
-                config["speed"] = max(0.25, min(4.0, float(state["speed"])))
+                config["_postprocess_speed"] = max(0.25, min(4.0, float(state["speed"])))
             except (TypeError, ValueError):
                 self._log_markup_runtime_warning(
                     "speed:invalid",
                     f"LTV Markup warning: invalid speed value ignored: {state['speed']}",
                 )
 
-        if "emotion" in state:
-            config["emotion"] = state["emotion"]
         if engine == "qwen":
             self._apply_qwen_style_instruction(config, state)
         if "volume_db" in state:
-            config["volume_db"] = state["volume_db"]
+            config["_postprocess_volume_db"] = state["volume_db"]
+        if "normalize_lufs" in state:
+            config["_postprocess_normalize_lufs"] = state["normalize_lufs"]
         return config
 
     def _apply_markup_voice(
@@ -640,17 +757,29 @@ class AudioPipeline:
         config: dict[str, Any],
         engine: str,
         voice_value: str,
+        voice_language: str = "",
     ) -> None:
         if self._is_default_marker(voice_value):
             return
         if engine == "chatterbox":
-            self._apply_chatterbox_voice(config, voice_value)
+            self._apply_chatterbox_voice(config, voice_value, voice_language)
         elif engine in {"kokoro", "kokoro_python"}:
-            self._apply_kokoro_voice(config, voice_value)
+            self._apply_kokoro_voice(config, voice_value, voice_language)
         elif engine == "qwen":
-            self._apply_qwen_voice(config, voice_value)
+            self._apply_qwen_voice(config, voice_value, voice_language)
+        elif engine == "omnivoice":
+            self._apply_omnivoice_voice(config, voice_value, voice_language)
         elif engine == "piper":
-            self._apply_piper_voice(config, voice_value)
+            self._apply_piper_voice(config, voice_value, voice_language)
+        elif engine.startswith("custom:"):
+            config["voice"] = voice_value
+            if voice_language:
+                config["language"] = voice_language
+                config["lang"] = voice_language
+            self._log_markup_voice_once(
+                str(config.get("name", engine)),
+                voice_value,
+            )
         else:
             self._log_markup_runtime_warning(
                 f"voice:unsupported:{engine}",
@@ -686,6 +815,13 @@ class AudioPipeline:
             else:
                 self._warn_unknown_language(engine, language_value)
             return
+        if engine == "omnivoice":
+            language = self._omnivoice_language_name(language_value)
+            if language:
+                config["language"] = language
+            else:
+                self._warn_unknown_language(engine, language_value)
+            return
         if engine == "piper":
             self._log_markup_runtime_warning(
                 "language:piper",
@@ -693,57 +829,172 @@ class AudioPipeline:
                 "by itself. Use {{voice \"...\"}} with a Piper voice instead.",
             )
             return
+        if engine.startswith("custom:"):
+            config["language"] = language_value
+            config["lang"] = language_value
+            return
         self._log_markup_runtime_warning(
             f"language:unsupported:{engine}",
             f"LTV Markup warning: language switching is not supported for {engine}.",
         )
 
+    def _apply_config_overrides(
+        self,
+        config: dict[str, Any],
+        overrides: dict[str, Any],
+    ) -> None:
+        reserved = {
+            "engine",
+            "piper_path",
+            "model_path",
+            "config_path",
+            "ffmpeg_path",
+            "cache_dir",
+            "install_dir",
+            "runtime_dir",
+        }
+        applied: list[str] = []
+        ignored: list[str] = []
+        for raw_key, value in overrides.items():
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            normalized = key.casefold()
+            if normalized in reserved or normalized.startswith("_"):
+                ignored.append(key)
+                continue
+            if key in {"instruct", "instructions"}:
+                existing = str(config.get(key, "") or "").strip()
+                incoming = str(value or "").strip()
+                config[key] = f"{existing} {incoming}".strip() if existing else value
+                alias = "instructions" if key == "instruct" else "instruct"
+                alias_existing = str(config.get(alias, "") or "").strip()
+                if alias_existing and incoming:
+                    config[alias] = f"{alias_existing} {incoming}".strip()
+                else:
+                    config[alias] = config[key]
+            else:
+                config[key] = value
+            applied.append(key)
+
+        if applied:
+            self._log_markup_runtime_warning(
+                f"cmd:overrides:{','.join(sorted(applied)).casefold()}",
+                "LTV Markup: applied next-segment TTS parameter(s): "
+                + ", ".join(applied),
+            )
+        if ignored:
+            self._log_markup_runtime_warning(
+                f"cmd:reserved:{','.join(sorted(ignored)).casefold()}",
+                "LTV Markup warning: reserved TTS parameter(s) ignored: "
+                + ", ".join(ignored),
+            )
+
     def _apply_chatterbox_voice(
         self,
         config: dict[str, Any],
         voice_value: str,
+        voice_language: str = "",
     ) -> None:
         try:
-            from app.tts.chatterbox_voice_manager import ChatterboxReferenceVoiceManager
+            from app.tts.voice_gallery_manager import GalleryVoice, VoiceGalleryManager
         except Exception as exc:
             self._log_markup_runtime_warning(
                 "voice:chatterbox:import",
-                f"LTV Markup warning: could not load Chatterbox voices: {exc}",
+                f"LTV Markup warning: could not load Chatterbox gallery voices: {exc}",
             )
             return
 
-        cache_key = "chatterbox"
+        cache_key = "chatterbox_gallery"
         voices = self._markup_voice_cache.get(cache_key)
-        manager = self._markup_voice_cache.get("chatterbox_manager")
-        if voices is None or not isinstance(manager, ChatterboxReferenceVoiceManager):
-            manager = ChatterboxReferenceVoiceManager()
-            voices = manager.list_installed_voices()
+        manager = self._markup_voice_cache.get("chatterbox_gallery_manager")
+        if voices is None or not isinstance(manager, VoiceGalleryManager):
+            manager = VoiceGalleryManager()
+            manager.ensure_seed_loaded()
+            voices = [
+                voice
+                for voice in manager.list_voices("chatterbox")
+                if manager.preview_source(voice)
+            ]
+            if not voices:
+                try:
+                    manager.sync()
+                    voices = [
+                        voice
+                        for voice in manager.list_voices("chatterbox")
+                        if manager.preview_source(voice)
+                    ]
+                except Exception as exc:
+                    self._log_markup_runtime_warning(
+                        "voice:chatterbox:sync",
+                        f"LTV Markup warning: could not sync Chatterbox voices: {exc}",
+                    )
             self._markup_voice_cache[cache_key] = voices
-            self._markup_voice_cache["chatterbox_manager"] = manager
+            self._markup_voice_cache["chatterbox_gallery_manager"] = manager
 
-        matched = self._match_named_item(
+        voice_name, requested_language = self._split_omnivoice_voice_language(
             voice_value,
-            voices,
-            lambda voice: self._chatterbox_voice_names(voice),
+            voice_language,
         )
-        if matched is None:
+        language_name = self._omnivoice_language_name(requested_language)
+        candidate_voices = list(voices)
+        if language_name:
+            filtered = [
+                voice
+                for voice in candidate_voices
+                if self._gallery_voice_matches_language(voice, language_name)
+            ]
+            if filtered:
+                candidate_voices = filtered
+            else:
+                self._log_markup_runtime_warning(
+                    f"voice:chatterbox:language:{self._lookup_key(requested_language)}",
+                    "LTV Markup warning: no Chatterbox gallery voices found for "
+                    f'language "{requested_language}". Searching all languages.',
+                )
+
+        match = self._match_named_item(
+            voice_name,
+            candidate_voices,
+            self._omnivoice_gallery_voice_names,
+        )
+        if match is None:
             self._warn_unknown_voice("Chatterbox", voice_value)
             return
-        path = manager.path_for(matched)
-        if not path.is_file():
+        matched = match.item
+        if not isinstance(matched, GalleryVoice):
+            self._warn_unknown_voice("Chatterbox", voice_value)
+            return
+        try:
+            path = manager.ensure_voice_audio(matched)
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                f"voice:chatterbox:download:{self._lookup_key(voice_value)}",
+                f"LTV Markup warning: could not prepare Chatterbox reference "
+                f'voice "{matched.name}": {exc}',
+            )
+            return
+        if path is None or not path.is_file():
             self._log_markup_runtime_warning(
                 f"voice:chatterbox:missing:{self._lookup_key(voice_value)}",
-                "LTV Markup warning: Chatterbox reference voice is not installed: "
-                f"{matched.display_name}",
+                f'LTV Markup warning: Chatterbox voice "{matched.name}" does '
+                "not provide reference audio.",
             )
             return
         config["reference_audio_path"] = str(path)
-        self._log_markup_voice_once("Chatterbox", matched.display_name)
+        if language_name:
+            config["language"] = self._language_code(language_name) or language_name
+        elif matched.language:
+            config["language"] = self._language_code(matched.language) or matched.language
+        if not match.exact:
+            self._warn_fuzzy_voice_match("Chatterbox", voice_value, matched.name)
+        self._log_markup_voice_once("Chatterbox", matched.name)
 
     def _apply_kokoro_voice(
         self,
         config: dict[str, Any],
         voice_value: str,
+        voice_language: str = "",
     ) -> None:
         try:
             from app.tts.kokoro_python_manager import KokoroPythonManager
@@ -759,22 +1010,39 @@ class AudioPipeline:
         if voices is None:
             voices = KokoroPythonManager().list_voices()
             self._markup_voice_cache[cache_key] = voices
-        matched = self._match_named_item(
+        candidate_voices = list(voices)
+        requested_language = self._kokoro_language_code(voice_language)
+        if requested_language:
+            filtered = [
+                voice
+                for voice in candidate_voices
+                if str(getattr(voice, "language", "")).casefold()
+                == requested_language.casefold()
+            ]
+            if filtered:
+                candidate_voices = filtered
+            else:
+                self._warn_unknown_language("Kokoro", voice_language)
+        match = self._match_named_item(
             voice_value,
-            voices,
+            candidate_voices,
             lambda voice: self._kokoro_voice_names(voice),
         )
-        if matched is None:
+        if match is None:
             self._warn_unknown_voice("Kokoro", voice_value)
             return
+        matched = match.item
         config["voice"] = matched.voice_id
         config["lang"] = matched.language
+        if not match.exact:
+            self._warn_fuzzy_voice_match("Kokoro", voice_value, matched.display_name)
         self._log_markup_voice_once("Kokoro", matched.display_name)
 
     def _apply_qwen_voice(
         self,
         config: dict[str, Any],
         voice_value: str,
+        voice_language: str = "",
     ) -> None:
         try:
             from app.tts.qwen_manager import QwenManager
@@ -798,26 +1066,43 @@ class AudioPipeline:
             languages = QwenManager().list_languages()
             self._markup_voice_cache["qwen_languages"] = languages
 
-        matched_pair = self._match_qwen_voice_language(voice_value, voices, languages)
+        matched_pair = self._match_qwen_voice_language(
+            voice_value,
+            voices,
+            languages,
+            voice_language,
+        )
         if matched_pair is not None:
-            matched_voice, matched_language = matched_pair
+            matched_voice, matched_language, exact = matched_pair
             config["speaker"] = matched_voice.voice_id
             config["language"] = matched_language.language_id
+            display_name = (
+                f"{matched_voice.display_name} - {matched_language.display_name}"
+            )
+            if not exact:
+                self._warn_fuzzy_voice_match(
+                    "Qwen3 TTS",
+                    voice_value,
+                    display_name,
+                )
             self._log_markup_voice_once(
                 "Qwen3 TTS",
-                f"{matched_voice.display_name} - {matched_language.display_name}",
+                display_name,
             )
             return
 
-        matched = self._match_named_item(
+        match = self._match_named_item(
             voice_value,
             voices,
             lambda voice: (voice.voice_id, voice.display_name),
         )
-        if matched is None:
+        if match is None:
             self._warn_unknown_voice("Qwen3 TTS", voice_value)
             return
+        matched = match.item
         config["speaker"] = matched.voice_id
+        if not match.exact:
+            self._warn_fuzzy_voice_match("Qwen3 TTS", voice_value, matched.display_name)
         self._log_markup_voice_once("Qwen3 TTS", matched.display_name)
 
     def _apply_qwen_style_instruction(
@@ -825,46 +1110,116 @@ class AudioPipeline:
         config: dict[str, Any],
         state: dict[str, Any],
     ) -> None:
-        instructions: list[str] = []
+        _ = state
         base_instruction = str(config.get("instruct", "")).strip()
         if base_instruction:
-            instructions.append(base_instruction)
+            config["instruct"] = base_instruction
 
-        emotion = str(state.get("emotion", "")).strip().casefold()
-        if emotion:
-            emotion_instruction = self._qwen_emotion_instruction(emotion)
-            if emotion_instruction:
-                instructions.append(emotion_instruction)
+    def _apply_omnivoice_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+        voice_language: str = "",
+    ) -> None:
+        try:
+            from app.tts.voice_gallery_manager import GalleryVoice, VoiceGalleryManager
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:omnivoice:import",
+                f"LTV Markup warning: could not load OmniVoice gallery voices: {exc}",
+            )
+            return
 
-        model_instruction = str(state.get("model_instruction", "")).strip()
-        if model_instruction:
-            instructions.append(self._qwen_model_instruction(model_instruction))
+        cache_key = "omnivoice_gallery"
+        voices = self._markup_voice_cache.get(cache_key)
+        manager = self._markup_voice_cache.get("omnivoice_gallery_manager")
+        if voices is None or not isinstance(manager, VoiceGalleryManager):
+            manager = VoiceGalleryManager()
+            manager.ensure_seed_loaded()
+            voices = [
+                voice
+                for voice in manager.list_voices("omnivoice")
+                if manager.preview_source(voice)
+            ]
+            if not voices:
+                try:
+                    manager.sync()
+                    voices = [
+                        voice
+                        for voice in manager.list_voices("omnivoice")
+                        if manager.preview_source(voice)
+                    ]
+                except Exception as exc:
+                    self._log_markup_runtime_warning(
+                        "voice:omnivoice:sync",
+                        f"LTV Markup warning: could not sync OmniVoice voices: {exc}",
+                    )
+            self._markup_voice_cache[cache_key] = voices
+            self._markup_voice_cache["omnivoice_gallery_manager"] = manager
 
-        if instructions:
-            config["instruct"] = " ".join(instructions)
+        voice_name, requested_language = self._split_omnivoice_voice_language(
+            voice_value,
+            voice_language,
+        )
+        language_name = self._omnivoice_language_name(requested_language)
+        candidate_voices = list(voices)
+        if language_name:
+            filtered = [
+                voice
+                for voice in candidate_voices
+                if self._gallery_voice_matches_language(voice, language_name)
+            ]
+            if filtered:
+                candidate_voices = filtered
+            else:
+                self._log_markup_runtime_warning(
+                    f"voice:omnivoice:language:{self._lookup_key(requested_language)}",
+                    "LTV Markup warning: no OmniVoice gallery voices found for "
+                    f'language "{requested_language}". Searching all languages.',
+                )
 
-    @staticmethod
-    def _qwen_emotion_instruction(emotion: str) -> str:
-        instructions = {
-            "happy": "Speak in a warm, happy, upbeat tone.",
-            "sad": "Speak in a soft, sad, reflective tone.",
-            "angry": "Speak with controlled anger and stronger emphasis.",
-            "scared": "Speak in a tense, frightened, cautious tone.",
-            "whisper": "Speak quietly, like a close whisper.",
-            "neutral": "Speak in a natural neutral tone.",
-        }
-        return instructions.get(emotion, "")
+        match = self._match_named_item(
+            voice_name,
+            candidate_voices,
+            self._omnivoice_gallery_voice_names,
+        )
+        if match is None:
+            self._warn_unknown_voice("OmniVoice", voice_value)
+            return
 
-    @staticmethod
-    def _qwen_model_instruction(value: str) -> str:
-        cleaned = value.strip()
-        if cleaned.startswith("[") and cleaned.endswith("]"):
-            cleaned = cleaned[1:-1].strip()
-        if not cleaned:
-            return ""
-        if cleaned.endswith((".", "!", "?")):
-            return cleaned
-        return f"Follow this speaking instruction: {cleaned}."
+        matched = match.item
+        if not isinstance(matched, GalleryVoice):
+            self._warn_unknown_voice("OmniVoice", voice_value)
+            return
+
+        try:
+            reference_path = manager.ensure_voice_audio(matched)
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                f"voice:omnivoice:download:{self._lookup_key(voice_value)}",
+                f"LTV Markup warning: could not prepare OmniVoice reference "
+                f'voice "{matched.name}": {exc}',
+            )
+            return
+        if reference_path is None or not reference_path.is_file():
+            self._log_markup_runtime_warning(
+                f"voice:omnivoice:missing:{self._lookup_key(voice_value)}",
+                f'LTV Markup warning: OmniVoice voice "{matched.name}" does '
+                "not provide reference audio.",
+            )
+            return
+
+        config["mode"] = "clone"
+        config["reference_audio_path"] = str(reference_path)
+        config["reference_text"] = matched.ref_text
+        config["instruct"] = ""
+        if language_name:
+            config["language"] = language_name
+        elif matched.language_name:
+            config["language"] = matched.language_name
+        if not match.exact:
+            self._warn_fuzzy_voice_match("OmniVoice", voice_value, matched.name)
+        self._log_markup_voice_once("OmniVoice", matched.name)
 
     @classmethod
     def _match_qwen_voice_language(
@@ -872,24 +1227,66 @@ class AudioPipeline:
         requested: str,
         voices: Any,
         languages: Any,
-    ) -> tuple[Any, Any] | None:
-        requested_key = cls._lookup_key(requested)
-        for voice in voices:
-            for language in languages:
-                candidate_names = (
-                    f"{voice.display_name} - {language.display_name}",
-                    f"{voice.display_name} {language.display_name}",
-                    f"{voice.voice_id} - {language.language_id}",
-                    f"{voice.voice_id} {language.language_id}",
+        requested_language: str = "",
+    ) -> tuple[Any, Any, bool] | None:
+        explicit_language = cls._qwen_language_name(requested_language)
+        if explicit_language:
+            voice_match = cls._match_named_item(
+                requested,
+                voices,
+                lambda voice: (voice.voice_id, voice.display_name),
+            )
+            language_match = cls._match_named_item(
+                explicit_language,
+                languages,
+                lambda language: (language.language_id, language.display_name),
+            )
+            if voice_match is not None and language_match is not None:
+                return (
+                    voice_match.item,
+                    language_match.item,
+                    voice_match.exact and language_match.exact,
                 )
-                if any(requested_key == cls._lookup_key(name) for name in candidate_names):
-                    return voice, language
-        return None
+            return None
+
+        pairs = [
+            (voice, language)
+            for voice in voices
+            for language in languages
+        ]
+        match = cls._match_named_item(
+            requested,
+            pairs,
+            lambda pair: (
+                f"{pair[0].display_name} - {pair[1].display_name}",
+                f"{pair[0].display_name} {pair[1].display_name}",
+                f"{pair[0].voice_id} - {pair[1].language_id}",
+                f"{pair[0].voice_id} {pair[1].language_id}",
+            ),
+            allow_fuzzy=False,
+        )
+        if match is None and len(cls._lookup_key(requested).split()) >= 2:
+            match = cls._match_named_item(
+                requested,
+                pairs,
+                lambda pair: (
+                    f"{pair[0].display_name} - {pair[1].display_name}",
+                    f"{pair[0].display_name} {pair[1].display_name}",
+                    f"{pair[0].voice_id} - {pair[1].language_id}",
+                    f"{pair[0].voice_id} {pair[1].language_id}",
+                ),
+                allow_fuzzy=True,
+            )
+        if match is None:
+            return None
+        voice, language = match.item
+        return voice, language, match.exact
 
     def _apply_piper_voice(
         self,
         config: dict[str, Any],
         voice_value: str,
+        voice_language: str = "",
     ) -> None:
         try:
             from app.tts.voice_manager import VoiceManager
@@ -906,9 +1303,21 @@ class AudioPipeline:
         if voices is None:
             voices = VoiceManager(application_root() / "voices").discover()
             self._markup_voice_cache[cache_key] = voices
-        matched = self._match_named_item(
+        candidate_voices = list(voices)
+        requested_language = self._language_code(voice_language)
+        if requested_language:
+            filtered = [
+                voice
+                for voice in candidate_voices
+                if self._piper_voice_matches_language(voice, requested_language)
+            ]
+            if filtered:
+                candidate_voices = filtered
+            else:
+                self._warn_unknown_language("Piper", voice_language)
+        match = self._match_named_item(
             voice_value,
-            voices,
+            candidate_voices,
             lambda voice: (
                 voice.voice_id,
                 voice.display_name,
@@ -917,13 +1326,30 @@ class AudioPipeline:
                 Path(voice.voice_id).parent.as_posix(),
             ),
         )
-        if matched is None:
+        if match is None:
             self._warn_unknown_voice("Piper", voice_value)
             return
+        matched = match.item
         speed = float(config.get("speed", 1.0))
         config.update(matched.as_config(speed))
         config["engine"] = "piper"
+        if not match.exact:
+            self._warn_fuzzy_voice_match("Piper", voice_value, matched.display_name)
         self._log_markup_voice_once("Piper", matched.display_name)
+
+    @classmethod
+    def _piper_voice_matches_language(cls, voice: Any, requested_language: str) -> bool:
+        candidates = (
+            str(getattr(voice, "language", "")),
+            str(getattr(voice, "voice_id", "")),
+            str(getattr(voice, "display_name", "")),
+        )
+        target = cls._lookup_key(requested_language)
+        for candidate in candidates:
+            key = cls._lookup_key(candidate.replace("_", " "))
+            if key == target or key.startswith(target):
+                return True
+        return False
 
     @staticmethod
     def _chatterbox_voice_names(voice: Any) -> tuple[str, ...]:
@@ -951,18 +1377,126 @@ class AudioPipeline:
         )
 
     @classmethod
+    def _split_omnivoice_voice_language(
+        cls,
+        voice_value: str,
+        voice_language: str = "",
+    ) -> tuple[str, str]:
+        explicit_language = voice_language.strip()
+        if explicit_language:
+            return voice_value.strip(), explicit_language
+
+        parts = re.split(r"\s*[-\u2010-\u2015\u2212]\s*", voice_value.strip(), maxsplit=1)
+        if len(parts) == 2 and cls._omnivoice_language_name(parts[1]):
+            return parts[0].strip(), parts[1].strip()
+        return voice_value.strip(), ""
+
+    @classmethod
+    def _gallery_voice_matches_language(cls, voice: Any, language_name: str) -> bool:
+        target = cls._lookup_key(language_name)
+        if not target:
+            return True
+        candidates = [
+            str(getattr(voice, "language_name", "")),
+            str(getattr(voice, "language", "")),
+            *[str(tag) for tag in getattr(voice, "tags", ()) or ()],
+        ]
+        for candidate in candidates:
+            key = cls._lookup_key(candidate)
+            if not key:
+                continue
+            if key == target:
+                return True
+            candidate_language = cls._omnivoice_language_name(candidate)
+            if candidate_language and cls._lookup_key(candidate_language) == target:
+                return True
+        return False
+
+    @staticmethod
+    def _omnivoice_gallery_voice_names(voice: Any) -> tuple[str, ...]:
+        tags = tuple(str(tag) for tag in getattr(voice, "tags", ()) or ())
+        return (
+            str(getattr(voice, "voice_id", "")),
+            str(getattr(voice, "name", "")),
+            str(getattr(voice, "short_description", "")),
+            str(getattr(voice, "voice_style", "")),
+            str(getattr(voice, "age_style", "")),
+            *tags,
+        )
+
+    @classmethod
     def _match_named_item(
         cls,
         requested: str,
         items: Any,
         names_callback: Callable[[Any], tuple[str, ...]],
-    ) -> Any | None:
+        allow_fuzzy: bool = True,
+    ) -> VoiceMatch | None:
         requested_key = cls._lookup_key(requested)
+        if not requested_key:
+            return None
+        candidates: list[tuple[Any, str, str]] = []
         for item in items:
             for name in names_callback(item):
-                if requested_key == cls._lookup_key(name):
-                    return item
-        return None
+                candidate_key = cls._lookup_key(name)
+                if not candidate_key:
+                    continue
+                if requested_key == candidate_key:
+                    return VoiceMatch(item, str(name), True)
+                candidates.append((item, str(name), candidate_key))
+
+        if not allow_fuzzy:
+            return None
+        fuzzy = cls._best_fuzzy_voice_match(requested_key, candidates)
+        if fuzzy is None:
+            return None
+        item, name, _score = fuzzy
+        return VoiceMatch(item, name, False)
+
+    @classmethod
+    def _best_fuzzy_voice_match(
+        cls,
+        requested_key: str,
+        candidates: list[tuple[Any, str, str]],
+    ) -> tuple[Any, str, float] | None:
+        if len(requested_key) < 2:
+            return None
+
+        best: tuple[Any, str, float] | None = None
+        requested_tokens = requested_key.split()
+        for item, name, candidate_key in candidates:
+            candidate_tokens = candidate_key.split()
+            score = 0.0
+            if candidate_key.startswith(requested_key):
+                score = 0.98
+            elif any(token.startswith(requested_key) for token in candidate_tokens):
+                score = 0.95
+            elif requested_key in candidate_key:
+                score = 0.90
+            elif requested_tokens and all(
+                any(
+                    token.startswith(requested_token)
+                    for token in candidate_tokens
+                )
+                for requested_token in requested_tokens
+            ):
+                score = 0.88
+            elif len(requested_key) >= 5:
+                score = difflib.SequenceMatcher(
+                    None,
+                    requested_key,
+                    candidate_key,
+                ).ratio()
+
+            if score > 0 and (best is None or score > best[2]):
+                best = (item, name, score)
+
+        if best is None:
+            return None
+        minimum_score = 0.72 if len(requested_key) >= 5 else 0.88
+        if best[2] < minimum_score:
+            return None
+        return best
 
     @classmethod
     def _language_code(cls, value: str) -> str:
@@ -1090,6 +1624,44 @@ class AudioPipeline:
         }
         return aliases.get(key) or aliases.get(code, "")
 
+    @classmethod
+    def _omnivoice_language_name(cls, value: str) -> str:
+        code = cls._language_code(value)
+        key = cls._lookup_key(value)
+        aliases = {
+            "zh": "Chinese",
+            "chinese": "Chinese",
+            "chino": "Chinese",
+            "en": "English",
+            "english": "English",
+            "ingles": "English",
+            "ja": "Japanese",
+            "japanese": "Japanese",
+            "japones": "Japanese",
+            "ko": "Korean",
+            "korean": "Korean",
+            "coreano": "Korean",
+            "de": "German",
+            "german": "German",
+            "aleman": "German",
+            "fr": "French",
+            "french": "French",
+            "frances": "French",
+            "ru": "Russian",
+            "russian": "Russian",
+            "ruso": "Russian",
+            "pt": "Portuguese",
+            "portuguese": "Portuguese",
+            "portugues": "Portuguese",
+            "es": "Spanish",
+            "spanish": "Spanish",
+            "espanol": "Spanish",
+            "it": "Italian",
+            "italian": "Italian",
+            "italiano": "Italian",
+        }
+        return aliases.get(key) or aliases.get(code, "")
+
     @staticmethod
     def _is_default_marker(value: str) -> bool:
         return value.strip().casefold() in {"", "auto", "default", "narrator"}
@@ -1126,6 +1698,21 @@ class AudioPipeline:
             f"voice:{engine_name.casefold()}:{self._lookup_key(voice_value)}",
             f'LTV Markup warning: {engine_name} voice not found: "{voice_value}". '
             "Using the selected default voice.",
+        )
+
+    def _warn_fuzzy_voice_match(
+        self,
+        engine_name: str,
+        requested: str,
+        selected: str,
+    ) -> None:
+        self._log_markup_runtime_warning(
+            (
+                f"voice:fuzzy:{engine_name.casefold()}:"
+                f"{self._lookup_key(requested)}:{self._lookup_key(selected)}"
+            ),
+            f'LTV Markup warning: voice "{requested}" was not found exactly. '
+            f"Closest {engine_name} voice selected: {selected}",
         )
 
     def _warn_unknown_language(self, engine: str, language_value: str) -> None:
@@ -1406,9 +1993,7 @@ class AudioPipeline:
         self.log_callback(f"Creating podcast mix: {artifact.podcast_filename}")
         self.log_callback(
             "Podcast mix options: "
-            f"intro={'on' if options.intro_enabled else 'off'}, "
             f"background={'on' if options.background_enabled else 'off'}, "
-            f"outro={'on' if options.outro_enabled else 'off'}, "
             f"ducking={'on' if options.podcast_ducking else 'off'}, "
             f"normalization={'on' if options.podcast_normalize else 'off'}, "
             f"voice={options.voice_volume_db:.1f} dB, "
@@ -1434,13 +2019,6 @@ class AudioPipeline:
             arguments.extend(["-i", str(options.background_path)])
             input_indexes["background"] = next_index
             next_index += 1
-        if options.intro_enabled and options.intro_path is not None:
-            arguments.extend(["-i", str(options.intro_path)])
-            input_indexes["intro"] = next_index
-            next_index += 1
-        if options.outro_enabled and options.outro_path is not None:
-            arguments.extend(["-i", str(options.outro_path)])
-            input_indexes["outro"] = next_index
 
         narration_duration = self._wav_duration_seconds(artifact.wav_path)
         voice_offset_seconds = options.voice_start_offset_ms / 1000
@@ -1580,47 +2158,7 @@ class AudioPipeline:
                 "[0:a]" + ",".join(voice_filters) + "[body]"
             )
 
-        segments: list[str] = []
-        if "intro" in input_indexes:
-            filters.append(
-                self._music_segment_filter(
-                    input_indexes["intro"],
-                    "intro",
-                    audio_format,
-                    options.music_fade_in_seconds,
-                    options.music_fade_out_seconds,
-                )
-            )
-            segments.append("[intro]")
-        if segments and options.podcast_gap_ms > 0:
-            filters.append(self._gap_filter("gap_before_body", options.podcast_gap_ms))
-            segments.append("[gap_before_body]")
-        segments.append("[body]")
-        if "outro" in input_indexes:
-            if options.podcast_gap_ms > 0:
-                filters.append(
-                    self._gap_filter("gap_before_outro", options.podcast_gap_ms)
-                )
-                segments.append("[gap_before_outro]")
-            filters.append(
-                self._music_segment_filter(
-                    input_indexes["outro"],
-                    "outro",
-                    audio_format,
-                    options.music_fade_in_seconds,
-                    options.music_fade_out_seconds,
-                )
-            )
-            segments.append("[outro]")
-
-        if len(segments) > 1:
-            filters.append(
-                "".join(segments)
-                + f"concat=n={len(segments)}:v=0:a=1[podcast_joined]"
-            )
-            final_label = "podcast_joined"
-        else:
-            final_label = "body"
+        final_label = "body"
 
         if options.podcast_normalize:
             filters.append(
@@ -1664,34 +2202,6 @@ class AudioPipeline:
             f"{self._format_duration(time.perf_counter() - mix_started)}."
         )
         return final_path
-
-    @staticmethod
-    def _music_segment_filter(
-        input_index: int,
-        label: str,
-        audio_format: str,
-        fade_in_seconds: float,
-        fade_out_seconds: float,
-    ) -> str:
-        filters = [audio_format]
-        if fade_in_seconds > 0:
-            filters.append(f"afade=t=in:st=0:d={fade_in_seconds:.3f}")
-        if fade_out_seconds > 0:
-            filters.extend(
-                [
-                    "areverse",
-                    f"afade=t=in:st=0:d={fade_out_seconds:.3f}",
-                    "areverse",
-                ]
-            )
-        return f"[{input_index}:a]" + ",".join(filters) + f"[{label}]"
-
-    @staticmethod
-    def _gap_filter(label: str, duration_ms: int) -> str:
-        return (
-            "anullsrc=channel_layout=stereo:sample_rate=44100:"
-            f"d={duration_ms / 1000:.3f}[{label}]"
-        )
 
     @staticmethod
     def _wav_duration_seconds(path: Path) -> float:
@@ -1896,18 +2406,12 @@ class AudioPipeline:
         if options.podcast_gap_ms < 0:
             raise AudioPipelineError("Podcast gap cannot be negative.")
         if options.podcast_enabled:
-            for enabled, path, label in (
-                (options.intro_enabled, options.intro_path, "intro"),
-                (
-                    options.background_enabled,
-                    options.background_path,
-                    "background music",
-                ),
-                (options.outro_enabled, options.outro_path, "outro"),
+            if options.background_enabled and (
+                options.background_path is None
+                or not options.background_path.is_file()
             ):
-                if enabled and (path is None or not path.is_file()):
-                    raise AudioPipelineError(
-                        f"The selected {label} audio file does not exist."
-                    )
+                raise AudioPipelineError(
+                    "The selected background music audio file does not exist."
+                )
         if not 0.25 <= float(options.voice_config.get("speed", 1.0)) <= 4.0:
             raise AudioPipelineError("Voice speed must be between 0.25 and 4.0.")

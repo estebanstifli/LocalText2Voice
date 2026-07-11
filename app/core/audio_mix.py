@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.utils.ffmpeg_utils import FFmpegRunner, find_ffmpeg
@@ -28,17 +28,33 @@ def render_audio_preview_segment(
     settings: AudioMixSettings,
     music_path: Path | None = None,
     start_seconds: float = 0.0,
-    duration_seconds: float = 15.0,
+    duration_seconds: float = 60.0,
 ) -> Path:
+    offset_seconds = settings.voice_start_offset_ms / 1000
+    voice_input_start = max(0.0, start_seconds - offset_seconds)
+    preview_voice_offset = max(0.0, offset_seconds - start_seconds)
+    music_input_start = 0.0 if settings.loop_background else max(0.0, start_seconds)
+    preview_settings = replace(
+        settings,
+        voice_start_offset_ms=round(preview_voice_offset * 1000),
+        music_fade_in_seconds=(
+            settings.music_fade_in_seconds
+            if start_seconds <= 0.001
+            else 0.0
+        ),
+        music_fade_out_seconds=0.0,
+    )
     return render_audio_mix(
         voice_path=voice_path,
         output_path=output_path,
         ffmpeg_path=ffmpeg_path,
-        settings=settings,
+        settings=preview_settings,
         music_path=music_path,
-        start_seconds=start_seconds,
+        start_seconds=0.0,
         duration_seconds=duration_seconds,
         voice_duration_seconds=duration_seconds,
+        voice_input_start_seconds=voice_input_start,
+        music_input_start_seconds=music_input_start,
     )
 
 
@@ -52,6 +68,8 @@ def render_audio_mix(
     duration_seconds: float | None = None,
     voice_duration_seconds: float | None = None,
     metadata: dict[str, str] | None = None,
+    voice_input_start_seconds: float = 0.0,
+    music_input_start_seconds: float = 0.0,
 ) -> Path:
     if not voice_path.is_file():
         raise FileNotFoundError(f"Voice audio not found: {voice_path}")
@@ -61,11 +79,15 @@ def render_audio_mix(
     runner = FFmpegRunner(find_ffmpeg(ffmpeg_path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     arguments = ["-y", "-hide_banner", "-loglevel", "error"]
+    if voice_input_start_seconds > 0:
+        arguments.extend(["-ss", f"{voice_input_start_seconds:.3f}"])
     arguments.extend(["-i", str(voice_path)])
 
     if music_path is not None:
         if settings.loop_background:
             arguments.extend(["-stream_loop", "-1"])
+        if music_input_start_seconds > 0:
+            arguments.extend(["-ss", f"{music_input_start_seconds:.3f}"])
         arguments.extend(["-i", str(music_path)])
 
     filter_complex, final_label = _build_mix_filter(
@@ -100,6 +122,8 @@ def _build_mix_filter(
     filters: list[str] = []
     voice_filters = [audio_format]
     target_duration = _target_duration(settings, duration_seconds, voice_duration_seconds)
+    if target_duration is not None and duration_seconds is not None and start_seconds > 0:
+        target_duration = max(target_duration, start_seconds + duration_seconds)
     offset_seconds = settings.voice_start_offset_ms / 1000
     if offset_seconds < 0:
         voice_filters.extend([f"atrim=start={abs(offset_seconds):.3f}", "asetpts=N/SR/TB"])

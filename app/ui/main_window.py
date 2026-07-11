@@ -11,7 +11,9 @@ import tempfile
 import time
 import wave
 from dataclasses import replace
+from html import escape
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QEvent, QPoint, QSize, QThread, QTimer, Qt
 from PySide6.QtGui import (
@@ -57,6 +59,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -75,8 +78,14 @@ from app.tts.chatterbox_voice_manager import (
 )
 from app.tts.kokoro_preview import kokoro_preview_text_for_language
 from app.tts.kokoro_python_manager import KokoroPythonManager
+from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
 from app.tts.piper_engine import PiperTTSEngine
+from app.tts.voice_gallery_manager import (
+    DEFAULT_GALLERY_CATALOG_URL,
+    GalleryVoice,
+    VoiceGalleryManager,
+)
 from app.tts.voice_manager import VoiceInfo, VoiceManager
 from app.utils.i18n import Translator
 from app.utils.paths import application_root, resolve_app_path, resource_root
@@ -89,6 +98,11 @@ from app.workers.chatterbox_worker import (
 from app.workers.chatterbox_voice_worker import ChatterboxVoiceWorker
 from app.workers.generation_worker import GenerationWorker
 from app.workers.kokoro_worker import KokoroInstallWorker, KokoroPreviewWorker
+from app.workers.omnivoice_worker import (
+    OmniVoiceHardwareWorker,
+    OmniVoiceInstallWorker,
+    OmniVoicePreviewWorker,
+)
 from app.workers.preload_worker import TTSEnginePreloadWorker
 from app.workers.qwen_worker import (
     QwenHardwareWorker,
@@ -102,6 +116,7 @@ from app.workers.verification_worker import (
     SegmentRegenerationWorker,
     SegmentVerificationWorker,
 )
+from app.workers.voice_catalog_worker import VoiceGalleryWorker
 from app.verification.faster_whisper_manager import (
     FasterWhisperManager,
     FasterWhisperVerifier,
@@ -294,7 +309,7 @@ class WindowControlButton(QPushButton):
         center_y = self.height() // 2
 
         if self.icon_name == "window_minimize":
-            line_half = 7
+            line_half = 5
             y = center_y + 3
             painter.drawLine(center_x - line_half, y, center_x + line_half, y)
         elif self.icon_name == "window_maximize":
@@ -305,7 +320,7 @@ class WindowControlButton(QPushButton):
             painter.drawRect(center_x - side // 2 + 2, center_y - side // 2 - 1, side, side)
             painter.drawRect(center_x - side // 2 - 2, center_y - side // 2 + 3, side, side)
         elif self.icon_name == "close":
-            line_half = 8
+            line_half = 5
             painter.drawLine(
                 center_x - line_half,
                 center_y - line_half,
@@ -337,6 +352,473 @@ class WindowControlButton(QPushButton):
         super().leaveEvent(event)
 
 
+MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
+    {
+        "name": "pause",
+        "label": "Pause",
+        "template": "{{pause }}",
+        "cursor": "{{pause ",
+        "color": "#92400e",
+        "background": "#fff7ed",
+        "help": "Adds a silence pause. Examples: {{pause 700ms}}, {{pause 0.7s}}, {{pause.long}}, {{pause random 500 1200}}.",
+    },
+    {
+        "name": "voice",
+        "label": "Voice",
+        "template": "{{voice \"\"}}",
+        "cursor": "{{voice \"",
+        "color": "#6d28d9",
+        "background": "#f5f3ff",
+        "help": "Changes the voice for following text. The name can be partial; the closest voice in the selected engine is used. Examples: {{voice \"Serena - Spanish\"}}, {{voice \"ser spa\"}}, {{voice \"edu\"}}.",
+    },
+    {
+        "name": "lang",
+        "label": "Lang",
+        "template": "{{lang }}",
+        "cursor": "{{lang ",
+        "color": "#0f766e",
+        "background": "#ecfdf5",
+        "help": "Sets the language for following text. Example: {{lang es}}.",
+    },
+    {
+        "name": "speed",
+        "label": "Speed",
+        "template": "{{speed }}",
+        "cursor": "{{speed ",
+        "color": "#7c2d12",
+        "background": "#fffbeb",
+        "help": "Changes speaking speed with FFmpeg postprocessing, so it works even if the TTS engine does not support speed. Examples: {{speed 0.9}}, {{speed.slow}}, {{speed.fast}}.",
+    },
+    {
+        "name": "volume",
+        "label": "Volume",
+        "template": "{{volume }}",
+        "cursor": "{{volume ",
+        "color": "#0369a1",
+        "background": "#eff6ff",
+        "help": "Changes voice volume with FFmpeg postprocessing. Use a multiplier, percent, dB, or LUFS normalization. Examples: {{volume 0.8}}, {{volume 80%}}, {{volume -3db}}, {{volume.normalize -16}}.",
+    },
+    {
+        "name": "chapter",
+        "label": "Chapter",
+        "template": "{{chapter \"\"}}",
+        "cursor": "{{chapter \"",
+        "color": "#2563eb",
+        "background": "#eff6ff",
+        "help": "Starts a new chapter/section. Example: {{chapter \"Lesson 1\"}}.",
+    },
+    {
+        "name": "cmd",
+        "label": "Model Cmd",
+        "template": "{{cmd\n\"instruct\": \"\"}}",
+        "cursor": "{{cmd\n\"instruct\": \"",
+        "color": "#c2410c",
+        "background": "#fff7ed",
+        "help": "Applies TTS parameters only to the next segment. Example: {{cmd \"instruct\": \"Warm tone\", \"temperature\": 0.7, \"top_p\": 0.9}}.",
+    },
+    {
+        "name": "preset",
+        "label": "Preset",
+        "template": "{{preset\n\"instruct\": \"\"}}",
+        "cursor": "{{preset\n\"instruct\": \"",
+        "color": "#b45309",
+        "background": "#fffbeb",
+        "help": "Applies TTS parameters to every following segment until {{reset.preset}}. One-shot {{cmd}} can override it for one segment.",
+    },
+    {
+        "name": "reset",
+        "label": "Reset",
+        "template": "{{reset}}",
+        "cursor": "{{reset}}",
+        "color": "#64748b",
+        "background": "#f8fafc",
+        "help": "Resets voice, language, speed and other markup state. Use {{reset.preset}} to clear persistent TTS parameters.",
+    },
+)
+
+
+class ReferenceVoiceImportDialog(QDialog):
+    def __init__(self, source: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.source = source
+        self.setWindowTitle("Import reference voice")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        title = QLabel("Import reference voice")
+        title.setObjectName("sectionLabel")
+        helper = QLabel(
+            "WAV/MP3 files will be normalized to WAV, mono, 24 kHz. "
+            "Use a clean voice-only clip between 3 and 20 seconds."
+        )
+        helper.setObjectName("helperLabel")
+        helper.setWordWrap(True)
+        source_label = QLabel(str(source))
+        source_label.setObjectName("helperLabel")
+        source_label.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(helper)
+        layout.addWidget(source_label)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.name_edit = QLineEdit(source.stem)
+        self.language_combo = QComboBox()
+        for label, code in (
+            ("Reference / Auto", "reference"),
+            ("English", "en"),
+            ("Spanish", "es"),
+            ("French", "fr"),
+            ("German", "de"),
+            ("Italian", "it"),
+            ("Portuguese", "pt"),
+            ("Japanese", "ja"),
+            ("Chinese", "zh"),
+            ("Hindi", "hi"),
+        ):
+            self.language_combo.addItem(label, code)
+        self.short_description_edit = QLineEdit()
+        self.short_description_edit.setPlaceholderText(
+            "Warm narrator, energetic promo, calm teacher..."
+        )
+        self.gender_combo = QComboBox()
+        for label, value in (
+            ("Not specified", ""),
+            ("Female", "female"),
+            ("Male", "male"),
+            ("Neutral", "neutral"),
+        ):
+            self.gender_combo.addItem(label, value)
+        self.age_style_combo = QComboBox()
+        for label, value in (
+            ("Not specified", ""),
+            ("Child", "child"),
+            ("Young adult", "young_adult"),
+            ("Middle aged", "middle_aged"),
+            ("Mature", "mature"),
+            ("Elderly", "elderly"),
+        ):
+            self.age_style_combo.addItem(label, value)
+        self.voice_style_edit = QLineEdit()
+        self.voice_style_edit.setPlaceholderText(
+            "storyteller, documentary, character, podcast..."
+        )
+        self.reference_text_edit = QTextEdit()
+        self.reference_text_edit.setMaximumHeight(90)
+        self.reference_text_edit.setPlaceholderText(
+            "Transcript of the reference audio. Recommended for better cloning."
+        )
+        form.addRow("Voice name", self.name_edit)
+        form.addRow("Language", self.language_combo)
+        form.addRow("Short description", self.short_description_edit)
+        form.addRow("Gender", self.gender_combo)
+        form.addRow("Age style", self.age_style_combo)
+        form.addRow("Voice style", self.voice_style_edit)
+        form.addRow("Reference transcript", self.reference_text_edit)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("Cancel")
+        import_button = QPushButton("Import voice")
+        import_button.setIcon(ui_icon("save"))
+        cancel_button.clicked.connect(self.reject)
+        import_button.clicked.connect(self.accept)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(import_button)
+        layout.addLayout(buttons)
+
+    def values(self) -> dict[str, object]:
+        language_code = str(self.language_combo.currentData() or "reference")
+        language_name = self.language_combo.currentText()
+        if language_code == "reference":
+            language_name = "Reference"
+        gender = str(self.gender_combo.currentData() or "")
+        age_style = str(self.age_style_combo.currentData() or "")
+        voice_style = self.voice_style_edit.text().strip()
+        tags = ["imported", "reference"]
+        for value in (language_code, gender, age_style, voice_style):
+            if value and value != "reference":
+                tags.append(value)
+        return {
+            "name": self.name_edit.text().strip() or self.source.stem,
+            "language": language_code,
+            "language_name": language_name,
+            "ref_text": self.reference_text_edit.toPlainText().strip(),
+            "short_description": self.short_description_edit.text().strip(),
+            "gender": gender,
+            "age_style": age_style,
+            "voice_style": voice_style,
+            "tags": tags,
+        }
+
+
+class OmniVoiceDesignDialog(QDialog):
+    VALID_GENDERS = {"male", "female"}
+    VALID_AGES = {"child", "teenager", "young adult", "middle-aged", "elderly"}
+    VALID_PITCHES = {
+        "very low pitch",
+        "low pitch",
+        "moderate pitch",
+        "high pitch",
+        "very high pitch",
+    }
+    VALID_ACCENTS = {
+        "american accent",
+        "british accent",
+        "australian accent",
+        "chinese accent",
+        "canadian accent",
+        "indian accent",
+        "korean accent",
+        "portuguese accent",
+        "russian accent",
+        "japanese accent",
+    }
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        translate: Callable[[str, str], str] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._translate = translate or (lambda _key, default: default)
+        self.preview_path: Path | None = None
+        self.setWindowTitle(self.tr_text("omnivoice_design_title", "OmniVoice Voice Designer"))
+        self.setMinimumSize(860, 620)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(16)
+
+        left = QFrame()
+        left.setObjectName("card")
+        left_layout = QVBoxLayout(left)
+        title = QLabel(self.tr_text("omnivoice_design_title", "OmniVoice Voice Designer"))
+        title.setObjectName("sectionLabel")
+        subtitle = QLabel(
+            self.tr_text(
+                "omnivoice_design_subtitle",
+                "Create a synthetic reference voice using only OmniVoice supported parameters.",
+            )
+        )
+        subtitle.setObjectName("helperLabel")
+        subtitle.setWordWrap(True)
+        left_layout.addWidget(title)
+        left_layout.addWidget(subtitle)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit(
+            self.tr_text("omnivoice_design_default_name", "New designed voice")
+        )
+        self.language_combo = QComboBox()
+        for label, value in (
+            (self.tr_text("language_english", "English"), "English"),
+            (self.tr_text("language_spanish", "Spanish"), "Spanish"),
+            (self.tr_text("language_french", "French"), "French"),
+            (self.tr_text("language_german", "German"), "German"),
+            (self.tr_text("language_italian", "Italian"), "Italian"),
+            (self.tr_text("language_portuguese", "Portuguese"), "Portuguese"),
+            (self.tr_text("auto", "Auto"), "auto"),
+        ):
+            self.language_combo.addItem(label, value)
+
+        self.gender_combo = QComboBox()
+        for label, value in (
+            (self.tr_text("none_option", "None"), ""),
+            (self.tr_text("omnivoice_gender_female", "Female"), "female"),
+            (self.tr_text("omnivoice_gender_male", "Male"), "male"),
+        ):
+            self.gender_combo.addItem(label, value)
+        self.gender_combo.setCurrentIndex(1)
+
+        self.age_combo = QComboBox()
+        for label, value in (
+            (self.tr_text("none_option", "None"), ""),
+            (self.tr_text("omnivoice_age_child", "Child"), "child"),
+            (self.tr_text("omnivoice_age_teenager", "Teenager"), "teenager"),
+            (self.tr_text("omnivoice_age_young_adult", "Young adult"), "young adult"),
+            (self.tr_text("omnivoice_age_middle_aged", "Middle-aged"), "middle-aged"),
+            (self.tr_text("omnivoice_age_elderly", "Elderly"), "elderly"),
+        ):
+            self.age_combo.addItem(label, value)
+        self.age_combo.setCurrentIndex(3)
+
+        self.pitch_combo = QComboBox()
+        for label, value in (
+            (self.tr_text("none_option", "None"), ""),
+            (self.tr_text("omnivoice_pitch_very_low", "Very low pitch"), "very low pitch"),
+            (self.tr_text("omnivoice_pitch_low", "Low pitch"), "low pitch"),
+            (self.tr_text("omnivoice_pitch_moderate", "Moderate pitch"), "moderate pitch"),
+            (self.tr_text("omnivoice_pitch_high", "High pitch"), "high pitch"),
+            (self.tr_text("omnivoice_pitch_very_high", "Very high pitch"), "very high pitch"),
+        ):
+            self.pitch_combo.addItem(label, value)
+        self.pitch_combo.setCurrentIndex(3)
+
+        self.whisper_checkbox = QCheckBox(
+            self.tr_text("omnivoice_style_whisper", "Whisper")
+        )
+
+        self.accent_combo = QComboBox()
+        self.accent_combo.addItem(
+            self.tr_text("omnivoice_no_accent", "No accent instruction"),
+            "",
+        )
+        for accent in sorted(self.VALID_ACCENTS):
+            self.accent_combo.addItem(
+                self.tr_text(
+                    f"omnivoice_accent_{accent.replace(' ', '_')}",
+                    accent.title(),
+                ),
+                accent,
+            )
+
+        form.addRow(self.tr_text("name", "Name"), self.name_edit)
+        form.addRow(self.tr_text("language", "Language"), self.language_combo)
+        form.addRow(self.tr_text("omnivoice_gender", "Gender"), self.gender_combo)
+        form.addRow(self.tr_text("omnivoice_age", "Age"), self.age_combo)
+        form.addRow(self.tr_text("omnivoice_pitch", "Pitch"), self.pitch_combo)
+        form.addRow(self.tr_text("omnivoice_style", "Style"), self.whisper_checkbox)
+        form.addRow(self.tr_text("omnivoice_accent", "Accent"), self.accent_combo)
+        left_layout.addLayout(form)
+
+        valid_help = QLabel(
+            self.tr_text(
+                "omnivoice_design_help",
+                "OmniVoice accepts one value per category: gender, age, pitch, optional whisper, and optional English accent.",
+            )
+        )
+        valid_help.setObjectName("helperLabel")
+        valid_help.setWordWrap(True)
+        left_layout.addWidget(valid_help)
+
+        self.instruct_preview_label = QLabel("")
+        self.instruct_preview_label.setObjectName("helperLabel")
+        self.instruct_preview_label.setWordWrap(True)
+        left_layout.addWidget(self.instruct_preview_label)
+        left_layout.addStretch(1)
+
+        right = QFrame()
+        right.setObjectName("card")
+        right_layout = QVBoxLayout(right)
+        preview_title = QLabel(self.tr_text("preview", "Preview"))
+        preview_title.setObjectName("sectionLabel")
+        self.sample_text_edit = QTextEdit()
+        self.sample_text_edit.setPlainText(
+            self.tr_text(
+                "omnivoice_design_sample_text",
+                "The sun dipped below the horizon, painting the sky in shades of gold and violet as the quiet village came to life.",
+            )
+        )
+        self.sample_text_edit.setMinimumHeight(140)
+        self.status_label = QLabel(
+            self.tr_text(
+                "omnivoice_design_status_ready",
+                "Choose parameters and generate a preview.",
+            )
+        )
+        self.status_label.setObjectName("helperLabel")
+        self.status_label.setWordWrap(True)
+        self.generate_button = QPushButton(
+            self.tr_text("generate_preview", "Generate Preview")
+        )
+        self.generate_button.setIcon(ui_icon("preview"))
+        self.play_button = QPushButton(self.tr_text("play_preview", "Play Preview"))
+        self.play_button.setIcon(ui_icon("play"))
+        self.play_button.setEnabled(False)
+        self.save_button = QPushButton(self.tr_text("save_as_voice", "Save as Voice"))
+        self.save_button.setIcon(ui_icon("save"))
+        self.save_button.setEnabled(False)
+        close_button = QPushButton(self.tr_text("close", "Close"))
+        close_button.clicked.connect(self.reject)
+        right_layout.addWidget(preview_title)
+        right_layout.addWidget(QLabel(self.tr_text("sample_text", "Sample text")))
+        right_layout.addWidget(self.sample_text_edit)
+        right_layout.addWidget(self.status_label)
+        right_layout.addStretch(1)
+        right_layout.addWidget(self.generate_button)
+        right_layout.addWidget(self.play_button)
+        right_layout.addWidget(self.save_button)
+        right_layout.addWidget(close_button)
+
+        layout.addWidget(left, 3)
+        layout.addWidget(right, 1)
+
+        for widget in (
+            self.gender_combo,
+            self.age_combo,
+            self.pitch_combo,
+            self.accent_combo,
+        ):
+            widget.currentIndexChanged.connect(self._refresh_instruct_preview)
+        self.whisper_checkbox.toggled.connect(self._refresh_instruct_preview)
+        self._refresh_instruct_preview()
+
+    def tr_text(self, key: str, default: str) -> str:
+        return self._translate(key, default)
+
+    def instruction(self) -> str:
+        parts: list[str] = []
+        gender = str(self.gender_combo.currentData() or "").strip().lower()
+        age = str(self.age_combo.currentData() or "").strip().lower()
+        pitch = str(self.pitch_combo.currentData() or "").strip().lower()
+        accent = str(self.accent_combo.currentData() or "").strip().lower()
+        if gender in self.VALID_GENDERS:
+            parts.append(gender)
+        if age in self.VALID_AGES:
+            parts.append(age)
+        if pitch in self.VALID_PITCHES:
+            parts.append(pitch)
+        if self.whisper_checkbox.isChecked():
+            parts.append("whisper")
+        if accent in self.VALID_ACCENTS:
+            parts.append(accent)
+
+        deduped: list[str] = []
+        for part in parts:
+            if part and part not in deduped:
+                deduped.append(part)
+        return ", ".join(deduped)
+
+    def _refresh_instruct_preview(self) -> None:
+        instruction = self.instruction()
+        fallback = self.tr_text("none_option", "None")
+        self.instruct_preview_label.setText(
+            self.tr_text(
+                "omnivoice_design_current_instruction",
+                "Current OmniVoice instruction: {instruction}",
+            ).format(instruction=instruction or fallback)
+        )
+
+    def voice_metadata(self) -> dict[str, object]:
+        language = str(self.language_combo.currentData() or "auto")
+        instruction = self.instruction()
+        tags = [
+            "designed",
+            "omnivoice",
+            *[
+                part.casefold().replace(" ", "_")
+                for part in instruction.split(", ")
+                if part
+            ],
+        ]
+        return {
+            "name": self.name_edit.text().strip()
+            or self.tr_text("omnivoice_design_default_name", "Designed voice"),
+            "language": language.casefold() if language != "auto" else "reference",
+            "language_name": self.language_combo.currentText()
+            if language != "auto"
+            else self.tr_text("reference", "Reference"),
+            "ref_text": self.sample_text_edit.toPlainText().strip(),
+            "short_description": instruction,
+            "gender": str(self.gender_combo.currentData() or ""),
+            "age_style": str(self.age_combo.currentData() or "").replace(" ", "_"),
+            "voice_style": instruction,
+            "tags": tags,
+        }
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -351,6 +833,15 @@ class MainWindow(QMainWindow):
         self.chatterbox_manager = ChatterboxManager()
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
+        self.omnivoice_manager = OmniVoiceManager()
+        gallery_settings = self.settings.get("voice_gallery", {})
+        self.voice_gallery_manager = VoiceGalleryManager(
+            catalog_url=str(
+                gallery_settings.get("catalog_url") or DEFAULT_GALLERY_CATALOG_URL
+            ),
+            local_catalog_path=str(gallery_settings.get("local_catalog_path", "")),
+        )
+        self.voice_gallery_manager.ensure_seed_loaded()
         self.audiobook_store = AudiobookStore()
         self.faster_whisper_manager = FasterWhisperManager()
         self.gpu_detection_result = detect_gpus()
@@ -374,12 +865,24 @@ class MainWindow(QMainWindow):
         self.chatterbox_hardware_thread: QThread | None = None
         self.chatterbox_voice_worker: ChatterboxVoiceWorker | None = None
         self.chatterbox_voice_thread: QThread | None = None
+        self.voice_gallery_worker: VoiceGalleryWorker | None = None
+        self.voice_gallery_thread: QThread | None = None
         self.qwen_worker: QwenInstallWorker | None = None
         self.qwen_thread: QThread | None = None
         self.qwen_preview_worker: QwenPreviewWorker | None = None
         self.qwen_preview_thread: QThread | None = None
         self.qwen_hardware_worker: QwenHardwareWorker | None = None
         self.qwen_hardware_thread: QThread | None = None
+        self.omnivoice_worker: OmniVoiceInstallWorker | None = None
+        self.omnivoice_thread: QThread | None = None
+        self.omnivoice_preview_worker: OmniVoicePreviewWorker | None = None
+        self.omnivoice_preview_thread: QThread | None = None
+        self.omnivoice_design_dialog: OmniVoiceDesignDialog | None = None
+        self.omnivoice_design_preview_path: Path | None = None
+        self.omnivoice_design_worker: OmniVoicePreviewWorker | None = None
+        self.omnivoice_design_thread: QThread | None = None
+        self.omnivoice_hardware_worker: OmniVoiceHardwareWorker | None = None
+        self.omnivoice_hardware_thread: QThread | None = None
         self.preload_worker: TTSEnginePreloadWorker | None = None
         self.preload_thread: QThread | None = None
         self.whisper_worker: FasterWhisperInstallWorker | None = None
@@ -408,6 +911,8 @@ class MainWindow(QMainWindow):
         self.preloaded_tts_engine_id: str | None = None
         self.preloading_tts_engine_id: str | None = None
         self.loaded_tts_engine_id: str | None = None
+        self.installer_setup_queue: list[str] = []
+        self.installer_setup_running = False
         self.generation_started_at: float | None = None
         self.progress_current = 0
         self.progress_total = 0
@@ -432,6 +937,12 @@ class MainWindow(QMainWindow):
         self.qwen_sample_player.setAudioOutput(self.qwen_audio_output)
         self.qwen_sample_player.playbackStateChanged.connect(
             self._on_qwen_playback_state_changed
+        )
+        self.omnivoice_audio_output = QAudioOutput(self)
+        self.omnivoice_sample_player = QMediaPlayer(self)
+        self.omnivoice_sample_player.setAudioOutput(self.omnivoice_audio_output)
+        self.omnivoice_sample_player.playbackStateChanged.connect(
+            self._on_omnivoice_playback_state_changed
         )
         self.music_library_audio_output = QAudioOutput(self)
         self.music_library_player = QMediaPlayer(self)
@@ -459,6 +970,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._restore_active_project()
         self._set_running(False)
+        QTimer.singleShot(900, self._run_pending_installer_setup)
 
     def tr(self, key: str, default: str | None = None, **values: object) -> str:
         return self.translator.text(key, default, **values)
@@ -747,11 +1259,22 @@ class MainWindow(QMainWindow):
             ("nav_voices", "Voices", self._show_voices_page),
             ("nav_music", "Music", self._show_music_page),
             ("nav_review", "Review", self._show_review_page),
-            ("audio_mix_preview", "Audio Mix Preview", self._show_mix_preview_page),
+            ("audio_mix_preview", "Audio Mix", self._show_mix_preview_page),
         ):
             action = QAction(self.tr(label_key, default), self)
             action.triggered.connect(callback)
             view_menu.addAction(action)
+        view_menu.addSeparator()
+        self.markup_toolbar_action = QAction(
+            self.tr("markup_toolbar", "Markup Toolbar"),
+            self,
+        )
+        self.markup_toolbar_action.setCheckable(True)
+        self.markup_toolbar_action.setChecked(
+            bool(self.settings.get("show_markup_toolbar", True))
+        )
+        self.markup_toolbar_action.toggled.connect(self._set_markup_toolbar_visible)
+        view_menu.addAction(self.markup_toolbar_action)
 
         help_menu = self.app_menu_bar.addMenu(self.tr("menu_help", "Help"))
         about_action = QAction(self.tr("help_about", "About LocalText2Voice"), self)
@@ -805,10 +1328,9 @@ class MainWindow(QMainWindow):
             (
                 "mix",
                 "waveform",
-                self.tr("audio_mix_preview", "Audio Mix Preview"),
+                self.tr("audio_mix_preview", "Audio Mix"),
                 self._show_mix_preview_page,
             ),
-            ("export", "export", self.tr("nav_export", "Export"), self._show_export_page),
         )
         for key, icon_name, text, callback in nav_items:
             button = self._sidebar_button(icon_name, text)
@@ -915,6 +1437,7 @@ class MainWindow(QMainWindow):
         self.header_open_output_button.setIcon(ui_icon("folder"))
         self.header_open_output_button.setIconSize(QSize(18, 18))
         self.header_open_output_button.clicked.connect(self._open_last_output_folder)
+        self.header_open_output_button.setVisible(False)
         header_layout.addWidget(self.ui_language_combo)
         header_layout.addWidget(self.settings_button)
         header_layout.addWidget(self.header_open_output_button)
@@ -1026,6 +1549,11 @@ class MainWindow(QMainWindow):
         self.import_button.clicked.connect(self._import_document)
         header_layout.addWidget(self.import_button)
         layout.addLayout(header_layout)
+        self.markup_toolbar = self._build_markup_toolbar()
+        self.markup_toolbar.setVisible(
+            bool(self.settings.get("show_markup_toolbar", True))
+        )
+        layout.addWidget(self.markup_toolbar)
 
         self.text_editor = QTextEdit()
         self.text_editor.setAcceptRichText(False)
@@ -1040,8 +1568,131 @@ class MainWindow(QMainWindow):
             bool(self.settings.get("editor_syntax_highlighting", True))
         )
         self.text_editor.textChanged.connect(self._mark_project_dirty)
+        self.text_editor.textChanged.connect(self._update_markup_editor_assist)
+        self.text_editor.cursorPositionChanged.connect(self._update_markup_editor_assist)
         layout.addWidget(self.text_editor, 1)
         return frame
+
+    def _build_markup_toolbar(self) -> QWidget:
+        toolbar = QFrame()
+        toolbar.setObjectName("markupToolbar")
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+        intro = QLabel(self.tr("markup_toolbar_hint", "Insert markup:"))
+        intro.setObjectName("helperLabel")
+        layout.addWidget(intro)
+        for command in MARKUP_COMMANDS:
+            button = QPushButton(command["label"])
+            button.setObjectName("markupCommandButton")
+            button.setProperty("markup_color", command["color"])
+            button.setToolTip(command["help"])
+            button.setStyleSheet(
+                "QPushButton#markupCommandButton {"
+                f"background: {command['background']};"
+                f"color: {command['color']};"
+                f"border: 1px solid {command['color']};"
+                "border-radius: 14px;"
+                "padding: 5px 10px;"
+                "font-weight: 700;"
+                "}"
+                "QPushButton#markupCommandButton:hover {"
+                "background: #ffffff;"
+                "}"
+            )
+            button.clicked.connect(
+                lambda _checked=False, item=command: self._insert_markup_template(item)
+            )
+            layout.addWidget(button)
+        layout.addStretch(1)
+        return toolbar
+
+    def _insert_markup_template(self, command: dict[str, str]) -> None:
+        if not hasattr(self, "text_editor"):
+            return
+        template = command["template"]
+        cursor_marker = command["cursor"]
+        cursor = self.text_editor.textCursor()
+        insert_position = cursor.position()
+        cursor.insertText(template)
+        cursor_position = insert_position + len(cursor_marker)
+        cursor.setPosition(cursor_position)
+        self.text_editor.setTextCursor(cursor)
+        self.text_editor.setFocus()
+        self._update_markup_editor_assist()
+
+    def _update_markup_editor_assist(self) -> None:
+        if not hasattr(self, "text_editor"):
+            return
+        self._show_markup_context_help()
+
+    def _show_markup_context_help(self) -> None:
+        context = self._markup_context()
+        if context is None:
+            QToolTip.hideText()
+            return
+        command_name = context.get("command", "")
+        if not command_name:
+            QToolTip.hideText()
+            return
+        command = self._markup_command_by_name(command_name)
+        if command is None:
+            QToolTip.showText(
+                self.text_editor.mapToGlobal(
+                    self.text_editor.cursorRect().bottomRight()
+                ),
+                self._markup_help_card(
+                    "Unknown command",
+                    self.tr(
+                        "markup_unknown_command_help",
+                        "Unknown markup command. Try {{pause}}, {{voice}}, {{lang}}, {{speed}}, {{chapter}}, {{cmd}} or {{preset}}.",
+                    ),
+                ),
+                self.text_editor,
+            )
+            return
+        QToolTip.showText(
+            self.text_editor.mapToGlobal(self.text_editor.cursorRect().bottomRight()),
+            self._markup_help_card(f"{{{{{command['name']}}}}}", command["help"]),
+            self.text_editor,
+        )
+
+    @staticmethod
+    def _markup_help_card(title: str, help_text: str) -> str:
+        body = escape(help_text)
+        body = body.replace(". Examples:", ".<br><br><b>Examples:</b>")
+        body = body.replace(". Example:", ".<br><br><b>Example:</b>")
+        body = body.replace(". Try", ".<br><br><b>Try:</b>")
+        return (
+            "<qt>"
+            "<div style='min-width: 380px; padding: 10px; line-height: 145%;'>"
+            f"<b>{escape(title)}</b><br><br>{body}"
+            "</div>"
+            "</qt>"
+        )
+
+    def _markup_context(self) -> dict[str, str] | None:
+        text = self.text_editor.toPlainText()
+        cursor_position = self.text_editor.textCursor().position()
+        before_cursor = text[:cursor_position]
+        opening = before_cursor.rfind("{{")
+        if opening < 0:
+            return None
+        closing = before_cursor.rfind("}}")
+        if closing > opening:
+            return None
+        content = before_cursor[opening + 2 :]
+        command_match = re.match(r"\s*([A-Za-z]*)", content)
+        command = command_match.group(1).casefold() if command_match else ""
+        return {"content": content, "command": command, "start": str(opening)}
+
+    @staticmethod
+    def _markup_command_by_name(name: str) -> dict[str, str] | None:
+        normalized = name.casefold()
+        for command in MARKUP_COMMANDS:
+            if command["name"] == normalized:
+                return command
+        return None
 
     def _build_voice_panel(self) -> QWidget:
         frame = QFrame()
@@ -1411,20 +2062,63 @@ class MainWindow(QMainWindow):
         self.voices_refresh_button.setIcon(ui_icon("refresh"))
         self.voices_refresh_button.setIconSize(QSize(18, 18))
         self.voices_refresh_button.clicked.connect(self._refresh_voices_page)
+        self.voices_sync_button = QPushButton(self.tr("sync_catalog", "Sync catalog"))
+        self.voices_sync_button.setIcon(ui_icon("save"))
+        self.voices_sync_button.setIconSize(QSize(18, 18))
+        self.voices_sync_button.clicked.connect(self._sync_voice_gallery)
         self.voices_manage_button = QPushButton(self.tr("manage", "Manage"))
         self.voices_manage_button.setIcon(ui_icon("settings"))
         self.voices_manage_button.setIconSize(QSize(18, 18))
         self.voices_manage_button.clicked.connect(self._voices_primary_manage_action)
+        self.voices_design_button = QPushButton("Design Voice")
+        self.voices_design_button.setIcon(ui_icon("render"))
+        self.voices_design_button.setIconSize(QSize(18, 18))
+        self.voices_design_button.clicked.connect(self._open_omnivoice_design_dialog)
         header.addWidget(self.voices_refresh_button)
+        header.addWidget(self.voices_sync_button)
         header.addWidget(self.voices_manage_button)
+        header.addWidget(self.voices_design_button)
         card_layout.addLayout(header)
 
-        self.voices_table = QTableWidget(0, 6)
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.voices_filter_edit = QLineEdit()
+        self.voices_filter_edit.setPlaceholderText(
+            self.tr(
+                "search_voices_descriptions_tags",
+                "Search voices, descriptions, styles or tags...",
+            )
+        )
+        self.voices_filter_edit.textChanged.connect(self._refresh_voices_page)
+        self.voices_filter_field_combo = QComboBox()
+        for label, field in (
+            (self.tr("all_fields", "All fields"), "all"),
+            (self.tr("voice", "Voice"), "name"),
+            (self.tr("short_description", "Short description"), "short_description"),
+            (self.tr("language", "Language"), "language"),
+            (self.tr("gender", "Gender"), "gender"),
+            (self.tr("age_style", "Age style"), "age_style"),
+            (self.tr("voice_style", "Voice style"), "voice_style"),
+            (self.tr("tags", "Tags"), "tags"),
+        ):
+            self.voices_filter_field_combo.addItem(label, field)
+        self.voices_filter_field_combo.currentIndexChanged.connect(
+            self._refresh_voices_page
+        )
+        filters.addWidget(self.voices_filter_edit, 1)
+        filters.addWidget(self.voices_filter_field_combo)
+        card_layout.addLayout(filters)
+
+        self.voices_table = QTableWidget(0, 10)
         self.voices_table.setHorizontalHeaderLabels(
             [
                 self.tr("selected", "Selected"),
                 self.tr("voice", "Voice"),
+                self.tr("short_description", "Short description"),
                 self.tr("language", "Language"),
+                self.tr("gender", "Gender"),
+                self.tr("age_style", "Age style"),
+                self.tr("voice_style", "Voice style"),
                 self.tr("type", "Type"),
                 self.tr("status", "Status"),
                 self.tr("actions", "Actions"),
@@ -1443,10 +2137,14 @@ class MainWindow(QMainWindow):
         voices_header = self.voices_table.horizontalHeader()
         voices_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         voices_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        voices_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        voices_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         voices_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         voices_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         voices_header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        voices_header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        voices_header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        voices_header.setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)
+        voices_header.setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)
         card_layout.addWidget(self.voices_table, 1)
 
         self.voices_status_label = QLabel()
@@ -1553,16 +2251,130 @@ class MainWindow(QMainWindow):
             ),
             "settings",
         )
+        self._refresh_wav_cache_stats()
+
+    def _run_pending_installer_setup(self) -> None:
+        setup = self.settings.get("installer_setup", {})
+        if not isinstance(setup, dict) or setup.get("completed"):
+            return
+        pending = [
+            str(item)
+            for item in setup.get("pending_installs", [])
+            if str(item) in {"omnivoice", "faster_whisper"}
+        ]
+        if not pending:
+            return
+
+        profile = str(setup.get("profile", "gpu")).casefold()
+        if "omnivoice" in pending:
+            self.settings["tts_engine"] = "omnivoice"
+        if "faster_whisper" in pending:
+            review = self.settings.get("review", {})
+            if not isinstance(review, dict):
+                review = {}
+            review["enabled"] = True
+            review["auto_verify_after_generation"] = True
+            self.settings["review"] = review
+        self.settings_manager.save(self.settings)
+        self._restore_settings()
+        self._show_settings_page()
+        if hasattr(self, "settings_tabs"):
+            self.settings_tabs.setCurrentIndex(1)
+
+        QMessageBox.information(
+            self,
+            self.tr("installer_setup_title", "LocalText2Voice setup"),
+            self.tr(
+                "installer_gpu_setup_message",
+                "The GPU profile was selected during installation. "
+                "LocalText2Voice will now download and prepare OmniVoice and Faster Whisper. "
+                "This can take several minutes and requires an internet connection.",
+            )
+            if profile == "gpu"
+            else self.tr(
+                "installer_setup_message",
+                "LocalText2Voice will now prepare the selected optional components.",
+            ),
+        )
+        self.installer_setup_queue = pending
+        self.installer_setup_running = True
+        self._start_next_installer_setup_task()
+
+    def _start_next_installer_setup_task(self) -> None:
+        if not self.installer_setup_running:
+            return
+        while self.installer_setup_queue:
+            task = self.installer_setup_queue.pop(0)
+            if task == "omnivoice":
+                if OmniVoiceManager().is_installed():
+                    self.log_view.append_event("Installer setup: OmniVoice already installed.")
+                    continue
+                self._select_combo_data(self.tts_engine_combo, "omnivoice")
+                self._on_tts_engine_changed()
+                if hasattr(self, "settings_tabs"):
+                    self.settings_tabs.setCurrentIndex(1)
+                self._install_omnivoice()
+                return
+            if task == "faster_whisper":
+                if FasterWhisperManager().is_installed():
+                    self.log_view.append_event(
+                        "Installer setup: Faster Whisper already installed."
+                    )
+                    continue
+                if hasattr(self, "settings_tabs"):
+                    self.settings_tabs.setCurrentIndex(2)
+                self._install_faster_whisper()
+                return
+        self._complete_pending_installer_setup()
+
+    def _continue_pending_installer_setup(self) -> None:
+        if self.installer_setup_running:
+            QTimer.singleShot(500, self._start_next_installer_setup_task)
+
+    def _abort_pending_installer_setup(self, message: str) -> None:
+        if not self.installer_setup_running:
+            return
+        setup = self.settings.get("installer_setup", {})
+        if not isinstance(setup, dict):
+            setup = {}
+        setup["completed"] = False
+        setup["last_error"] = message
+        setup["pending_installs"] = self.installer_setup_queue
+        self.settings["installer_setup"] = setup
+        self.settings_manager.save(self.settings)
+        self.installer_setup_queue = []
+        self.installer_setup_running = False
+
+    def _complete_pending_installer_setup(self) -> None:
+        setup = self.settings.get("installer_setup", {})
+        if not isinstance(setup, dict):
+            setup = {}
+        setup["pending_installs"] = []
+        setup["completed"] = True
+        setup["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.settings["installer_setup"] = setup
+        self.settings_manager.save(self.settings)
+        self.installer_setup_running = False
+        self._refresh_tts_engine_table()
+        self._refresh_whisper_status()
+        QMessageBox.information(
+            self,
+            self.tr("installer_setup_title", "LocalText2Voice setup"),
+            self.tr(
+                "installer_setup_complete",
+                "Optional components are ready. You can start creating audiobooks.",
+            ),
+        )
 
     def _show_mix_preview_page(self) -> None:
         self._ensure_audio_mix_preview_context()
         self._show_page(
             4,
             "mix",
-            self.tr("audio_mix_preview", "Audio Mix Preview"),
+            self.tr("audio_mix_preview", "Audio Mix"),
             self.tr(
                 "audio_mix_preview_subtitle",
-                "Preview how your voice narration and background music blend together.",
+                "Mix your voice narration with background music.",
             ),
             "generate",
         )
@@ -1606,11 +2418,6 @@ class MainWindow(QMainWindow):
         )
         self._refresh_music_library()
 
-    def _show_export_page(self) -> None:
-        self._show_settings_page()
-        self.settings_tabs.setCurrentIndex(0)
-        self._set_active_nav("export")
-
     def _show_page(
         self,
         index: int,
@@ -1626,7 +2433,111 @@ class MainWindow(QMainWindow):
         self.page_title_label.setText(title)
         self.subtitle_label.setText(subtitle)
         self.page_icon_label.setPixmap(ui_icon(icon_name, color=ICON_LIGHT).pixmap(32, 32))
-        self.header_open_output_button.setEnabled(self.last_output_folder is not None)
+        show_output_button = nav_key == "mix"
+        self.header_open_output_button.setVisible(show_output_button)
+        self.header_open_output_button.setEnabled(
+            show_output_button and self._current_output_folder() is not None
+        )
+
+    def _custom_tts_engines(self) -> list[dict[str, object]]:
+        engines = self.settings.get("custom_tts_engines", [])
+        if not isinstance(engines, list):
+            return []
+        result: list[dict[str, object]] = []
+        for item in engines:
+            if isinstance(item, dict) and str(item.get("id", "")).strip():
+                result.append(dict(item))
+        return result
+
+    @staticmethod
+    def _custom_engine_key(engine_id: object) -> str:
+        return f"custom:{str(engine_id).strip()}"
+
+    def _custom_engine_by_key(self, engine_key: str) -> dict[str, object] | None:
+        if not engine_key.startswith("custom:"):
+            return None
+        wanted = engine_key.split(":", 1)[1]
+        for engine in self._custom_tts_engines():
+            if str(engine.get("id", "")) == wanted:
+                return engine
+        return None
+
+    def _populate_tts_engine_combo(self, selected_engine: object | None = None) -> None:
+        if not hasattr(self, "tts_engine_combo"):
+            return
+        selected = (
+            selected_engine
+            if selected_engine is not None
+            else self.tts_engine_combo.currentData()
+        )
+        self.tts_engine_combo.blockSignals(True)
+        self.tts_engine_combo.clear()
+        for engine in TTS_ENGINES:
+            self.tts_engine_combo.addItem(
+                ui_icon("voice"),
+                self._tts_engine_label(engine.engine_id),
+                engine.engine_id,
+            )
+        for engine in self._custom_tts_engines():
+            key = self._custom_engine_key(engine.get("id", ""))
+            self.tts_engine_combo.addItem(
+                ui_icon("settings"),
+                self._tts_engine_label(key),
+                key,
+            )
+        if selected is not None:
+            self._select_combo_data(self.tts_engine_combo, selected)
+        self.tts_engine_combo.blockSignals(False)
+
+    @staticmethod
+    def _custom_tts_engine_defaults() -> dict[str, object]:
+        return {
+            "id": "",
+            "name": "",
+            "location": "local_http",
+            "url": "http://127.0.0.1:7851/api/tts-generate",
+            "method": "POST",
+            "voice": "",
+            "language": "",
+            "api_key": "",
+            "auth_header": "",
+            "headers_json": '{\n  "Content-Type": "application/json"\n}',
+            "body_template": (
+                '{\n'
+                '  "text": "{{text}}",\n'
+                '  "voice": "{{voice}}",\n'
+                '  "language": "{{language}}",\n'
+                '  "speed": {{speed}}\n'
+                '}'
+            ),
+            "response_mode": "audio_wav",
+            "json_audio_path": "",
+            "sample_rate": 24000,
+            "timeout_seconds": 120,
+        }
+
+    @staticmethod
+    def _custom_engine_slug(name: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", name.strip().lower()).strip("-")
+        return slug[:48] or "custom-engine"
+
+    def _unique_custom_engine_id(
+        self,
+        name: str,
+        existing_id: str | None = None,
+    ) -> str:
+        base = existing_id or self._custom_engine_slug(name)
+        existing = {
+            str(engine.get("id", ""))
+            for engine in self._custom_tts_engines()
+            if str(engine.get("id", "")) != (existing_id or "")
+        }
+        candidate = base
+        suffix = 2
+        while candidate in existing:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
 
     def _set_active_nav(self, active_key: str) -> None:
         if not hasattr(self, "nav_buttons"):
@@ -1645,6 +2556,41 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+
+        self.whisper_missing_frame = QFrame()
+        self.whisper_missing_frame.setObjectName("whisperMissingFrame")
+        self.whisper_missing_frame.setStyleSheet(
+            "QFrame#whisperMissingFrame {"
+            " background: #fff7ed;"
+            " border: 1px solid #fb923c;"
+            " border-radius: 10px;"
+            "}"
+            "QLabel { color: #7c2d12; }"
+        )
+        missing_layout = QHBoxLayout(self.whisper_missing_frame)
+        missing_layout.setContentsMargins(14, 12, 14, 12)
+        missing_layout.setSpacing(12)
+        missing_icon = QLabel()
+        missing_icon.setPixmap(ui_icon("warning").pixmap(22, 22))
+        missing_text = QLabel(
+            self.tr(
+                "whisper_missing_message",
+                "Faster Whisper is not installed. Generation Review needs it "
+                "to transcribe segment audio, compare it with the source text, "
+                "and mark segments that need attention.",
+            )
+        )
+        missing_text.setWordWrap(True)
+        missing_text.setObjectName("helperLabel")
+        self.whisper_missing_install_button = QPushButton(
+            self.tr("install_whisper_now", "Install Faster Whisper")
+        )
+        self.whisper_missing_install_button.setIcon(ui_icon("apply"))
+        self.whisper_missing_install_button.clicked.connect(self._install_faster_whisper)
+        missing_layout.addWidget(missing_icon)
+        missing_layout.addWidget(missing_text, 1)
+        missing_layout.addWidget(self.whisper_missing_install_button)
+        layout.addWidget(self.whisper_missing_frame)
 
         group = QGroupBox(self.tr("review_settings", "Generation Review"))
         form = QFormLayout(group)
@@ -1795,12 +2741,7 @@ class MainWindow(QMainWindow):
         group_layout.setSpacing(12)
 
         self.tts_engine_combo = QComboBox()
-        for engine in TTS_ENGINES:
-            self.tts_engine_combo.addItem(
-                ui_icon("voice"),
-                self._tts_engine_label(engine.engine_id),
-                engine.engine_id,
-            )
+        self._populate_tts_engine_combo()
         self.tts_engine_combo.setVisible(False)
 
         intro = QLabel(
@@ -1814,6 +2755,17 @@ class MainWindow(QMainWindow):
         intro.setWordWrap(True)
         intro.setObjectName("helperLabel")
         group_layout.addWidget(intro)
+
+        engine_actions = QHBoxLayout()
+        engine_actions.setSpacing(8)
+        self.add_custom_engine_button = QPushButton(
+            self.tr("add_new_engine", "Add New Engine")
+        )
+        self.add_custom_engine_button.setIcon(ui_icon("add"))
+        self.add_custom_engine_button.clicked.connect(self._add_custom_tts_engine)
+        engine_actions.addStretch(1)
+        engine_actions.addWidget(self.add_custom_engine_button)
+        group_layout.addLayout(engine_actions)
 
         self.tts_engine_table = QTableWidget()
         self.tts_engine_table.setColumnCount(8)
@@ -1861,10 +2813,12 @@ class MainWindow(QMainWindow):
             ("kokoro", self._build_kokoro_python_engine_panel()),
             ("chatterbox", self._build_chatterbox_engine_panel()),
             ("qwen", self._build_qwen_engine_panel()),
+            ("omnivoice", self._build_omnivoice_engine_panel()),
             ("openai", self._build_openai_engine_panel()),
             ("elevenlabs", self._build_elevenlabs_engine_panel()),
             ("gemini", self._build_gemini_engine_panel()),
             ("azure", self._build_azure_engine_panel()),
+            ("custom", self._build_custom_engine_panel()),
         ):
             self.engine_stack_indexes[engine_id] = self.engine_settings_stack.addWidget(
                 panel
@@ -2310,9 +3264,6 @@ class MainWindow(QMainWindow):
         self.chatterbox_runtime_label = QLabel()
         self.chatterbox_runtime_label.setObjectName("helperLabel")
         self.chatterbox_runtime_label.setWordWrap(True)
-        layout.addWidget(self.chatterbox_status_label)
-        layout.addWidget(self.chatterbox_path_label)
-        layout.addWidget(self.chatterbox_runtime_label)
 
         hardware_frame = QFrame()
         hardware_frame.setObjectName("inlineStatusFrame")
@@ -2338,13 +3289,11 @@ class MainWindow(QMainWindow):
         self.chatterbox_hardware_label.setWordWrap(True)
         hardware_layout.addLayout(hardware_title_row)
         hardware_layout.addWidget(self.chatterbox_hardware_label)
-        layout.addWidget(hardware_frame)
 
         self.chatterbox_progress_bar = QProgressBar()
         self.chatterbox_progress_bar.setRange(0, 100)
         self.chatterbox_progress_bar.setValue(0)
         self.chatterbox_progress_bar.setVisible(False)
-        layout.addWidget(self.chatterbox_progress_bar)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -2369,12 +3318,6 @@ class MainWindow(QMainWindow):
                 "Audio files (*.wav *.mp3 *.flac *.m4a);;All files (*.*)",
             ),
         )
-        self.chatterbox_consent_checkbox = QCheckBox(
-            self.tr(
-                "voice_clone_consent",
-                "I have permission to use this reference voice.",
-            )
-        )
         self.chatterbox_exaggeration_spin = self._ratio_spin(0.5)
         self.chatterbox_cfg_spin = self._ratio_spin(0.5)
         form.addRow(
@@ -2393,13 +3336,11 @@ class MainWindow(QMainWindow):
             self.tr("reference_audio", "Reference audio"),
             self.chatterbox_reference_picker,
         )
-        form.addRow("", self.chatterbox_consent_checkbox)
         form.addRow(
             self.tr("exaggeration", "Emotion exaggeration"),
             self.chatterbox_exaggeration_spin,
         )
         form.addRow(self.tr("cfg_weight", "CFG weight"), self.chatterbox_cfg_spin)
-        layout.addLayout(form)
 
         actions = QHBoxLayout()
         self.chatterbox_install_button = QPushButton(self.tr("install", "Install"))
@@ -2437,7 +3378,6 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.chatterbox_load_button)
         actions.addWidget(self.chatterbox_cancel_button)
         actions.addStretch(1)
-        layout.addLayout(actions)
 
         self.chatterbox_preview_frame = QFrame()
         self.chatterbox_preview_frame.setObjectName("inlineStatusFrame")
@@ -2453,7 +3393,6 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.chatterbox_preview_status_label, 1)
         preview_layout.addWidget(self.chatterbox_preview_bar)
         self.chatterbox_preview_frame.setVisible(False)
-        layout.addWidget(self.chatterbox_preview_frame)
 
         helper = QLabel(
             self.tr(
@@ -2465,7 +3404,14 @@ class MainWindow(QMainWindow):
         )
         helper.setWordWrap(True)
         helper.setObjectName("helperLabel")
+        layout.addLayout(form)
+        layout.addWidget(self.chatterbox_progress_bar)
+        layout.addWidget(self.chatterbox_preview_frame)
         layout.addWidget(helper)
+        layout.addWidget(self.chatterbox_status_label)
+        layout.addWidget(self.chatterbox_path_label)
+        layout.addWidget(self.chatterbox_runtime_label)
+        layout.addWidget(hardware_frame)
         self._refresh_chatterbox_hardware_status()
         self._refresh_chatterbox_status()
         return panel
@@ -2802,15 +3748,6 @@ class MainWindow(QMainWindow):
                 ),
             )
             return None
-        if reference_path is not None and not self.chatterbox_consent_checkbox.isChecked():
-            self._show_error(
-                self.tr("generation_failed", "Generation failed"),
-                self.tr(
-                    "voice_clone_consent_required",
-                    "Confirm that you have permission to use the reference voice.",
-                ),
-            )
-            return None
         model = str(self.chatterbox_model_combo.currentData() or "multilingual_v3")
         if model == "turbo" and reference_path is None:
             self._show_error(
@@ -2860,9 +3797,6 @@ class MainWindow(QMainWindow):
         self.qwen_runtime_label = QLabel()
         self.qwen_runtime_label.setObjectName("helperLabel")
         self.qwen_runtime_label.setWordWrap(True)
-        layout.addWidget(self.qwen_status_label)
-        layout.addWidget(self.qwen_path_label)
-        layout.addWidget(self.qwen_runtime_label)
 
         hardware_frame = QFrame()
         hardware_frame.setObjectName("inlineStatusFrame")
@@ -2884,13 +3818,11 @@ class MainWindow(QMainWindow):
         self.qwen_hardware_label.setWordWrap(True)
         hardware_layout.addLayout(hardware_title_row)
         hardware_layout.addWidget(self.qwen_hardware_label)
-        layout.addWidget(hardware_frame)
 
         self.qwen_progress_bar = QProgressBar()
         self.qwen_progress_bar.setRange(0, 100)
         self.qwen_progress_bar.setValue(0)
         self.qwen_progress_bar.setVisible(False)
-        layout.addWidget(self.qwen_progress_bar)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -2931,7 +3863,6 @@ class MainWindow(QMainWindow):
             self.tr("qwen_instruct", "Voice instruction"),
             self.qwen_instruct_edit,
         )
-        layout.addLayout(form)
 
         actions = QHBoxLayout()
         self.qwen_install_button = QPushButton(self.tr("install", "Install"))
@@ -2967,7 +3898,6 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.qwen_load_button)
         actions.addWidget(self.qwen_cancel_button)
         actions.addStretch(1)
-        layout.addLayout(actions)
 
         self.qwen_preview_frame = QFrame()
         self.qwen_preview_frame.setObjectName("inlineStatusFrame")
@@ -2983,7 +3913,6 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.qwen_preview_status_label, 1)
         preview_layout.addWidget(self.qwen_preview_bar)
         self.qwen_preview_frame.setVisible(False)
-        layout.addWidget(self.qwen_preview_frame)
 
         helper = QLabel(
             self.tr(
@@ -2995,7 +3924,14 @@ class MainWindow(QMainWindow):
         )
         helper.setWordWrap(True)
         helper.setObjectName("helperLabel")
+        layout.addLayout(form)
+        layout.addWidget(self.qwen_progress_bar)
+        layout.addWidget(self.qwen_preview_frame)
         layout.addWidget(helper)
+        layout.addWidget(self.qwen_status_label)
+        layout.addWidget(self.qwen_path_label)
+        layout.addWidget(self.qwen_runtime_label)
+        layout.addWidget(hardware_frame)
         self._refresh_qwen_hardware_status()
         self._refresh_qwen_status()
         return panel
@@ -3326,6 +4262,600 @@ class MainWindow(QMainWindow):
         }
         return texts.get(language, texts["English"])
 
+    def _build_omnivoice_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+
+        self.omnivoice_status_label = QLabel()
+        self.omnivoice_status_label.setObjectName("helperLabel")
+        self.omnivoice_path_label = QLabel()
+        self.omnivoice_path_label.setObjectName("helperLabel")
+        self.omnivoice_path_label.setWordWrap(True)
+        self.omnivoice_runtime_label = QLabel()
+        self.omnivoice_runtime_label.setObjectName("helperLabel")
+        self.omnivoice_runtime_label.setWordWrap(True)
+
+        hardware_frame = QFrame()
+        hardware_frame.setObjectName("inlineStatusFrame")
+        hardware_layout = QVBoxLayout(hardware_frame)
+        hardware_layout.setContentsMargins(12, 10, 12, 10)
+        hardware_title_row = QHBoxLayout()
+        hardware_title = QLabel(
+            self.tr("hardware_acceleration", "Hardware acceleration")
+        )
+        hardware_title.setObjectName("sectionLabel")
+        self.omnivoice_detect_gpu_button = QPushButton(
+            self.tr("detect_gpu", "Detect GPU")
+        )
+        self.omnivoice_detect_gpu_button.setIcon(ui_icon("refresh"))
+        self.omnivoice_detect_gpu_button.clicked.connect(
+            self._detect_omnivoice_hardware
+        )
+        hardware_title_row.addWidget(hardware_title)
+        hardware_title_row.addStretch(1)
+        hardware_title_row.addWidget(self.omnivoice_detect_gpu_button)
+        self.omnivoice_hardware_label = QLabel()
+        self.omnivoice_hardware_label.setObjectName("helperLabel")
+        self.omnivoice_hardware_label.setWordWrap(True)
+        hardware_layout.addLayout(hardware_title_row)
+        hardware_layout.addWidget(self.omnivoice_hardware_label)
+
+        self.omnivoice_progress_bar = QProgressBar()
+        self.omnivoice_progress_bar.setRange(0, 100)
+        self.omnivoice_progress_bar.setValue(0)
+        self.omnivoice_progress_bar.setVisible(False)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.omnivoice_model_combo = QComboBox()
+        for model in self.omnivoice_manager.list_models():
+            self.omnivoice_model_combo.addItem(model.display_name, model.model_id)
+        self.omnivoice_mode_combo = QComboBox()
+        self.omnivoice_mode_combo.addItem("Voice cloning", "clone")
+        self.omnivoice_mode_combo.currentIndexChanged.connect(
+            lambda _index: (
+                self._refresh_generation_voice_combo(),
+                self._refresh_voices_page()
+                if hasattr(self, "page_stack") and self.page_stack.currentIndex() == 5
+                else None,
+            )
+        )
+        self.omnivoice_language_combo = QComboBox()
+        for label, value in (
+            ("Auto", "auto"),
+            ("English", "English"),
+            ("Spanish", "Spanish"),
+            ("French", "French"),
+            ("German", "German"),
+            ("Italian", "Italian"),
+            ("Portuguese", "Portuguese"),
+            ("Chinese", "Chinese"),
+            ("Japanese", "Japanese"),
+            ("Korean", "Korean"),
+        ):
+            self.omnivoice_language_combo.addItem(label, value)
+        self.omnivoice_device_combo = QComboBox()
+        self.omnivoice_device_combo.addItem("Auto (recommended)", "auto")
+        self.omnivoice_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
+        self.omnivoice_device_combo.addItem("CPU only", "cpu")
+        self.omnivoice_dtype_combo = QComboBox()
+        self.omnivoice_dtype_combo.addItem("Auto", "auto")
+        self.omnivoice_dtype_combo.addItem("float16", "float16")
+        self.omnivoice_dtype_combo.addItem("bfloat16", "bfloat16")
+        self.omnivoice_dtype_combo.addItem("float32", "float32")
+        self.omnivoice_instruct_edit = QLineEdit()
+        self.omnivoice_instruct_edit.setPlaceholderText(
+            self.tr(
+                "omnivoice_instruct_placeholder",
+                "Example: female, young adult, moderate pitch",
+            )
+        )
+        self.omnivoice_reference_picker = FilePicker(
+            self.tr("browse", "Browse"),
+            "Audio files (*.wav *.mp3 *.flac *.m4a);;All files (*.*)",
+        )
+        self.omnivoice_reference_text_edit = QTextEdit()
+        self.omnivoice_reference_text_edit.setMaximumHeight(70)
+        self.omnivoice_reference_text_edit.setPlaceholderText(
+            self.tr(
+                "omnivoice_reference_text_placeholder",
+                "Optional transcript for the reference audio.",
+            )
+        )
+        self.omnivoice_num_step_spin = QSpinBox()
+        self.omnivoice_num_step_spin.setRange(8, 64)
+        self.omnivoice_num_step_spin.setSingleStep(4)
+        self.omnivoice_num_step_spin.setValue(32)
+        self.omnivoice_engine_speed_spin = QDoubleSpinBox()
+        self.omnivoice_engine_speed_spin.setRange(0.25, 4.0)
+        self.omnivoice_engine_speed_spin.setSingleStep(0.05)
+        self.omnivoice_engine_speed_spin.setDecimals(2)
+        self.omnivoice_engine_speed_spin.setValue(1.0)
+        self.omnivoice_duration_spin = QDoubleSpinBox()
+        self.omnivoice_duration_spin.setRange(0.0, 180.0)
+        self.omnivoice_duration_spin.setSingleStep(0.5)
+        self.omnivoice_duration_spin.setDecimals(1)
+        self.omnivoice_duration_spin.setSuffix(" s")
+        self.omnivoice_duration_spin.setValue(0.0)
+        form.addRow(
+            self.tr("omnivoice_model", "OmniVoice model"),
+            self.omnivoice_model_combo,
+        )
+        form.addRow(self.tr("language", "Language"), self.omnivoice_language_combo)
+        form.addRow(
+            self.tr("omnivoice_device", "Compute device"),
+            self.omnivoice_device_combo,
+        )
+        form.addRow(
+            self.tr("omnivoice_dtype", "Precision"),
+            self.omnivoice_dtype_combo,
+        )
+        form.addRow(
+            self.tr("omnivoice_reference_audio", "Reference audio"),
+            self.omnivoice_reference_picker,
+        )
+        form.addRow(
+            self.tr("omnivoice_reference_text", "Reference transcript"),
+            self.omnivoice_reference_text_edit,
+        )
+        form.addRow(
+            self.tr("omnivoice_num_step", "Diffusion steps"),
+            self.omnivoice_num_step_spin,
+        )
+        form.addRow(
+            self.tr("omnivoice_speed", "Engine speed"),
+            self.omnivoice_engine_speed_spin,
+        )
+        form.addRow(
+            self.tr("omnivoice_duration", "Fixed duration"),
+            self.omnivoice_duration_spin,
+        )
+
+        actions = QHBoxLayout()
+        self.omnivoice_install_button = QPushButton(self.tr("install", "Install"))
+        self.omnivoice_install_button.setIcon(ui_icon("apply"))
+        self.omnivoice_install_button.clicked.connect(self._install_omnivoice)
+        self.omnivoice_remove_button = QPushButton(self.tr("remove", "Remove"))
+        self.omnivoice_remove_button.setIcon(ui_icon("delete"))
+        self.omnivoice_remove_button.clicked.connect(self._remove_omnivoice)
+        self.omnivoice_test_button = QPushButton(self.tr("test_voice", "Test voice"))
+        self.omnivoice_test_button.setIcon(ui_icon("preview"))
+        self.omnivoice_test_button.clicked.connect(self._test_omnivoice_voice)
+        self.omnivoice_load_button = QPushButton(
+            self.tr("load_into_memory", "Load into memory")
+        )
+        self.omnivoice_load_button.setIcon(ui_icon("open"))
+        self.omnivoice_load_button.clicked.connect(
+            lambda _checked=False: self._toggle_preloaded_tts_engine("omnivoice")
+        )
+        self.omnivoice_cancel_button = QPushButton(self.tr("cancel", "Cancel"))
+        self.omnivoice_cancel_button.setIcon(ui_icon("cancel"))
+        self.omnivoice_cancel_button.setObjectName("secondaryButton")
+        self.omnivoice_cancel_button.clicked.connect(self._cancel_omnivoice_operation)
+        actions.addWidget(self.omnivoice_install_button)
+        actions.addWidget(self.omnivoice_remove_button)
+        actions.addWidget(self.omnivoice_test_button)
+        actions.addWidget(self.omnivoice_load_button)
+        actions.addWidget(self.omnivoice_cancel_button)
+        actions.addStretch(1)
+
+        self.omnivoice_preview_frame = QFrame()
+        self.omnivoice_preview_frame.setObjectName("inlineStatusFrame")
+        preview_layout = QHBoxLayout(self.omnivoice_preview_frame)
+        preview_layout.setContentsMargins(12, 10, 12, 10)
+        preview_layout.setSpacing(10)
+        self.omnivoice_preview_status_label = QLabel()
+        self.omnivoice_preview_status_label.setObjectName("helperLabel")
+        self.omnivoice_preview_bar = QProgressBar()
+        self.omnivoice_preview_bar.setRange(0, 0)
+        self.omnivoice_preview_bar.setTextVisible(False)
+        self.omnivoice_preview_bar.setFixedWidth(140)
+        preview_layout.addWidget(self.omnivoice_preview_status_label, 1)
+        preview_layout.addWidget(self.omnivoice_preview_bar)
+        self.omnivoice_preview_frame.setVisible(False)
+
+        helper = QLabel(
+            self.tr(
+                "omnivoice_help",
+                "OmniVoice is a multilingual local TTS engine. LocalText2Voice "
+                "uses it in voice cloning mode with a reference voice from the "
+                "voice gallery.",
+            )
+        )
+        helper.setWordWrap(True)
+        helper.setObjectName("helperLabel")
+        layout.addLayout(form)
+        layout.addWidget(self.omnivoice_progress_bar)
+        layout.addWidget(self.omnivoice_preview_frame)
+        layout.addWidget(helper)
+        layout.addWidget(self.omnivoice_status_label)
+        layout.addWidget(self.omnivoice_path_label)
+        layout.addWidget(self.omnivoice_runtime_label)
+        layout.addWidget(hardware_frame)
+        self._refresh_omnivoice_hardware_status()
+        self._refresh_omnivoice_status()
+        return panel
+
+    def _refresh_omnivoice_hardware_status(self) -> None:
+        if not hasattr(self, "omnivoice_hardware_label"):
+            return
+        self.omnivoice_hardware_label.setText(format_gpu_detection(detect_gpus()))
+
+    def _detect_omnivoice_hardware(self) -> None:
+        if self.omnivoice_hardware_thread is not None:
+            return
+        self.omnivoice_detect_gpu_button.setEnabled(False)
+        self.omnivoice_hardware_label.setText(
+            self.tr("detecting_gpu", "Detecting GPU and CUDA runtime...")
+        )
+        thread = QThread(self)
+        worker = OmniVoiceHardwareWorker(
+            OmniVoiceManager(),
+            include_runtime=True,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_omnivoice_hardware_ready)
+        worker.failed.connect(self._on_omnivoice_hardware_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_omnivoice_hardware_worker)
+        self.omnivoice_hardware_thread = thread
+        self.omnivoice_hardware_worker = worker
+        self._refresh_omnivoice_status()
+        thread.start()
+
+    def _on_omnivoice_hardware_ready(self, message: str) -> None:
+        self.omnivoice_hardware_label.setText(message)
+        self.log_view.append_event(message.replace("\n", " | "))
+
+    def _on_omnivoice_hardware_failed(self, message: str) -> None:
+        self.omnivoice_hardware_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _clear_omnivoice_hardware_worker(self) -> None:
+        self.omnivoice_hardware_worker = None
+        self.omnivoice_hardware_thread = None
+        self._refresh_omnivoice_status()
+
+    def _refresh_omnivoice_status(self) -> None:
+        if not hasattr(self, "omnivoice_status_label"):
+            return
+        installed = self.omnivoice_manager.is_installed()
+        runtime_ready = self.omnivoice_manager.has_runtime()
+        operation_running = self.omnivoice_thread is not None
+        status_text = (
+            self.tr("installed", "Installed")
+            if installed
+            else self.tr("not_installed", "Not installed")
+        )
+        runtime_status = (
+            self.tr("installed", "Installed")
+            if runtime_ready
+            else self.tr("not_installed", "Not installed")
+        )
+        self.omnivoice_status_label.setText(
+            self.tr(
+                "omnivoice_status",
+                "OmniVoice status: {status}",
+                status=status_text,
+            )
+        )
+        self.omnivoice_path_label.setText(
+            self.tr(
+                "omnivoice_model_path",
+                "Model cache: {path}",
+                path=str(self.omnivoice_manager.cache_dir),
+            )
+        )
+        self.omnivoice_runtime_label.setText(
+            self.tr(
+                "omnivoice_runtime_status",
+                "Runtime: {status}",
+                status=runtime_status,
+            )
+        )
+        self.omnivoice_install_button.setEnabled(not operation_running)
+        self.omnivoice_remove_button.setEnabled(
+            (runtime_ready or self.omnivoice_manager.install_dir.exists())
+            and not operation_running
+        )
+        self.omnivoice_test_button.setEnabled(
+            installed
+            and self.omnivoice_preview_thread is None
+            and not operation_running
+        )
+        self.omnivoice_detect_gpu_button.setEnabled(
+            self.omnivoice_hardware_thread is None and not operation_running
+        )
+        self.omnivoice_cancel_button.setVisible(operation_running)
+        self.omnivoice_cancel_button.setEnabled(operation_running)
+        self._configure_preload_button(
+            self.omnivoice_load_button,
+            "omnivoice",
+            installed and runtime_ready and not operation_running,
+        )
+        self._refresh_tts_engine_table()
+
+    def _ensure_default_omnivoice_reference(
+        self,
+        *,
+        allow_sync: bool = False,
+    ) -> bool:
+        if not hasattr(self, "omnivoice_reference_picker"):
+            return False
+        current_path = self.omnivoice_reference_picker.path()
+        if current_path is not None and current_path.is_file():
+            return True
+
+        voice_id = "omnivoice_en_harold_storyteller"
+        voice = self.voice_gallery_manager.get_voice(voice_id)
+        if voice is None and allow_sync:
+            try:
+                self.voice_gallery_manager.sync()
+                voice = self.voice_gallery_manager.get_voice(voice_id)
+            except Exception as exc:
+                self.log_view.append_event(
+                    "Could not sync OmniVoice default reference voice: "
+                    f"{exc}"
+                )
+        if voice is None:
+            return False
+
+        try:
+            audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+        except Exception as exc:
+            self.log_view.append_event(
+                f"Could not prepare OmniVoice default reference voice: {exc}"
+            )
+            return False
+        if audio_path is None or not audio_path.is_file():
+            return False
+
+        self.omnivoice_reference_picker.set_path(audio_path)
+        self.omnivoice_reference_text_edit.setPlainText(voice.ref_text)
+        self._select_combo_data(self.omnivoice_mode_combo, "clone")
+        self.log_view.append_event(
+            "OmniVoice default reference voice ready: "
+            f"{voice.name} ({audio_path})"
+        )
+        return True
+
+    def _install_omnivoice(self) -> None:
+        self._start_omnivoice_operation("install")
+
+    def _remove_omnivoice(self) -> None:
+        if self.preloaded_tts_engine_id == "omnivoice":
+            self._unload_preloaded_tts_engine()
+        self._start_omnivoice_operation("remove")
+
+    def _cancel_omnivoice_operation(self) -> None:
+        if self.omnivoice_worker is None:
+            return
+        self.omnivoice_cancel_button.setEnabled(False)
+        self.log_view.append_event(self.tr("cancelling", "Cancelling generation..."))
+        self.omnivoice_worker.request_cancel()
+
+    def _start_omnivoice_operation(self, operation: str) -> None:
+        if self.omnivoice_thread is not None:
+            return
+        self.omnivoice_progress_bar.setVisible(True)
+        self.omnivoice_progress_bar.setRange(0, 0 if operation == "install" else 100)
+        self.omnivoice_progress_bar.setValue(0)
+        self.log_view.append_event(
+            self.tr(
+                "omnivoice_installing",
+                "OmniVoice operation started: {operation}",
+                operation=operation,
+            )
+        )
+        thread = QThread(self)
+        worker = OmniVoiceInstallWorker(
+            OmniVoiceManager(),
+            operation,
+            str(self.omnivoice_model_combo.currentData() or "omnivoice"),
+            str(self.omnivoice_device_combo.currentData() or "auto"),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_omnivoice_progress)
+        worker.finished.connect(self._on_omnivoice_finished)
+        worker.failed.connect(self._on_omnivoice_failed)
+        worker.cancelled.connect(self._on_omnivoice_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_omnivoice_worker)
+        self.omnivoice_thread = thread
+        self.omnivoice_worker = worker
+        self._refresh_omnivoice_status()
+        thread.start()
+
+    def _on_omnivoice_progress(self, current: int, total: int, message: str) -> None:
+        if total:
+            self.omnivoice_progress_bar.setRange(0, 100)
+            percentage = int((current / total) * 100)
+            self.omnivoice_progress_bar.setValue(max(0, min(100, percentage)))
+        self.omnivoice_status_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _on_omnivoice_finished(self, path: str) -> None:
+        self.omnivoice_progress_bar.setRange(0, 100)
+        self.omnivoice_progress_bar.setValue(100)
+        self.log_view.append_event(
+            self.tr("omnivoice_ready", "OmniVoice ready: {path}", path=path)
+        )
+        if self._ensure_default_omnivoice_reference(allow_sync=True):
+            self._save_settings()
+        self._continue_pending_installer_setup()
+
+    def _on_omnivoice_failed(self, message: str) -> None:
+        self.omnivoice_progress_bar.setVisible(False)
+        self._hide_voice_preview_status()
+        if (
+            hasattr(self, "omnivoice_preview_frame")
+            and self.omnivoice_preview_thread is not None
+        ):
+            self._hide_omnivoice_preview_status()
+        self.log_view.append_event(message)
+        self._abort_pending_installer_setup(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_omnivoice_cancelled(self) -> None:
+        self.omnivoice_progress_bar.setVisible(False)
+        self.log_view.append_event(
+            self.tr("omnivoice_cancelled", "OmniVoice operation cancelled.")
+        )
+        self._abort_pending_installer_setup("OmniVoice operation cancelled.")
+
+    def _clear_omnivoice_worker(self) -> None:
+        self.omnivoice_worker = None
+        self.omnivoice_thread = None
+        self.omnivoice_progress_bar.setVisible(False)
+        self.omnivoice_manager = OmniVoiceManager()
+        self._refresh_omnivoice_status()
+
+    def _test_omnivoice_voice(self) -> None:
+        if self.omnivoice_preview_thread is not None:
+            return
+        voice_config = self._omnivoice_voice_config_for_ui()
+        if voice_config is None:
+            return
+        thread = QThread(self)
+        worker = OmniVoicePreviewWorker(
+            OmniVoiceManager(),
+            voice_config,
+            "The moon looks beautiful tonight.",
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_omnivoice_preview_ready)
+        worker.failed.connect(self._on_omnivoice_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_omnivoice_preview_worker)
+        self.omnivoice_preview_thread = thread
+        self.omnivoice_preview_worker = worker
+        self.loaded_tts_engine_id = "omnivoice"
+        self._update_header_engine_label()
+        self._refresh_omnivoice_status()
+        self._show_omnivoice_preview_status(
+            self.tr("omnivoice_preview_generating", "Generating OmniVoice preview..."),
+            busy=True,
+        )
+        self.log_view.append_event(
+            self.tr("omnivoice_preview_generating", "Generating OmniVoice preview...")
+        )
+        thread.start()
+
+    def _on_omnivoice_preview_ready(self, path: str) -> None:
+        self._show_voice_preview_status(
+            self.tr("voice_preview_playing", "Playing voice preview."),
+            busy=False,
+        )
+        self._show_omnivoice_preview_status(
+            self.tr("omnivoice_preview_ready", "Playing OmniVoice preview."),
+            busy=False,
+        )
+        self.omnivoice_sample_player.setSource(QUrl.fromLocalFile(path))
+        self.omnivoice_sample_player.play()
+        self.log_view.append_event(
+            self.tr("omnivoice_preview_ready", "Playing OmniVoice preview.")
+        )
+
+    def _show_omnivoice_preview_status(self, message: str, busy: bool) -> None:
+        if not hasattr(self, "omnivoice_preview_frame"):
+            return
+        self.omnivoice_preview_status_label.setText(message)
+        self.omnivoice_preview_bar.setRange(0, 0 if busy else 100)
+        if not busy:
+            self.omnivoice_preview_bar.setValue(100)
+        self.omnivoice_preview_frame.setVisible(True)
+
+    def _hide_omnivoice_preview_status(self) -> None:
+        if not hasattr(self, "omnivoice_preview_frame"):
+            return
+        self.omnivoice_preview_frame.setVisible(False)
+
+    def _on_omnivoice_playback_state_changed(
+        self,
+        state: QMediaPlayer.PlaybackState,
+    ) -> None:
+        if not hasattr(self, "omnivoice_preview_frame"):
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._show_omnivoice_preview_status(
+                self.tr("omnivoice_preview_ready", "Playing OmniVoice preview."),
+                busy=False,
+            )
+        elif (
+            state == QMediaPlayer.PlaybackState.StoppedState
+            and self.omnivoice_preview_thread is None
+        ):
+            QTimer.singleShot(800, self._hide_omnivoice_preview_status)
+
+    def _clear_omnivoice_preview_worker(self) -> None:
+        self.omnivoice_preview_worker = None
+        self.omnivoice_preview_thread = None
+        self.loaded_tts_engine_id = self.preloaded_tts_engine_id
+        self._update_header_engine_label()
+        if (
+            hasattr(self, "omnivoice_preview_frame")
+            and self.omnivoice_sample_player.playbackState()
+            == QMediaPlayer.PlaybackState.StoppedState
+        ):
+            QTimer.singleShot(800, self._hide_omnivoice_preview_status)
+        self._refresh_omnivoice_status()
+
+    def _omnivoice_voice_config_for_ui(self) -> dict[str, object] | None:
+        if not self.omnivoice_manager.is_installed():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "omnivoice_runtime_missing",
+                    "OmniVoice is not installed yet. Open Settings > TTS Engines "
+                    "and click Install.",
+                ),
+            )
+            return None
+        self._ensure_default_omnivoice_reference(allow_sync=True)
+        mode = "clone"
+        reference_path = self.omnivoice_reference_picker.path()
+        if reference_path is None or not reference_path.is_file():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "omnivoice_reference_required",
+                    "OmniVoice voice cloning requires a reference audio file.",
+                ),
+            )
+            return None
+        model = str(self.omnivoice_model_combo.currentData() or "omnivoice")
+        return {
+            "engine": "omnivoice",
+            "speed": self.speed_spin.value(),
+            "model": model,
+            "model_repo": self.omnivoice_manager.model_repo(model),
+            "mode": mode,
+            "language": self.omnivoice_language_combo.currentData() or "auto",
+            "device": self.omnivoice_device_combo.currentData() or "auto",
+            "dtype": self.omnivoice_dtype_combo.currentData() or "auto",
+            "instruct": "",
+            "reference_audio_path": str(reference_path or ""),
+            "reference_text": self.omnivoice_reference_text_edit.toPlainText().strip(),
+            "num_step": self.omnivoice_num_step_spin.value(),
+            "engine_speed": self.omnivoice_engine_speed_spin.value(),
+            "duration": self.omnivoice_duration_spin.value(),
+            "cache_dir": str(self.omnivoice_manager.cache_dir),
+        }
+
     def _build_openai_engine_panel(self) -> QWidget:
         panel = QWidget()
         form = QFormLayout(panel)
@@ -3543,12 +5073,354 @@ class MainWindow(QMainWindow):
         form.addRow(self.tr("azure_style", "Style"), self.azure_style_edit)
         return panel
 
+    def _build_custom_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(8)
+
+        self.custom_engine_status_label = QLabel()
+        self.custom_engine_status_label.setObjectName("helperLabel")
+        self.custom_engine_status_label.setWordWrap(True)
+        self.custom_engine_endpoint_label = QLabel()
+        self.custom_engine_endpoint_label.setObjectName("helperLabel")
+        self.custom_engine_endpoint_label.setWordWrap(True)
+        layout.addWidget(self.custom_engine_status_label)
+        layout.addWidget(self.custom_engine_endpoint_label)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.custom_engine_configure_button = QPushButton(
+            self.tr("configure", "Configure")
+        )
+        self.custom_engine_configure_button.setIcon(ui_icon("settings"))
+        self.custom_engine_configure_button.clicked.connect(
+            self._edit_selected_custom_tts_engine
+        )
+        self.custom_engine_delete_button = QPushButton(self.tr("remove", "Remove"))
+        self.custom_engine_delete_button.setIcon(ui_icon("delete"))
+        self.custom_engine_delete_button.clicked.connect(
+            self._delete_selected_custom_tts_engine
+        )
+        actions.addWidget(self.custom_engine_configure_button)
+        actions.addWidget(self.custom_engine_delete_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        helper = QLabel(
+            self.tr(
+                "custom_engine_help",
+                "Custom engines call an HTTP endpoint that returns WAV/PCM audio "
+                "or JSON containing audio. Use placeholders like {{text}}, "
+                "{{voice}}, {{language}}, {{speed}}, {{api_key}}, and {{output_path}}.",
+            )
+        )
+        helper.setObjectName("helperLabel")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+        self._refresh_custom_engine_panel()
+        return panel
+
+    def _add_custom_tts_engine(self) -> None:
+        self._open_custom_tts_engine_dialog(None)
+
+    def _edit_selected_custom_tts_engine(self) -> None:
+        engine = self._custom_engine_by_key(
+            str(self.tts_engine_combo.currentData() or "")
+        )
+        if engine is not None:
+            self._open_custom_tts_engine_dialog(engine)
+
+    def _delete_selected_custom_tts_engine(self) -> None:
+        engine_key = str(self.tts_engine_combo.currentData() or "")
+        engine = self._custom_engine_by_key(engine_key)
+        if engine is None:
+            return
+        choice = QMessageBox.question(
+            self,
+            self.tr("remove", "Remove"),
+            self.tr(
+                "custom_engine_delete_confirm",
+                "Remove custom engine '{name}'?",
+                name=str(engine.get("name", "")),
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        engine_id = str(engine.get("id", ""))
+        self.settings["custom_tts_engines"] = [
+            item
+            for item in self._custom_tts_engines()
+            if str(item.get("id", "")) != engine_id
+        ]
+        if str(self.settings.get("tts_engine", "")) == engine_key:
+            self.settings["tts_engine"] = "piper"
+        self._populate_tts_engine_combo("piper")
+        self._select_tts_engine("piper")
+        self._save_settings()
+        self.log_view.append_event(
+            self.tr(
+                "custom_engine_deleted",
+                "Custom TTS engine removed: {name}",
+                name=str(engine.get("name", "")),
+            )
+        )
+
+    def _open_custom_tts_engine_dialog(
+        self,
+        engine: dict[str, object] | None,
+    ) -> None:
+        data = self._custom_tts_engine_defaults()
+        editing_id = ""
+        if engine is not None:
+            data.update(engine)
+            editing_id = str(engine.get("id", ""))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            self.tr("custom_engine_dialog_title", "Custom TTS Engine")
+        )
+        dialog.setMinimumWidth(720)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        name_edit = QLineEdit(str(data.get("name", "")))
+        name_edit.setPlaceholderText("AllTalk local, My Studio TTS...")
+        location_combo = QComboBox()
+        location_combo.addItem(
+            self.tr("custom_engine_local_http", "Local HTTP endpoint"),
+            "local_http",
+        )
+        location_combo.addItem(
+            self.tr("custom_engine_remote_http", "Remote HTTP API"),
+            "remote_http",
+        )
+        self._select_combo_data(location_combo, data.get("location", "local_http"))
+
+        url_edit = QLineEdit(str(data.get("url", "")))
+        url_edit.setPlaceholderText("http://127.0.0.1:7851/api/tts-generate")
+        method_combo = QComboBox()
+        for method in ("POST", "GET"):
+            method_combo.addItem(method, method)
+        self._select_combo_data(method_combo, data.get("method", "POST"))
+
+        voice_edit = QLineEdit(str(data.get("voice", "")))
+        language_edit = QLineEdit(str(data.get("language", "")))
+        api_key_edit = self._password_edit()
+        api_key_edit.setText(str(data.get("api_key", "")))
+        auth_header_edit = QLineEdit(str(data.get("auth_header", "")))
+        auth_header_edit.setPlaceholderText("Authorization: Bearer {{api_key}}")
+
+        headers_edit = QTextEdit()
+        headers_edit.setPlainText(str(data.get("headers_json", "")))
+        headers_edit.setFixedHeight(72)
+        body_edit = QTextEdit()
+        body_edit.setPlainText(str(data.get("body_template", "")))
+        body_edit.setFixedHeight(128)
+
+        response_combo = QComboBox()
+        for label, value in (
+            (
+                self.tr("custom_engine_response_wav", "HTTP response is WAV audio"),
+                "audio_wav",
+            ),
+            (
+                self.tr(
+                    "custom_engine_response_pcm",
+                    "HTTP response is raw PCM 16-bit mono",
+                ),
+                "audio_pcm",
+            ),
+            (
+                self.tr(
+                    "custom_engine_response_json_base64",
+                    "JSON field contains base64 audio",
+                ),
+                "json_base64",
+            ),
+            (
+                self.tr(
+                    "custom_engine_response_json_url",
+                    "JSON field contains audio URL",
+                ),
+                "json_url",
+            ),
+            (
+                self.tr(
+                    "custom_engine_response_json_path",
+                    "JSON field contains local audio file path",
+                ),
+                "json_path",
+            ),
+        ):
+            response_combo.addItem(label, value)
+        self._select_combo_data(
+            response_combo,
+            data.get("response_mode", "audio_wav"),
+        )
+
+        json_path_edit = QLineEdit(str(data.get("json_audio_path", "")))
+        json_path_edit.setPlaceholderText("audio.data / output.url / file_path")
+        sample_rate_spin = QSpinBox()
+        sample_rate_spin.setRange(8000, 192000)
+        sample_rate_spin.setValue(int(data.get("sample_rate", 24000) or 24000))
+        timeout_spin = QSpinBox()
+        timeout_spin.setRange(10, 1800)
+        timeout_spin.setSuffix(" s")
+        timeout_spin.setValue(int(data.get("timeout_seconds", 120) or 120))
+
+        form.addRow(self.tr("custom_engine_name", "Name"), name_edit)
+        form.addRow(self.tr("custom_engine_location", "Location"), location_combo)
+        form.addRow(self.tr("custom_engine_url", "Endpoint URL"), url_edit)
+        form.addRow(self.tr("custom_engine_method", "HTTP method"), method_combo)
+        form.addRow(self.tr("custom_engine_default_voice", "Default voice"), voice_edit)
+        form.addRow(
+            self.tr("custom_engine_default_language", "Default language"),
+            language_edit,
+        )
+        form.addRow(self.tr("api_key", "API key"), api_key_edit)
+        form.addRow(
+            self.tr("custom_engine_auth_header", "Auth header template"),
+            auth_header_edit,
+        )
+        form.addRow(
+            self.tr("custom_engine_headers_json", "Headers JSON"),
+            headers_edit,
+        )
+        form.addRow(
+            self.tr("custom_engine_body_template", "Body template"),
+            body_edit,
+        )
+        form.addRow(
+            self.tr("custom_engine_response_mode", "Response mode"),
+            response_combo,
+        )
+        form.addRow(
+            self.tr("custom_engine_json_field", "JSON audio field"),
+            json_path_edit,
+        )
+        form.addRow(
+            self.tr("custom_engine_sample_rate", "PCM sample rate"),
+            sample_rate_spin,
+        )
+        form.addRow(self.tr("custom_engine_timeout", "Timeout"), timeout_spin)
+        layout.addLayout(form)
+
+        help_label = QLabel(
+            self.tr(
+                "custom_engine_template_help",
+                "Templates can use {{text}}, {{voice}}, {{language}}, {{speed}}, "
+                "{{model}}, {{api_key}}, and {{output_path}}. For JSON responses, "
+                "use dot paths like audio.data or result.file.",
+            )
+        )
+        help_label.setObjectName("helperLabel")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton(self.tr("cancel", "Cancel"))
+        save_button = QPushButton(self.tr("save", "Save"))
+        save_button.setIcon(ui_icon("save"))
+        cancel_button.clicked.connect(dialog.reject)
+        save_button.clicked.connect(dialog.accept)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name = name_edit.text().strip()
+        url = url_edit.text().strip()
+        if not name or not url:
+            self._show_error(
+                self.tr("custom_engine_invalid", "Invalid custom engine"),
+                self.tr(
+                    "custom_engine_invalid_message",
+                    "Custom engines require at least a name and an endpoint URL.",
+                ),
+            )
+            return
+
+        saved_engine = {
+            "id": self._unique_custom_engine_id(name, editing_id or None),
+            "name": name,
+            "location": location_combo.currentData() or "local_http",
+            "url": url,
+            "method": method_combo.currentData() or "POST",
+            "voice": voice_edit.text().strip(),
+            "language": language_edit.text().strip(),
+            "api_key": api_key_edit.text().strip(),
+            "auth_header": auth_header_edit.text().strip(),
+            "headers_json": headers_edit.toPlainText().strip(),
+            "body_template": body_edit.toPlainText().strip(),
+            "response_mode": response_combo.currentData() or "audio_wav",
+            "json_audio_path": json_path_edit.text().strip(),
+            "sample_rate": sample_rate_spin.value(),
+            "timeout_seconds": timeout_spin.value(),
+        }
+
+        engines = self._custom_tts_engines()
+        if editing_id:
+            engines = [
+                saved_engine if str(item.get("id", "")) == editing_id else item
+                for item in engines
+            ]
+        else:
+            engines.append(saved_engine)
+        self.settings["custom_tts_engines"] = engines
+        selected_key = self._custom_engine_key(saved_engine["id"])
+        self._populate_tts_engine_combo(selected_key)
+        self._select_tts_engine(selected_key)
+        self._save_settings()
+        self.log_view.append_event(
+            self.tr(
+                "custom_engine_saved",
+                "Custom TTS engine saved: {name}",
+                name=name,
+            )
+        )
+
+    def _refresh_custom_engine_panel(self) -> None:
+        if not hasattr(self, "custom_engine_status_label"):
+            return
+        engine_key = str(self.tts_engine_combo.currentData() or "")
+        engine = self._custom_engine_by_key(engine_key)
+        has_engine = engine is not None
+        if not has_engine:
+            self.custom_engine_status_label.setText(
+                self.tr("custom_engine_missing", "No custom engine is selected.")
+            )
+            self.custom_engine_endpoint_label.setText("")
+        else:
+            self.custom_engine_status_label.setText(
+                self.tr(
+                    "custom_engine_status",
+                    "Custom engine: {name} ({type})",
+                    name=str(engine.get("name", "")),
+                    type=str(engine.get("location", "local_http")),
+                )
+            )
+            self.custom_engine_endpoint_label.setText(
+                self.tr(
+                    "custom_engine_endpoint",
+                    "Endpoint: {url}",
+                    url=str(engine.get("url", "")),
+                )
+            )
+        self.custom_engine_configure_button.setEnabled(has_engine)
+        self.custom_engine_delete_button.setEnabled(has_engine)
+
     def _on_tts_engine_changed(self) -> None:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
-        index = self.engine_stack_indexes.get(engine_id, 0)
+        stack_key = "custom" if engine_id.startswith("custom:") else engine_id
+        index = self.engine_stack_indexes.get(stack_key, 0)
         self.engine_settings_stack.setCurrentIndex(index)
         self._update_voice_panel_for_engine()
         self._refresh_tts_engine_table()
+        self._refresh_custom_engine_panel()
         self._refresh_generation_voice_combo()
         self._update_header_engine_label()
         if hasattr(self, "page_stack") and self.page_stack.currentIndex() == 5:
@@ -3663,6 +5535,9 @@ class MainWindow(QMainWindow):
         return spin
 
     def _tts_engine_label(self, engine_id: str) -> str:
+        custom_engine = self._custom_engine_by_key(engine_id)
+        if custom_engine is not None:
+            return str(custom_engine.get("name", engine_id) or engine_id)
         labels = {
             "piper": self.tr("tts_engine_piper", "Piper"),
             "kokoro": self.tr(
@@ -3674,6 +5549,7 @@ class MainWindow(QMainWindow):
                 "Chatterbox",
             ),
             "qwen": self.tr("tts_engine_qwen", "Qwen3 TTS"),
+            "omnivoice": self.tr("tts_engine_omnivoice", "OmniVoice"),
             "openai": self.tr("tts_engine_openai", "OpenAI TTS (API)"),
             "elevenlabs": self.tr("tts_engine_elevenlabs", "ElevenLabs (API)"),
             "gemini": self.tr("tts_engine_gemini", "Google Gemini TTS (API)"),
@@ -3698,6 +5574,8 @@ class MainWindow(QMainWindow):
         chatterbox_ready = self.chatterbox_manager.is_installed()
         qwen_runtime_ready = self.qwen_manager.has_runtime()
         qwen_ready = self.qwen_manager.is_installed()
+        omnivoice_runtime_ready = self.omnivoice_manager.has_runtime()
+        omnivoice_ready = self.omnivoice_manager.is_installed()
 
         local_type = self.tr("engine_type_local", "Local")
         remote_type = self.tr("engine_type_remote", "Remote")
@@ -3755,6 +5633,21 @@ class MainWindow(QMainWindow):
                 ),
             },
             {
+                "engine_id": "omnivoice",
+                "type": local_type,
+                "name": self._tts_engine_label("omnivoice"),
+                "speed": self.tr("engine_speed_medium", "Medium"),
+                "quality": self.tr("engine_quality_high", "High"),
+                "gpu": self.tr("recommended", "Recommended"),
+                "installed": (
+                    installed
+                    if omnivoice_ready
+                    else update_available
+                    if omnivoice_runtime_ready
+                    else not_installed
+                ),
+            },
+            {
                 "engine_id": "openai",
                 "type": remote_type,
                 "name": self._tts_engine_label("openai"),
@@ -3791,6 +5684,20 @@ class MainWindow(QMainWindow):
                 "installed": "",
             },
         ]
+        for engine in self._custom_tts_engines():
+            engine_id = self._custom_engine_key(engine.get("id", ""))
+            is_local = str(engine.get("location", "local_http")) == "local_http"
+            rows.append(
+                {
+                    "engine_id": engine_id,
+                    "type": local_type if is_local else remote_type,
+                    "name": str(engine.get("name", engine_id)),
+                    "speed": self.tr("engine_speed_depends", "Depends"),
+                    "quality": self.tr("engine_quality_custom", "Custom"),
+                    "gpu": self.tr("depends", "Depends") if is_local else "",
+                    "installed": self.tr("configured", "Configured"),
+                }
+            )
         for row in rows:
             engine_id = row["engine_id"]
             if engine_id != current_engine:
@@ -3799,7 +5706,7 @@ class MainWindow(QMainWindow):
                 row["selected"] = self.tr("selected_loading", "Selected / loading")
             elif self.preloaded_tts_engine_id == engine_id:
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
-            elif engine_id in {"chatterbox", "qwen"}:
+            elif engine_id in {"chatterbox", "qwen", "omnivoice"}:
                 row["selected"] = self.tr(
                     "selected_not_loaded",
                     "Selected / not loaded",
@@ -3932,6 +5839,57 @@ class MainWindow(QMainWindow):
                 )
                 install_button.setEnabled(self.qwen_thread is None)
                 layout.addWidget(install_button)
+        elif engine_id == "omnivoice":
+            runtime_ready = self.omnivoice_manager.has_runtime()
+            installed = self.omnivoice_manager.is_installed()
+            if installed:
+                remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
+                remove_button.setIcon(ui_icon("delete"))
+                remove_button.clicked.connect(self._remove_omnivoice)
+                remove_button.setEnabled(self.omnivoice_thread is None)
+                layout.addWidget(remove_button)
+                load_button = QPushButton()
+                load_button.clicked.connect(
+                    lambda _checked=False: self._toggle_preloaded_tts_engine(
+                        "omnivoice"
+                    )
+                )
+                self._configure_preload_button(load_button, "omnivoice", True)
+                layout.addWidget(load_button)
+            else:
+                install_button = QPushButton(
+                    self.tr(
+                        "update" if runtime_ready else "install",
+                        "Update" if runtime_ready else "Install",
+                    )
+                )
+                install_button.setIcon(ui_icon("apply"))
+                install_button.clicked.connect(
+                    lambda _checked=False: self._select_and_install_engine(
+                        "omnivoice"
+                    )
+                )
+                install_button.setEnabled(self.omnivoice_thread is None)
+                layout.addWidget(install_button)
+        elif engine_id.startswith("custom:"):
+            configure_button = QPushButton(self.tr("configure", "Configure"))
+            configure_button.setIcon(ui_icon("settings"))
+            configure_button.clicked.connect(
+                lambda _checked=False, selected=engine_id: (
+                    self._select_tts_engine(selected),
+                    self._edit_selected_custom_tts_engine(),
+                )
+            )
+            layout.addWidget(configure_button)
+            remove_button = QPushButton(self.tr("remove", "Remove"))
+            remove_button.setIcon(ui_icon("delete"))
+            remove_button.clicked.connect(
+                lambda _checked=False, selected=engine_id: (
+                    self._select_tts_engine(selected),
+                    self._delete_selected_custom_tts_engine(),
+                )
+            )
+            layout.addWidget(remove_button)
 
         layout.addStretch(1)
         return widget
@@ -3956,6 +5914,8 @@ class MainWindow(QMainWindow):
             self._install_chatterbox()
         elif engine_id == "qwen":
             self._install_qwen()
+        elif engine_id == "omnivoice":
+            self._install_omnivoice()
 
     def _configure_preload_button(
         self,
@@ -3995,7 +5955,7 @@ class MainWindow(QMainWindow):
     def _start_preload_tts_engine(self, engine_id: str) -> None:
         if self.preload_thread is not None:
             return
-        if engine_id not in {"kokoro", "chatterbox", "qwen"}:
+        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice"}:
             return
         self._select_tts_engine(engine_id)
         voice_config = self._current_voice_config()
@@ -4090,6 +6050,8 @@ class MainWindow(QMainWindow):
         self._refresh_kokoro_python_status()
         self._refresh_chatterbox_status()
         self._refresh_qwen_status()
+        self._refresh_omnivoice_status()
+        self._refresh_custom_engine_panel()
 
     def _build_general_settings(self) -> QWidget:
         widget = QWidget()
@@ -4101,13 +6063,14 @@ class MainWindow(QMainWindow):
         narration_group = QGroupBox(
             self.tr("narration_settings", "Narration and export")
         )
-        left_form = QFormLayout(narration_group)
-        left_form.setSpacing(10)
-        output_group = QGroupBox(
-            self.tr("output_and_podcast", "Output and podcast")
+        narration_form = QFormLayout(narration_group)
+        narration_form.setSpacing(10)
+
+        editor_group = QGroupBox(
+            self.tr("text_editor_settings", "Text Editor")
         )
-        right_form = QFormLayout(output_group)
-        right_form.setSpacing(10)
+        editor_form = QFormLayout(editor_group)
+        editor_form.setSpacing(10)
 
         self.speed_spin = QDoubleSpinBox()
         self.speed_spin.setRange(0.5, 2.0)
@@ -4145,11 +6108,16 @@ class MainWindow(QMainWindow):
         self.editor_highlighting_checkbox.toggled.connect(
             self._set_editor_highlighting_enabled
         )
-
-        left_form.addRow(self.tr("voice_speed", "Voice speed"), self.speed_spin)
-        left_form.addRow(self.tr("split_mode", "Text splitting"), self.split_combo)
-        left_form.addRow(self.tr("export_mode", "Output type"), self.export_combo)
-        left_form.addRow("", self.editor_highlighting_checkbox)
+        self.markup_toolbar_checkbox = QCheckBox(
+            self.tr("show_markup_toolbar", "Show markup toolbar")
+        )
+        self.markup_toolbar_checkbox.toggled.connect(self._set_markup_toolbar_visible)
+        self.markup_corrector_checkbox = QCheckBox(
+            self.tr("markup_corrector_enabled", "Markup corrector enabled")
+        )
+        self.markup_corrector_checkbox.toggled.connect(
+            self._set_markup_corrector_enabled
+        )
 
         output_path = str(resolve_app_path(self.settings.get("output_dir", "output")))
         self.output_picker = PathPicker(
@@ -4159,6 +6127,15 @@ class MainWindow(QMainWindow):
         self.normalize_checkbox = QCheckBox(
             self.tr("normalize_clean_audio", "Normalize clean narration")
         )
+        normalize_help = QLabel(
+            self.tr(
+                "normalize_clean_audio_help",
+                "Uses FFmpeg loudness normalization (-16 LUFS) when encoding the clean narration MP3. "
+                "It helps segments feel more even in perceived volume, but it is not a full studio compressor.",
+            )
+        )
+        normalize_help.setObjectName("helperLabel")
+        normalize_help.setWordWrap(True)
         self.open_folder_checkbox = QCheckBox(
             self.tr("open_output", "Open output folder when finished")
         )
@@ -4173,14 +6150,73 @@ class MainWindow(QMainWindow):
             self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
         )
 
-        right_form.addRow(
+        narration_form.addRow(self.tr("voice_speed", "Voice speed"), self.speed_spin)
+        narration_form.addRow(self.tr("export_mode", "Output type"), self.export_combo)
+        narration_form.addRow(
             self.tr("output_folder", "Output folder"),
             self.output_picker,
         )
-        right_form.addRow("", self.normalize_checkbox)
+        narration_form.addRow("", self.normalize_checkbox)
+        narration_form.addRow("", normalize_help)
+
+        editor_form.addRow("", self.editor_highlighting_checkbox)
+        editor_form.addRow("", self.markup_toolbar_checkbox)
+        editor_form.addRow("", self.markup_corrector_checkbox)
+
+        cache_group = QGroupBox(
+            self.tr("temporary_audio_cache", "Temporary audio cache")
+        )
+        cache_layout = QVBoxLayout(cache_group)
+        cache_layout.setSpacing(8)
+        cache_help = QLabel(
+            self.tr(
+                "temporary_audio_cache_help",
+                "Segment WAV files are kept for review and regeneration. "
+                "You can delete them after the final mix to free disk space.",
+            )
+        )
+        cache_help.setObjectName("helperLabel")
+        cache_help.setWordWrap(True)
+        self.auto_delete_segment_wavs_checkbox = QCheckBox(
+            self.tr(
+                "auto_delete_segment_wavs_after_mix",
+                "Delete segment WAV cache after rendering the full mix",
+            )
+        )
+        self.wav_cache_stats_label = QLabel("")
+        self.wav_cache_stats_label.setObjectName("helperLabel")
+        cleanup_buttons = QHBoxLayout()
+        self.cleanup_current_wavs_button = QPushButton(
+            self.tr("cleanup_current_project_wavs", "Clean current project WAVs")
+        )
+        self.cleanup_current_wavs_button.setIcon(ui_icon("delete"))
+        self.cleanup_current_wavs_button.clicked.connect(
+            self._cleanup_current_project_wavs
+        )
+        self.cleanup_all_wavs_button = QPushButton(
+            self.tr("cleanup_all_project_wavs", "Clean all project WAVs")
+        )
+        self.cleanup_all_wavs_button.setIcon(ui_icon("delete"))
+        self.cleanup_all_wavs_button.clicked.connect(self._cleanup_all_project_wavs)
+        self.cleanup_temp_audio_button = QPushButton(
+            self.tr("cleanup_abandoned_temp_audio", "Clean abandoned temp audio")
+        )
+        self.cleanup_temp_audio_button.setIcon(ui_icon("delete"))
+        self.cleanup_temp_audio_button.clicked.connect(
+            self._cleanup_abandoned_temp_audio
+        )
+        cleanup_buttons.addWidget(self.cleanup_current_wavs_button)
+        cleanup_buttons.addWidget(self.cleanup_all_wavs_button)
+        cleanup_buttons.addWidget(self.cleanup_temp_audio_button)
+        cleanup_buttons.addStretch(1)
+        cache_layout.addWidget(cache_help)
+        cache_layout.addWidget(self.auto_delete_segment_wavs_checkbox)
+        cache_layout.addWidget(self.wav_cache_stats_label)
+        cache_layout.addLayout(cleanup_buttons)
 
         grid.addWidget(narration_group, 0, 0)
-        grid.addWidget(output_group, 0, 1)
+        grid.addWidget(editor_group, 0, 1)
+        grid.addWidget(cache_group, 1, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -4192,6 +6228,23 @@ class MainWindow(QMainWindow):
     def _set_editor_highlighting_enabled(self, enabled: bool) -> None:
         if hasattr(self, "markup_highlighter"):
             self.markup_highlighter.set_enabled(enabled)
+
+    def _set_markup_corrector_enabled(self, enabled: bool) -> None:
+        if hasattr(self, "markup_highlighter"):
+            self.markup_highlighter.set_corrector_enabled(enabled)
+
+    def _set_markup_toolbar_visible(self, visible: bool) -> None:
+        self.settings["show_markup_toolbar"] = bool(visible)
+        if hasattr(self, "markup_toolbar"):
+            self.markup_toolbar.setVisible(bool(visible))
+        if hasattr(self, "markup_toolbar_checkbox"):
+            self.markup_toolbar_checkbox.blockSignals(True)
+            self.markup_toolbar_checkbox.setChecked(bool(visible))
+            self.markup_toolbar_checkbox.blockSignals(False)
+        if hasattr(self, "markup_toolbar_action"):
+            self.markup_toolbar_action.blockSignals(True)
+            self.markup_toolbar_action.setChecked(bool(visible))
+            self.markup_toolbar_action.blockSignals(False)
 
     def _build_advanced_settings(self) -> QWidget:
         widget = QWidget()
@@ -4274,20 +6327,6 @@ class MainWindow(QMainWindow):
             self.tr("podcast_mix_settings", "Podcast mix")
         )
         podcast_form = QFormLayout(podcast_group)
-        self.intro_enabled_checkbox = QCheckBox(
-            self.tr("enable_intro", "Enable intro")
-        )
-        self.intro_picker = FilePicker(
-            self.tr("browse", "Browse"),
-            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
-        )
-        self.outro_enabled_checkbox = QCheckBox(
-            self.tr("enable_outro", "Enable outro")
-        )
-        self.outro_picker = FilePicker(
-            self.tr("browse", "Browse"),
-            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
-        )
         self.background_loop_checkbox = QCheckBox(
             self.tr("loop_background", "Loop background during narration")
         )
@@ -4318,7 +6357,6 @@ class MainWindow(QMainWindow):
             "medium",
         )
         self.ducking_strength_combo.addItem(self.tr("ducking_high", "High"), "high")
-        podcast_form.addRow(self.intro_enabled_checkbox, self.intro_picker)
         podcast_form.addRow("", self.background_loop_checkbox)
         podcast_form.addRow(
             self.tr("voice_volume", "Voice volume"),
@@ -4336,7 +6374,6 @@ class MainWindow(QMainWindow):
             self.tr("music_tail", "Music after voice"),
             self.music_tail_spin,
         )
-        podcast_form.addRow(self.outro_enabled_checkbox, self.outro_picker)
         podcast_form.addRow(
             self.tr("music_fade_in", "Music fade in"),
             self.fade_in_spin,
@@ -4356,8 +6393,58 @@ class MainWindow(QMainWindow):
             self.ducking_strength_combo,
         )
 
+        splitting_group = QGroupBox(
+            self.tr("text_splitting_settings", "Text splitting")
+        )
+        splitting_form = QFormLayout(splitting_group)
+        splitting_form.setSpacing(10)
+        splitting_help = QLabel(
+            self.tr(
+                "text_splitting_help",
+                "Default chunking applies to every engine unless a specific engine override is set.",
+            )
+        )
+        splitting_help.setObjectName("helperLabel")
+        splitting_help.setWordWrap(True)
+        self.chunk_size_spin = QSpinBox()
+        self.chunk_size_spin.setRange(120, 5000)
+        self.chunk_size_spin.setSingleStep(20)
+        self.chunk_size_spin.setSuffix(self.tr("characters_suffix", " chars"))
+        self.chatterbox_chunk_size_spin = self._engine_chunk_spin()
+        self.qwen_chunk_size_spin = self._engine_chunk_spin()
+        self.omnivoice_chunk_size_spin = self._engine_chunk_spin()
+        self.kokoro_chunk_size_spin = self._engine_chunk_spin()
+        self.piper_chunk_size_spin = self._engine_chunk_spin()
+        splitting_form.addRow(self.tr("split_mode", "Text splitting"), self.split_combo)
+        splitting_form.addRow(
+            self.tr("default_chunk_size", "Default chunk size"),
+            self.chunk_size_spin,
+        )
+        splitting_form.addRow(
+            self.tr("piper_chunk_size", "Piper override"),
+            self.piper_chunk_size_spin,
+        )
+        splitting_form.addRow(
+            self.tr("kokoro_chunk_size", "Kokoro override"),
+            self.kokoro_chunk_size_spin,
+        )
+        splitting_form.addRow(
+            self.tr("chatterbox_chunk_size", "Chatterbox override"),
+            self.chatterbox_chunk_size_spin,
+        )
+        splitting_form.addRow(
+            self.tr("qwen_chunk_size", "Qwen override"),
+            self.qwen_chunk_size_spin,
+        )
+        splitting_form.addRow(
+            self.tr("omnivoice_chunk_size", "OmniVoice override"),
+            self.omnivoice_chunk_size_spin,
+        )
+        splitting_form.addRow("", splitting_help)
+
         grid.addWidget(pause_group, 0, 0)
         grid.addWidget(podcast_group, 0, 1)
+        grid.addWidget(splitting_group, 1, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -4375,6 +6462,49 @@ class MainWindow(QMainWindow):
         spin.setSuffix(" s")
         spin.setValue(value)
         return spin
+
+    def _engine_chunk_spin(self) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(0, 5000)
+        spin.setSingleStep(20)
+        spin.setSpecialValueText(self.tr("use_default", "Use default"))
+        spin.setSuffix(self.tr("characters_suffix", " chars"))
+        return spin
+
+    def _current_chunk_size(self, engine_id: str | None = None) -> int:
+        default_size = int(
+            self.chunk_size_spin.value()
+            if hasattr(self, "chunk_size_spin")
+            else self.settings.get("chunk_size", 2500)
+        )
+        engine = str(
+            engine_id
+            or (
+                self.tts_engine_combo.currentData()
+                if hasattr(self, "tts_engine_combo")
+                else self.settings.get("tts_engine", "piper")
+            )
+            or "piper"
+        )
+        spin_map = {
+            "piper": getattr(self, "piper_chunk_size_spin", None),
+            "kokoro": getattr(self, "kokoro_chunk_size_spin", None),
+            "chatterbox": getattr(self, "chatterbox_chunk_size_spin", None),
+            "qwen": getattr(self, "qwen_chunk_size_spin", None),
+            "omnivoice": getattr(self, "omnivoice_chunk_size_spin", None),
+        }
+        override = 0
+        spin = spin_map.get(engine)
+        if spin is not None:
+            override = int(spin.value())
+        else:
+            overrides = self.settings.get("engine_chunk_sizes", {})
+            if isinstance(overrides, dict):
+                try:
+                    override = int(overrides.get(engine, 0) or 0)
+                except (TypeError, ValueError):
+                    override = 0
+        return override if override > 0 else default_size
 
     @staticmethod
     def _db_spin(
@@ -4806,9 +6936,19 @@ class MainWindow(QMainWindow):
 
     def _generation_voice_rows(self, engine_id: str) -> list[dict[str, object]]:
         rows = self._voice_page_rows(engine_id)
-        if engine_id == "chatterbox":
-            return [row for row in rows if bool(row.get("installed"))]
-        return rows
+        usable_rows: list[dict[str, object]] = []
+        for row in rows:
+            gallery_voice = row.get("gallery_voice")
+            if engine_id == "chatterbox" and not bool(row.get("installed")):
+                continue
+            if (
+                isinstance(gallery_voice, GalleryVoice)
+                and gallery_voice.is_reference_audio
+                and not bool(row.get("installed"))
+            ):
+                continue
+            usable_rows.append(row)
+        return usable_rows
 
     def _on_generation_voice_selected(self, index: int) -> None:
         if index < 0 or not hasattr(self, "generation_voice_combo"):
@@ -4833,8 +6973,14 @@ class MainWindow(QMainWindow):
             )
         )
         self.voices_manage_button.setText(self._voices_manage_button_text(engine_id))
-        self.voices_manage_button.setEnabled(engine_id in {"piper", "chatterbox"})
-        self.voice_page_rows = self._voice_page_rows(engine_id)
+        self.voices_manage_button.setEnabled(engine_id in {"piper", "chatterbox", "omnivoice"})
+        self.voices_design_button.setVisible(engine_id == "omnivoice")
+        self.voices_design_button.setEnabled(
+            engine_id == "omnivoice" and self.omnivoice_manager.is_installed()
+        )
+        self.voice_page_rows = self._filter_voice_page_rows(
+            self._voice_page_rows(engine_id)
+        )
         self.voices_table.setSortingEnabled(False)
         self.voices_table.setRowCount(0)
         for row_index, row in enumerate(self.voice_page_rows):
@@ -4843,7 +6989,11 @@ class MainWindow(QMainWindow):
             values = (
                 self.tr("selected", "Selected") if selected else "",
                 str(row.get("name", "")),
+                str(row.get("short_description", "")),
                 str(row.get("language", "")),
+                str(row.get("gender", "")),
+                str(row.get("age_style", "")),
+                str(row.get("voice_style", "")),
                 str(row.get("type", "")),
                 str(row.get("status", "")),
             )
@@ -4854,12 +7004,12 @@ class MainWindow(QMainWindow):
                     if selected:
                         item.setIcon(ui_icon("apply", active=True))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                elif column in {2, 3, 4}:
+                elif column in {3, 4, 5, 6, 7, 8}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.voices_table.setItem(row_index, column, item)
             self.voices_table.setCellWidget(
                 row_index,
-                5,
+                9,
                 self._voice_actions_widget(row),
             )
             self.voices_table.setRowHeight(row_index, 42)
@@ -4869,10 +7019,50 @@ class MainWindow(QMainWindow):
         self.voices_table.resizeRowsToContents()
         self._refresh_generation_voice_combo()
 
+    def _filter_voice_page_rows(
+        self,
+        rows: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        if not hasattr(self, "voices_filter_edit"):
+            return rows
+        query = self.voices_filter_edit.text().strip().casefold()
+        if not query:
+            return rows
+        field = str(self.voices_filter_field_combo.currentData() or "all")
+        field_map = {
+            "name": ("name",),
+            "short_description": ("short_description",),
+            "language": ("language",),
+            "gender": ("gender",),
+            "age_style": ("age_style",),
+            "voice_style": ("voice_style",),
+            "tags": ("tags",),
+            "all": (
+                "name",
+                "short_description",
+                "language",
+                "gender",
+                "age_style",
+                "voice_style",
+                "type",
+                "status",
+                "tags",
+            ),
+        }
+        keys = field_map.get(field, field_map["all"])
+        filtered: list[dict[str, object]] = []
+        for row in rows:
+            haystack = " ".join(str(row.get(key, "")) for key in keys).casefold()
+            if query in haystack:
+                filtered.append(row)
+        return filtered
+
     def _voices_manage_button_text(self, engine_id: str) -> str:
         if engine_id == "piper":
             return self.tr("download_piper_voices", "Download Piper voices")
         if engine_id == "chatterbox":
+            return self.tr("import_reference_voice", "Import reference voice")
+        if engine_id == "omnivoice":
             return self.tr("import_reference_voice", "Import reference voice")
         return self.tr("manage", "Manage")
 
@@ -4892,10 +7082,15 @@ class MainWindow(QMainWindow):
                 "qwen_voices_page_help",
                 "Qwen speakers are built into the selected Qwen3 TTS model.",
             )
+        if engine_id == "omnivoice":
+            return self.tr(
+                "omnivoice_voices_page_help",
+                "OmniVoice uses gallery voices as cloning references. Selecting a voice downloads its preview/reference audio when needed.",
+            )
         if engine_id == "chatterbox":
             return self.tr(
                 "chatterbox_voices_page_help",
-                "Chatterbox uses short reference audio clips. You can import your own WAV/MP3 files or install the available remote examples row by row.",
+                "Chatterbox uses the same gallery reference voices as OmniVoice. Selecting a voice downloads its preview/reference audio when needed.",
             )
         return self.tr(
             "api_voices_page_help",
@@ -4905,7 +7100,7 @@ class MainWindow(QMainWindow):
     def _voice_page_rows(self, engine_id: str) -> list[dict[str, object]]:
         if engine_id == "piper":
             selected_id = self.voice_combo.currentData()
-            return [
+            rows = [
                 {
                     "engine": "piper",
                     "id": voice.voice_id,
@@ -4918,6 +7113,7 @@ class MainWindow(QMainWindow):
                 }
                 for voice in self.voices
             ]
+            return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "kokoro":
             selected_id = self.kokoro_python_voice_combo.currentData()
             status = (
@@ -4925,7 +7121,7 @@ class MainWindow(QMainWindow):
                 if self.kokoro_python_manager.is_installed()
                 else self.tr("not_installed", "Not installed")
             )
-            return [
+            rows = [
                 {
                     "engine": "kokoro",
                     "id": voice.voice_id,
@@ -4938,6 +7134,7 @@ class MainWindow(QMainWindow):
                 }
                 for voice in self.kokoro_python_manager.list_voices()
             ]
+            return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "qwen":
             selected_speaker = self.qwen_speaker_combo.currentData()
             selected_language = self.qwen_language_combo.currentData()
@@ -4966,9 +7163,11 @@ class MainWindow(QMainWindow):
                             "voice": voice,
                         }
                     )
-            return rows
+            return self._merge_voice_gallery_rows(engine_id, rows)
+        if engine_id == "omnivoice":
+            return self._merge_voice_gallery_rows(engine_id, [])
         if engine_id == "chatterbox":
-            return self._chatterbox_voice_page_rows()
+            return self._merge_voice_gallery_rows(engine_id, [])
         if engine_id == "openai":
             selected = self.openai_voice_combo.currentData()
             return [
@@ -5031,7 +7230,167 @@ class MainWindow(QMainWindow):
                     "selected": bool(voice),
                 }
             ]
+        if engine_id.startswith("custom:"):
+            engine = self._custom_engine_by_key(engine_id)
+            if engine is None:
+                return []
+            voice = str(engine.get("voice", "")).strip()
+            language = str(engine.get("language", "")).strip()
+            return [
+                {
+                    "engine": engine_id,
+                    "id": voice or str(engine.get("id", "")),
+                    "name": voice or str(engine.get("name", "")),
+                    "language": language or self.tr("depends_on_engine", "Depends on engine"),
+                    "type": self.tr("custom_engine_voice", "Custom engine voice"),
+                    "status": self.tr("configured", "Configured"),
+                    "selected": True,
+                }
+            ]
         return []
+
+    def _merge_voice_gallery_rows(
+        self,
+        engine_id: str,
+        rows: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        gallery_voices = self.voice_gallery_manager.list_voices(engine_id)
+        matched: set[str] = set()
+        merged: list[dict[str, object]] = []
+        for row in rows:
+            gallery_voice = self._matching_gallery_voice(engine_id, row, gallery_voices)
+            if gallery_voice is not None:
+                row = dict(row)
+                row["gallery_voice"] = gallery_voice
+                row["preview_source"] = self.voice_gallery_manager.preview_source(gallery_voice)
+                row["short_description"] = gallery_voice.short_description
+                row["gender"] = gallery_voice.gender
+                row["age_style"] = gallery_voice.age_style
+                row["voice_style"] = gallery_voice.voice_style
+                row["tags"] = ", ".join(gallery_voice.tags)
+                if gallery_voice.voice_type:
+                    row["type"] = gallery_voice.voice_type
+                if gallery_voice.is_builtin:
+                    row["status"] = self.tr("built_in", "Built in")
+                elif self.voice_gallery_manager.is_installed(gallery_voice):
+                    row["status"] = self.tr("installed", "Installed")
+                    row["installed"] = True
+                    if gallery_voice.installed_path:
+                        row["path"] = Path(gallery_voice.installed_path)
+                else:
+                    row["status"] = self.tr("available", "Available")
+                    row["installed"] = False
+                matched.add(gallery_voice.voice_id)
+            merged.append(row)
+
+        for gallery_voice in gallery_voices:
+            if gallery_voice.voice_id in matched:
+                continue
+            merged.append(self._gallery_voice_row(engine_id, gallery_voice))
+        return merged
+
+    def _matching_gallery_voice(
+        self,
+        engine_id: str,
+        row: dict[str, object],
+        gallery_voices: list[GalleryVoice],
+    ) -> GalleryVoice | None:
+        for voice in gallery_voices:
+            if engine_id == "qwen":
+                if (
+                    str(row.get("speaker_id", "")).casefold()
+                    == (voice.speaker_id or voice.engine_voice_id).casefold()
+                    and str(row.get("language_id", "")).casefold()
+                    == (voice.language_name or voice.language).casefold()
+                ):
+                    return voice
+            elif engine_id == "kokoro":
+                if str(row.get("id", "")).casefold() == (
+                    voice.engine_voice_id or voice.voice_id
+                ).casefold():
+                    return voice
+            elif engine_id == "chatterbox":
+                if str(row.get("name", "")).casefold() == voice.name.casefold():
+                    return voice
+            elif engine_id == "omnivoice":
+                if str(row.get("id", "")).casefold() == (
+                    voice.engine_voice_id or voice.voice_id
+                ).casefold():
+                    return voice
+            elif engine_id == "piper":
+                if str(row.get("id", "")).casefold() == (
+                    voice.engine_voice_id or voice.voice_id
+                ).casefold():
+                    return voice
+        return None
+
+    def _gallery_voice_row(
+        self,
+        engine_id: str,
+        voice: GalleryVoice,
+    ) -> dict[str, object]:
+        installed = self.voice_gallery_manager.is_installed(voice)
+        status = (
+            self.tr("built_in", "Built in")
+            if voice.is_builtin
+            else self.tr("installed", "Installed")
+            if installed
+            else self.tr("available", "Available")
+        )
+        row: dict[str, object] = {
+            "engine": engine_id,
+            "id": voice.voice_id,
+            "name": voice.name,
+            "language": voice.language_name or voice.language,
+            "short_description": voice.short_description,
+            "gender": voice.gender,
+            "age_style": voice.age_style,
+            "voice_style": voice.voice_style,
+            "tags": ", ".join(voice.tags),
+            "type": voice.voice_type,
+            "status": status,
+            "selected": self._is_gallery_voice_selected(engine_id, voice),
+            "gallery_voice": voice,
+            "preview_source": self.voice_gallery_manager.preview_source(voice),
+            "installed": installed,
+        }
+        if voice.installed_path:
+            row["path"] = Path(voice.installed_path)
+        if engine_id == "qwen":
+            row["speaker_id"] = voice.speaker_id or voice.engine_voice_id
+            row["language_id"] = voice.language_name or voice.language
+        elif engine_id == "kokoro":
+            row["id"] = voice.engine_voice_id or voice.voice_id
+        return row
+
+    def _is_gallery_voice_selected(self, engine_id: str, voice: GalleryVoice) -> bool:
+        if engine_id == "qwen":
+            return (
+                str(self.qwen_speaker_combo.currentData() or "").casefold()
+                == (voice.speaker_id or voice.engine_voice_id).casefold()
+                and str(self.qwen_language_combo.currentData() or "").casefold()
+                == (voice.language_name or voice.language).casefold()
+            )
+        if engine_id == "kokoro":
+            return str(self.kokoro_python_voice_combo.currentData() or "").casefold() == (
+                voice.engine_voice_id or voice.voice_id
+            ).casefold()
+        if engine_id == "chatterbox":
+            path = Path(voice.installed_path) if voice.installed_path else None
+            selected = self.chatterbox_reference_picker.path()
+            return bool(path and selected and path.resolve() == selected.resolve())
+        if engine_id == "omnivoice":
+            selected = self.omnivoice_reference_picker.path()
+            return bool(
+                selected
+                and voice.installed_path
+                and Path(voice.installed_path).resolve() == selected.resolve()
+            )
+        if engine_id == "piper":
+            return str(self.voice_combo.currentData() or "").casefold() == (
+                voice.engine_voice_id or voice.voice_id
+            ).casefold()
+        return False
 
     def _chatterbox_voice_page_rows(self) -> list[dict[str, object]]:
         selected_path = self.chatterbox_reference_picker.path()
@@ -5109,7 +7468,39 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(select_button)
 
-        if engine_id in {"piper", "kokoro", "qwen", "chatterbox"}:
+        gallery_voice = row.get("gallery_voice")
+        preview_source = str(row.get("preview_source", ""))
+        if isinstance(gallery_voice, GalleryVoice) and preview_source:
+            play_button = self._small_icon_button(
+                "play",
+                self.tr("play_sample", "Play sample"),
+                lambda _checked=False, voice_row=row: self._play_voice_page_sample_data(
+                    voice_row
+                ),
+            )
+            layout.addWidget(play_button)
+            if gallery_voice.is_reference_audio:
+                if self.voice_gallery_manager.is_installed(gallery_voice):
+                    remove_button = self._small_icon_button(
+                        "delete",
+                        self.tr("remove", "Remove"),
+                        lambda _checked=False, voice_row=row: self._remove_gallery_voice_data(
+                            voice_row
+                        ),
+                    )
+                    remove_button.setObjectName("dangerButton")
+                    layout.addWidget(remove_button)
+                else:
+                    install_button = self._small_icon_button(
+                        "save",
+                        self.tr("install", "Install"),
+                        lambda _checked=False, voice_row=row: self._install_gallery_voice_data(
+                            voice_row
+                        ),
+                    )
+                    layout.addWidget(install_button)
+
+        if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "chatterbox"}:
             test_button = self._small_icon_button(
                 "preview",
                 self.tr("test_voice", "Test voice"),
@@ -5118,10 +7509,15 @@ class MainWindow(QMainWindow):
                 ),
             )
             test_button.setEnabled(
-                engine_id != "chatterbox" or bool(row.get("installed"))
+                (engine_id != "chatterbox" or bool(row.get("installed")))
+                and not (
+                    isinstance(gallery_voice, GalleryVoice)
+                    and gallery_voice.is_reference_audio
+                    and not bool(row.get("installed"))
+                )
             )
             layout.addWidget(test_button)
-        if engine_id == "chatterbox":
+        if engine_id == "chatterbox" and not isinstance(gallery_voice, GalleryVoice):
             if bool(row.get("installed")):
                 play_button = self._small_icon_button(
                     "play",
@@ -5194,12 +7590,34 @@ class MainWindow(QMainWindow):
     ) -> None:
         engine_id = str(row.get("engine", ""))
         voice_id = row.get("id")
+        gallery_voice = row.get("gallery_voice")
+        if isinstance(gallery_voice, GalleryVoice):
+            if (
+                gallery_voice.is_reference_audio
+                and not self.voice_gallery_manager.is_installed(gallery_voice)
+            ):
+                self._start_voice_gallery_operation("install", gallery_voice)
+                return
+            installed_path = (
+                Path(gallery_voice.installed_path)
+                if gallery_voice.installed_path
+                else None
+            )
+            if engine_id == "chatterbox" and installed_path is not None:
+                self.chatterbox_reference_picker.set_path(installed_path)
+            elif engine_id == "omnivoice":
+                self._apply_omnivoice_gallery_reference(gallery_voice)
         if engine_id == "piper":
             voice = row.get("voice")
             if isinstance(voice, VoiceInfo):
                 self._select_combo_data(self.language_combo, voice.language)
                 self._filter_voices()
                 self._select_combo_data(self.voice_combo, voice.voice_id)
+            elif isinstance(gallery_voice, GalleryVoice):
+                self._select_combo_data(
+                    self.voice_combo,
+                    gallery_voice.engine_voice_id or gallery_voice.voice_id,
+                )
         elif engine_id == "kokoro":
             self._select_combo_data(self.kokoro_python_voice_combo, voice_id)
         elif engine_id == "qwen":
@@ -5211,6 +7629,9 @@ class MainWindow(QMainWindow):
                 self.qwen_speaker_combo,
                 row.get("speaker_id", voice_id),
             )
+        elif engine_id == "omnivoice":
+            if not isinstance(gallery_voice, GalleryVoice):
+                self._select_combo_data(self.omnivoice_mode_combo, voice_id)
         elif engine_id == "chatterbox":
             if not bool(row.get("installed")):
                 self._install_chatterbox_reference_voice_data(row)
@@ -5218,16 +7639,40 @@ class MainWindow(QMainWindow):
             path = row.get("path")
             if isinstance(path, Path):
                 self.chatterbox_reference_picker.set_path(path)
-                self.chatterbox_consent_checkbox.setChecked(True)
         elif engine_id == "openai":
             self._select_combo_data(self.openai_voice_combo, voice_id)
         elif engine_id == "gemini":
             self._select_combo_data(self.gemini_voice_combo, voice_id)
+        elif engine_id.startswith("custom:"):
+            pass
         self._save_settings()
         if refresh:
             self._refresh_voices_page()
         else:
             self._refresh_generation_voice_combo()
+
+    def _apply_omnivoice_gallery_reference(self, voice: GalleryVoice) -> bool:
+        try:
+            audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+        except Exception as exc:
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                f"Could not prepare OmniVoice reference voice: {exc}",
+            )
+            return False
+        if audio_path is None or not audio_path.is_file():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                f"OmniVoice voice does not provide reference audio: {voice.name}",
+            )
+            return False
+        self._select_combo_data(self.omnivoice_mode_combo, "clone")
+        self.omnivoice_reference_picker.set_path(audio_path)
+        self.omnivoice_reference_text_edit.setPlainText(voice.ref_text)
+        self.log_view.append_event(
+            f"OmniVoice reference voice selected: {voice.name}"
+        )
+        return True
 
     def _test_voice_page_row(self, row_index: int) -> None:
         if not 0 <= row_index < len(self.voice_page_rows):
@@ -5253,6 +7698,8 @@ class MainWindow(QMainWindow):
             self._test_kokoro_python_voice()
         elif engine_id == "qwen":
             self._test_qwen_voice()
+        elif engine_id == "omnivoice":
+            self._test_omnivoice_voice()
         elif engine_id == "chatterbox":
             self._test_chatterbox_voice()
 
@@ -5349,6 +7796,16 @@ class MainWindow(QMainWindow):
         self._play_voice_page_sample_data(row)
 
     def _play_voice_page_sample_data(self, row: dict[str, object]) -> None:
+        gallery_voice = row.get("gallery_voice")
+        if isinstance(gallery_voice, GalleryVoice):
+            source = self.voice_gallery_manager.preview_source(gallery_voice)
+            if source:
+                if source.startswith("http://") or source.startswith("https://"):
+                    self.voices_player.setSource(QUrl(source))
+                else:
+                    self.voices_player.setSource(QUrl.fromLocalFile(str(Path(source))))
+                self.voices_player.play()
+                return
         voice = row.get("voice")
         path = row.get("path")
         if isinstance(path, Path) and path.is_file():
@@ -5359,6 +7816,117 @@ class MainWindow(QMainWindow):
             self.voices_player.setSource(QUrl(voice.source_url))
             self.voices_player.play()
 
+    def _sync_voice_gallery(self) -> None:
+        self._start_voice_gallery_operation("sync")
+
+    def _install_gallery_voice_data(self, row: dict[str, object]) -> None:
+        gallery_voice = row.get("gallery_voice")
+        if isinstance(gallery_voice, GalleryVoice):
+            self._start_voice_gallery_operation("install", gallery_voice)
+
+    def _remove_gallery_voice_data(self, row: dict[str, object]) -> None:
+        gallery_voice = row.get("gallery_voice")
+        if not isinstance(gallery_voice, GalleryVoice):
+            return
+        choice = QMessageBox.question(
+            self,
+            self.tr("remove_voice", "Remove voice"),
+            self.tr(
+                "remove_voice_confirm",
+                "Remove {voice} from this computer?",
+                voice=gallery_voice.name,
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        self._start_voice_gallery_operation("remove", gallery_voice)
+
+    def _start_voice_gallery_operation(
+        self,
+        operation: str,
+        voice: GalleryVoice | None = None,
+    ) -> None:
+        if self.voice_gallery_thread is not None:
+            return
+        self.voices_progress_bar.setVisible(True)
+        self.voices_progress_bar.setRange(0, 0 if operation == "sync" else 100)
+        self.voices_progress_bar.setValue(0)
+        self.voices_status_label.setText(
+            self.tr("voice_gallery_working", "Updating voice gallery...")
+        )
+        self.voices_sync_button.setEnabled(False)
+        self.voices_manage_button.setEnabled(False)
+        thread = QThread(self)
+        gallery_settings = self.settings.get("voice_gallery", {})
+        manager = VoiceGalleryManager(
+            catalog_url=str(
+                gallery_settings.get("catalog_url") or DEFAULT_GALLERY_CATALOG_URL
+            ),
+            local_catalog_path=str(gallery_settings.get("local_catalog_path", "")),
+        )
+        worker = VoiceGalleryWorker(manager, operation, voice)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_voice_gallery_progress)
+        worker.finished.connect(self._on_voice_gallery_finished)
+        worker.failed.connect(self._on_voice_gallery_failed)
+        worker.cancelled.connect(self._on_voice_gallery_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_voice_gallery_worker)
+        self.voice_gallery_worker = worker
+        self.voice_gallery_thread = thread
+        thread.start()
+
+    def _on_voice_gallery_progress(
+        self,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        if total:
+            self.voices_progress_bar.setRange(0, 100)
+            self.voices_progress_bar.setValue(max(0, min(100, int(current / total * 100))))
+        self.voices_status_label.setText(message)
+        self.log_view.append_event(message)
+
+    def _on_voice_gallery_finished(self, message: str) -> None:
+        self.voices_progress_bar.setVisible(False)
+        gallery_settings = self.settings.setdefault("voice_gallery", {})
+        if isinstance(gallery_settings, dict):
+            gallery_settings["last_sync_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.settings_manager.save(self.settings)
+        self.voice_gallery_manager = VoiceGalleryManager(
+            catalog_url=str(
+                gallery_settings.get("catalog_url") or DEFAULT_GALLERY_CATALOG_URL
+            ),
+            local_catalog_path=str(gallery_settings.get("local_catalog_path", "")),
+        )
+        self.log_view.append_event(message)
+        self._refresh_voices_page()
+
+    def _on_voice_gallery_failed(self, message: str) -> None:
+        self.voices_progress_bar.setVisible(False)
+        self.log_view.append_event(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_voice_gallery_cancelled(self) -> None:
+        self.voices_progress_bar.setVisible(False)
+        self.log_view.append_event(
+            self.tr("voice_gallery_cancelled", "Voice gallery operation cancelled.")
+        )
+
+    def _clear_voice_gallery_worker(self) -> None:
+        self.voice_gallery_worker = None
+        self.voice_gallery_thread = None
+        self.voices_progress_bar.setVisible(False)
+        if hasattr(self, "voices_sync_button"):
+            self.voices_sync_button.setEnabled(True)
+        self._refresh_voices_page()
+
     def _voices_primary_manage_action(self) -> None:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
         if engine_id == "piper":
@@ -5366,7 +7934,10 @@ class MainWindow(QMainWindow):
             self._refresh_voices_page()
             return
         if engine_id == "chatterbox":
-            self._show_chatterbox_voice_manage_menu()
+            self._import_gallery_reference_voice("chatterbox")
+            return
+        if engine_id == "omnivoice":
+            self._import_gallery_reference_voice("omnivoice")
 
     def _show_chatterbox_voice_manage_menu(self) -> None:
         self._import_chatterbox_reference_voice()
@@ -5388,6 +7959,226 @@ class MainWindow(QMainWindow):
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
             return
         self.log_view.append_event(f"Imported Chatterbox reference voice: {destination.name}")
+        self._refresh_voices_page()
+
+    def _import_gallery_reference_voice(self, engine_id: str) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("import_reference_voice", "Import reference voice"),
+            "",
+            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
+        )
+        if not selected:
+            return
+        source = Path(selected)
+        dialog = ReferenceVoiceImportDialog(source, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            voice = self.voice_gallery_manager.import_reference_voice(
+                engine_id,
+                source,
+                name=str(values["name"]),
+                language=str(values["language"]),
+                language_name=str(values["language_name"]),
+                ref_text=str(values["ref_text"]),
+                short_description=str(values["short_description"]),
+                gender=str(values["gender"]),
+                age_style=str(values["age_style"]),
+                voice_style=str(values["voice_style"]),
+                tags=list(values["tags"]),
+                ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            )
+        except Exception as exc:
+            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        self.log_view.append_event(f"Imported {engine_id} reference voice: {voice.name}")
+        self._refresh_voices_page()
+
+    def _open_omnivoice_design_dialog(self) -> None:
+        if not self.omnivoice_manager.is_installed():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "omnivoice_runtime_missing",
+                    "OmniVoice is not installed yet. Open Settings > TTS Engines "
+                    "and click Install.",
+                ),
+            )
+            return
+        dialog = OmniVoiceDesignDialog(self, self.tr)
+        dialog.generate_button.clicked.connect(
+            lambda _checked=False: self._start_omnivoice_design_preview(dialog)
+        )
+        dialog.play_button.clicked.connect(
+            lambda _checked=False: self._play_omnivoice_design_preview(dialog)
+        )
+        dialog.save_button.clicked.connect(
+            lambda _checked=False: self._save_omnivoice_design_voice(dialog)
+        )
+        self.omnivoice_design_dialog = dialog
+        dialog.exec()
+        if self.omnivoice_design_dialog is dialog:
+            self.omnivoice_design_dialog = None
+
+    def _start_omnivoice_design_preview(
+        self,
+        dialog: OmniVoiceDesignDialog,
+    ) -> None:
+        if self.omnivoice_design_thread is not None:
+            return
+        sample_text = dialog.sample_text_edit.toPlainText().strip()
+        if not sample_text:
+            self._show_error(
+                self.tr("missing_text", "Missing text"),
+                self.tr(
+                    "omnivoice_design_missing_sample",
+                    "Add sample text before generating a preview.",
+                ),
+            )
+            return
+        design_instruct = dialog.instruction()
+        voice_config = {
+            "engine": "omnivoice",
+            "model": self.omnivoice_model_combo.currentData() or "omnivoice",
+            "mode": "design",
+            "language": dialog.language_combo.currentData() or "auto",
+            "device": self.omnivoice_device_combo.currentData() or "auto",
+            "dtype": self.omnivoice_dtype_combo.currentData() or "auto",
+            "instruct": design_instruct,
+            "num_step": self.omnivoice_num_step_spin.value(),
+            "speed": self.omnivoice_engine_speed_spin.value(),
+            "duration": self.omnivoice_duration_spin.value(),
+        }
+        thread = QThread(self)
+        worker = OmniVoicePreviewWorker(
+            OmniVoiceManager(),
+            voice_config,
+            sample_text,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda path: self._on_omnivoice_design_preview_ready(dialog, path))
+        worker.failed.connect(lambda message: self._on_omnivoice_design_preview_failed(dialog, message))
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_omnivoice_design_worker)
+        self.omnivoice_design_worker = worker
+        self.omnivoice_design_thread = thread
+        dialog.generate_button.setEnabled(False)
+        dialog.save_button.setEnabled(False)
+        dialog.status_label.setText(
+            self.tr(
+                "omnivoice_design_generating",
+                "Generating preview with OmniVoice...",
+            )
+        )
+        self.log_view.append_event(
+            self.tr(
+                "omnivoice_design_log_generating",
+                "Generating OmniVoice designed voice preview...",
+            )
+        )
+        self.log_view.append_event(f"OmniVoice design instruct: {design_instruct}")
+        thread.start()
+
+    def _on_omnivoice_design_preview_ready(
+        self,
+        dialog: OmniVoiceDesignDialog,
+        path: str,
+    ) -> None:
+        preview_path = Path(path)
+        self.omnivoice_design_preview_path = preview_path
+        dialog.preview_path = preview_path
+        dialog.status_label.setText(
+            self.tr(
+                "omnivoice_design_preview_ready",
+                "Preview ready. Listen, then save it as a reusable voice.",
+            )
+        )
+        dialog.play_button.setEnabled(True)
+        dialog.save_button.setEnabled(True)
+        self._play_omnivoice_design_preview(dialog)
+        self.log_view.append_event(
+            self.tr(
+                "omnivoice_design_log_preview_ready",
+                "OmniVoice designed voice preview ready.",
+            )
+        )
+
+    def _on_omnivoice_design_preview_failed(
+        self,
+        dialog: OmniVoiceDesignDialog,
+        message: str,
+    ) -> None:
+        first_line = message.splitlines()[0] if message else "Unknown error"
+        dialog.status_label.setText(
+            self.tr(
+                "omnivoice_design_preview_failed",
+                "Preview failed: {message}",
+                message=first_line,
+            )
+        )
+        self.log_view.append_event(message)
+        visible_message = message if len(message) <= 1200 else message[:1200] + "\n..."
+        self._show_error(self.tr("generation_failed", "Generation failed"), visible_message)
+
+    def _clear_omnivoice_design_worker(self) -> None:
+        self.omnivoice_design_worker = None
+        self.omnivoice_design_thread = None
+        if self.omnivoice_design_dialog is not None:
+            self.omnivoice_design_dialog.generate_button.setEnabled(True)
+
+    def _play_omnivoice_design_preview(self, dialog: OmniVoiceDesignDialog) -> None:
+        if dialog.preview_path is None or not dialog.preview_path.is_file():
+            return
+        self.voices_player.setSource(QUrl.fromLocalFile(str(dialog.preview_path)))
+        self.voices_player.play()
+
+    def _save_omnivoice_design_voice(self, dialog: OmniVoiceDesignDialog) -> None:
+        if dialog.preview_path is None or not dialog.preview_path.is_file():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "omnivoice_design_generate_before_save",
+                    "Generate a preview before saving the designed voice.",
+                ),
+            )
+            return
+        metadata = dialog.voice_metadata()
+        try:
+            voice = self.voice_gallery_manager.import_reference_voice(
+                "omnivoice",
+                dialog.preview_path,
+                name=str(metadata["name"]),
+                language=str(metadata["language"]),
+                language_name=str(metadata["language_name"]),
+                ref_text=str(metadata["ref_text"]),
+                short_description=str(metadata["short_description"]),
+                gender=str(metadata["gender"]),
+                age_style=str(metadata["age_style"]),
+                voice_style=str(metadata["voice_style"]),
+                tags=list(metadata["tags"]),
+                ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+                min_duration_seconds=1.0,
+                max_duration_seconds=60.0,
+            )
+        except Exception as exc:
+            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        dialog.status_label.setText(
+            self.tr("omnivoice_design_saved_voice", "Saved voice: {name}", name=voice.name)
+        )
+        self.log_view.append_event(
+            self.tr(
+                "omnivoice_design_log_saved_voice",
+                "Saved OmniVoice designed voice: {name}",
+                name=voice.name,
+            )
+        )
         self._refresh_voices_page()
 
     def _install_chatterbox_reference_voice(self, row_index: int) -> None:
@@ -5500,6 +8291,7 @@ class MainWindow(QMainWindow):
         selected_engine = self.settings.get("tts_engine", "piper")
         if selected_engine == "kokoro_python":
             selected_engine = "kokoro"
+        self._populate_tts_engine_combo(selected_engine)
         self._select_combo_data(
             self.tts_engine_combo,
             selected_engine,
@@ -5545,9 +8337,6 @@ class MainWindow(QMainWindow):
         self.chatterbox_reference_picker.set_path(
             str(chatterbox.get("reference_audio_path", ""))
         )
-        self.chatterbox_consent_checkbox.setChecked(
-            bool(chatterbox.get("voice_clone_consent", False))
-        )
         self.chatterbox_exaggeration_spin.setValue(
             float(chatterbox.get("exaggeration", 0.5))
         )
@@ -5579,6 +8368,54 @@ class MainWindow(QMainWindow):
             qwen.get("dtype", "auto"),
         )
         self.qwen_instruct_edit.setText(str(qwen.get("instruct", "")))
+
+        omnivoice = self.settings.get("omnivoice", {})
+        if not isinstance(omnivoice, dict):
+            omnivoice = {}
+        self._select_combo_data(
+            self.omnivoice_model_combo,
+            omnivoice.get("model", "omnivoice"),
+        )
+        self._select_combo_data(
+            self.omnivoice_mode_combo,
+            "clone",
+        )
+        self._select_combo_data(
+            self.omnivoice_language_combo,
+            omnivoice.get("language", "auto"),
+        )
+        self._select_combo_data(
+            self.omnivoice_device_combo,
+            omnivoice.get("device", "auto"),
+        )
+        self._select_combo_data(
+            self.omnivoice_dtype_combo,
+            omnivoice.get("dtype", "auto"),
+        )
+        self.omnivoice_instruct_edit.setText(
+            str(
+                omnivoice.get(
+                    "instruct",
+                    "female, young adult, moderate pitch",
+                )
+            )
+        )
+        self.omnivoice_reference_picker.set_path(
+            str(omnivoice.get("reference_audio_path", ""))
+        )
+        self.omnivoice_reference_text_edit.setPlainText(
+            str(omnivoice.get("reference_text", ""))
+        )
+        self._ensure_default_omnivoice_reference(allow_sync=False)
+        self.omnivoice_num_step_spin.setValue(
+            int(omnivoice.get("num_step", 32))
+        )
+        self.omnivoice_engine_speed_spin.setValue(
+            float(omnivoice.get("speed", 1.0))
+        )
+        self.omnivoice_duration_spin.setValue(
+            float(omnivoice.get("duration", 0.0))
+        )
 
         review = self.settings.get("review", {})
         if not isinstance(review, dict):
@@ -5690,6 +8527,26 @@ class MainWindow(QMainWindow):
             self.split_combo,
             self.settings.get("split_mode", "safe_chunks"),
         )
+        try:
+            default_chunk_size = int(self.settings.get("chunk_size", 2500))
+        except (TypeError, ValueError):
+            default_chunk_size = 2500
+        self.chunk_size_spin.setValue(default_chunk_size)
+        engine_chunk_sizes = self.settings.get("engine_chunk_sizes", {})
+        if not isinstance(engine_chunk_sizes, dict):
+            engine_chunk_sizes = {}
+
+        def chunk_override(engine: str) -> int:
+            try:
+                return int(engine_chunk_sizes.get(engine, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        self.piper_chunk_size_spin.setValue(chunk_override("piper"))
+        self.kokoro_chunk_size_spin.setValue(chunk_override("kokoro"))
+        self.chatterbox_chunk_size_spin.setValue(chunk_override("chatterbox"))
+        self.qwen_chunk_size_spin.setValue(chunk_override("qwen"))
+        self.omnivoice_chunk_size_spin.setValue(chunk_override("omnivoice"))
         self._select_combo_data(
             self.export_combo,
             self.settings.get("export_mode", "single"),
@@ -5697,19 +8554,28 @@ class MainWindow(QMainWindow):
         self.normalize_checkbox.setChecked(
             bool(self.settings.get("normalize_audio", False))
         )
+        self.auto_delete_segment_wavs_checkbox.setChecked(
+            bool(self.settings.get("auto_delete_segment_wavs_after_mix", False))
+        )
+        self._refresh_wav_cache_stats()
         self.editor_highlighting_checkbox.setChecked(
             bool(self.settings.get("editor_syntax_highlighting", True))
         )
         self._set_editor_highlighting_enabled(
             self.editor_highlighting_checkbox.isChecked()
         )
+        self._set_markup_toolbar_visible(
+            bool(self.settings.get("show_markup_toolbar", True))
+        )
+        self.markup_corrector_checkbox.setChecked(
+            bool(self.settings.get("markup_corrector_enabled", True))
+        )
+        self._set_markup_corrector_enabled(
+            self.markup_corrector_checkbox.isChecked()
+        )
         self.podcast_enabled_checkbox.setChecked(
             bool(self.settings.get("podcast_enabled", False))
         )
-        self.intro_enabled_checkbox.setChecked(
-            bool(self.settings.get("intro_enabled", False))
-        )
-        self.intro_picker.set_path(self.settings.get("intro_path", ""))
         self.background_enabled_checkbox.setChecked(
             bool(self.settings.get("background_enabled", False))
         )
@@ -5736,10 +8602,6 @@ class MainWindow(QMainWindow):
         self.music_tail_spin.setValue(
             int(self.settings.get("music_tail_ms", 2000))
         )
-        self.outro_enabled_checkbox.setChecked(
-            bool(self.settings.get("outro_enabled", False))
-        )
-        self.outro_picker.set_path(self.settings.get("outro_path", ""))
         self.fade_in_spin.setValue(
             float(self.settings.get("music_fade_in_seconds", 1.0))
         )
@@ -5867,6 +8729,246 @@ class MainWindow(QMainWindow):
     def _current_audiobook(self):
         audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
         return audiobook or self.audiobook_store.latest_audiobook()
+
+    def _refresh_wav_cache_stats(self) -> None:
+        if not hasattr(self, "wav_cache_stats_label"):
+            return
+        current = self._current_audiobook()
+        current_count, current_bytes = (
+            self.audiobook_store.segment_wav_cache_stats(current.id)
+            if current is not None
+            else (0, 0)
+        )
+        all_count, all_bytes = self.audiobook_store.segment_wav_cache_stats()
+        temp_count, temp_bytes = self._temp_audio_cache_stats()
+        self.wav_cache_stats_label.setText(
+            self.tr(
+                "wav_cache_stats",
+                "Current project: {current_count} WAV(s), {current_size}. "
+                "All projects: {all_count} WAV(s), {all_size}. "
+                "Abandoned temp: {temp_count} file(s), {temp_size}.",
+                current_count=current_count,
+                current_size=self._format_bytes(current_bytes),
+                all_count=all_count,
+                all_size=self._format_bytes(all_bytes),
+                temp_count=temp_count,
+                temp_size=self._format_bytes(temp_bytes),
+            )
+        )
+        cleanup_allowed = self._can_cleanup_wav_cache()
+        self.cleanup_current_wavs_button.setEnabled(
+            cleanup_allowed and current_count > 0
+        )
+        self.cleanup_all_wavs_button.setEnabled(cleanup_allowed and all_count > 0)
+        self.cleanup_temp_audio_button.setEnabled(
+            cleanup_allowed and temp_count > 0
+        )
+
+    def _can_cleanup_wav_cache(self) -> bool:
+        return (
+            self.worker is None
+            and self.verification_thread is None
+            and self.segment_regeneration_thread is None
+            and self.audiobook_rebuild_thread is None
+        )
+
+    def _cleanup_current_project_wavs(self) -> None:
+        if not self._can_cleanup_wav_cache():
+            QMessageBox.information(
+                self,
+                self.tr("delete_wav_cache", "Delete WAV cache"),
+                self.tr(
+                    "cleanup_wavs_busy",
+                    "Wait until generation or review work finishes before deleting WAV files.",
+                ),
+            )
+            return
+        audiobook = self._current_audiobook()
+        if audiobook is None:
+            QMessageBox.information(
+                self,
+                self.tr("delete_wav_cache", "Delete WAV cache"),
+                self.tr("no_current_project", "No current project found."),
+            )
+            return
+        choice = QMessageBox.question(
+            self,
+            self.tr("delete_wav_cache", "Delete WAV cache"),
+            self.tr(
+                "cleanup_current_wavs_confirm",
+                "Delete segment WAV files for the current project? "
+                "Final MP3 files will not be deleted.",
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        self._cleanup_wav_cache(audiobook.id)
+
+    def _cleanup_all_project_wavs(self) -> None:
+        if not self._can_cleanup_wav_cache():
+            QMessageBox.information(
+                self,
+                self.tr("delete_wav_cache", "Delete WAV cache"),
+                self.tr(
+                    "cleanup_wavs_busy",
+                    "Wait until generation or review work finishes before deleting WAV files.",
+                ),
+            )
+            return
+        choice = QMessageBox.question(
+            self,
+            self.tr("delete_wav_cache", "Delete WAV cache"),
+            self.tr(
+                "cleanup_all_wavs_confirm",
+                "Delete segment WAV files for all projects? "
+                "Final MP3 files will not be deleted.",
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        self._cleanup_wav_cache(None)
+
+    def _cleanup_abandoned_temp_audio(self) -> None:
+        if not self._can_cleanup_wav_cache():
+            QMessageBox.information(
+                self,
+                self.tr("delete_wav_cache", "Delete WAV cache"),
+                self.tr(
+                    "cleanup_wavs_busy",
+                    "Wait until generation or review work finishes before deleting WAV files.",
+                ),
+            )
+            return
+        dirs = self._temp_audio_cache_dirs()
+        if not dirs:
+            QMessageBox.information(
+                self,
+                self.tr("delete_wav_cache", "Delete WAV cache"),
+                self.tr("cleanup_wavs_none", "No segment WAV files found."),
+            )
+            self._refresh_wav_cache_stats()
+            return
+        choice = QMessageBox.question(
+            self,
+            self.tr("delete_wav_cache", "Delete WAV cache"),
+            self.tr(
+                "cleanup_temp_audio_confirm",
+                "Delete abandoned LocalText2Voice temporary audio folders? "
+                "Final MP3 files and project files will not be deleted.",
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        count, size = self._delete_temp_audio_cache_dirs(dirs)
+        self._refresh_wav_cache_stats()
+        message = self.tr(
+            "cleanup_temp_audio_complete",
+            "Deleted {count} temporary file(s), freed {size}.",
+            count=count,
+            size=self._format_bytes(size),
+        )
+        self.log_view.append_event(message)
+        QMessageBox.information(
+            self,
+            self.tr("delete_wav_cache", "Delete WAV cache"),
+            message,
+        )
+
+    def _cleanup_wav_cache(self, audiobook_id: int | None) -> None:
+        try:
+            count, size = self.audiobook_store.cleanup_segment_wav_cache(audiobook_id)
+        except OSError as exc:
+            self._show_error(
+                self.tr("cleanup_wavs_failed", "WAV cleanup failed"),
+                str(exc),
+            )
+            return
+        self._refresh_wav_cache_stats()
+        if hasattr(self, "review_table"):
+            self._refresh_review_page()
+        message = (
+            self.tr(
+                "cleanup_wavs_complete",
+                "Deleted {count} WAV file(s), freed {size}.",
+                count=count,
+                size=self._format_bytes(size),
+            )
+            if count
+            else self.tr("cleanup_wavs_none", "No segment WAV files found.")
+        )
+        self.log_view.append_event(message)
+        QMessageBox.information(
+            self,
+            self.tr("delete_wav_cache", "Delete WAV cache"),
+            message,
+        )
+
+    def _temp_audio_cache_stats(self) -> tuple[int, int]:
+        count = 0
+        size = 0
+        for directory in self._temp_audio_cache_dirs():
+            directory_count, directory_size = self._directory_file_stats(directory)
+            count += directory_count
+            size += directory_size
+        return count, size
+
+    def _temp_audio_cache_dirs(self) -> list[Path]:
+        temp_root = Path(tempfile.gettempdir())
+        active_dirs: set[Path] = set()
+        if hasattr(self, "audio_mix_preview_panel"):
+            try:
+                active_dirs.add(
+                    Path(self.audio_mix_preview_panel.temp_dir.name).resolve()
+                )
+            except OSError:
+                pass
+        directories: list[Path] = []
+        try:
+            children = list(temp_root.iterdir())
+        except OSError:
+            return []
+        for child in children:
+            if not child.is_dir():
+                continue
+            if not child.name.startswith("local_text_2_voice_"):
+                continue
+            try:
+                resolved = child.resolve()
+            except OSError:
+                continue
+            if resolved in active_dirs:
+                continue
+            directories.append(child)
+        return sorted(directories)
+
+    @staticmethod
+    def _directory_file_stats(directory: Path) -> tuple[int, int]:
+        count = 0
+        size = 0
+        try:
+            files = [path for path in directory.rglob("*") if path.is_file()]
+        except OSError:
+            return 0, 0
+        for path in files:
+            try:
+                size += path.stat().st_size
+            except OSError:
+                continue
+            count += 1
+        return count, size
+
+    def _delete_temp_audio_cache_dirs(self, directories: list[Path]) -> tuple[int, int]:
+        count = 0
+        size = 0
+        for directory in directories:
+            directory_count, directory_size = self._directory_file_stats(directory)
+            try:
+                shutil.rmtree(directory)
+            except OSError:
+                continue
+            count += directory_count
+            size += directory_size
+        return count, size
 
     def _current_project_title(self) -> str:
         metadata = self.settings.get("metadata", {})
@@ -6724,6 +9826,8 @@ class MainWindow(QMainWindow):
             return self._chatterbox_voice_config_for_ui()
         if engine_id == "qwen":
             return self._qwen_voice_config_for_ui()
+        if engine_id == "omnivoice":
+            return self._omnivoice_voice_config_for_ui()
         if engine_id == "elevenlabs":
             return {
                 "engine": "elevenlabs",
@@ -6758,6 +9862,23 @@ class MainWindow(QMainWindow):
                 "output_format": self.azure_output_combo.currentData(),
                 "style": self.azure_style_edit.text().strip(),
             }
+        if engine_id.startswith("custom:"):
+            engine = self._custom_engine_by_key(engine_id)
+            if engine is None:
+                self._show_error(
+                    self.tr("generation_failed", "Generation failed"),
+                    self.tr(
+                        "custom_engine_missing",
+                        "No custom engine is selected.",
+                    ),
+                )
+                return None
+            config = dict(engine)
+            config["engine"] = engine_id
+            config["speed"] = speed
+            config["ffmpeg_path"] = self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe")
+            config.setdefault("name", self._tts_engine_label(engine_id))
+            return config
         self._show_error(
             self.tr("generation_failed", "Generation failed"),
             f"Unknown TTS engine: {engine_id}",
@@ -6800,7 +9921,7 @@ class MainWindow(QMainWindow):
             ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
             split_mode=str(self.split_combo.currentData()),
             export_mode=str(self.export_combo.currentData()),
-            chunk_size=int(self.settings.get("chunk_size", 2500)),
+            chunk_size=self._current_chunk_size(engine_id),
             pause_between_blocks_ms=int(
                 self.settings.get("pause_between_blocks_ms", 350)
             ),
@@ -6831,8 +9952,6 @@ class MainWindow(QMainWindow):
             ),
             normalize_audio=self.normalize_checkbox.isChecked(),
             podcast_enabled=False,
-            intro_enabled=self.intro_enabled_checkbox.isChecked(),
-            intro_path=self._resolved_audio_path(self.intro_picker.path()),
             background_enabled=bool(self.settings.get("background_enabled", True)),
             background_path=self._selected_music_path(),
             background_loop=self.background_loop_checkbox.isChecked(),
@@ -6843,8 +9962,6 @@ class MainWindow(QMainWindow):
             music_volume_db=self.background_volume_spin.value(),
             voice_start_offset_ms=self.voice_start_offset_spin.value(),
             music_tail_ms=self.music_tail_spin.value(),
-            outro_enabled=self.outro_enabled_checkbox.isChecked(),
-            outro_path=self._resolved_audio_path(self.outro_picker.path()),
             music_fade_in_seconds=self.fade_in_spin.value(),
             music_fade_out_seconds=self.fade_out_spin.value(),
             podcast_gap_ms=round(self.podcast_gap_spin.value() * 1000),
@@ -6890,7 +10007,7 @@ class MainWindow(QMainWindow):
             )
         self.loaded_tts_engine_id = (
             engine_id
-            if engine_id in {"kokoro", "chatterbox", "qwen"}
+            if engine_id in {"kokoro", "chatterbox", "qwen", "omnivoice"}
             else self.preloaded_tts_engine_id
         )
         self._update_header_engine_label()
@@ -6951,7 +10068,10 @@ class MainWindow(QMainWindow):
                 self._set_current_project(audiobook.id)
                 self.project_dirty = False
             self.last_output_folder = Path(output_paths[0]).parent
-            self.header_open_output_button.setEnabled(True)
+            self.header_open_output_button.setEnabled(
+                self.header_open_output_button.isVisible()
+                and self._current_output_folder() is not None
+            )
             if (
                 self.review_enabled_checkbox.isChecked()
                 and self.review_auto_checkbox.isChecked()
@@ -7031,10 +10151,20 @@ class MainWindow(QMainWindow):
         return f"{minutes:02d}:{seconds:02d}"
 
     def _open_last_output_folder(self) -> None:
-        if self.last_output_folder is not None:
+        folder = self._current_output_folder()
+        if folder is not None:
             QDesktopServices.openUrl(
-                QUrl.fromLocalFile(str(self.last_output_folder))
+                QUrl.fromLocalFile(str(folder))
             )
+
+    def _current_output_folder(self) -> Path | None:
+        if (
+            hasattr(self, "audio_mix_preview_panel")
+            and self.header_open_output_button.isVisible()
+            and self.audio_mix_preview_panel.context is not None
+        ):
+            return self.audio_mix_preview_panel.context.output_dir
+        return self.last_output_folder
 
     def _show_audio_mix_preview(self, output_paths: list[str]) -> None:
         narration_path = self._first_narration_output(output_paths)
@@ -7070,11 +10200,14 @@ class MainWindow(QMainWindow):
     def _set_audio_mix_preview_context(self, narration_path: Path) -> None:
         if not narration_path.is_file():
             self.log_view.append_event(
-                f"Audio Mix Preview skipped: narration file not found: {narration_path}"
+                f"Audio Mix skipped: narration file not found: {narration_path}"
             )
             return
         output_dir = narration_path.parent
         self.last_output_folder = output_dir
+        self.header_open_output_button.setEnabled(
+            self.header_open_output_button.isVisible()
+        )
         context = AudioMixPreviewContext(
             voice_path=narration_path,
             output_dir=output_dir,
@@ -7144,6 +10277,34 @@ class MainWindow(QMainWindow):
     def _on_mix_preview_render_finished(self, path: str) -> None:
         self.last_output_folder = Path(path).parent
         self.log_view.append_event(f"Saved mix preview render: {path}")
+        if not bool(self.settings.get("auto_delete_segment_wavs_after_mix", False)):
+            return
+        audiobook = self._current_audiobook()
+        if audiobook is None:
+            return
+        try:
+            count, size = self.audiobook_store.cleanup_segment_wav_cache(audiobook.id)
+        except OSError as exc:
+            self.log_view.append_event(
+                self.tr(
+                    "cleanup_wavs_failed_with_error",
+                    "WAV cleanup failed: {error}",
+                    error=str(exc),
+                )
+            )
+            return
+        if count:
+            self.log_view.append_event(
+                self.tr(
+                    "auto_cleanup_wavs_done",
+                    "Auto cleanup removed {count} WAV file(s), freed {size}.",
+                    count=count,
+                    size=self._format_bytes(size),
+                )
+            )
+        self._refresh_wav_cache_stats()
+        if hasattr(self, "review_table"):
+            self._refresh_review_page()
 
     def _refresh_review_page(self) -> None:
         audiobook = self._current_audiobook()
@@ -7822,7 +10983,9 @@ class MainWindow(QMainWindow):
             ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
             split_mode=str(audiobook.split_mode or self.split_combo.currentData()),
             export_mode="single",
-            chunk_size=int(self.settings.get("chunk_size", 2500)),
+            chunk_size=self._current_chunk_size(
+                str(voice_config.get("engine", "piper"))
+            ),
             pause_between_blocks_ms=int(
                 self.settings.get("pause_between_blocks_ms", 350)
             ),
@@ -7859,7 +11022,10 @@ class MainWindow(QMainWindow):
     def _on_review_rebuild_finished(self, path: str) -> None:
         self.review_progress_bar.setVisible(False)
         self.last_output_folder = Path(path).parent
-        self.header_open_output_button.setEnabled(True)
+        self.header_open_output_button.setEnabled(
+            self.header_open_output_button.isVisible()
+            and self._current_output_folder() is not None
+        )
         self.log_view.append_event(f"Review rebuild saved: {path}")
         self._set_audio_mix_preview_context(Path(path))
         self._close_review_rebuild_dialog(
@@ -7926,6 +11092,10 @@ class MainWindow(QMainWindow):
             )
         )
         self.whisper_install_button.setEnabled(self.whisper_thread is None)
+        if hasattr(self, "whisper_missing_frame"):
+            self.whisper_missing_frame.setVisible(not installed)
+        if hasattr(self, "whisper_missing_install_button"):
+            self.whisper_missing_install_button.setEnabled(self.whisper_thread is None)
         self.whisper_remove_button.setEnabled(
             self.whisper_thread is None
             and (installed or runtime_ready or self.faster_whisper_manager.install_dir.exists())
@@ -7984,15 +11154,18 @@ class MainWindow(QMainWindow):
     def _on_whisper_finished(self, message: str) -> None:
         self.whisper_progress_bar.setVisible(False)
         self.log_view.append_event(f"Faster Whisper operation complete: {message}")
+        self._continue_pending_installer_setup()
 
     def _on_whisper_failed(self, message: str) -> None:
         self.whisper_progress_bar.setVisible(False)
         self.log_view.append_event(message)
+        self._abort_pending_installer_setup(message)
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
 
     def _on_whisper_cancelled(self) -> None:
         self.whisper_progress_bar.setVisible(False)
         self.log_view.append_event("Faster Whisper operation cancelled.")
+        self._abort_pending_installer_setup("Faster Whisper operation cancelled.")
 
     def _clear_whisper_worker(self) -> None:
         self.whisper_worker = None
@@ -8173,7 +11346,9 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(running)
         self.open_output_button.setEnabled(not running)
         self.header_open_output_button.setEnabled(
-            not running and self.last_output_folder is not None
+            not running
+            and self.header_open_output_button.isVisible()
+            and self._current_output_folder() is not None
         )
         self.text_editor.setReadOnly(running)
         for widget in (
@@ -8201,7 +11376,6 @@ class MainWindow(QMainWindow):
             self.chatterbox_language_combo,
             self.chatterbox_device_combo,
             self.chatterbox_reference_picker,
-            self.chatterbox_consent_checkbox,
             self.chatterbox_exaggeration_spin,
             self.chatterbox_cfg_spin,
             self.chatterbox_install_button,
@@ -8220,6 +11394,21 @@ class MainWindow(QMainWindow):
             self.qwen_test_button,
             self.qwen_load_button,
             self.qwen_detect_gpu_button,
+            self.omnivoice_model_combo,
+            self.omnivoice_mode_combo,
+            self.omnivoice_device_combo,
+            self.omnivoice_dtype_combo,
+            self.omnivoice_instruct_edit,
+            self.omnivoice_reference_picker,
+            self.omnivoice_reference_text_edit,
+            self.omnivoice_num_step_spin,
+            self.omnivoice_engine_speed_spin,
+            self.omnivoice_duration_spin,
+            self.omnivoice_install_button,
+            self.omnivoice_remove_button,
+            self.omnivoice_test_button,
+            self.omnivoice_load_button,
+            self.omnivoice_detect_gpu_button,
             self.review_enabled_checkbox,
             self.review_auto_checkbox,
             self.review_filter_combo,
@@ -8263,12 +11452,22 @@ class MainWindow(QMainWindow):
             self.periodic_pause_every_spin,
             self.periodic_pause_min_spin,
             self.periodic_pause_max_spin,
+            self.chunk_size_spin,
+            self.piper_chunk_size_spin,
+            self.kokoro_chunk_size_spin,
+            self.chatterbox_chunk_size_spin,
+            self.qwen_chunk_size_spin,
+            self.omnivoice_chunk_size_spin,
             self.output_picker,
             self.normalize_checkbox,
+            self.auto_delete_segment_wavs_checkbox,
+            self.cleanup_current_wavs_button,
+            self.cleanup_all_wavs_button,
+            self.cleanup_temp_audio_button,
             self.editor_highlighting_checkbox,
+            self.markup_toolbar_checkbox,
+            self.markup_corrector_checkbox,
             self.podcast_enabled_checkbox,
-            self.intro_enabled_checkbox,
-            self.intro_picker,
             self.background_enabled_checkbox,
             self.background_picker,
             self.background_loop_checkbox,
@@ -8276,8 +11475,6 @@ class MainWindow(QMainWindow):
             self.background_volume_spin,
             self.voice_start_offset_spin,
             self.music_tail_spin,
-            self.outro_enabled_checkbox,
-            self.outro_picker,
             self.fade_in_spin,
             self.fade_out_spin,
             self.podcast_gap_spin,
@@ -8285,6 +11482,7 @@ class MainWindow(QMainWindow):
             self.podcast_ducking_checkbox,
             self.ducking_strength_combo,
             self.open_folder_checkbox,
+            self.markup_toolbar,
         ):
             widget.setEnabled(not running)
         if not running:
@@ -8293,6 +11491,8 @@ class MainWindow(QMainWindow):
             self._refresh_kokoro_python_status()
             self._refresh_chatterbox_status()
             self._refresh_qwen_status()
+            self._refresh_omnivoice_status()
+            self._refresh_wav_cache_stats()
 
     def _save_settings(self) -> None:
         output_dir = self.output_picker.path()
@@ -8333,13 +11533,32 @@ class MainWindow(QMainWindow):
                 ),
                 "split_mode": self.split_combo.currentData(),
                 "export_mode": self.export_combo.currentData(),
+                "chunk_size": self.chunk_size_spin.value(),
+                "engine_chunk_sizes": {
+                    "piper": self.piper_chunk_size_spin.value(),
+                    "kokoro": self.kokoro_chunk_size_spin.value(),
+                    "chatterbox": self.chatterbox_chunk_size_spin.value(),
+                    "qwen": self.qwen_chunk_size_spin.value(),
+                    "omnivoice": self.omnivoice_chunk_size_spin.value(),
+                },
                 "normalize_audio": self.normalize_checkbox.isChecked(),
+                "auto_delete_segment_wavs_after_mix": (
+                    self.auto_delete_segment_wavs_checkbox.isChecked()
+                ),
                 "editor_syntax_highlighting": (
                     self.editor_highlighting_checkbox.isChecked()
                 ),
+                "show_markup_toolbar": (
+                    self.markup_toolbar_checkbox.isChecked()
+                    if hasattr(self, "markup_toolbar_checkbox")
+                    else bool(self.settings.get("show_markup_toolbar", True))
+                ),
+                "markup_corrector_enabled": (
+                    self.markup_corrector_checkbox.isChecked()
+                    if hasattr(self, "markup_corrector_checkbox")
+                    else bool(self.settings.get("markup_corrector_enabled", True))
+                ),
                 "podcast_enabled": self.podcast_enabled_checkbox.isChecked(),
-                "intro_enabled": self.intro_enabled_checkbox.isChecked(),
-                "intro_path": str(self.intro_picker.path() or ""),
                 "background_enabled": (
                     self.background_enabled_checkbox.isChecked()
                 ),
@@ -8352,8 +11571,6 @@ class MainWindow(QMainWindow):
                 "music_volume_db": self.background_volume_spin.value(),
                 "voice_start_offset_ms": self.voice_start_offset_spin.value(),
                 "music_tail_ms": self.music_tail_spin.value(),
-                "outro_enabled": self.outro_enabled_checkbox.isChecked(),
-                "outro_path": str(self.outro_picker.path() or ""),
                 "music_fade_in_seconds": self.fade_in_spin.value(),
                 "music_fade_out_seconds": self.fade_out_spin.value(),
                 "podcast_gap_ms": round(self.podcast_gap_spin.value() * 1000),
@@ -8387,9 +11604,6 @@ class MainWindow(QMainWindow):
                     "reference_audio_path": str(
                         self.chatterbox_reference_picker.path() or ""
                     ),
-                    "voice_clone_consent": (
-                        self.chatterbox_consent_checkbox.isChecked()
-                    ),
                     "exaggeration": self.chatterbox_exaggeration_spin.value(),
                     "cfg_weight": self.chatterbox_cfg_spin.value(),
                 },
@@ -8403,6 +11617,26 @@ class MainWindow(QMainWindow):
                     "device": self.qwen_device_combo.currentData() or "auto",
                     "dtype": self.qwen_dtype_combo.currentData() or "auto",
                     "instruct": self.qwen_instruct_edit.text().strip(),
+                },
+                "omnivoice": {
+                    "model": (
+                        self.omnivoice_model_combo.currentData()
+                        or "omnivoice"
+                    ),
+                    "mode": "clone",
+                    "language": self.omnivoice_language_combo.currentData() or "auto",
+                    "device": self.omnivoice_device_combo.currentData() or "auto",
+                    "dtype": self.omnivoice_dtype_combo.currentData() or "auto",
+                    "instruct": "",
+                    "reference_audio_path": str(
+                        self.omnivoice_reference_picker.path() or ""
+                    ),
+                    "reference_text": (
+                        self.omnivoice_reference_text_edit.toPlainText().strip()
+                    ),
+                    "num_step": self.omnivoice_num_step_spin.value(),
+                    "speed": self.omnivoice_engine_speed_spin.value(),
+                    "duration": self.omnivoice_duration_spin.value(),
                 },
                 "review": {
                     "enabled": self.review_enabled_checkbox.isChecked(),
@@ -8421,6 +11655,29 @@ class MainWindow(QMainWindow):
                     "approve_threshold": self.review_threshold_spin.value(),
                     "max_retries": self.review_max_retries_spin.value(),
                     "preload_model": self.whisper_model_loaded,
+                },
+                "voice_gallery": {
+                    "catalog_url": str(
+                        self.settings.get("voice_gallery", {}).get(
+                            "catalog_url",
+                            "https://raw.githubusercontent.com/estebanstifli/LocalText2Voice-VoiceGallery/main/catalog.json",
+                        )
+                    ),
+                    "local_catalog_path": str(
+                        self.settings.get("voice_gallery", {}).get(
+                            "local_catalog_path",
+                            "",
+                        )
+                    ),
+                    "auto_sync": bool(
+                        self.settings.get("voice_gallery", {}).get("auto_sync", False)
+                    ),
+                    "last_sync_at": str(
+                        self.settings.get("voice_gallery", {}).get(
+                            "last_sync_at",
+                            "",
+                        )
+                    ),
                 },
                 "api_tts": {
                     "openai": {
@@ -8467,6 +11724,7 @@ class MainWindow(QMainWindow):
                         "timeout_seconds": 120,
                     },
                 },
+                "custom_tts_engines": self._custom_tts_engines(),
             }
         )
         try:
@@ -8479,6 +11737,15 @@ class MainWindow(QMainWindow):
         if path is None:
             return None
         return path if path.is_absolute() else resolve_app_path(path)
+
+    @staticmethod
+    def _format_bytes(size: int) -> str:
+        value = float(max(0, size))
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GB"
 
     @staticmethod
     def _percent_to_db(percent: int) -> float:

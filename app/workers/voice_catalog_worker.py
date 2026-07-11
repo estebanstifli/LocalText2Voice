@@ -10,6 +10,12 @@ from app.tts.voice_catalog import (
     VoiceCatalogError,
     VoiceDownloadCancelled,
 )
+from app.tts.voice_gallery_manager import (
+    GalleryVoice,
+    VoiceGalleryCancelled,
+    VoiceGalleryError,
+    VoiceGalleryManager,
+)
 
 
 class VoiceCatalogWorker(QObject):
@@ -56,3 +62,48 @@ class VoiceCatalogWorker(QObject):
 
     def request_cancel(self) -> None:
         self.catalog.cancel()
+
+
+class VoiceGalleryWorker(QObject):
+    catalog_ready = Signal(int)
+    progress = Signal(int, int, str)
+    finished = Signal(str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        manager: VoiceGalleryManager,
+        operation: str,
+        voice: GalleryVoice | None = None,
+    ) -> None:
+        super().__init__()
+        self.manager = manager
+        self.operation = operation
+        self.voice = voice
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self.operation == "sync":
+                count = self.manager.sync(progress_callback=self.progress.emit)
+                self.catalog_ready.emit(count)
+                self.finished.emit(f"Voice gallery synced: {count} voice(s).")
+            elif self.operation == "install" and self.voice is not None:
+                self.manager.install(self.voice, self.progress.emit)
+                self.finished.emit(f"Installed voice: {self.voice.name}")
+            elif self.operation == "remove" and self.voice is not None:
+                self.manager.uninstall(self.voice)
+                self.finished.emit(f"Removed voice: {self.voice.name}")
+            else:
+                raise VoiceGalleryError("Unknown voice gallery operation.")
+        except VoiceGalleryCancelled:
+            self.cancelled.emit()
+        except VoiceGalleryError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            traceback.print_exc()
+            self.failed.emit(f"Unexpected voice gallery error: {exc}")
+
+    def request_cancel(self) -> None:
+        self.manager.cancel()

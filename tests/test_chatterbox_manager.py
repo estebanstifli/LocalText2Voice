@@ -8,7 +8,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from app.core.settings_manager import DEFAULT_SETTINGS
+from app.core.settings_manager import CURRENT_SETTINGS_SCHEMA_VERSION, DEFAULT_SETTINGS
 from app.core.settings_manager import SettingsManager
 from app.tts.base import TTSEngineError
 from app.tts.chatterbox_engine import ChatterboxTTSEngine
@@ -138,7 +138,10 @@ class ChatterboxManagerTests(unittest.TestCase):
 
             settings = SettingsManager(config_path).settings
 
-            self.assertEqual(settings["settings_schema_version"], 4)
+            self.assertEqual(
+                settings["settings_schema_version"],
+                CURRENT_SETTINGS_SCHEMA_VERSION,
+            )
             self.assertEqual(settings["chatterbox"]["device"], "auto")
 
     def test_install_retries_with_auto_when_cuda_is_unavailable(self) -> None:

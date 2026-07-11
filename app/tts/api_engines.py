@@ -9,7 +9,12 @@ import threading
 import wave
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote as url_quote
+from urllib.parse import urljoin
+from urllib.parse import urlparse
 from urllib.parse import quote, urlencode
+
+from app.utils.ffmpeg_utils import FFmpegError, FFmpegRunner, find_ffmpeg
 
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
 
@@ -495,3 +500,396 @@ class GeminiTTSEngine(HttpTTSEngine):
             except ValueError:
                 break
         return 24000
+
+
+class CustomHTTPTTSEngine(BaseTTSEngine):
+    """Generic HTTP bridge for user-defined local or remote TTS services."""
+
+    def __init__(self) -> None:
+        self._cancel_requested = threading.Event()
+        self._connection: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
+        self._lock = threading.Lock()
+
+    def cancel_current(self) -> None:
+        self._cancel_requested.set()
+        with self._lock:
+            connection = self._connection
+        if connection is not None:
+            connection.close()
+
+    def validate(self, voice_config: dict[str, Any]) -> None:
+        name = str(voice_config.get("name", "")).strip()
+        url = str(voice_config.get("url", "")).strip()
+        if not name:
+            raise TTSEngineError("Custom TTS engine requires a name.")
+        if not url:
+            raise TTSEngineError("Custom TTS engine requires an endpoint URL.")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise TTSEngineError(
+                "Custom TTS endpoint must be a full http:// or https:// URL."
+            )
+        response_mode = str(voice_config.get("response_mode", "audio_wav"))
+        if response_mode not in {
+            "audio_wav",
+            "audio_pcm",
+            "json_base64",
+            "json_url",
+            "json_path",
+        }:
+            raise TTSEngineError(f"Unsupported custom TTS response mode: {response_mode}")
+        if response_mode.startswith("json_") and not str(
+            voice_config.get("json_audio_path", "")
+        ).strip():
+            raise TTSEngineError(
+                "Custom TTS JSON response mode requires a JSON field path."
+            )
+
+    def synthesize_to_wav(
+        self,
+        text: str,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+    ) -> Path:
+        self.validate(voice_config)
+        values = self._template_values(text, output_wav, voice_config)
+        url = self._render_template(str(voice_config.get("url", "")), values, for_url=True)
+        method = str(voice_config.get("method", "POST")).upper()
+        headers = self._headers(voice_config, values)
+        body = b""
+        if method not in {"GET", "DELETE"}:
+            body_template = str(
+                voice_config.get("body_template")
+                or self._default_body_template()
+            )
+            is_form_body = any(
+                key.lower() == "content-type"
+                and "application/x-www-form-urlencoded" in value.lower()
+                for key, value in headers.items()
+            )
+            body = self._render_template(
+                body_template,
+                values,
+                for_url=is_form_body,
+            ).encode("utf-8")
+            if not any(key.lower() == "content-type" for key in headers):
+                headers["Content-Type"] = "application/json"
+
+        timeout_seconds = self._timeout(voice_config)
+        response, content_type = self._request(
+            method,
+            url,
+            body,
+            headers,
+            timeout_seconds,
+        )
+        return self._write_custom_response(
+            response,
+            content_type,
+            output_wav,
+            voice_config,
+            timeout_seconds,
+        )
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> tuple[bytes, str]:
+        if self._cancel_requested.is_set():
+            raise TTSCancelled("Generation cancelled.")
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise TTSEngineError(
+                "Custom TTS endpoint must be a full http:// or https:// URL."
+            )
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        connection_class = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        connection = connection_class(parsed.netloc, timeout=max(10, timeout_seconds))
+        with self._lock:
+            self._connection = connection
+        try:
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            content_type = response.getheader("Content-Type", "")
+            response_body = response.read()
+        except OSError as exc:
+            if self._cancel_requested.is_set():
+                raise TTSCancelled("Generation cancelled.") from exc
+            raise TTSEngineError(f"Custom TTS request failed: {exc}") from exc
+        finally:
+            with self._lock:
+                if self._connection is connection:
+                    self._connection = None
+            connection.close()
+
+        if self._cancel_requested.is_set():
+            raise TTSCancelled("Generation cancelled.")
+        if response.status >= 400:
+            raise TTSEngineError(
+                f"Custom TTS returned HTTP {response.status}: "
+                f"{HttpTTSEngine._extract_error_message(response_body)}"
+            )
+        if not response_body:
+            raise TTSEngineError("Custom TTS returned an empty response.")
+        return response_body, content_type
+
+    def _write_custom_response(
+        self,
+        response: bytes,
+        content_type: str,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+        timeout_seconds: int,
+    ) -> Path:
+        response_mode = str(voice_config.get("response_mode", "audio_wav"))
+        lowered_type = content_type.lower()
+        if response_mode == "audio_wav" or (
+            response_mode == "auto" and "wav" in lowered_type
+        ):
+            return self._write_wav_bytes_compatible(response, output_wav, voice_config)
+        if response_mode == "audio_pcm":
+            return HttpTTSEngine._write_pcm_wav(
+                response,
+                output_wav,
+                self._sample_rate(voice_config),
+            )
+
+        data = self._json_response(response)
+        json_path = str(voice_config.get("json_audio_path", "")).strip()
+        value = self._json_value(data, json_path)
+        if response_mode == "json_base64":
+            try:
+                audio = base64.b64decode(str(value))
+            except (TypeError, ValueError) as exc:
+                raise TTSEngineError(
+                    "Custom TTS JSON audio field is not valid base64."
+                ) from exc
+            if audio.startswith(b"RIFF"):
+                return self._write_wav_bytes_compatible(audio, output_wav, voice_config)
+            return HttpTTSEngine._write_pcm_wav(
+                audio,
+                output_wav,
+                self._sample_rate(voice_config),
+            )
+        if response_mode == "json_url":
+            audio_url = str(value).strip()
+            if not audio_url:
+                raise TTSEngineError("Custom TTS JSON URL field is empty.")
+            audio_url = urljoin(str(voice_config.get("url", "")), audio_url)
+            audio, audio_type = self._request("GET", audio_url, b"", {}, timeout_seconds)
+            if "wav" in audio_type.lower() or audio.startswith(b"RIFF"):
+                return self._write_wav_bytes_compatible(audio, output_wav, voice_config)
+            return HttpTTSEngine._write_pcm_wav(
+                audio,
+                output_wav,
+                self._sample_rate(voice_config),
+            )
+        if response_mode == "json_path":
+            audio_path = Path(str(value).strip()).expanduser()
+            if not audio_path.exists():
+                raise TTSEngineError(
+                    f"Custom TTS JSON file path does not exist: {audio_path}"
+            )
+            audio = audio_path.read_bytes()
+            if audio.startswith(b"RIFF"):
+                return self._write_wav_bytes_compatible(audio, output_wav, voice_config)
+            return HttpTTSEngine._write_pcm_wav(
+                audio,
+                output_wav,
+                self._sample_rate(voice_config),
+            )
+        raise TTSEngineError(f"Unsupported custom TTS response mode: {response_mode}")
+
+    @classmethod
+    def _write_wav_bytes_compatible(
+        cls,
+        audio_bytes: bytes,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+    ) -> Path:
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        output_wav.write_bytes(audio_bytes)
+        try:
+            with wave.open(str(output_wav), "rb"):
+                pass
+            return output_wav
+        except wave.Error:
+            return cls._convert_wav_to_pcm(output_wav, voice_config)
+
+    @staticmethod
+    def _convert_wav_to_pcm(
+        wav_path: Path,
+        voice_config: dict[str, Any],
+    ) -> Path:
+        temporary = wav_path.with_name(f"{wav_path.stem}_pcm_tmp.wav")
+        try:
+            runner = FFmpegRunner(
+                find_ffmpeg(voice_config.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"))
+            )
+            runner.run(
+                [
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(wav_path),
+                    "-ac",
+                    "1",
+                    "-codec:a",
+                    "pcm_s16le",
+                    str(temporary),
+                ]
+            )
+            temporary.replace(wav_path)
+            with wave.open(str(wav_path), "rb"):
+                pass
+            return wav_path
+        except (FFmpegError, OSError, wave.Error) as exc:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+            raise TTSEngineError(
+                "Custom TTS returned WAV audio, but it was not PCM-compatible. "
+                "FFmpeg conversion failed."
+            ) from exc
+
+    @staticmethod
+    def _json_response(response: bytes) -> Any:
+        try:
+            return json.loads(response.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise TTSEngineError("Custom TTS returned invalid JSON.") from exc
+
+    @staticmethod
+    def _json_value(data: Any, path: str) -> Any:
+        current = data
+        for part in path.split("."):
+            part = part.strip()
+            if not part:
+                continue
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                continue
+            if isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                    continue
+                except (ValueError, IndexError):
+                    pass
+            raise TTSEngineError(f"Custom TTS JSON field not found: {path}")
+        return current
+
+    @classmethod
+    def _headers(
+        cls,
+        voice_config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        raw = str(voice_config.get("headers_json", "") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(cls._render_template(raw, values))
+            except json.JSONDecodeError as exc:
+                raise TTSEngineError("Custom TTS headers must be valid JSON.") from exc
+            if not isinstance(parsed, dict):
+                raise TTSEngineError("Custom TTS headers JSON must be an object.")
+            headers.update({str(key): str(value) for key, value in parsed.items()})
+
+        api_key = str(voice_config.get("api_key", "") or "").strip()
+        auth_header = str(voice_config.get("auth_header", "") or "").strip()
+        if api_key and auth_header:
+            name, separator, value = auth_header.partition(":")
+            if not separator:
+                raise TTSEngineError(
+                    "Custom TTS auth header must use the format 'Header: value'."
+                )
+            headers[name.strip()] = cls._render_template(
+                value.strip(),
+                values,
+            )
+        return headers
+
+    @staticmethod
+    def _template_values(
+        text: str,
+        output_wav: Path,
+        voice_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        language = voice_config.get("language") or voice_config.get("lang") or ""
+        values = {
+            "text": text,
+            "voice": str(voice_config.get("voice", "") or ""),
+            "language": str(language),
+            "lang": str(language),
+            "speed": voice_config.get("speed", 1.0),
+            "output_path": str(output_wav),
+            "api_key": str(voice_config.get("api_key", "") or ""),
+            "model": str(voice_config.get("model", "") or ""),
+        }
+        for key, value in voice_config.items():
+            normalized = str(key).strip()
+            if not normalized or normalized.startswith("_"):
+                continue
+            values.setdefault(normalized, value)
+        if "instruct" in values and "instructions" not in values:
+            values["instructions"] = values["instruct"]
+        if "instructions" in values and "instruct" not in values:
+            values["instruct"] = values["instructions"]
+        return values
+
+    @staticmethod
+    def _render_template(
+        template: str,
+        values: dict[str, Any],
+        for_url: bool = False,
+    ) -> str:
+        rendered = template
+        for key, value in values.items():
+            if key == "speed":
+                replacement = str(value)
+            elif for_url:
+                replacement = url_quote(str(value))
+            else:
+                replacement = json.dumps(str(value))[1:-1]
+            rendered = rendered.replace(f"{{{{{key}}}}}", replacement)
+        return rendered
+
+    @staticmethod
+    def _default_body_template() -> str:
+        return (
+            '{\n'
+            '  "text": "{{text}}",\n'
+            '  "voice": "{{voice}}",\n'
+            '  "language": "{{language}}",\n'
+            '  "speed": {{speed}}\n'
+            '}'
+        )
+
+    @staticmethod
+    def _sample_rate(voice_config: dict[str, Any]) -> int:
+        try:
+            return int(voice_config.get("sample_rate", 24000))
+        except (TypeError, ValueError):
+            return 24000
+
+    @staticmethod
+    def _timeout(voice_config: dict[str, Any]) -> int:
+        try:
+            return int(voice_config.get("timeout_seconds", 120))
+        except (TypeError, ValueError):
+            return 120
