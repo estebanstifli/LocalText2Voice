@@ -111,6 +111,7 @@ class SegmentVerificationWorker(QObject):
         piper_path: Path | None = None,
         fallback_voice_config: dict | None = None,
         only_unverified: bool = True,
+        shared_tts_engines: dict[str, BaseTTSEngine] | None = None,
     ) -> None:
         super().__init__()
         self.store = store
@@ -127,7 +128,8 @@ class SegmentVerificationWorker(QObject):
         self.fallback_voice_config = fallback_voice_config or {}
         self.only_unverified = only_unverified
         self._cancel_requested = threading.Event()
-        self._tts_engines: dict[str, BaseTTSEngine] = {}
+        self._tts_engines = shared_tts_engines if shared_tts_engines is not None else {}
+        self._owns_tts_engines = shared_tts_engines is None
         self._active_tts_engine: BaseTTSEngine | None = None
 
     @Slot()
@@ -174,9 +176,10 @@ class SegmentVerificationWorker(QObject):
             traceback.print_exc()
             self.failed.emit(f"Unexpected verification error: {exc}")
         finally:
-            for engine in self._tts_engines.values():
-                engine.close()
-            self._tts_engines.clear()
+            if self._owns_tts_engines:
+                for engine in self._tts_engines.values():
+                    engine.close()
+                self._tts_engines.clear()
             self._active_tts_engine = None
             if self.owns_verifier:
                 self.verifier.close()

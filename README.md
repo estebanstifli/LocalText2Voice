@@ -268,6 +268,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 - Faster Whisper verification pipeline with similarity scoring and retry logic.
 - SQLite persistence for projects, segments, transcripts, review status, and word timestamps.
 - FFmpeg audio DSP pipeline for joining, MP3 encoding, speed/volume postprocessing, loudnorm, fades, ducking, and podcast mixing.
+- Optional local MCP/HTTP server for automation from local AI clients and agent tools.
 - PySide6 desktop UI with background workers, progress, cancellation, logs, translation files, and portable packaging.
 
 ## Technology Stack
@@ -283,6 +284,8 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 | Qwen3 TTS | Optional local multilingual neural TTS |
 | OmniVoice | Optional local zero-shot TTS with voice design/cloning |
 | Faster Whisper | Optional transcription and generation review |
+| FastAPI + MCP SDK | Optional local automation server |
+| Uvicorn | Local ASGI server for HTTP/MCP |
 | FFmpeg | Audio conversion, MP3 export, mixing, filters |
 | SQLite | Project, segment, transcript, and review data |
 | Mutagen | Fast music metadata/duration reading |
@@ -298,6 +301,7 @@ LocalText2Voice/
 |   |-- core/          # Text processing, markup, audio pipeline, projects, SQLite store
 |   |-- tts/           # TTS engines, managers, voice catalogs, local/API providers
 |   |-- verification/  # Faster Whisper runtime and persistent verifier
+|   |-- server/        # Optional local FastAPI/MCP server and job queue
 |   |-- ui/            # PySide6 windows, pages, Audio Mix, widgets
 |   |-- workers/       # Background generation, install, verification workers
 |   |-- utils/         # Paths, FFmpeg, GPU detection, logging
@@ -316,6 +320,100 @@ LocalText2Voice/
 Voice previews and downloadable reference voices live outside the main code repository in
 [LocalText2Voice-VoiceGallery](https://github.com/estebanstifli/LocalText2Voice-VoiceGallery).
 The desktop app syncs that JSON catalog into a local SQLite cache and downloads audio assets on demand.
+
+## Local MCP Automation
+
+LocalText2Voice can be automated from local AI clients through MCP.
+
+### MCP stdio bridge
+
+For Claude Desktop, Codex, ChatGPT Desktop, and other clients that launch local
+MCP servers through `stdio`, use:
+
+```text
+mcp_stdio_bridge.py
+```
+
+The stdio bridge starts or reuses the persistent LocalText2Voice EngineHost.
+The desktop UI and MCP clients therefore share the same generation queue and
+the same loaded TTS model in RAM/VRAM. Saved UI settings are reloaded before
+every external job and act as defaults unless a tool argument overrides them.
+This includes the selected engine and voice, output, audio parameters, music,
+and automatic Faster Whisper review settings.
+
+It exposes:
+
+- `server_info`
+- `list_engines`
+- `list_voices`
+- `list_background_music`
+- `create_audiobook`
+- `generate_audio`
+- `get_jobs`
+- `get_job`
+- `cancel_job`
+- `preload_engine`
+- `unload_engine`
+- `engine_memory`
+- `get_markup_help`
+
+Example `claude_desktop_config.json` for a source checkout:
+
+```json
+{
+  "mcpServers": {
+    "localtext2voice": {
+      "command": "C:\\prueba\\ai_podcasts\\course_to_podcast\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\prueba\\ai_podcasts\\course_to_podcast\\mcp_stdio_bridge.py"
+      ],
+      "cwd": "C:\\prueba\\ai_podcasts\\course_to_podcast"
+    }
+  }
+}
+```
+
+Example `~/.codex/config.toml` for Codex or ChatGPT Desktop:
+
+```toml
+[mcp_servers.localtext2voice]
+command = 'C:\prueba\ai_podcasts\course_to_podcast\.venv\Scripts\python.exe'
+args = ['C:\prueba\ai_podcasts\course_to_podcast\mcp_stdio_bridge.py']
+cwd = 'C:\prueba\ai_podcasts\course_to_podcast'
+```
+
+The Windows app generates both configurations with the correct installation
+and user paths under **Settings -> Local Server**, with buttons to copy each
+block and open the corresponding client configuration file.
+
+Test with MCP Inspector:
+
+```bat
+npx @modelcontextprotocol/inspector C:\prueba\ai_podcasts\course_to_podcast\.venv\Scripts\python.exe C:\prueba\ai_podcasts\course_to_podcast\mcp_stdio_bridge.py
+```
+
+Start with `server_info`, `list_engines`, `list_voices`, and
+`list_background_music`. Then test `create_audiobook` with a short text and
+poll `get_job` until it completes.
+
+### Optional HTTP/MCP server
+
+The desktop app can also expose a local FastAPI/MCP server from
+**Settings -> Local Server**. It is disabled by default and binds to
+`127.0.0.1` for Windows desktop use.
+
+Useful endpoints:
+
+- MCP: `http://127.0.0.1:8765/mcp`
+- Health: `GET /health`
+- Voices: `GET /voices`
+- Music: `GET /background-music`
+- Jobs: `POST /jobs`, `GET /jobs/{job_id}`, `POST /jobs/{job_id}/cancel`
+
+The MCP tools include `create_audiobook`, `generate_audio`, `list_voices`,
+`list_background_music`, `get_jobs`, `get_job`, and `cancel_job`.
+Generated jobs return paths and local URLs for the clean narration MP3 and the podcast mix MP3 when available.
+Use the generated access token as a Bearer token for clients that support headers.
 
 ## Run From Source
 

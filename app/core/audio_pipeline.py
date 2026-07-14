@@ -2363,8 +2363,8 @@ class AudioPipeline:
             raise AudioPipelineError(f"Unknown split mode: {options.split_mode}")
         if options.export_mode not in {"single", "chapters"}:
             raise AudioPipelineError(f"Unknown export mode: {options.export_mode}")
-        if options.chunk_size < 200:
-            raise AudioPipelineError("Chunk size must be at least 200 characters.")
+        if options.chunk_size < 1:
+            raise AudioPipelineError("Chunk size must be at least 1 character.")
         if options.paragraph_pause_min_ms < 0:
             raise AudioPipelineError("Minimum paragraph pause cannot be negative.")
         if options.paragraph_pause_max_ms < options.paragraph_pause_min_ms:

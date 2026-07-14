@@ -54,6 +54,16 @@ Second chapter body.
         chunks = TextProcessor.split_safe_chunks("a" * 900, max_chars=250)
         self.assertEqual([len(chunk) for chunk in chunks], [250, 250, 250, 150])
 
+    def test_short_text_can_use_small_chunk_limit(self) -> None:
+        source = (
+            "At two seventeen in the morning, the hallway camera stopped "
+            "recording. Three minutes later, the front door opened by itself."
+        )
+        chunks = TextProcessor.split_paragraph_chunks(source, max_chars=120)
+
+        self.assertEqual(" ".join(chunk.text for chunk in chunks), source)
+        self.assertTrue(all(0 < len(chunk.text) <= 120 for chunk in chunks))
+
     def test_paragraph_chunks_keep_boundary_information(self) -> None:
         chunks = TextProcessor.split_paragraph_chunks(
             ("First paragraph. " * 30) + "\n\nSecond paragraph.",

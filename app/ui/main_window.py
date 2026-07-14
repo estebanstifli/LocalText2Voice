@@ -4,7 +4,9 @@ import ctypes
 import ctypes.wintypes
 import math
 import json
+import os
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -31,6 +33,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -69,6 +72,8 @@ from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredSegment
 from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
+from app.server.engine_host_client import EngineHostClient
+from app.server.server_controller import LocalServerController
 from app.tts.base import BaseTTSEngine, TTSEngineError
 from app.tts.engine_registry import TTS_ENGINES
 from app.tts.chatterbox_manager import ChatterboxManager
@@ -96,14 +101,14 @@ from app.workers.chatterbox_worker import (
     ChatterboxPreviewWorker,
 )
 from app.workers.chatterbox_voice_worker import ChatterboxVoiceWorker
-from app.workers.generation_worker import GenerationWorker
+from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
+from app.workers.engine_host_memory_worker import EngineHostMemoryWorker
 from app.workers.kokoro_worker import KokoroInstallWorker, KokoroPreviewWorker
 from app.workers.omnivoice_worker import (
     OmniVoiceHardwareWorker,
     OmniVoiceInstallWorker,
     OmniVoicePreviewWorker,
 )
-from app.workers.preload_worker import TTSEnginePreloadWorker
 from app.workers.qwen_worker import (
     QwenHardwareWorker,
     QwenInstallWorker,
@@ -828,6 +833,8 @@ class MainWindow(QMainWindow):
         self._resize_border_px = 8
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
+        self.engine_host_client = EngineHostClient(self.settings_manager)
+        self.local_server_controller = LocalServerController(self.settings_manager)
         self.translator = Translator(str(self.settings.get("ui_language", "en")))
         self.kokoro_python_manager = KokoroPythonManager()
         self.chatterbox_manager = ChatterboxManager()
@@ -850,7 +857,7 @@ class MainWindow(QMainWindow):
         self._loading_project = False
         self.voices: list[VoiceInfo] = []
         self.voice_page_rows: list[dict[str, object]] = []
-        self.worker: GenerationWorker | None = None
+        self.worker: EngineHostGenerationWorker | None = None
         self.worker_thread: QThread | None = None
         self.worker_uses_preloaded_engine = False
         self.kokoro_python_worker: KokoroInstallWorker | None = None
@@ -883,7 +890,7 @@ class MainWindow(QMainWindow):
         self.omnivoice_design_thread: QThread | None = None
         self.omnivoice_hardware_worker: OmniVoiceHardwareWorker | None = None
         self.omnivoice_hardware_thread: QThread | None = None
-        self.preload_worker: TTSEnginePreloadWorker | None = None
+        self.preload_worker: EngineHostMemoryWorker | None = None
         self.preload_thread: QThread | None = None
         self.whisper_worker: FasterWhisperInstallWorker | None = None
         self.whisper_thread: QThread | None = None
@@ -909,6 +916,8 @@ class MainWindow(QMainWindow):
         self.whisper_model_loaded = False
         self.preloaded_tts_engine: BaseTTSEngine | None = None
         self.preloaded_tts_engine_id: str | None = None
+        self.host_loaded_tts_engine_ids: set[str] = set()
+        self.host_generation_engine_id: str | None = None
         self.preloading_tts_engine_id: str | None = None
         self.loaded_tts_engine_id: str | None = None
         self.installer_setup_queue: list[str] = []
@@ -970,7 +979,9 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._restore_active_project()
         self._set_running(False)
+        QTimer.singleShot(700, self._maybe_start_local_server)
         QTimer.singleShot(900, self._run_pending_installer_setup)
+        QTimer.singleShot(1200, self._sync_engine_host_memory_state)
 
     def tr(self, key: str, default: str | None = None, **values: object) -> str:
         return self.translator.text(key, default, **values)
@@ -2215,6 +2226,11 @@ class MainWindow(QMainWindow):
             self.tr("review_settings", "Review"),
         )
         self.settings_tabs.addTab(
+            self._build_local_server_settings(),
+            ui_icon("server"),
+            self.tr("local_server_settings", "Local Server"),
+        )
+        self.settings_tabs.addTab(
             self._build_advanced_settings(),
             ui_icon("settings"),
             self.tr("advanced_settings", "Advanced"),
@@ -2728,6 +2744,551 @@ class MainWindow(QMainWindow):
         scroll.setWidget(widget)
         return scroll
 
+    def _build_local_server_settings(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        desktop_group = QGroupBox(
+            self.tr("desktop_mcp_settings", "MCP Desktop Clients")
+        )
+        desktop_layout = QVBoxLayout(desktop_group)
+        desktop_layout.setSpacing(10)
+
+        desktop_intro = QLabel(
+            self.tr(
+                "desktop_mcp_intro",
+                "Use this stdio MCP configuration for Claude Desktop and other "
+                "desktop clients that launch local MCP servers.",
+            )
+        )
+        desktop_intro.setObjectName("helperLabel")
+        desktop_intro.setWordWrap(True)
+        desktop_layout.addWidget(desktop_intro)
+
+        claude_title = QLabel(self.tr("claude_desktop", "Claude Desktop"))
+        claude_title.setObjectName("sectionTitle")
+        desktop_layout.addWidget(claude_title)
+
+        self.local_mcp_json_edit = QTextEdit()
+        self.local_mcp_json_edit.setReadOnly(True)
+        self.local_mcp_json_edit.setMinimumHeight(150)
+        self.local_mcp_json_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        desktop_layout.addWidget(self.local_mcp_json_edit)
+
+        mcp_actions = QHBoxLayout()
+        self.copy_mcp_json_button = QPushButton(
+            self.tr("copy_mcp_json", "Copy JSON")
+        )
+        self.copy_mcp_json_button.setIcon(ui_icon("copy"))
+        self.copy_mcp_json_button.clicked.connect(self._copy_mcp_desktop_json)
+        self.open_claude_config_button = QPushButton(
+            self.tr("open_claude_config", "Open Claude config")
+        )
+        self.open_claude_config_button.setIcon(ui_icon("open"))
+        self.open_claude_config_button.clicked.connect(self._open_claude_config)
+        mcp_actions.addWidget(self.copy_mcp_json_button)
+        mcp_actions.addWidget(self.open_claude_config_button)
+        mcp_actions.addStretch(1)
+        desktop_layout.addLayout(mcp_actions)
+
+        claude_help = QLabel(
+            self.tr(
+                "claude_mcp_help",
+                "Paste or merge this block into %APPDATA%\\Claude\\claude_desktop_config.json, "
+                "then restart Claude Desktop. Use Developer settings or Connectors in Claude "
+                "to confirm that LocalText2Voice tools are loaded.",
+            )
+        )
+        claude_help.setObjectName("helperLabel")
+        claude_help.setWordWrap(True)
+        desktop_layout.addWidget(claude_help)
+
+        codex_separator = QFrame()
+        codex_separator.setFrameShape(QFrame.Shape.HLine)
+        codex_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        desktop_layout.addWidget(codex_separator)
+
+        codex_title = QLabel(
+            self.tr("codex_chatgpt_desktop", "Codex / ChatGPT Desktop")
+        )
+        codex_title.setObjectName("sectionTitle")
+        desktop_layout.addWidget(codex_title)
+
+        self.local_codex_toml_edit = QTextEdit()
+        self.local_codex_toml_edit.setReadOnly(True)
+        self.local_codex_toml_edit.setMinimumHeight(135)
+        self.local_codex_toml_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        desktop_layout.addWidget(self.local_codex_toml_edit)
+
+        codex_actions = QHBoxLayout()
+        self.copy_codex_toml_button = QPushButton(
+            self.tr("copy_codex_toml", "Copy TOML")
+        )
+        self.copy_codex_toml_button.setIcon(ui_icon("copy"))
+        self.copy_codex_toml_button.clicked.connect(self._copy_codex_mcp_toml)
+        self.open_codex_config_button = QPushButton(
+            self.tr("open_codex_config", "Open Codex config")
+        )
+        self.open_codex_config_button.setIcon(ui_icon("open"))
+        self.open_codex_config_button.clicked.connect(self._open_codex_config)
+        codex_actions.addWidget(self.copy_codex_toml_button)
+        codex_actions.addWidget(self.open_codex_config_button)
+        codex_actions.addStretch(1)
+        desktop_layout.addLayout(codex_actions)
+
+        codex_help = QLabel(
+            self.tr(
+                "codex_mcp_help",
+                "Paste or merge this block into ~/.codex/config.toml, then restart Codex "
+                "or ChatGPT Desktop. The paths are generated for this Windows user and the "
+                "current LocalText2Voice installation.",
+            )
+        )
+        codex_help.setObjectName("helperLabel")
+        codex_help.setWordWrap(True)
+        desktop_layout.addWidget(codex_help)
+
+        layout.addWidget(desktop_group)
+
+        group = QGroupBox(
+            self.tr("local_server_settings", "Advanced HTTP / Remote MCP Server")
+        )
+        form = QFormLayout(group)
+        form.setSpacing(10)
+
+        intro = QLabel(
+            self.tr(
+                "local_server_intro",
+                "Optional advanced server for HTTP clients or future remote workflows. "
+                "For Claude Desktop, prefer the stdio configuration above.",
+            )
+        )
+        intro.setObjectName("helperLabel")
+        intro.setWordWrap(True)
+        form.addRow("", intro)
+
+        self.local_server_enabled_checkbox = QCheckBox(
+            self.tr("enable_local_server", "Enable local server")
+        )
+        self.local_server_enabled_checkbox.toggled.connect(
+            self._on_local_server_enabled_changed
+        )
+        form.addRow("", self.local_server_enabled_checkbox)
+
+        self.local_server_auto_start_checkbox = QCheckBox(
+            self.tr("local_server_auto_start", "Start server when LocalText2Voice opens")
+        )
+        self.local_server_auto_start_checkbox.toggled.connect(
+            lambda _checked: self._save_settings()
+        )
+        form.addRow("", self.local_server_auto_start_checkbox)
+
+        host_row = QWidget()
+        host_layout = QHBoxLayout(host_row)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+        self.local_server_host_edit = QLineEdit("127.0.0.1")
+        self.local_server_host_edit.textChanged.connect(
+            lambda _text: self._on_local_server_field_changed()
+        )
+        self.local_server_port_spin = QSpinBox()
+        self.local_server_port_spin.setRange(1024, 65535)
+        self.local_server_port_spin.setValue(8765)
+        self.local_server_port_spin.valueChanged.connect(
+            lambda _value: self._on_local_server_field_changed()
+        )
+        host_layout.addWidget(self.local_server_host_edit, 1)
+        host_layout.addWidget(QLabel(":"))
+        host_layout.addWidget(self.local_server_port_spin)
+        form.addRow(self.tr("local_server_bind", "Bind address"), host_row)
+
+        self.local_server_allow_lan_checkbox = QCheckBox(
+            self.tr("local_server_allow_lan", "Allow access from this LAN")
+        )
+        self.local_server_allow_lan_checkbox.setToolTip(
+            self.tr(
+                "local_server_allow_lan_tip",
+                "Keep this off unless you need another device on your network to connect.",
+            )
+        )
+        self.local_server_allow_lan_checkbox.toggled.connect(
+            lambda _checked: self._on_local_server_field_changed()
+        )
+        form.addRow("", self.local_server_allow_lan_checkbox)
+
+        token_row = QWidget()
+        token_layout = QHBoxLayout(token_row)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        token_layout.setSpacing(8)
+        self.local_server_token_edit = QLineEdit()
+        self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.local_server_token_edit.textChanged.connect(
+            lambda _text: self._on_local_server_field_changed()
+        )
+        self.local_server_show_token_button = QPushButton(
+            self.tr("show_token", "Show")
+        )
+        self.local_server_show_token_button.setIcon(ui_icon("show"))
+        self.local_server_show_token_button.setCheckable(True)
+        self.local_server_show_token_button.toggled.connect(
+            self._toggle_local_server_token_visibility
+        )
+        self.local_server_copy_token_button = QPushButton(
+            self.tr("copy_token", "Copy")
+        )
+        self.local_server_copy_token_button.setIcon(ui_icon("copy"))
+        self.local_server_copy_token_button.clicked.connect(
+            self._copy_local_server_token
+        )
+        self.local_server_generate_token_button = QPushButton(
+            self.tr("generate_token", "Generate token")
+        )
+        self.local_server_generate_token_button.setIcon(ui_icon("refresh"))
+        self.local_server_generate_token_button.clicked.connect(
+            self._generate_local_server_token
+        )
+        token_layout.addWidget(self.local_server_token_edit, 1)
+        token_layout.addWidget(self.local_server_show_token_button)
+        token_layout.addWidget(self.local_server_copy_token_button)
+        token_layout.addWidget(self.local_server_generate_token_button)
+        form.addRow(self.tr("local_server_token", "Access token"), token_row)
+
+        self.local_server_max_jobs_spin = QSpinBox()
+        self.local_server_max_jobs_spin.setRange(1, 1)
+        self.local_server_max_jobs_spin.setValue(1)
+        self.local_server_max_jobs_spin.setToolTip(
+            self.tr(
+                "local_server_one_job_tip",
+                "Heavy TTS models are safest with one generation job at a time.",
+            )
+        )
+        self.local_server_max_jobs_spin.valueChanged.connect(
+            lambda _value: self._on_local_server_field_changed()
+        )
+        form.addRow(
+            self.tr("local_server_parallel_jobs", "Parallel jobs"),
+            self.local_server_max_jobs_spin,
+        )
+
+        self.local_server_status_label = QLabel("")
+        self.local_server_status_label.setObjectName("helperLabel")
+        self.local_server_status_label.setWordWrap(True)
+        form.addRow("", self.local_server_status_label)
+
+        self.local_server_endpoint_label = QLabel("")
+        self.local_server_endpoint_label.setObjectName("helperLabel")
+        self.local_server_endpoint_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.local_server_endpoint_label.setWordWrap(True)
+        form.addRow(self.tr("local_server_mcp_url", "MCP endpoint"), self.local_server_endpoint_label)
+
+        http_help = QLabel(
+            self.tr(
+                "local_server_http_help",
+                "HTTP endpoints: GET /health, GET /voices, GET /background-music, "
+                "POST /jobs, GET /jobs/{job_id}, POST /jobs/{job_id}/cancel.",
+            )
+        )
+        http_help.setObjectName("helperLabel")
+        http_help.setWordWrap(True)
+        form.addRow("", http_help)
+
+        actions = QHBoxLayout()
+        self.local_server_start_stop_button = QPushButton()
+        self.local_server_start_stop_button.setIcon(ui_icon("server"))
+        self.local_server_start_stop_button.clicked.connect(
+            self._toggle_local_server
+        )
+        actions.addWidget(self.local_server_start_stop_button)
+        actions.addStretch(1)
+        form.addRow("", actions)
+
+        layout.addWidget(group)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        self._refresh_local_server_status()
+        self._refresh_mcp_desktop_json()
+        return scroll
+
+    def _local_server_settings_from_ui(self) -> dict[str, object]:
+        current = self.settings.get("local_server", {})
+        fallback = dict(current) if isinstance(current, dict) else {}
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return fallback
+        return {
+            "enabled": self.local_server_enabled_checkbox.isChecked(),
+            "auto_start": self.local_server_auto_start_checkbox.isChecked(),
+            "host": self.local_server_host_edit.text().strip() or "127.0.0.1",
+            "port": self.local_server_port_spin.value(),
+            "auth_token": self.local_server_token_edit.text().strip(),
+            "allow_lan": self.local_server_allow_lan_checkbox.isChecked(),
+            "serve_files": True,
+            "max_parallel_jobs": self.local_server_max_jobs_spin.value(),
+        }
+
+    def _mcp_desktop_config(self) -> dict[str, object]:
+        app_root = application_root()
+        if getattr(sys, "frozen", False):
+            command = app_root / "LocalText2VoiceMCP.exe"
+            args: list[str] = []
+        else:
+            venv_python = app_root / ".venv" / "Scripts" / "python.exe"
+            command = venv_python if venv_python.exists() else Path(sys.executable)
+            args = [str(app_root / "mcp_stdio_bridge.py")]
+        return {
+            "mcpServers": {
+                "localtext2voice": {
+                    "command": str(command),
+                    "args": args,
+                    "cwd": str(app_root),
+                }
+            }
+        }
+
+    def _mcp_desktop_config_text(self) -> str:
+        return json.dumps(self._mcp_desktop_config(), indent=2, ensure_ascii=False)
+
+    def _refresh_mcp_desktop_json(self) -> None:
+        if hasattr(self, "local_mcp_json_edit"):
+            self.local_mcp_json_edit.setPlainText(self._mcp_desktop_config_text())
+        if hasattr(self, "local_codex_toml_edit"):
+            self.local_codex_toml_edit.setPlainText(self._codex_mcp_config_text())
+
+    def _copy_mcp_desktop_json(self) -> None:
+        QApplication.clipboard().setText(self._mcp_desktop_config_text())
+        self.statusBar().showMessage(
+            self.tr("mcp_json_copied", "MCP configuration copied to clipboard."),
+            3000,
+        )
+
+    def _claude_config_path(self) -> Path:
+        app_data = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        return app_data / "Claude" / "claude_desktop_config.json"
+
+    def _codex_mcp_config_text(self) -> str:
+        app_root = application_root()
+        if getattr(sys, "frozen", False):
+            command = app_root / "LocalText2VoiceMCP.exe"
+            args: list[str] = []
+        else:
+            venv_python = app_root / ".venv" / "Scripts" / "python.exe"
+            command = venv_python if venv_python.exists() else Path(sys.executable)
+            args = [str(app_root / "mcp_stdio_bridge.py")]
+
+        def literal(value: str) -> str:
+            if "'" not in value:
+                return f"'{value}'"
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+
+        args_text = ", ".join(literal(value) for value in args)
+        return "\n".join(
+            [
+                "[mcp_servers.localtext2voice]",
+                f"command = {literal(str(command))}",
+                f"args = [{args_text}]",
+                f"cwd = {literal(str(app_root))}",
+            ]
+        )
+
+    def _copy_codex_mcp_toml(self) -> None:
+        QApplication.clipboard().setText(self._codex_mcp_config_text())
+        self.statusBar().showMessage(
+            self.tr("codex_toml_copied", "Codex MCP configuration copied to clipboard."),
+            3000,
+        )
+
+    @staticmethod
+    def _codex_config_path() -> Path:
+        codex_home = os.environ.get("CODEX_HOME", "").strip()
+        return (Path(codex_home) if codex_home else Path.home() / ".codex") / "config.toml"
+
+    def _open_codex_config(self) -> None:
+        path = self._codex_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _open_claude_config(self) -> None:
+        path = self._claude_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text('{\n  "mcpServers": {}\n}\n', encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _restore_local_server_settings(self) -> None:
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return
+        settings = self.settings.get("local_server", {})
+        if not isinstance(settings, dict):
+            settings = {}
+        if not str(settings.get("auth_token", "")).strip():
+            settings = dict(settings)
+            settings["auth_token"] = secrets.token_urlsafe(24)
+            self.settings["local_server"] = settings
+            self.settings_manager.save(self.settings)
+        widgets = (
+            self.local_server_enabled_checkbox,
+            self.local_server_auto_start_checkbox,
+            self.local_server_host_edit,
+            self.local_server_port_spin,
+            self.local_server_token_edit,
+            self.local_server_allow_lan_checkbox,
+            self.local_server_max_jobs_spin,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.local_server_enabled_checkbox.setChecked(bool(settings.get("enabled", False)))
+        self.local_server_auto_start_checkbox.setChecked(bool(settings.get("auto_start", False)))
+        self.local_server_host_edit.setText(str(settings.get("host", "127.0.0.1")))
+        self.local_server_port_spin.setValue(int(settings.get("port", 8765) or 8765))
+        self.local_server_token_edit.setText(str(settings.get("auth_token", "")))
+        self.local_server_allow_lan_checkbox.setChecked(bool(settings.get("allow_lan", False)))
+        self.local_server_max_jobs_spin.setValue(1)
+        for widget in widgets:
+            widget.blockSignals(False)
+        self._refresh_local_server_status()
+        self._refresh_mcp_desktop_json()
+
+    def _maybe_start_local_server(self) -> None:
+        settings = self.settings.get("local_server", {})
+        if not isinstance(settings, dict):
+            return
+        if bool(settings.get("enabled", False)) or bool(settings.get("auto_start", False)):
+            self._start_local_server(show_errors=False)
+        else:
+            self._refresh_local_server_status()
+
+    def _toggle_local_server(self) -> None:
+        if self.local_server_controller.is_running():
+            self._stop_local_server()
+            return
+        self._start_local_server(show_errors=True)
+
+    def _start_local_server(self, show_errors: bool = True) -> None:
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return
+        if not self.local_server_token_edit.text().strip():
+            self.local_server_token_edit.setText(secrets.token_urlsafe(24))
+        self.local_server_enabled_checkbox.blockSignals(True)
+        self.local_server_enabled_checkbox.setChecked(True)
+        self.local_server_enabled_checkbox.blockSignals(False)
+        self._save_settings()
+        try:
+            self.local_server_controller.start()
+            self.log_view.append_event(
+                f"Local MCP/HTTP server started: {self.local_server_controller.endpoint_url()}"
+            )
+        except Exception as exc:
+            self.local_server_enabled_checkbox.blockSignals(True)
+            self.local_server_enabled_checkbox.setChecked(False)
+            self.local_server_enabled_checkbox.blockSignals(False)
+            self._save_settings()
+            message = f"Could not start local server: {exc}"
+            self.log_view.append_event(message)
+            if show_errors:
+                self._show_error(
+                    self.tr("local_server_start_failed", "Local server failed"),
+                    message,
+                )
+        self._refresh_local_server_status()
+
+    def _stop_local_server(self) -> None:
+        self.local_server_controller.stop()
+        if hasattr(self, "local_server_enabled_checkbox"):
+            self.local_server_enabled_checkbox.blockSignals(True)
+            self.local_server_enabled_checkbox.setChecked(False)
+            self.local_server_enabled_checkbox.blockSignals(False)
+        self._save_settings()
+        self.log_view.append_event("Local MCP/HTTP server stopped.")
+        self._refresh_local_server_status()
+
+    def _on_local_server_enabled_changed(self, enabled: bool) -> None:
+        if enabled:
+            self._start_local_server(show_errors=True)
+        else:
+            self._stop_local_server()
+
+    def _on_local_server_field_changed(self) -> None:
+        self._save_settings()
+        self._refresh_local_server_status()
+
+    def _generate_local_server_token(self) -> None:
+        self.local_server_token_edit.setText(secrets.token_urlsafe(24))
+        self._save_settings()
+        self._refresh_local_server_status()
+
+    def _toggle_local_server_token_visibility(self, checked: bool) -> None:
+        if checked:
+            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.local_server_show_token_button.setText(self.tr("hide_token", "Hide"))
+            self.local_server_show_token_button.setIcon(ui_icon("hide"))
+        else:
+            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.local_server_show_token_button.setText(self.tr("show_token", "Show"))
+            self.local_server_show_token_button.setIcon(ui_icon("show"))
+
+    def _copy_local_server_token(self) -> None:
+        token = self.local_server_token_edit.text().strip()
+        if not token:
+            QMessageBox.information(
+                self,
+                self.tr("local_server_token", "Access token"),
+                self.tr("no_token_to_copy", "There is no access token to copy yet."),
+            )
+            return
+        QApplication.clipboard().setText(token)
+        self.statusBar().showMessage(
+            self.tr("token_copied", "Access token copied to clipboard."),
+            3000,
+        )
+
+    def _refresh_local_server_status(self) -> None:
+        if not hasattr(self, "local_server_status_label"):
+            return
+        running = self.local_server_controller.is_running()
+        endpoint = self.local_server_controller.endpoint_url()
+        self.local_server_endpoint_label.setText(endpoint)
+        self.local_server_start_stop_button.setText(
+            self.tr("stop_server", "Stop server")
+            if running
+            else self.tr("start_server", "Start server")
+        )
+        self.local_server_start_stop_button.setIcon(
+            ui_icon("stop", danger=True) if running else ui_icon("server")
+        )
+        token_hint = (
+            self.tr(
+                "local_server_token_hint",
+                "Use the access token as a Bearer token, or as ?token=... for file URLs.",
+            )
+            if self.local_server_token_edit.text().strip()
+            else self.tr(
+                "local_server_no_token_hint",
+                "No token is configured. This is acceptable only for localhost experiments.",
+            )
+        )
+        status = (
+            self.tr("local_server_running", "Running")
+            if running
+            else self.tr("local_server_stopped", "Stopped")
+        )
+        self.local_server_status_label.setText(
+            self.tr(
+                "local_server_status_text",
+                "Status: {status}. {token_hint}",
+                status=status,
+                token_hint=token_hint,
+            )
+        )
+
     def _build_tts_engine_settings(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -2845,6 +3406,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(widget)
+        self._refresh_mcp_desktop_json()
         return scroll
 
     def _build_piper_engine_panel(self) -> QWidget:
@@ -5443,7 +6005,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "sidebar_engine_detail_label"):
             if self.preloading_tts_engine_id == engine_id:
                 memory_text = self.tr("loading_into_memory", "Loading into memory...")
-            elif self.preloaded_tts_engine_id == engine_id:
+            elif (
+                self.preloaded_tts_engine_id == engine_id
+                or engine_id in self.host_loaded_tts_engine_ids
+            ):
                 memory_text = self.tr("loaded_in_memory", "Loaded in memory")
             else:
                 memory_text = self.tr("not_loaded_in_memory", "Not loaded in memory")
@@ -5704,7 +6269,10 @@ class MainWindow(QMainWindow):
                 row["selected"] = ""
             elif self.preloading_tts_engine_id == engine_id:
                 row["selected"] = self.tr("selected_loading", "Selected / loading")
-            elif self.preloaded_tts_engine_id == engine_id:
+            elif (
+                self.preloaded_tts_engine_id == engine_id
+                or engine_id in self.host_loaded_tts_engine_ids
+            ):
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
             elif engine_id in {"chatterbox", "qwen", "omnivoice"}:
                 row["selected"] = self.tr(
@@ -5924,8 +6492,11 @@ class MainWindow(QMainWindow):
         can_load: bool,
     ) -> None:
         loaded = (
-            self.preloaded_tts_engine is not None
-            and self.preloaded_tts_engine_id == engine_id
+            engine_id in self.host_loaded_tts_engine_ids
+            or (
+                self.preloaded_tts_engine is not None
+                and self.preloaded_tts_engine_id == engine_id
+            )
         )
         loading = self.preloading_tts_engine_id == engine_id
         if loaded:
@@ -5944,11 +6515,8 @@ class MainWindow(QMainWindow):
             )
 
     def _toggle_preloaded_tts_engine(self, engine_id: str) -> None:
-        if (
-            self.preloaded_tts_engine is not None
-            and self.preloaded_tts_engine_id == engine_id
-        ):
-            self._unload_preloaded_tts_engine()
+        if engine_id in self.host_loaded_tts_engine_ids:
+            self._start_engine_host_memory_action(engine_id, load=False)
             return
         self._start_preload_tts_engine(engine_id)
 
@@ -5962,21 +6530,40 @@ class MainWindow(QMainWindow):
         if voice_config is None:
             return
         self._unload_preloaded_tts_engine(log_message=False)
-        piper_path = resolve_app_path(
-            self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
+        self._save_settings()
+        self._start_engine_host_memory_action(
+            engine_id,
+            load=True,
+            voice_config=voice_config,
         )
+
+    def _start_engine_host_memory_action(
+        self,
+        engine_id: str,
+        load: bool,
+        voice_config: dict[str, object] | None = None,
+    ) -> None:
+        if self.preload_thread is not None:
+            return
         self.preloading_tts_engine_id = engine_id
         self.log_view.append_event(
             self.tr(
-                "preloading_engine",
-                "Loading {engine} into memory...",
+                "preloading_engine" if load else "unloading_engine",
+                "Loading {engine} into memory..."
+                if load
+                else "Unloading {engine} from memory...",
                 engine=self._tts_engine_label(engine_id),
             )
         )
         self._refresh_all_engine_status()
 
         thread = QThread(self)
-        worker = TTSEnginePreloadWorker(engine_id, piper_path, voice_config)
+        worker = EngineHostMemoryWorker(
+            self.engine_host_client,
+            engine_id,
+            load,
+            voice_config,
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.log.connect(self.log_view.append_event)
@@ -5994,15 +6581,21 @@ class MainWindow(QMainWindow):
     def _on_tts_engine_preloaded(
         self,
         engine_id: str,
-        engine: BaseTTSEngine,
+        loaded: bool,
     ) -> None:
-        self.preloaded_tts_engine = engine
-        self.preloaded_tts_engine_id = engine_id
-        self.loaded_tts_engine_id = engine_id
+        if loaded:
+            self.host_loaded_tts_engine_ids.add(engine_id)
+            self.loaded_tts_engine_id = engine_id
+        else:
+            self.host_loaded_tts_engine_ids.discard(engine_id)
+            if self.loaded_tts_engine_id == engine_id:
+                self.loaded_tts_engine_id = None
         self.log_view.append_event(
             self.tr(
-                "engine_loaded_in_memory",
-                "{engine} loaded in memory and waiting for requests.",
+                "engine_loaded_in_memory" if loaded else "engine_unloaded_from_memory",
+                "{engine} loaded in memory and waiting for requests."
+                if loaded
+                else "{engine} unloaded from memory.",
                 engine=self._tts_engine_label(engine_id),
             )
         )
@@ -6052,6 +6645,30 @@ class MainWindow(QMainWindow):
         self._refresh_qwen_status()
         self._refresh_omnivoice_status()
         self._refresh_custom_engine_panel()
+
+    def _sync_engine_host_memory_state(self) -> None:
+        if not self.engine_host_client.health(timeout=0.25):
+            return
+        try:
+            status = self.engine_host_client.request_json(
+                "GET",
+                "/engines/memory",
+                timeout=3.0,
+            )
+        except Exception as exc:
+            self.log_view.append_event(f"Engine host status warning: {exc}")
+            return
+        if not isinstance(status, dict):
+            return
+        self.host_loaded_tts_engine_ids = {
+            str(engine_id)
+            for engine_id, details in status.items()
+            if isinstance(details, dict) and bool(details.get("loaded", False))
+        }
+        selected_engine = str(self.tts_engine_combo.currentData() or "piper")
+        if selected_engine in self.host_loaded_tts_engine_ids:
+            self.loaded_tts_engine_id = selected_engine
+        self._refresh_all_engine_status()
 
     def _build_general_settings(self) -> QWidget:
         widget = QWidget()
@@ -6407,7 +7024,7 @@ class MainWindow(QMainWindow):
         splitting_help.setObjectName("helperLabel")
         splitting_help.setWordWrap(True)
         self.chunk_size_spin = QSpinBox()
-        self.chunk_size_spin.setRange(120, 5000)
+        self.chunk_size_spin.setRange(1, 5000)
         self.chunk_size_spin.setSingleStep(20)
         self.chunk_size_spin.setSuffix(self.tr("characters_suffix", " chars"))
         self.chatterbox_chunk_size_spin = self._engine_chunk_spin()
@@ -6472,10 +7089,13 @@ class MainWindow(QMainWindow):
         return spin
 
     def _current_chunk_size(self, engine_id: str | None = None) -> int:
-        default_size = int(
-            self.chunk_size_spin.value()
-            if hasattr(self, "chunk_size_spin")
-            else self.settings.get("chunk_size", 2500)
+        default_size = max(
+            1,
+            int(
+                self.chunk_size_spin.value()
+                if hasattr(self, "chunk_size_spin")
+                else self.settings.get("chunk_size", 2500)
+            ),
         )
         engine = str(
             engine_id
@@ -6504,6 +7124,8 @@ class MainWindow(QMainWindow):
                     override = int(overrides.get(engine, 0) or 0)
                 except (TypeError, ValueError):
                     override = 0
+        if 0 < override < 1:
+            override = 1
         return override if override > 0 else default_size
 
     @staticmethod
@@ -8440,6 +9062,7 @@ class MainWindow(QMainWindow):
         )
         self.review_max_retries_spin.setValue(int(review.get("max_retries", 0)))
         self._refresh_whisper_status()
+        self._restore_local_server_settings()
 
         elevenlabs = api_tts.get("elevenlabs", {})
         self.elevenlabs_api_key_edit.setText(str(elevenlabs.get("api_key", "")))
@@ -9915,69 +10538,32 @@ class MainWindow(QMainWindow):
             return
 
         self._save_settings()
-        options = AudioGenerationOptions(
-            output_dir=output_dir,
-            voice_config=voice_config,
-            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
-            split_mode=str(self.split_combo.currentData()),
-            export_mode=str(self.export_combo.currentData()),
-            chunk_size=self._current_chunk_size(engine_id),
-            pause_between_blocks_ms=int(
-                self.settings.get("pause_between_blocks_ms", 350)
-            ),
-            pause_between_chapters_ms=int(
-                self.settings.get("pause_between_chapters_ms", 900)
-            ),
-            paragraph_pause_min_ms=round(
-                self.paragraph_pause_min_spin.value() * 1000
-            ),
-            paragraph_pause_max_ms=round(
-                self.paragraph_pause_max_spin.value() * 1000
-            ),
-            adaptive_paragraph_pause=self.adaptive_pause_checkbox.isChecked(),
-            paragraph_length_reference_chars=(
-                self.paragraph_length_reference_spin.value()
-            ),
-            paragraph_length_extra_ms=round(
-                self.paragraph_length_extra_spin.value() * 1000
-            ),
-            periodic_pause_every_paragraphs=(
-                self.periodic_pause_every_spin.value()
-            ),
-            periodic_pause_min_ms=round(
-                self.periodic_pause_min_spin.value() * 1000
-            ),
-            periodic_pause_max_ms=round(
-                self.periodic_pause_max_spin.value() * 1000
-            ),
-            normalize_audio=self.normalize_checkbox.isChecked(),
-            podcast_enabled=False,
-            background_enabled=bool(self.settings.get("background_enabled", True)),
-            background_path=self._selected_music_path(),
-            background_loop=self.background_loop_checkbox.isChecked(),
-            background_volume_percent=self._db_to_percent(
-                self.background_volume_spin.value()
-            ),
-            voice_volume_db=self.voice_volume_db_spin.value(),
-            music_volume_db=self.background_volume_spin.value(),
-            voice_start_offset_ms=self.voice_start_offset_spin.value(),
-            music_tail_ms=self.music_tail_spin.value(),
-            music_fade_in_seconds=self.fade_in_spin.value(),
-            music_fade_out_seconds=self.fade_out_spin.value(),
-            podcast_gap_ms=round(self.podcast_gap_spin.value() * 1000),
-            podcast_normalize=self.podcast_normalize_checkbox.isChecked(),
-            podcast_ducking=self.podcast_ducking_checkbox.isChecked(),
-            ducking_strength=str(
-                self.ducking_strength_combo.currentData() or "low"
-            ),
-            mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
-            metadata=dict(self.settings.get("metadata", {})),
-            project_audiobook_id=self.current_audiobook_id,
-            project_settings=json.loads(json.dumps(self.settings)),
+        metadata = self.settings.get("metadata", {})
+        title = (
+            str(metadata.get("title", "Audiobook"))
+            if isinstance(metadata, dict)
+            else "Audiobook"
         )
-        piper_path = resolve_app_path(
-            self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
-        )
+        request = {
+            "text": text,
+            "title": title or "Audiobook",
+            "engine_id": engine_id,
+            "voice": str(
+                voice_config.get("voice") or voice_config.get("voice_id") or ""
+            ),
+            "language": str(
+                voice_config.get("language") or voice_config.get("lang") or ""
+            ),
+            "speed": float(voice_config.get("speed", self.speed_spin.value())),
+            "output_dir": str(output_dir),
+            "split_mode": str(self.split_combo.currentData()),
+            "export_mode": str(self.export_combo.currentData()),
+            "project_audiobook_id": self.current_audiobook_id,
+            # The desktop UI owns the interactive Review and Audio Mix transitions.
+            "review_policy": "off",
+            "mix_policy": "clean_only",
+            "client": "desktop_ui",
+        }
         self.log_view.clear()
         self.log_view.append_event(self.tr("starting", "Starting generation..."))
         self.progress_bar.setValue(0)
@@ -9991,35 +10577,29 @@ class MainWindow(QMainWindow):
         self.time_label.setVisible(True)
         self._update_generation_time()
         self.generation_timer.start()
-        preloaded_engine = (
-            self.preloaded_tts_engine
-            if self.preloaded_tts_engine_id == engine_id
-            else None
-        )
-        self.worker_uses_preloaded_engine = preloaded_engine is not None
-        if preloaded_engine is not None:
+        if self.preloaded_tts_engine is not None:
             self.log_view.append_event(
                 self.tr(
-                    "using_preloaded_engine",
-                    "Using preloaded {engine} engine.",
+                    "moving_generation_to_shared_host",
+                    "Generation uses the shared engine host; releasing the legacy "
+                    "in-process {engine} copy.",
                     engine=self._tts_engine_label(engine_id),
                 )
             )
-        self.loaded_tts_engine_id = (
-            engine_id
-            if engine_id in {"kokoro", "chatterbox", "qwen", "omnivoice"}
-            else self.preloaded_tts_engine_id
-        )
+            self._unload_preloaded_tts_engine(log_message=False)
+        self.worker_uses_preloaded_engine = False
+        self.host_generation_engine_id = engine_id
+        self.loaded_tts_engine_id = engine_id
         self._update_header_engine_label()
         self._set_running(True)
 
         thread = QThread(self)
-        worker = GenerationWorker(text, options, piper_path, preloaded_engine)
+        worker = EngineHostGenerationWorker(self.engine_host_client, request)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
         worker.log.connect(self.log_view.append_event)
-        worker.finished.connect(self._on_finished)
+        worker.finished.connect(self._on_host_generation_finished)
         worker.failed.connect(self._on_failed)
         worker.cancelled.connect(self._on_cancelled)
         worker.finished.connect(thread.quit)
@@ -10031,6 +10611,29 @@ class MainWindow(QMainWindow):
         self.worker_thread = thread
         self.worker = worker
         thread.start()
+
+    def _on_host_generation_finished(self, result: dict[str, object]) -> None:
+        audiobook_id = result.get("audiobook_id")
+        try:
+            resolved_id = int(audiobook_id) if audiobook_id is not None else None
+        except (TypeError, ValueError):
+            resolved_id = None
+        if resolved_id is not None:
+            self._set_current_project(resolved_id)
+        engine_id = self.host_generation_engine_id
+        if engine_id:
+            self.host_loaded_tts_engine_ids.add(engine_id)
+        outputs_value = result.get("outputs", [])
+        outputs = (
+            [str(path) for path in outputs_value]
+            if isinstance(outputs_value, list)
+            else []
+        )
+        if not outputs:
+            clean_mp3 = str(result.get("clean_mp3", "") or "")
+            mix_mp3 = str(result.get("mix_mp3", "") or "")
+            outputs = [path for path in (clean_mp3, mix_mp3) if path]
+        self._on_finished(outputs)
 
     def _cancel_generation(self) -> None:
         if self.worker is None:
@@ -10114,7 +10717,13 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.worker_thread = None
         self.worker_uses_preloaded_engine = False
-        self.loaded_tts_engine_id = self.preloaded_tts_engine_id
+        selected_engine = str(self.tts_engine_combo.currentData() or "piper")
+        self.loaded_tts_engine_id = (
+            selected_engine
+            if selected_engine in self.host_loaded_tts_engine_ids
+            else self.preloaded_tts_engine_id
+        )
+        self.host_generation_engine_id = None
         self._update_header_engine_label()
         self._set_running(False)
 
@@ -11656,6 +12265,7 @@ class MainWindow(QMainWindow):
                     "max_retries": self.review_max_retries_spin.value(),
                     "preload_model": self.whisper_model_loaded,
                 },
+                "local_server": self._local_server_settings_from_ui(),
                 "voice_gallery": {
                     "catalog_url": str(
                         self.settings.get("voice_gallery", {}).get(
@@ -11825,5 +12435,6 @@ class MainWindow(QMainWindow):
         else:
             self._unload_faster_whisper()
         self._unload_preloaded_tts_engine(log_message=False)
+        self.local_server_controller.stop()
         self._save_settings()
         event.accept()

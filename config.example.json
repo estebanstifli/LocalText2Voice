@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 7,
+  "settings_schema_version": 9,
   "ui_language": "en",
   "output_dir": "output",
   "voice_id": "",
@@ -100,6 +100,16 @@
     "approve_threshold": 92.0,
     "max_retries": 0,
     "preload_model": false
+  },
+  "local_server": {
+    "enabled": false,
+    "auto_start": false,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "auth_token": "",
+    "allow_lan": false,
+    "serve_files": true,
+    "max_parallel_jobs": 1
   },
   "api_tts": {
     "openai": {

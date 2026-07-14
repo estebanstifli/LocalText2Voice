@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -98,7 +99,7 @@ class MainWindowUITests(unittest.TestCase):
 
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
-        self.assertEqual(window.settings_tabs.count(), 4)
+        self.assertEqual(window.settings_tabs.count(), 5)
         self.assertGreaterEqual(window.tts_engine_combo.count(), 9)
         self.assertEqual(window.tts_engine_combo.currentData(), "piper")
         self.assertTrue(hasattr(window, "tts_engine_table"))
@@ -138,6 +139,12 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "markup_toolbar_checkbox"))
         self.assertTrue(window.markup_toolbar_checkbox.isChecked())
         self.assertIn("min-width", window._markup_help_card("{{pause}}", "Example."))
+        codex_config = window._codex_mcp_config_text()
+        parsed_codex = tomllib.loads(codex_config)
+        self.assertIn("localtext2voice", parsed_codex["mcp_servers"])
+        self.assertEqual(window.local_codex_toml_edit.toPlainText(), codex_config)
+        self.assertTrue(hasattr(window, "copy_codex_toml_button"))
+        self.assertTrue(hasattr(window, "open_codex_config_button"))
 
         window._select_tts_engine("openai")
         self.assertFalse(window.language_combo.isEnabled())
