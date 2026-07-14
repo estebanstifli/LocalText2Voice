@@ -66,23 +66,29 @@ def resolve_audio_reference(
     music_dir = library_directory(settings, "music", root=app_root)
     sfx_dir = library_directory(settings, "sfx", root=app_root)
 
-    if reference.is_absolute():
-        return reference.resolve() if reference.is_file() else None
-
+    references = (
+        (reference.with_suffix(".mp3"), reference.with_suffix(".wav"))
+        if not reference.suffix
+        else (reference,)
+    )
     exact_roots = [path for path in (project_dir, app_root, sfx_dir, music_dir) if path]
-    for candidate_root in exact_roots:
-        candidate = candidate_root / reference
-        if candidate.is_file():
-            return candidate.resolve()
+    for candidate_reference in references:
+        if candidate_reference.is_absolute():
+            if candidate_reference.is_file():
+                return candidate_reference.resolve()
+            continue
+        for candidate_root in exact_roots:
+            candidate = candidate_root / candidate_reference
+            if candidate.is_file():
+                return candidate.resolve()
 
-    # A path component means the author deliberately selected a location. Only
-    # basename-only references receive the convenient recursive library search.
-    if reference.parent != Path("."):
-        return None
-
-    wanted = reference.name.casefold()
-    for directory in (sfx_dir, music_dir):
-        for path in audio_library_files(directory):
-            if path.name.casefold() == wanted:
-                return path.resolve()
+        # A path component means the author deliberately selected a location.
+        # Only basename-only references receive recursive library search.
+        if candidate_reference.parent != Path("."):
+            continue
+        wanted = candidate_reference.name.casefold()
+        for directory in (sfx_dir, music_dir):
+            for path in audio_library_files(directory):
+                if path.name.casefold() == wanted:
+                    return path.resolve()
     return None

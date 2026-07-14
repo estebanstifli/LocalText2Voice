@@ -9,6 +9,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app.ui.main_window import MainWindow
@@ -72,7 +73,19 @@ class MainWindowUITests(unittest.TestCase):
             set(window.audio_mix_preview_panel.track_volume_spins),
             {"voice", "background", "music", "ambient", "sfx"},
         )
-        self.assertTrue(hasattr(window.audio_mix_preview_panel, "advanced_toggle"))
+        self.assertEqual(window.audio_mix_preview_panel.mix_tabs.count(), 2)
+        self.assertFalse(hasattr(window.audio_mix_preview_panel, "advanced_toggle"))
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "multitrack_graph"))
+        window.audio_mix_preview_panel.multitrack_graph.resize(900, 360)
+        self.assertFalse(
+            window.audio_mix_preview_panel.multitrack_graph.grab().isNull()
+        )
+        window.audio_mix_preview_panel.total_duration_seconds = 10.0
+        window.audio_mix_preview_panel._set_shared_cursor(4.0)
+        window.audio_mix_preview_panel._on_media_status_changed(
+            QMediaPlayer.MediaStatus.EndOfMedia
+        )
+        self.assertEqual(window.audio_mix_preview_panel.cursor_seconds, 0.0)
         self.assertEqual(window._format_duration(65), "01:05")
         author_credit = window.findChild(QLabel, "authorCreditLabel")
         self.assertIsNotNone(author_credit)

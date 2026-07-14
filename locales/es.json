@@ -659,5 +659,9 @@
   "audio_library_folders": "Carpetas de bibliotecas de audio",
   "background_music_folder": "Carpeta de m\u00fasica de fondo",
   "sfx_folder": "Carpeta de efectos de sonido",
-  "audio_library_folders_help": "Las rutas relativas parten de la carpeta de la aplicaci\u00f3n. PLAY busca recursivamente en ambas carpetas cuando s\u00f3lo se indica un nombre de archivo."
+  "audio_library_folders_help": "Las rutas relativas parten de la carpeta de la aplicaci\u00f3n. PLAY busca recursivamente en ambas carpetas cuando s\u00f3lo se indica un nombre de archivo.",
+  "basic": "B\u00e1sico",
+  "advanced": "Avanzado",
+  "advanced_mix_help": "Revisa los buses sincronizados, los eventos PLAY y su posici\u00f3n exacta en la l\u00ednea de tiempo de la narraci\u00f3n.",
+  "advanced_mix_tab_count": "Avanzado ({count} eventos)"
 }

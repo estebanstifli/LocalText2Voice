@@ -659,5 +659,9 @@
   "audio_library_folders": "Audio library folders",
   "background_music_folder": "Background music folder",
   "sfx_folder": "Sound effects folder",
-  "audio_library_folders_help": "Relative paths are resolved from the application folder. PLAY searches both folders recursively when only a filename is given."
+  "audio_library_folders_help": "Relative paths are resolved from the application folder. PLAY searches both folders recursively when only a filename is given.",
+  "basic": "Basic",
+  "advanced": "Advanced",
+  "advanced_mix_help": "Inspect the synchronized buses, PLAY events and their exact positions on the narration timeline.",
+  "advanced_mix_tab_count": "Advanced ({count} events)"
 }

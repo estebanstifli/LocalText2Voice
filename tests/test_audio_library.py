@@ -53,3 +53,30 @@ def test_explicit_play_path_does_not_fall_back_to_an_unrelated_basename(
         {},
         root=tmp_path,
     ) is None
+
+
+def test_play_without_extension_prefers_mp3_then_wav(tmp_path: Path) -> None:
+    sfx = tmp_path / "music/sfx/nested"
+    music = tmp_path / "music/background"
+    sfx.mkdir(parents=True)
+    music.mkdir(parents=True)
+    wav = sfx / "bell.wav"
+    mp3 = music / "bell.mp3"
+    wav.write_bytes(b"wav")
+    mp3.write_bytes(b"mp3")
+
+    assert resolve_audio_reference("bell", {}, root=tmp_path) == mp3.resolve()
+    mp3.unlink()
+    assert resolve_audio_reference("bell", {}, root=tmp_path) == wav.resolve()
+
+
+def test_explicit_play_path_without_extension_adds_supported_suffix(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "music/sfx/doors/close.wav"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wav")
+
+    assert resolve_audio_reference(
+        "music/sfx/doors/close", {}, root=tmp_path
+    ) == source.resolve()

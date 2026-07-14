@@ -25,9 +25,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -551,6 +551,175 @@ class WaveformGraph(QWidget):
         return f"{minutes:02d}:{seconds:02d}"
 
 
+class MultitrackWaveformGraph(QWidget):
+    """Compact studio-style timeline for voice, music, ambient and SFX buses."""
+
+    cursorChanged = Signal(float)
+    TRACKS = ("voice", "background", "music", "ambient", "sfx")
+
+    def __init__(self, tr_callback, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.tr = tr_callback
+        self.voice_series: WaveformSeries | None = None
+        self.background_series: WaveformSeries | None = None
+        self.clips: tuple[ResolvedAudioClip, ...] = ()
+        self.duration_seconds = 1.0
+        self.view_start_seconds = 0.0
+        self.view_duration_seconds = 1.0
+        self.cursor_seconds = 0.0
+        self.setMinimumHeight(330)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_data(
+        self,
+        voice_series: WaveformSeries | None,
+        background_series: WaveformSeries | None,
+        clips: tuple[ResolvedAudioClip, ...],
+        duration_seconds: float,
+    ) -> None:
+        self.voice_series = voice_series
+        self.background_series = background_series
+        self.clips = clips
+        self.duration_seconds = max(0.01, duration_seconds)
+        self.update()
+
+    def set_view(self, start_seconds: float, duration_seconds: float) -> None:
+        self.view_duration_seconds = max(
+            0.01, min(duration_seconds, self.duration_seconds)
+        )
+        self.view_start_seconds = max(
+            0.0,
+            min(start_seconds, self.duration_seconds - self.view_duration_seconds),
+        )
+        self.update()
+
+    def set_cursor(self, seconds: float) -> None:
+        self.cursor_seconds = max(0.0, min(seconds, self.duration_seconds))
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        self.cursorChanged.emit(self._seconds_at_x(event.position().x()))
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.cursorChanged.emit(self._seconds_at_x(event.position().x()))
+
+    def paintEvent(self, _event) -> None:  # noqa: ANN001
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        outer = self.rect().adjusted(1, 1, -1, -1)
+        painter.fillRect(outer, QColor("#08111f"))
+        painter.setPen(QPen(QColor("#24324a"), 1))
+        painter.drawRoundedRect(outer, 10, 10)
+
+        label_width = 112
+        header_height = 34
+        timeline = outer.adjusted(label_width, header_height, -12, -10)
+        lane_height = max(28, timeline.height() / len(self.TRACKS))
+        colors = {
+            "voice": QColor("#3b82f6"),
+            "background": QColor("#f59e0b"),
+            "music": QColor("#a855f7"),
+            "ambient": QColor("#14b8a6"),
+            "sfx": QColor("#f43f5e"),
+        }
+        labels = {
+            "voice": self.tr("voice", "Voice"),
+            "background": self.tr("background_music", "Global music"),
+            "music": self.tr("markup_music", "Markup music"),
+            "ambient": self.tr("ambient", "Ambient"),
+            "sfx": self.tr("sfx", "SFX"),
+        }
+
+        painter.setPen(QColor("#94a3b8"))
+        for tick in range(7):
+            x = timeline.left() + round(timeline.width() * tick / 6)
+            painter.drawLine(x, timeline.top(), x, timeline.bottom())
+            seconds = self.view_start_seconds + self.view_duration_seconds * tick / 6
+            painter.drawText(x - 20, outer.top() + 8, WaveformGraph._format_time(seconds))
+
+        for index, track in enumerate(self.TRACKS):
+            top = timeline.top() + round(index * lane_height)
+            bottom = timeline.top() + round((index + 1) * lane_height)
+            lane = timeline.adjusted(0, top - timeline.top(), 0, bottom - timeline.bottom())
+            painter.fillRect(lane, QColor("#0f1b2d") if index % 2 == 0 else QColor("#0b1626"))
+            painter.setPen(QColor("#26364f"))
+            painter.drawLine(timeline.left(), bottom, timeline.right(), bottom)
+            painter.setPen(colors[track])
+            painter.drawText(outer.left() + 14, top, label_width - 20, bottom - top, Qt.AlignmentFlag.AlignVCenter, labels[track])
+
+            series = self.voice_series if track == "voice" else self.background_series if track == "background" else None
+            if series is not None:
+                self._draw_series(painter, lane.adjusted(2, 5, -2, -5), series)
+
+            for clip in self.clips:
+                if clip.track != track:
+                    continue
+                start = clip.timeline_start_ms / 1000
+                duration = max(0.12, (clip.playback_duration_ms or 1000) / 1000)
+                end = start + duration
+                view_end = self.view_start_seconds + self.view_duration_seconds
+                if end < self.view_start_seconds or start > view_end:
+                    continue
+                left = self._x_for_seconds(max(start, self.view_start_seconds), timeline)
+                right = self._x_for_seconds(min(end, view_end), timeline)
+                block = lane.adjusted(left - lane.left() + 2, 7, right - lane.right() - 2, -7)
+                fill = QColor(colors[track])
+                fill.setAlpha(185)
+                painter.setBrush(fill)
+                painter.setPen(QPen(colors[track].lighter(135), 1))
+                painter.drawRoundedRect(block, 5, 5)
+                if block.width() > 55:
+                    painter.setPen(QColor("#ffffff"))
+                    painter.drawText(block.adjusted(7, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, Path(clip.file_path).stem)
+
+        cursor_x = self._x_for_seconds(self.cursor_seconds, timeline)
+        if timeline.left() <= cursor_x <= timeline.right():
+            painter.setPen(QPen(QColor("#f8fafc"), 2))
+            painter.drawLine(cursor_x, timeline.top() - 8, cursor_x, timeline.bottom())
+            painter.setBrush(QColor("#f8fafc"))
+            painter.drawEllipse(QPoint(cursor_x, timeline.top() - 8), 4, 4)
+
+    def _draw_series(self, painter: QPainter, lane, series: WaveformSeries) -> None:  # noqa: ANN001
+        envelope, color, gain, offset_seconds, loop = series
+        if envelope.is_empty:
+            return
+        painter.setPen(QPen(color, 1))
+        center = lane.center().y()
+        amplitude = max(2, lane.height() / 2)
+        repeats = 1
+        if loop and envelope.duration_seconds > 0:
+            repeats = min(100, int(self.duration_seconds / envelope.duration_seconds) + 2)
+        for repeat in range(repeats):
+            repeat_offset = repeat * envelope.duration_seconds if loop else 0.0
+            for time_value, low, high in zip(
+                envelope.times, envelope.minimums, envelope.maximums, strict=False
+            ):
+                seconds = time_value + offset_seconds + repeat_offset
+                if not self.view_start_seconds <= seconds <= self.view_start_seconds + self.view_duration_seconds:
+                    continue
+                x = self._x_for_seconds(seconds, lane)
+                painter.drawLine(
+                    x,
+                    round(center - max(-1.0, min(1.0, high * gain)) * amplitude),
+                    x,
+                    round(center - max(-1.0, min(1.0, low * gain)) * amplitude),
+                )
+
+    def _seconds_at_x(self, x_value: float) -> float:
+        timeline = self.rect().adjusted(113, 35, -13, -11)
+        ratio = max(0.0, min(1.0, (x_value - timeline.left()) / max(1, timeline.width())))
+        return self.view_start_seconds + ratio * self.view_duration_seconds
+
+    def _x_for_seconds(self, seconds: float, rect) -> int:  # noqa: ANN001
+        return rect.left() + round(
+            (seconds - self.view_start_seconds)
+            / max(0.01, self.view_duration_seconds)
+            * rect.width()
+        )
+
+
 class AudioMixPreviewPanel(QWidget):
     backRequested = Signal()
     openFolderRequested = Signal()
@@ -595,6 +764,7 @@ class AudioMixPreviewPanel(QWidget):
             self._on_playback_state_changed
         )
         self.preview_player.positionChanged.connect(self._on_preview_position_changed)
+        self.preview_player.mediaStatusChanged.connect(self._on_media_status_changed)
         self.full_mix_dialog: QDialog | None = None
         self.full_mix_dialog_status_label: QLabel | None = None
         self.full_mix_dialog_progress: QProgressBar | None = None
@@ -609,6 +779,18 @@ class AudioMixPreviewPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
+        self.mix_tabs = QTabWidget()
+        self.basic_tab = QWidget()
+        self.advanced_tab = QWidget()
+        basic_layout = QVBoxLayout(self.basic_tab)
+        basic_layout.setContentsMargins(0, 8, 0, 0)
+        basic_layout.setSpacing(12)
+        advanced_tab_layout = QVBoxLayout(self.advanced_tab)
+        advanced_tab_layout.setContentsMargins(0, 8, 0, 0)
+        advanced_tab_layout.setSpacing(12)
+        self.mix_tabs.addTab(self.basic_tab, self.tr("basic", "Basic"))
+        self.mix_tabs.addTab(self.advanced_tab, self.tr("advanced", "Advanced"))
+
         card = QFrame()
         card.setObjectName("card")
         card_layout = QVBoxLayout(card)
@@ -622,31 +804,18 @@ class AudioMixPreviewPanel(QWidget):
         )
         self.info_label.setObjectName("helperLabel")
         self.info_label.setWordWrap(True)
-        card_layout.addWidget(self.info_label)
+        layout.addWidget(self.info_label)
 
-        self.voice_graph = WaveformGraph(
-            self.tr("voice_waveform", "Voice"),
-            self.tr("waveform_loading", "Loading waveform..."),
-        )
-        self.music_graph = WaveformGraph(
-            self.tr("music_waveform", "Music"),
-            self.tr("no_music_selected", "No background music selected."),
-        )
         self.mix_graph = WaveformGraph(
             self.tr("mix_preview_waveform", "Mix"),
             self.tr("waveform_loading", "Loading waveform..."),
         )
-        self.voice_graph.cursorChanged.connect(self._set_shared_cursor)
-        card_layout.addWidget(self.voice_graph)
-
         self.change_music_button = QPushButton(self.tr("change_music", "Change"))
         self.change_music_button.setIcon(ui_icon("folder"))
         self.change_music_button.setIconSize(QSize(14, 14))
         self.change_music_button.clicked.connect(self.changeMusicRequested.emit)
-        self.music_graph.set_header_action_button(self.change_music_button)
+        self.mix_graph.set_header_action_button(self.change_music_button)
 
-        self.music_graph.cursorChanged.connect(self._set_shared_cursor)
-        card_layout.addWidget(self.music_graph)
         self.mix_graph.cursorChanged.connect(self._set_shared_cursor)
         card_layout.addWidget(self.mix_graph)
         playback_row = QHBoxLayout()
@@ -673,19 +842,7 @@ class AudioMixPreviewPanel(QWidget):
             button.setEnabled(False)
             playback_row.addWidget(button)
         card_layout.addLayout(playback_row)
-        layout.addWidget(card, 1)
-
-        self.advanced_toggle = QToolButton()
-        self.advanced_toggle.setCheckable(True)
-        self.advanced_toggle.setChecked(False)
-        self.advanced_toggle.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.advanced_toggle.setText(
-            self.tr("show_advanced_mix", "Show advanced mix (0 events)")
-        )
-        layout.addWidget(self.advanced_toggle)
+        basic_layout.addWidget(card, 1)
 
         self.advanced_frame = QFrame()
         self.advanced_frame.setObjectName("card")
@@ -700,6 +857,19 @@ class AudioMixPreviewPanel(QWidget):
         )
         advanced_title.setObjectName("sectionLabel")
         advanced_layout.addWidget(advanced_title)
+
+        advanced_help = QLabel(
+            self.tr(
+                "advanced_mix_help",
+                "Inspect the synchronized buses, PLAY events and their exact positions on the narration timeline.",
+            )
+        )
+        advanced_help.setObjectName("helperLabel")
+        advanced_help.setWordWrap(True)
+        advanced_layout.addWidget(advanced_help)
+        self.multitrack_graph = MultitrackWaveformGraph(self.tr)
+        self.multitrack_graph.cursorChanged.connect(self._set_shared_cursor)
+        advanced_layout.addWidget(self.multitrack_graph, 1)
 
         track_grid = QGridLayout()
         track_grid.addWidget(QLabel(self.tr("track", "Track")), 0, 0)
@@ -792,9 +962,7 @@ class AudioMixPreviewPanel(QWidget):
         advanced_buttons.addWidget(self.jump_to_source_button)
         advanced_buttons.addWidget(self.preview_clip_button)
         advanced_layout.addLayout(advanced_buttons)
-        self.advanced_frame.setVisible(False)
-        self.advanced_toggle.toggled.connect(self._set_advanced_visible)
-        layout.addWidget(self.advanced_frame)
+        advanced_tab_layout.addWidget(self.advanced_frame, 1)
 
         controls = QFrame()
         controls.setObjectName("card")
@@ -846,15 +1014,16 @@ class AudioMixPreviewPanel(QWidget):
         )
         self.ducking_strength_combo.addItem(self.tr("ducking_high", "High"), "high")
 
-        controls_layout.addWidget(
-            self._control_label("timeline", self.tr("timeline_zoom", "Timeline")),
-            0,
-            0,
+        advanced_timeline_controls = QHBoxLayout()
+        advanced_timeline_controls.setSpacing(8)
+        advanced_timeline_controls.addWidget(
+            self._control_label("timeline", self.tr("timeline_zoom", "Timeline"))
         )
-        controls_layout.addWidget(self.zoom_out_button, 0, 1)
-        controls_layout.addWidget(self.zoom_in_button, 0, 2)
-        controls_layout.addWidget(self.timeline_scroll, 0, 3)
-        controls_layout.addWidget(self.timeline_label, 0, 4)
+        advanced_timeline_controls.addWidget(self.zoom_out_button)
+        advanced_timeline_controls.addWidget(self.zoom_in_button)
+        advanced_timeline_controls.addWidget(self.timeline_scroll, 1)
+        advanced_timeline_controls.addWidget(self.timeline_label)
+        advanced_layout.insertLayout(2, advanced_timeline_controls)
         controls_layout.addWidget(
             self._control_label("volume", self.tr("voice_volume", "Voice volume")),
             1,
@@ -925,7 +1094,8 @@ class AudioMixPreviewPanel(QWidget):
         button_row.addStretch(1)
         button_row.addWidget(self.render_button)
         controls_layout.addLayout(button_row, 6, 0, 1, 5)
-        layout.addWidget(controls)
+        basic_layout.addWidget(controls)
+        layout.addWidget(self.mix_tabs, 1)
 
         for widget in (
             self.voice_spin,
@@ -1006,12 +1176,6 @@ class AudioMixPreviewPanel(QWidget):
         spin.setValue(value)
         return spin
 
-    def _set_advanced_visible(self, visible: bool) -> None:
-        self.advanced_frame.setVisible(visible)
-        self.advanced_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
-        )
-
     def _on_track_solo_changed(self, track: str, checked: bool) -> None:
         if checked:
             for other_track, checkbox in self.track_solo_checks.items():
@@ -1044,14 +1208,14 @@ class AudioMixPreviewPanel(QWidget):
     def _refresh_audio_event_table(self) -> None:
         events = self.context.audio_events if self.context is not None else ()
         self.audio_event_table.setRowCount(0)
-        self.advanced_toggle.setText(
+        self.mix_tabs.setTabText(
+            1,
             self.tr(
-                "show_advanced_mix_count",
-                "Show advanced mix ({count} events)",
+                "advanced_mix_tab_count",
+                "Advanced ({count} events)",
                 count=len(events),
-            )
+            ),
         )
-        self.advanced_toggle.setEnabled(bool(events))
         self.resolve_timeline_button.setEnabled(bool(events))
         for event in events:
             row = self.audio_event_table.rowCount()
@@ -1144,9 +1308,8 @@ class AudioMixPreviewPanel(QWidget):
                 file=context.voice_path.name,
             )
         )
-        self.voice_graph.set_waveforms([], 1)
-        self.music_graph.set_waveforms([], 1)
         self.mix_graph.set_waveforms([], 1)
+        self.multitrack_graph.set_data(None, None, (), 1)
         self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
         self._load_waveforms()
@@ -1165,14 +1328,14 @@ class AudioMixPreviewPanel(QWidget):
                 "Generate or open an audiobook before previewing the mix.",
             )
         )
-        self.voice_graph.set_waveforms([], 1)
-        self.music_graph.set_waveforms([], 1)
         self.mix_graph.set_waveforms([], 1)
+        self.multitrack_graph.set_data(None, None, (), 1)
         self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
         self.audio_event_table.setRowCount(0)
-        self.advanced_toggle.setText(
-            self.tr("show_advanced_mix", "Show advanced mix (0 events)")
+        self.mix_tabs.setTabText(
+            1,
+            self.tr("advanced_mix_tab_count", "Advanced ({count} events)", count=0),
         )
 
     def current_settings(self) -> AudioMixSettings:
@@ -1362,23 +1525,7 @@ class AudioMixPreviewPanel(QWidget):
             0.01,
             min(MIX_PREVIEW_DURATION_SECONDS, duration),
         )
-        self.voice_graph.set_waveforms(
-            [(self.voice_envelope, self.voice_color, voice_gain, voice_offset, False)],
-            self.total_duration_seconds,
-        )
         if self.music_envelope is not None:
-            self.music_graph.set_waveforms(
-                [
-                    (
-                        self.music_envelope,
-                        self.music_color,
-                        music_gain,
-                        0.0,
-                        settings.loop_background,
-                    )
-                ],
-                self.total_duration_seconds,
-            )
             self.mix_graph.set_waveforms(
                 [
                     (
@@ -1399,7 +1546,6 @@ class AudioMixPreviewPanel(QWidget):
                 self.total_duration_seconds,
             )
         else:
-            self.music_graph.set_waveforms([], self.total_duration_seconds)
             self.mix_graph.set_waveforms(
                 [
                     (
@@ -1412,12 +1558,37 @@ class AudioMixPreviewPanel(QWidget):
                 ],
                 self.total_duration_seconds,
             )
+        voice_series: WaveformSeries = (
+            self.voice_envelope,
+            self.voice_color,
+            voice_gain,
+            voice_offset,
+            False,
+        )
+        background_series: WaveformSeries | None = None
+        if self.music_envelope is not None:
+            background_series = (
+                self.music_envelope,
+                self.music_color,
+                music_gain,
+                0.0,
+                settings.loop_background,
+            )
+        self.multitrack_graph.set_data(
+            voice_series,
+            background_series,
+            self.context.timeline_clips if self.context is not None else (),
+            self.total_duration_seconds,
+        )
         self._sync_timeline_controls()
         self._apply_view_to_graphs()
 
     def _set_shared_cursor(self, seconds: float) -> None:
         self.cursor_seconds = max(0.0, min(seconds, self.total_duration_seconds))
-        for graph in (self.voice_graph, self.music_graph, self.mix_graph):
+        for graph in (
+            self.mix_graph,
+            self.multitrack_graph,
+        ):
             graph.set_cursor(self.cursor_seconds)
 
     def _on_zoom_out(self) -> None:
@@ -1466,7 +1637,10 @@ class AudioMixPreviewPanel(QWidget):
 
     def _apply_view_to_graphs(self) -> None:
         window = min(self.view_window_seconds, self.total_duration_seconds)
-        for graph in (self.voice_graph, self.music_graph, self.mix_graph):
+        for graph in (
+            self.mix_graph,
+            self.multitrack_graph,
+        ):
             graph.set_view(self.view_start_seconds, window)
         self._update_timeline_label()
 
@@ -1749,6 +1923,14 @@ class AudioMixPreviewPanel(QWidget):
             return
         seconds = self.preview_start_seconds + milliseconds / 1000
         self._set_shared_cursor(min(seconds, self.total_duration_seconds))
+
+    def _on_media_status_changed(self, status) -> None:  # noqa: ANN001
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        self.preview_player.stop()
+        self.preview_player.setPosition(0)
+        self.preview_start_seconds = 0.0
+        self._set_shared_cursor(0.0)
 
     def _on_full_mix_rendered(self, path: str) -> None:
         self.info_label.setText(

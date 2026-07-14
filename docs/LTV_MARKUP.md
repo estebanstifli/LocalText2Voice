@@ -387,6 +387,10 @@ Advanced**. Subfolders are supported for organizing either library. A reference
 that includes a directory is treated as an explicit path and does not fall back
 to an unrelated file with the same basename.
 
+The extension may be omitted: `{{play "door-close"}}` tries `door-close.mp3`
+first and then `door-close.wav`. The same extension rule applies to explicit
+relative paths such as `{{play "doors/door-close"}}`.
+
 `wait`, `pan_from`, and `pan_to` are deliberately not part of V1. If present,
 they produce a warning and are ignored. The former `music`, `music.stop`, and
 `sfx` commands are not aliases and are no longer supported. `music.volume` is
