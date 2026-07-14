@@ -21,6 +21,7 @@ class TextChunk:
     markup_pause_before_ms: int = 0
     markup_pause_after_ms: int | None = None
     markup_state: dict[str, Any] = field(default_factory=dict)
+    markup_audio_events: tuple[Any, ...] = ()
 
 
 class TextProcessor:

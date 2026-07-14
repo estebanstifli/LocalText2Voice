@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QTextCursor,
 )
 from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -70,6 +71,12 @@ from PySide6.QtWidgets import (
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.audio_event_timeline import (
+    resolve_audio_event_timeline,
+    resolved_audio_clips,
+    speech_intervals_for_audiobook,
+)
+from app.core.ltv_markup import LTVMarkupParser
 from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
 from app.server.engine_host_client import EngineHostClient
@@ -429,6 +436,24 @@ MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
         "color": "#b45309",
         "background": "#fffbeb",
         "help": "Applies TTS parameters to every following segment until {{reset.preset}}. One-shot {{cmd}} can override it for one segment.",
+    },
+    {
+        "name": "play",
+        "label": "Play",
+        "template": "{{play \"\" track=sfx volume=1}}",
+        "cursor": "{{play \"",
+        "color": "#047857",
+        "background": "#ecfdf5",
+        "help": "Plays a local audio file at this word position after mandatory Whisper alignment. Example: {{play \"effects/door.mp3\" volume=-6db pan=0}}.",
+    },
+    {
+        "name": "stop",
+        "label": "Stop Audio",
+        "template": "{{stop id=\"\" fade_out=2}}",
+        "cursor": "{{stop id=\"",
+        "color": "#b91c1c",
+        "background": "#fef2f2",
+        "help": "Stops an active PLAY id. Example: {{stop id=\"rain\" fade_out=4}}.",
     },
     {
         "name": "reset",
@@ -912,6 +937,7 @@ class MainWindow(QMainWindow):
         self.review_candidate_segment_id: int | None = None
         self.review_candidate_wav: Path | None = None
         self.review_after_generation_outputs: list[str] = []
+        self.markup_audio_review_required = False
         self.preloaded_whisper_verifier: FasterWhisperVerifier | None = None
         self.whisper_model_loaded = False
         self.preloaded_tts_engine: BaseTTSEngine | None = None
@@ -1049,6 +1075,12 @@ class MainWindow(QMainWindow):
             lambda message: self.log_view.append_event(message)
         )
         self.audio_mix_preview_panel.log.connect(self.log_view.append_event)
+        self.audio_mix_preview_panel.sourcePositionRequested.connect(
+            self._jump_to_markup_source_position
+        )
+        self.audio_mix_preview_panel.resolveTimelineRequested.connect(
+            self._resolve_current_audio_timeline
+        )
         self.page_stack.addWidget(self.audio_mix_preview_panel)
         self.page_stack.addWidget(self._build_voices_page())
         content_layout.addWidget(self.page_stack, 1)
@@ -1656,7 +1688,7 @@ class MainWindow(QMainWindow):
                     "Unknown command",
                     self.tr(
                         "markup_unknown_command_help",
-                        "Unknown markup command. Try {{pause}}, {{voice}}, {{lang}}, {{speed}}, {{chapter}}, {{cmd}} or {{preset}}.",
+                        "Unknown markup command. Try {{pause}}, {{voice}}, {{lang}}, {{speed}}, {{play}}, {{stop}}, {{chapter}}, {{cmd}} or {{preset}}.",
                     ),
                 ),
                 self.text_editor,
@@ -10520,6 +10552,23 @@ class MainWindow(QMainWindow):
             )
             return
 
+        parsed_markup = LTVMarkupParser.parse(text)
+        self.markup_audio_review_required = any(
+            event.type == "play" for event in parsed_markup.events
+        )
+        if (
+            self.markup_audio_review_required
+            and not self.faster_whisper_manager.is_installed()
+        ):
+            self._show_error(
+                self.tr("whisper_required", "Faster Whisper required"),
+                self.tr(
+                    "play_requires_whisper",
+                    "PLAY requires word-level Whisper timestamps. Install Faster Whisper from Settings > Review before generating this project.",
+                ),
+            )
+            return
+
         voice_config = self._current_voice_config()
         if voice_config is None:
             return
@@ -10675,10 +10724,11 @@ class MainWindow(QMainWindow):
                 self.header_open_output_button.isVisible()
                 and self._current_output_folder() is not None
             )
-            if (
+            should_review = self.markup_audio_review_required or (
                 self.review_enabled_checkbox.isChecked()
                 and self.review_auto_checkbox.isChecked()
-            ):
+            )
+            if should_review:
                 if (
                     self.faster_whisper_manager.is_installed()
                     and self.verification_thread is None
@@ -10687,7 +10737,7 @@ class MainWindow(QMainWindow):
                     self._start_verification_for_latest(show_review=False)
                     return
                 self.log_view.append_event(
-                    "Automatic review skipped: Faster Whisper is not ready."
+                    "Required review skipped: Faster Whisper is not ready."
                 )
             self._show_audio_mix_preview(output_paths)
 
@@ -10817,6 +10867,28 @@ class MainWindow(QMainWindow):
         self.header_open_output_button.setEnabled(
             self.header_open_output_button.isVisible()
         )
+        audiobook = self._current_audiobook()
+        audio_events = ()
+        timeline_clips = ()
+        speech_intervals = ()
+        stem_cache_dir = None
+        if audiobook is not None:
+            audio_events = tuple(self.audiobook_store.list_audio_events(audiobook.id))
+            duration_seconds = self._probe_audio_duration(narration_path) or 0.0
+            timeline_clips = tuple(
+                resolved_audio_clips(
+                    self.audiobook_store,
+                    audiobook.id,
+                    max(1, round(duration_seconds * 1000)),
+                )
+            )
+            speech_intervals = tuple(
+                speech_intervals_for_audiobook(
+                    self.audiobook_store,
+                    audiobook.id,
+                )
+            )
+            stem_cache_dir = audiobook.project_dir / "cache" / "stems"
         context = AudioMixPreviewContext(
             voice_path=narration_path,
             output_dir=output_dir,
@@ -10824,6 +10896,11 @@ class MainWindow(QMainWindow):
             music_path=self._selected_music_path(),
             settings=self._current_mix_settings(),
             metadata=dict(self.settings.get("metadata", {})),
+            audiobook_id=audiobook.id if audiobook is not None else None,
+            audio_events=audio_events,
+            timeline_clips=timeline_clips,
+            speech_intervals=speech_intervals,
+            stem_cache_dir=stem_cache_dir,
         )
         self.audio_mix_preview_panel.set_context(context)
 
@@ -10851,6 +10928,21 @@ class MainWindow(QMainWindow):
             loop_background=self.background_loop_checkbox.isChecked(),
             normalize=self.podcast_normalize_checkbox.isChecked(),
             mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
+            markup_music_volume_db=float(
+                self.settings.get("markup_music_volume_db", 0.0)
+            ),
+            ambient_volume_db=float(self.settings.get("ambient_volume_db", 0.0)),
+            sfx_volume_db=float(self.settings.get("sfx_volume_db", 0.0)),
+            voice_muted=bool(self.settings.get("voice_muted", False)),
+            background_music_muted=bool(
+                self.settings.get("background_music_muted", False)
+            ),
+            markup_music_muted=bool(
+                self.settings.get("markup_music_muted", False)
+            ),
+            ambient_muted=bool(self.settings.get("ambient_muted", False)),
+            sfx_muted=bool(self.settings.get("sfx_muted", False)),
+            solo_track=str(self.settings.get("markup_audio_solo_track", "")),
         )
 
     def _on_mix_preview_settings_changed(self, settings: AudioMixSettings) -> None:
@@ -10881,14 +10973,65 @@ class MainWindow(QMainWindow):
         self.fade_out_spin.blockSignals(False)
         self.podcast_ducking_checkbox.blockSignals(False)
         self.ducking_strength_combo.blockSignals(False)
+        self.settings.update(
+            {
+                "markup_music_volume_db": settings.markup_music_volume_db,
+                "ambient_volume_db": settings.ambient_volume_db,
+                "sfx_volume_db": settings.sfx_volume_db,
+                "voice_muted": settings.voice_muted,
+                "background_music_muted": settings.background_music_muted,
+                "markup_music_muted": settings.markup_music_muted,
+                "ambient_muted": settings.ambient_muted,
+                "sfx_muted": settings.sfx_muted,
+                "markup_audio_solo_track": settings.solo_track,
+            }
+        )
         self._save_settings()
+
+    def _jump_to_markup_source_position(self, position: int) -> None:
+        self._show_generation()
+        cursor = self.text_editor.textCursor()
+        cursor.setPosition(
+            max(0, min(position, len(self.text_editor.toPlainText()))),
+            QTextCursor.MoveMode.MoveAnchor,
+        )
+        self.text_editor.setTextCursor(cursor)
+        self.text_editor.setFocus()
+
+    def _resolve_current_audio_timeline(self) -> None:
+        audiobook = self._current_audiobook()
+        if audiobook is None:
+            return
+        summary = resolve_audio_event_timeline(
+            self.audiobook_store,
+            audiobook.id,
+        )
+        self.log_view.append_event(
+            "PLAY/STOP timeline: "
+            f"{summary.resolved}/{summary.total} ready, "
+            f"{summary.pending} pending, {summary.missing} missing."
+        )
+        if summary.pending and self.verification_thread is None:
+            if self.faster_whisper_manager.is_installed():
+                self._start_verification_for_latest(show_review=False)
+                return
+        narration_path = self._latest_clean_narration_path()
+        if narration_path is not None:
+            self._set_audio_mix_preview_context(narration_path)
 
     def _on_mix_preview_render_finished(self, path: str) -> None:
         self.last_output_folder = Path(path).parent
         self.log_view.append_event(f"Saved mix preview render: {path}")
+        audiobook = self._current_audiobook()
+        if audiobook is not None:
+            clean_path, _old_mix = self.audiobook_store.audiobook_output_paths(
+                audiobook.id
+            )
+            outputs = [Path(clean_path)] if clean_path else []
+            outputs.append(Path(path))
+            self.audiobook_store.complete_audiobook(audiobook.id, outputs)
         if not bool(self.settings.get("auto_delete_segment_wavs_after_mix", False)):
             return
-        audiobook = self._current_audiobook()
         if audiobook is None:
             return
         try:

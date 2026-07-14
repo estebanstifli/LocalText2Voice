@@ -16,6 +16,37 @@ from app.core.transcript_similarity import similarity_metrics, verification_stat
 
 
 class AudiobookStoreTests(unittest.TestCase):
+    def test_audio_assets_are_deduplicated_by_content_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            first = root / "first.mp3"
+            second = root / "renamed.mp3"
+            first.write_bytes(b"identical audio bytes")
+            second.write_bytes(b"identical audio bytes")
+            store = AudiobookStore(root / "projects.sqlite3")
+            audiobook = store.create_audiobook(
+                "Text.",
+                {},
+                root / "output",
+                "safe_chunks",
+                "single",
+                project_dir=root / "project",
+            )
+
+            first_asset, first_warning = store._embed_audio_asset(
+                audiobook,
+                str(first),
+            )
+            second_asset, second_warning = store._embed_audio_asset(
+                audiobook,
+                str(second),
+            )
+
+            self.assertEqual(first_warning, "")
+            self.assertEqual(second_warning, "")
+            self.assertEqual(first_asset, second_asset)
+            self.assertEqual(len(list((audiobook.project_dir / "assets/audio").iterdir())), 1)
+
     def test_store_creates_audiobook_and_segments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)

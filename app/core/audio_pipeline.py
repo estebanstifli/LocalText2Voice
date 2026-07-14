@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import tempfile
 import threading
@@ -181,6 +182,18 @@ class AudioPipeline:
                     self._active_audiobook,
                     groups,
                 )
+                for audio_event in self.audiobook_store.list_audio_events(
+                    self._active_audiobook.id
+                ):
+                    try:
+                        event_warnings = json.loads(audio_event.warnings_json or "[]")
+                    except json.JSONDecodeError:
+                        event_warnings = []
+                    for warning in event_warnings:
+                        if str(warning).startswith(
+                            ("Audio file not found:", "Unsupported local audio file:")
+                        ):
+                            self.log_callback(f"LTV Markup audio warning: {warning}")
                 self.log_callback(
                     "Audiobook project saved: "
                     f"{self._active_audiobook.project_dir}"
@@ -447,6 +460,35 @@ class AudioPipeline:
                 segment_chunks = self._split_tts_chunks(segment.text, options)
                 if not segment_chunks:
                     continue
+                audio_events_by_chunk: list[list[Any]] = [
+                    [] for _chunk in segment_chunks
+                ]
+                cumulative_words = 0
+                for chunk_position, segment_chunk in enumerate(segment_chunks):
+                    chunk_words = LTVMarkupCompiler._word_count(segment_chunk.text)
+                    upper_boundary = cumulative_words + chunk_words
+                    for audio_event in segment.audio_events:
+                        if any(
+                            existing.event_uid == audio_event.event_uid
+                            for bucket in audio_events_by_chunk
+                            for existing in bucket
+                        ):
+                            continue
+                        if (
+                            audio_event.anchor_source_word <= upper_boundary
+                            or chunk_position == len(segment_chunks) - 1
+                        ):
+                            audio_events_by_chunk[chunk_position].append(
+                                replace(
+                                    audio_event,
+                                    anchor_source_word=max(
+                                        0,
+                                        audio_event.anchor_source_word
+                                        - cumulative_words,
+                                    ),
+                                )
+                            )
+                    cumulative_words = upper_boundary
                 for index, chunk in enumerate(segment_chunks):
                     chunks.append(
                         replace(
@@ -460,6 +502,7 @@ class AudioPipeline:
                                 else None
                             ),
                             markup_state=dict(segment.state),
+                            markup_audio_events=tuple(audio_events_by_chunk[index]),
                         )
                     )
             if chunks:

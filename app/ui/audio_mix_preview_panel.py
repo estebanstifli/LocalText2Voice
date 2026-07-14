@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QPoint, QSize, QThread, QTimer, QUrl, Qt, Si
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -23,6 +25,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +38,8 @@ from app.core.audio_mix import (
     render_audio_preview_segment,
 )
 from app.core.waveform_preview import WaveformEnvelope, db_to_gain, generate_waveform_preview
+from app.core.audio_event_timeline import ResolvedAudioClip, SpeechInterval
+from app.core.audiobook_store import StoredAudioEvent
 
 from .icons import ICON_DANGER, ui_icon
 
@@ -48,6 +55,11 @@ class AudioMixPreviewContext:
     music_path: Path | None
     settings: AudioMixSettings
     metadata: dict[str, str]
+    audiobook_id: int | None = None
+    audio_events: tuple[StoredAudioEvent, ...] = ()
+    timeline_clips: tuple[ResolvedAudioClip, ...] = ()
+    speech_intervals: tuple[SpeechInterval, ...] = ()
+    stem_cache_dir: Path | None = None
 
 
 class WaveformLoadWorker(QObject):
@@ -146,6 +158,9 @@ class PreviewRenderWorker(QObject):
                 music_path=self.context.music_path,
                 start_seconds=self.start_seconds,
                 duration_seconds=self.duration_seconds,
+                timeline_clips=self.context.timeline_clips,
+                speech_intervals=self.context.speech_intervals,
+                stem_cache_dir=self.context.stem_cache_dir,
             )
             self.log.emit(
                 "Audio Mix: playable mix segment rendered in "
@@ -189,6 +204,9 @@ class FinalMixRenderWorker(QObject):
                 music_path=self.context.music_path,
                 voice_duration_seconds=self.voice_duration_seconds,
                 metadata=self.context.metadata,
+                timeline_clips=self.context.timeline_clips,
+                speech_intervals=self.context.speech_intervals,
+                stem_cache_dir=self.context.stem_cache_dir,
             )
             self.log.emit(
                 "Audio Mix: full mix rendered in "
@@ -541,6 +559,8 @@ class AudioMixPreviewPanel(QWidget):
     renderFinished = Signal(str)
     errorOccurred = Signal(str)
     log = Signal(str)
+    sourcePositionRequested = Signal(int)
+    resolveTimelineRequested = Signal()
 
     def __init__(self, tr_callback, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -655,6 +675,127 @@ class AudioMixPreviewPanel(QWidget):
         card_layout.addLayout(playback_row)
         layout.addWidget(card, 1)
 
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.advanced_toggle.setText(
+            self.tr("show_advanced_mix", "Show advanced mix (0 events)")
+        )
+        layout.addWidget(self.advanced_toggle)
+
+        self.advanced_frame = QFrame()
+        self.advanced_frame.setObjectName("card")
+        advanced_layout = QVBoxLayout(self.advanced_frame)
+        advanced_layout.setContentsMargins(16, 14, 16, 14)
+        advanced_layout.setSpacing(10)
+        advanced_title = QLabel(
+            self.tr(
+                "markup_audio_tracks",
+                "Markup audio tracks",
+            )
+        )
+        advanced_title.setObjectName("sectionLabel")
+        advanced_layout.addWidget(advanced_title)
+
+        track_grid = QGridLayout()
+        track_grid.addWidget(QLabel(self.tr("track", "Track")), 0, 0)
+        track_grid.addWidget(QLabel(self.tr("track_volume", "Bus volume")), 0, 1)
+        track_grid.addWidget(QLabel(self.tr("mute", "Mute")), 0, 2)
+        track_grid.addWidget(QLabel(self.tr("solo", "Solo")), 0, 3)
+        self.track_volume_spins: dict[str, QDoubleSpinBox] = {}
+        self.track_mute_checks: dict[str, QCheckBox] = {}
+        self.track_solo_checks: dict[str, QCheckBox] = {}
+        track_labels = {
+            "voice": self.tr("voice", "Voice"),
+            "background": self.tr("background_music", "Global music"),
+            "music": self.tr("markup_music", "Markup music"),
+            "ambient": self.tr("ambient", "Ambient"),
+            "sfx": self.tr("sfx", "SFX"),
+        }
+        for row, (track, label) in enumerate(track_labels.items(), start=1):
+            volume = QDoubleSpinBox()
+            volume.setRange(-36.0, 12.0)
+            volume.setDecimals(1)
+            volume.setSingleStep(0.5)
+            volume.setSuffix(" dB")
+            mute = QCheckBox()
+            solo = QCheckBox()
+            self.track_volume_spins[track] = volume
+            self.track_mute_checks[track] = mute
+            self.track_solo_checks[track] = solo
+            track_grid.addWidget(QLabel(label), row, 0)
+            track_grid.addWidget(volume, row, 1)
+            track_grid.addWidget(mute, row, 2)
+            track_grid.addWidget(solo, row, 3)
+            volume.valueChanged.connect(
+                lambda value, item=track: self._on_track_volume_changed(item, value)
+            )
+            mute.stateChanged.connect(self._on_controls_changed)
+            solo.toggled.connect(
+                lambda checked, item=track: self._on_track_solo_changed(
+                    item,
+                    checked,
+                )
+            )
+        track_grid.setColumnStretch(1, 1)
+        advanced_layout.addLayout(track_grid)
+
+        self.audio_event_table = QTableWidget(0, 9)
+        self.audio_event_table.setHorizontalHeaderLabels(
+            [
+                self.tr("id", "ID"),
+                self.tr("track", "Track"),
+                self.tr("file", "File"),
+                self.tr("time", "Time"),
+                self.tr("duration", "Duration"),
+                self.tr("volume", "Volume"),
+                self.tr("pan", "Pan"),
+                self.tr("mode", "Mode"),
+                self.tr("status", "Status"),
+            ]
+        )
+        self.audio_event_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.audio_event_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.audio_event_table.verticalHeader().setVisible(False)
+        self.audio_event_table.horizontalHeader().setSectionResizeMode(
+            2,
+            QHeaderView.ResizeMode.Stretch,
+        )
+        self.audio_event_table.doubleClicked.connect(self._preview_selected_clip)
+        advanced_layout.addWidget(self.audio_event_table)
+
+        advanced_buttons = QHBoxLayout()
+        self.resolve_timeline_button = QPushButton(
+            self.tr("resolve_timeline", "Resolve timeline again")
+        )
+        self.resolve_timeline_button.clicked.connect(
+            self.resolveTimelineRequested.emit
+        )
+        self.jump_to_source_button = QPushButton(
+            self.tr("jump_to_source", "Jump to source")
+        )
+        self.jump_to_source_button.clicked.connect(self._jump_to_selected_source)
+        self.preview_clip_button = QPushButton(
+            self.tr("preview_clip", "Preview clip")
+        )
+        self.preview_clip_button.clicked.connect(self._preview_selected_clip)
+        advanced_buttons.addWidget(self.resolve_timeline_button)
+        advanced_buttons.addStretch(1)
+        advanced_buttons.addWidget(self.jump_to_source_button)
+        advanced_buttons.addWidget(self.preview_clip_button)
+        advanced_layout.addLayout(advanced_buttons)
+        self.advanced_frame.setVisible(False)
+        self.advanced_toggle.toggled.connect(self._set_advanced_visible)
+        layout.addWidget(self.advanced_frame)
+
         controls = QFrame()
         controls.setObjectName("card")
         controls_layout = QGridLayout(controls)
@@ -664,6 +805,12 @@ class AudioMixPreviewPanel(QWidget):
 
         self.voice_slider, self.voice_spin = self._volume_control(-12, 6, 0)
         self.music_slider, self.music_spin = self._volume_control(-36, 0, -7)
+        self.voice_spin.valueChanged.connect(
+            lambda value: self._sync_advanced_track_volume("voice", value)
+        )
+        self.music_spin.valueChanged.connect(
+            lambda value: self._sync_advanced_track_volume("background", value)
+        )
         self.voice_offset_spin = self._milliseconds_spin(-300000, 300000, 2000)
         self.music_tail_spin = self._milliseconds_spin(0, 600000, 2000)
         self.fade_in_spin = self._seconds_spin(1.0)
@@ -859,6 +1006,128 @@ class AudioMixPreviewPanel(QWidget):
         spin.setValue(value)
         return spin
 
+    def _set_advanced_visible(self, visible: bool) -> None:
+        self.advanced_frame.setVisible(visible)
+        self.advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
+        )
+
+    def _on_track_solo_changed(self, track: str, checked: bool) -> None:
+        if checked:
+            for other_track, checkbox in self.track_solo_checks.items():
+                if other_track == track:
+                    continue
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+        self._on_controls_changed()
+
+    def _on_track_volume_changed(self, track: str, value: float) -> None:
+        target = None
+        if track == "voice" and hasattr(self, "voice_spin"):
+            target = self.voice_spin
+        elif track == "background" and hasattr(self, "music_spin"):
+            target = self.music_spin
+        if target is not None and abs(target.value() - value) > 0.001:
+            target.setValue(value)
+            return
+        self._on_controls_changed()
+
+    def _sync_advanced_track_volume(self, track: str, value: float) -> None:
+        spin = self.track_volume_spins.get(track)
+        if spin is None or abs(spin.value() - value) <= 0.001:
+            return
+        spin.blockSignals(True)
+        spin.setValue(value)
+        spin.blockSignals(False)
+
+    def _refresh_audio_event_table(self) -> None:
+        events = self.context.audio_events if self.context is not None else ()
+        self.audio_event_table.setRowCount(0)
+        self.advanced_toggle.setText(
+            self.tr(
+                "show_advanced_mix_count",
+                "Show advanced mix ({count} events)",
+                count=len(events),
+            )
+        )
+        self.advanced_toggle.setEnabled(bool(events))
+        self.resolve_timeline_button.setEnabled(bool(events))
+        for event in events:
+            row = self.audio_event_table.rowCount()
+            self.audio_event_table.insertRow(row)
+            time_text = (
+                self._format_time(event.resolved_time_ms / 1000)
+                if event.resolved_time_ms is not None
+                else "--:--"
+            )
+            duration_text = (
+                f"{event.duration_ms / 1000:.2f} s"
+                if event.duration_ms is not None
+                else ("loop" if event.loop else "auto")
+            )
+            values = (
+                event.event_id,
+                event.track if event.command_type == "play" else "STOP",
+                Path(event.file_path or event.file_reference).name,
+                time_text,
+                duration_text,
+                f"{event.volume_db:.1f} dB",
+                f"{event.pan:.2f}",
+                (
+                    f"stops {event.event_id}"
+                    if event.command_type == "stop"
+                    else ("loop" if event.loop else "once")
+                ),
+                event.resolution_status,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setData(Qt.ItemDataRole.UserRole, event.source_position)
+                item.setData(
+                    Qt.ItemDataRole.UserRole + 1,
+                    event.resolved_time_ms,
+                )
+                self.audio_event_table.setItem(row, column, item)
+
+    def _selected_event_item(self) -> QTableWidgetItem | None:
+        row = self.audio_event_table.currentRow()
+        if row < 0:
+            return None
+        return self.audio_event_table.item(row, 0)
+
+    def _jump_to_selected_source(self, *_args) -> None:
+        item = self._selected_event_item()
+        if item is None:
+            return
+        source_position = item.data(Qt.ItemDataRole.UserRole)
+        if source_position is not None:
+            self.sourcePositionRequested.emit(int(source_position))
+
+    def _preview_selected_clip(self, *_args) -> None:
+        item = self._selected_event_item()
+        if item is None:
+            return
+        resolved_time_ms = item.data(Qt.ItemDataRole.UserRole + 1)
+        if resolved_time_ms is None:
+            self.info_label.setText(
+                self.tr(
+                    "clip_not_resolved",
+                    "This clip is not resolved yet. Run Whisper review first.",
+                )
+            )
+            return
+        position_seconds = float(resolved_time_ms) / 1000
+        if position_seconds >= MIX_PREVIEW_DURATION_SECONDS:
+            self.info_label.setText(
+                self.tr(
+                    "clip_outside_fast_preview",
+                    "This clip is outside the fast first-minute preview.",
+                )
+            )
+            return
+        self._play_mix_from(position_seconds)
+
     def set_context(self, context: AudioMixPreviewContext) -> None:
         self.context = context
         self.voice_envelope = None
@@ -867,6 +1136,7 @@ class AudioMixPreviewPanel(QWidget):
         self.cursor_seconds = 0.0
         self._mark_preview_dirty(clear_cached_file=True)
         self._apply_settings(context.settings)
+        self._refresh_audio_event_table()
         self.info_label.setText(
             self.tr(
                 "mix_preview_loading",
@@ -900,9 +1170,21 @@ class AudioMixPreviewPanel(QWidget):
         self.mix_graph.set_waveforms([], 1)
         self._set_playback_controls_enabled(False)
         self.render_button.setEnabled(False)
+        self.audio_event_table.setRowCount(0)
+        self.advanced_toggle.setText(
+            self.tr("show_advanced_mix", "Show advanced mix (0 events)")
+        )
 
     def current_settings(self) -> AudioMixSettings:
         current = self.context.settings if self.context else AudioMixSettings()
+        solo_track = next(
+            (
+                track
+                for track, checkbox in self.track_solo_checks.items()
+                if checkbox.isChecked()
+            ),
+            "",
+        )
         return AudioMixSettings(
             voice_volume_db=self.voice_spin.value(),
             music_volume_db=self.music_spin.value(),
@@ -917,6 +1199,17 @@ class AudioMixPreviewPanel(QWidget):
             loop_background=current.loop_background,
             normalize=current.normalize,
             mp3_bitrate=current.mp3_bitrate,
+            markup_music_volume_db=self.track_volume_spins["music"].value(),
+            ambient_volume_db=self.track_volume_spins["ambient"].value(),
+            sfx_volume_db=self.track_volume_spins["sfx"].value(),
+            voice_muted=self.track_mute_checks["voice"].isChecked(),
+            background_music_muted=self.track_mute_checks[
+                "background"
+            ].isChecked(),
+            markup_music_muted=self.track_mute_checks["music"].isChecked(),
+            ambient_muted=self.track_mute_checks["ambient"].isChecked(),
+            sfx_muted=self.track_mute_checks["sfx"].isChecked(),
+            solo_track=solo_track,
         )
 
     def _apply_settings(self, settings: AudioMixSettings) -> None:
@@ -930,6 +1223,12 @@ class AudioMixPreviewPanel(QWidget):
         self.fade_out_spin.blockSignals(True)
         self.ducking_checkbox.blockSignals(True)
         self.ducking_strength_combo.blockSignals(True)
+        for widget in (
+            *self.track_volume_spins.values(),
+            *self.track_mute_checks.values(),
+            *self.track_solo_checks.values(),
+        ):
+            widget.blockSignals(True)
         self.voice_spin.setValue(settings.voice_volume_db)
         self.voice_slider.setValue(round(settings.voice_volume_db * 10))
         self.music_spin.setValue(settings.music_volume_db)
@@ -941,6 +1240,20 @@ class AudioMixPreviewPanel(QWidget):
         self.ducking_checkbox.setChecked(settings.ducking_enabled)
         index = self.ducking_strength_combo.findData(settings.ducking_strength)
         self.ducking_strength_combo.setCurrentIndex(max(0, index))
+        self.track_volume_spins["music"].setValue(settings.markup_music_volume_db)
+        self.track_volume_spins["ambient"].setValue(settings.ambient_volume_db)
+        self.track_volume_spins["sfx"].setValue(settings.sfx_volume_db)
+        self.track_volume_spins["voice"].setValue(settings.voice_volume_db)
+        self.track_volume_spins["background"].setValue(settings.music_volume_db)
+        self.track_mute_checks["voice"].setChecked(settings.voice_muted)
+        self.track_mute_checks["background"].setChecked(
+            settings.background_music_muted
+        )
+        self.track_mute_checks["music"].setChecked(settings.markup_music_muted)
+        self.track_mute_checks["ambient"].setChecked(settings.ambient_muted)
+        self.track_mute_checks["sfx"].setChecked(settings.sfx_muted)
+        for track, checkbox in self.track_solo_checks.items():
+            checkbox.setChecked(settings.solo_track == track)
         self.voice_spin.blockSignals(False)
         self.voice_slider.blockSignals(False)
         self.music_spin.blockSignals(False)
@@ -951,6 +1264,12 @@ class AudioMixPreviewPanel(QWidget):
         self.fade_out_spin.blockSignals(False)
         self.ducking_checkbox.blockSignals(False)
         self.ducking_strength_combo.blockSignals(False)
+        for widget in (
+            *self.track_volume_spins.values(),
+            *self.track_mute_checks.values(),
+            *self.track_solo_checks.values(),
+        ):
+            widget.blockSignals(False)
 
     def _load_waveforms(self) -> None:
         if self.context is None:
@@ -1019,6 +1338,14 @@ class AudioMixPreviewPanel(QWidget):
         settings = self.current_settings()
         voice_gain = db_to_gain(settings.voice_volume_db)
         music_gain = db_to_gain(settings.music_volume_db)
+        if settings.voice_muted or (
+            settings.solo_track and settings.solo_track != "voice"
+        ):
+            voice_gain = 0.0
+        if settings.background_music_muted or (
+            settings.solo_track and settings.solo_track != "background"
+        ):
+            music_gain = 0.0
         voice_offset = settings.voice_start_offset_ms / 1000
         voice_trim = max(0.0, -voice_offset)
         voice_delay = max(0.0, voice_offset)
@@ -1176,7 +1503,7 @@ class AudioMixPreviewPanel(QWidget):
             return None
         settings = self.current_settings()
         return (
-            "mix-preview-v1",
+            "mix-preview-v2",
             self._file_signature(self.context.voice_path),
             self._file_signature(self.context.music_path),
             str(self.context.ffmpeg_path),
@@ -1191,6 +1518,26 @@ class AudioMixPreviewPanel(QWidget):
             settings.loop_background,
             settings.normalize,
             settings.mp3_bitrate,
+            round(settings.markup_music_volume_db, 3),
+            round(settings.ambient_volume_db, 3),
+            round(settings.sfx_volume_db, 3),
+            settings.voice_muted,
+            settings.background_music_muted,
+            settings.markup_music_muted,
+            settings.ambient_muted,
+            settings.sfx_muted,
+            settings.solo_track,
+            tuple(
+                (
+                    event.event_uid,
+                    event.resolved_time_ms,
+                    event.resolution_status,
+                    self._file_signature(
+                        Path(event.file_path) if event.file_path else None
+                    ),
+                )
+                for event in self.context.audio_events
+            ),
             round(self.total_duration_seconds, 3),
         )
 

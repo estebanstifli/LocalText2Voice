@@ -40,6 +40,8 @@ class MainWindowUITests(unittest.TestCase):
             "markupCommandButton",
         )
         self.assertGreaterEqual(len(markup_buttons), 6)
+        self.assertIn("Play", [button.text() for button in markup_buttons])
+        self.assertIn("Stop Audio", [button.text() for button in markup_buttons])
         window.text_editor.clear()
         markup_buttons[0].click()
         self.assertEqual(window.text_editor.toPlainText(), "{{pause }}")
@@ -65,6 +67,12 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "audio_mix_preview_panel"))
         self.assertTrue(hasattr(window.audio_mix_preview_panel, "waveform_worker"))
         self.assertTrue(hasattr(window.audio_mix_preview_panel, "render_worker"))
+        self.assertEqual(window.audio_mix_preview_panel.audio_event_table.columnCount(), 9)
+        self.assertEqual(
+            set(window.audio_mix_preview_panel.track_volume_spins),
+            {"voice", "background", "music", "ambient", "sfx"},
+        )
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "advanced_toggle"))
         self.assertEqual(window._format_duration(65), "01:05")
         author_credit = window.findChild(QLabel, "authorCreditLabel")
         self.assertIsNotNone(author_credit)

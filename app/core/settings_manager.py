@@ -7,7 +7,7 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 9
+CURRENT_SETTINGS_SCHEMA_VERSION = 10
 MIN_CHUNK_SIZE = 1
 
 
@@ -61,6 +61,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "podcast_normalize": True,
     "podcast_ducking": True,
     "ducking_strength": "low",
+    "markup_music_volume_db": 0.0,
+    "ambient_volume_db": 0.0,
+    "sfx_volume_db": 0.0,
+    "voice_muted": False,
+    "background_music_muted": False,
+    "markup_music_muted": False,
+    "ambient_muted": False,
+    "sfx_muted": False,
+    "markup_audio_solo_track": "",
     "auto_delete_segment_wavs_after_mix": False,
     "open_output_on_finish": False,
     "mp3_bitrate": "128k",

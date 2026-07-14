@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -108,3 +110,39 @@ def test_service_reloads_ui_settings_and_keeps_project_id(tmp_path):
     assert service.settings["speed"] == 1.35
     assert options.paragraph_pause_min_ms == 725
     assert options.project_audiobook_id == 42
+
+
+def test_external_play_forces_whisper_review_and_postproduction_mix(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["output_dir"] = str(tmp_path / "output")
+    settings.save()
+    service = LocalText2VoiceService(settings)
+    service.faster_whisper_manager.is_installed = MagicMock(return_value=True)
+    clean = tmp_path / "output" / "podcast1.mp3"
+    mixed = tmp_path / "output" / "podcast1_mix.mp3"
+    pipeline = MagicMock()
+    pipeline.generate.return_value = [clean]
+    pipeline._active_audiobook = SimpleNamespace(id=7)
+
+    with (
+        patch("app.server.ltv_service.AudioPipeline", return_value=pipeline),
+        patch.object(service, "_get_tts_engine", return_value=MagicMock()),
+        patch.object(
+            service,
+            "_run_automatic_review",
+            return_value=({"enabled": True}, clean),
+        ) as review,
+        patch.object(service, "_render_reviewed_mix", return_value=mixed) as render,
+    ):
+        result = service.generate_audio(
+            {
+                "text": 'Hola {{play "door.mp3" volume=-6db}} mundo.',
+                "review_policy": "off",
+                "mix_policy": "clean_only",
+            }
+        )
+
+    review.assert_called_once()
+    render.assert_called_once()
+    assert result["clean_mp3"] == str(clean)
+    assert result["mix_mp3"] == str(mixed)

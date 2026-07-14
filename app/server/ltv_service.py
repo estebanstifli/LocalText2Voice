@@ -9,8 +9,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.audio_mix import AudioMixSettings, render_audio_mix
+from app.core.audio_event_timeline import (
+    resolved_audio_clips,
+    speech_intervals_for_audiobook,
+)
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
 from app.core.audiobook_store import AudiobookStore
+from app.core.ltv_markup import LTVMarkupParser
 from app.core.waveform_preview import probe_audio_duration
 from app.core.settings_manager import SettingsManager
 from app.tts.base import BaseTTSEngine
@@ -309,7 +314,18 @@ class LocalText2VoiceService:
             engine_id = "kokoro"
         voice_config = self._voice_config(engine_id, request)
         requested_options = self._generation_options(request, voice_config)
+        play_required = any(
+            event.type == "play" for event in LTVMarkupParser.parse(text).events
+        )
+        desktop_ui = str(request.get("client", "")).casefold() == "desktop_ui"
         review_enabled = self._review_enabled(request)
+        if play_required and not desktop_ui:
+            if not self.faster_whisper_manager.is_installed():
+                raise ValueError(
+                    "PLAY markup requires Faster Whisper small for mandatory word "
+                    "timestamp alignment. Install it from Settings > Review."
+                )
+            review_enabled = True
         options = (
             replace(
                 requested_options,
@@ -347,7 +363,7 @@ class LocalText2VoiceService:
                 ]
         if (
             review_enabled
-            and requested_options.podcast_enabled
+            and (requested_options.podcast_enabled or play_required)
             and audiobook_id is not None
         ):
             clean_path = next(
@@ -533,8 +549,32 @@ class LocalText2VoiceService:
             loop_background=options.background_loop,
             normalize=options.podcast_normalize,
             mp3_bitrate=options.mp3_bitrate,
+            markup_music_volume_db=float(
+                self.settings.get("markup_music_volume_db", 0.0)
+            ),
+            ambient_volume_db=float(self.settings.get("ambient_volume_db", 0.0)),
+            sfx_volume_db=float(self.settings.get("sfx_volume_db", 0.0)),
+            voice_muted=bool(self.settings.get("voice_muted", False)),
+            background_music_muted=bool(
+                self.settings.get("background_music_muted", False)
+            ),
+            markup_music_muted=bool(
+                self.settings.get("markup_music_muted", False)
+            ),
+            ambient_muted=bool(self.settings.get("ambient_muted", False)),
+            sfx_muted=bool(self.settings.get("sfx_muted", False)),
+            solo_track=str(self.settings.get("markup_audio_solo_track", "")),
         )
         music_path = options.background_path if options.background_enabled else None
+        store = AudiobookStore()
+        audiobook = store.get_audiobook(audiobook_id)
+        voice_duration = probe_audio_duration(clean_path, options.ffmpeg_path)
+        timeline_clips = resolved_audio_clips(
+            store,
+            audiobook_id,
+            project_duration_ms=max(1, round(voice_duration * 1000)),
+        )
+        speech_intervals = speech_intervals_for_audiobook(store, audiobook_id)
         log(f"Rendering reviewed podcast mix: {mix_path.name}")
         render_audio_mix(
             clean_path,
@@ -542,13 +582,17 @@ class LocalText2VoiceService:
             options.ffmpeg_path,
             settings,
             music_path=music_path,
-            voice_duration_seconds=probe_audio_duration(
-                clean_path,
-                options.ffmpeg_path,
-            ),
+            voice_duration_seconds=voice_duration,
             metadata=options.metadata,
+            timeline_clips=timeline_clips,
+            speech_intervals=speech_intervals,
+            stem_cache_dir=(
+                audiobook.project_dir / "cache" / "stems"
+                if audiobook is not None
+                else None
+            ),
         )
-        AudiobookStore().complete_audiobook(audiobook_id, [clean_path, mix_path])
+        store.complete_audiobook(audiobook_id, [clean_path, mix_path])
         log(f"Reviewed podcast mix created: {mix_path}")
         return mix_path
 

@@ -622,5 +622,21 @@
   "local_server_no_token_hint": "No hay token configurado. Esto solo es recomendable para pruebas en localhost.",
   "local_server_running": "En ejecución",
   "local_server_stopped": "Detenido",
-  "local_server_status_text": "Estado: {status}. {token_hint}"
+  "local_server_status_text": "Estado: {status}. {token_hint}",
+  "show_advanced_mix": "Mostrar mezcla avanzada (0 eventos)",
+  "show_advanced_mix_count": "Mostrar mezcla avanzada ({count} eventos)",
+  "markup_audio_tracks": "Pistas de audio del markup",
+  "track_volume": "Volumen de pista",
+  "mute": "Silenciar",
+  "solo": "Solo",
+  "markup_music": "M\u00fasica de markup",
+  "ambient": "Ambiente",
+  "mode": "Modo",
+  "resolve_timeline": "Volver a resolver el timeline",
+  "jump_to_source": "Ir al texto fuente",
+  "preview_clip": "Previsualizar clip",
+  "clip_not_resolved": "Este clip a\u00fan no est\u00e1 resuelto. Ejecuta primero la revisi\u00f3n Whisper.",
+  "clip_outside_fast_preview": "Este clip queda fuera de la previsualizaci\u00f3n r\u00e1pida del primer minuto.",
+  "whisper_required": "Se necesita Faster Whisper",
+  "play_requires_whisper": "PLAY necesita timestamps de palabras de Whisper. Instala Faster Whisper desde Ajustes > Revisi\u00f3n antes de generar este proyecto."
 }

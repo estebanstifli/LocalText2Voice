@@ -622,5 +622,21 @@
   "local_server_no_token_hint": "No token is configured. This is acceptable only for localhost experiments.",
   "local_server_running": "Running",
   "local_server_stopped": "Stopped",
-  "local_server_status_text": "Status: {status}. {token_hint}"
+  "local_server_status_text": "Status: {status}. {token_hint}",
+  "show_advanced_mix": "Show advanced mix (0 events)",
+  "show_advanced_mix_count": "Show advanced mix ({count} events)",
+  "markup_audio_tracks": "Markup audio tracks",
+  "track_volume": "Bus volume",
+  "mute": "Mute",
+  "solo": "Solo",
+  "markup_music": "Markup music",
+  "ambient": "Ambient",
+  "mode": "Mode",
+  "resolve_timeline": "Resolve timeline again",
+  "jump_to_source": "Jump to source",
+  "preview_clip": "Preview clip",
+  "clip_not_resolved": "This clip is not resolved yet. Run Whisper review first.",
+  "clip_outside_fast_preview": "This clip is outside the fast first-minute preview.",
+  "whisper_required": "Faster Whisper required",
+  "play_requires_whisper": "PLAY requires word-level Whisper timestamps. Install Faster Whisper from Settings > Review before generating this project."
 }

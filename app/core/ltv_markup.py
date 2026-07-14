@@ -6,7 +6,7 @@ import math
 import random
 import re
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -46,6 +46,34 @@ class LTVNarrationSegment:
     pause_before_ms: int = 0
     pause_after_ms: int | None = None
     state: dict[str, Any] = field(default_factory=dict)
+    audio_events: tuple["LTVAudioEvent", ...] = ()
+
+
+@dataclass(frozen=True)
+class LTVAudioEvent:
+    event_uid: str
+    event_id: str
+    command_type: str
+    raw_command: str
+    source_position: int
+    anchor_source_word: int
+    anchor_mode: str = "word_boundary"
+    anchor_pause_offset_ms: int = 0
+    file_reference: str = ""
+    track: str = "sfx"
+    source_start_ms: int = 0
+    duration_ms: int | None = None
+    volume_db: float = 0.0
+    loop: bool = False
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
+    pan: float = 0.0
+    duck_db: float = 0.0
+    trim_silence: bool = False
+    target_event_uid: str = ""
+    enabled: bool = True
+    warnings: tuple[str, ...] = ()
+    anchor_word_adjustment: int = 0
 
 
 @dataclass(frozen=True)
@@ -60,6 +88,7 @@ class LTVMarkupCompileResult:
     warnings: list[str]
     ignored_commands: list[str]
     events: list[LTVMarkupEvent]
+    audio_events: list[LTVAudioEvent]
 
 
 @dataclass(frozen=True)
@@ -81,14 +110,14 @@ class LTVMarkupParser:
         "cmd",
         "lang",
         "mark",
-        "music",
         "pause",
+        "play",
         "preset",
         "reset",
         "sendcomand",
         "sendcommand",
-        "sfx",
         "speed",
+        "stop",
         "voice",
         "volume",
     }
@@ -130,6 +159,19 @@ class LTVMarkupParser:
                     warnings.append(f"Unknown command: {raw_command}.")
             else:
                 event, event_warnings = parsed_event
+                if event.type in {"play", "stop"}:
+                    left_run, right_run = cls._mid_word_runs(text, match.start(), match.end())
+                    if left_run and right_run:
+                        boundary = "start" if left_run <= right_run else "end"
+                        warning = (
+                            f"{event.type.upper()} was inside a word; aligned to the "
+                            f"nearest word {boundary}: {raw_command}."
+                        )
+                        attrs = dict(event.attrs)
+                        attrs["anchor_word_adjustment"] = -1 if boundary == "start" else 0
+                        attrs["warnings"] = tuple(attrs.get("warnings", ())) + (warning,)
+                        event = replace(event, attrs=attrs)
+                        event_warnings.append(warning)
                 events.append(event)
                 warnings.extend(event_warnings)
             cursor = match.end()
@@ -138,6 +180,24 @@ class LTVMarkupParser:
             events.append(LTVMarkupEvent("text", value=text[cursor:], position=cursor))
 
         return LTVMarkupParseResult(events, warnings, unknown_commands)
+
+    @staticmethod
+    def _mid_word_runs(text: str, start: int, end: int) -> tuple[int, int]:
+        if start <= 0 or end >= len(text):
+            return 0, 0
+        if not (text[start - 1].isalnum() and text[end].isalnum()):
+            return 0, 0
+        left = 0
+        cursor = start - 1
+        while cursor >= 0 and (text[cursor].isalnum() or text[cursor] == "_"):
+            left += 1
+            cursor -= 1
+        right = 0
+        cursor = end
+        while cursor < len(text) and (text[cursor].isalnum() or text[cursor] == "_"):
+            right += 1
+            cursor += 1
+        return left, right
 
     @classmethod
     def _parse_command(
@@ -188,6 +248,17 @@ class LTVMarkupParser:
         command_token = tokens[0].lower()
         command, _, modifier = command_token.partition(".")
         args = tokens[1:]
+        if command == "music" and modifier == "volume":
+            warning = (
+                "music.volume is reserved for a future volume-automation version "
+                f"and is ignored in V1: {raw}."
+            )
+            return LTVMarkupEvent(
+                "warning",
+                raw=raw,
+                value=warning,
+                position=position,
+            ), [warning]
         if command not in cls._known_commands:
             return None
 
@@ -217,10 +288,10 @@ class LTVMarkupParser:
             event = cls._parse_language(modifier, args, raw, position)
         elif command == "alias":
             event = cls._parse_alias(args, raw, position)
-        elif command == "sfx":
-            event = cls._parse_single_value("sfx", "file", args, raw, position)
-        elif command == "music":
-            event = cls._parse_music(modifier, args, raw, position)
+        elif command == "play":
+            event = cls._parse_play(args, raw, position)
+        elif command == "stop":
+            event = cls._parse_stop(args, raw, position)
         elif command == "chapter":
             event = cls._parse_single_value("chapter", "title", args, raw, position)
         elif command == "mark":
@@ -237,6 +308,9 @@ class LTVMarkupParser:
 
         if event.type == "warning":
             warnings.append(str(event.value))
+        extra_warnings = event.attrs.get("warnings", ())
+        if isinstance(extra_warnings, (list, tuple)):
+            warnings.extend(str(item) for item in extra_warnings)
         return event, warnings
 
     @classmethod
@@ -483,36 +557,312 @@ class LTVMarkupParser:
             )
         return LTVMarkupParser._warning(raw, position, f"Malformed {event_type} command ignored.")
 
-    @staticmethod
-    def _parse_music(
-        modifier: str,
+    @classmethod
+    def _parse_play(
+        cls,
         args: list[str],
         raw: str,
         position: int,
     ) -> LTVMarkupEvent:
-        if modifier == "stop" and not args:
-            return LTVMarkupEvent("music_stop", raw=raw, position=position)
-        if modifier == "volume" and len(args) == 1:
-            try:
-                return LTVMarkupEvent(
-                    "music_volume",
-                    raw=raw,
-                    value=float(args[0]),
-                    attrs={"db": float(args[0])},
-                    position=position,
+        if not args or "=" in args[0]:
+            return cls._warning(raw, position, "PLAY requires a quoted local audio path.")
+
+        file_reference = args[0].strip()
+        if not file_reference:
+            return cls._warning(raw, position, "PLAY requires a local audio path.")
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", file_reference):
+            return cls._warning(raw, position, "PLAY does not support remote URLs.")
+
+        warnings: list[str] = []
+        values: dict[str, str] = {}
+        known = {
+            "id",
+            "track",
+            "start",
+            "duration",
+            "volume",
+            "loop",
+            "fade_in",
+            "fade_out",
+            "pan",
+            "duck_on_voice",
+            "trim_silence",
+        }
+        for token in args[1:]:
+            if "=" not in token:
+                warnings.append(f"Unknown PLAY argument ignored: {token} ({raw}).")
+                continue
+            name, value = token.split("=", 1)
+            normalized_name = name.strip().casefold()
+            if normalized_name not in known:
+                warnings.append(
+                    f"Unknown PLAY parameter ignored: {name.strip() or token} ({raw})."
                 )
-            except ValueError:
-                pass
-        if not modifier and args:
-            value = " ".join(args)
-            return LTVMarkupEvent(
-                "music_start",
-                raw=raw,
-                value=value,
-                attrs={"file": value},
-                position=position,
+                continue
+            if normalized_name in values:
+                warnings.append(
+                    f"Duplicate PLAY parameter uses the last value: {name.strip()} ({raw})."
+                )
+            values[normalized_name] = value.strip()
+
+        event_id = values.get("id", "").strip()
+        track = values.get("track", "sfx").strip().casefold() or "sfx"
+        if track not in {"sfx", "music", "ambient"}:
+            warnings.append(f"Invalid PLAY track uses sfx: {track} ({raw}).")
+            track = "sfx"
+
+        start_seconds = cls._parse_nonnegative_seconds(
+            values.get("start"),
+            0.0,
+            "start",
+            raw,
+            warnings,
+        )
+        duration_seconds: float | None = None
+        if "duration" in values:
+            duration_seconds = cls._parse_positive_seconds(
+                values.get("duration"),
+                None,
+                "duration",
+                raw,
+                warnings,
             )
-        return LTVMarkupParser._warning(raw, position, "Malformed music command ignored.")
+        fade_in_seconds = cls._parse_nonnegative_seconds(
+            values.get("fade_in"),
+            0.0,
+            "fade_in",
+            raw,
+            warnings,
+        )
+        fade_out_seconds = cls._parse_nonnegative_seconds(
+            values.get("fade_out"),
+            0.0,
+            "fade_out",
+            raw,
+            warnings,
+        )
+        volume_db = cls._parse_play_volume(values.get("volume"), raw, warnings)
+        loop = cls._parse_boolean(
+            values.get("loop"),
+            False,
+            "loop",
+            raw,
+            warnings,
+        )
+        trim_silence = cls._parse_boolean(
+            values.get("trim_silence"),
+            False,
+            "trim_silence",
+            raw,
+            warnings,
+        )
+        pan = cls._parse_bounded_float(
+            values.get("pan"),
+            0.0,
+            -1.0,
+            1.0,
+            "pan",
+            raw,
+            warnings,
+        )
+        duck_db = cls._parse_duck_db(values.get("duck_on_voice"), raw, warnings)
+
+        return LTVMarkupEvent(
+            "play",
+            raw=raw,
+            value=file_reference,
+            attrs={
+                "file": file_reference,
+                "id": event_id,
+                "track": track,
+                "source_start_ms": round(start_seconds * 1000),
+                "duration_ms": (
+                    None if duration_seconds is None else round(duration_seconds * 1000)
+                ),
+                "volume_db": volume_db,
+                "loop": loop,
+                "fade_in_ms": round(fade_in_seconds * 1000),
+                "fade_out_ms": round(fade_out_seconds * 1000),
+                "pan": pan,
+                "duck_db": duck_db,
+                "trim_silence": trim_silence,
+                "warnings": tuple(warnings),
+            },
+            position=position,
+        )
+
+    @classmethod
+    def _parse_stop(
+        cls,
+        args: list[str],
+        raw: str,
+        position: int,
+    ) -> LTVMarkupEvent:
+        warnings: list[str] = []
+        values: dict[str, str] = {}
+        for token in args:
+            if "=" not in token:
+                warnings.append(f"Unknown STOP argument ignored: {token} ({raw}).")
+                continue
+            name, value = token.split("=", 1)
+            normalized_name = name.strip().casefold()
+            if normalized_name not in {"id", "fade_out"}:
+                warnings.append(
+                    f"Unknown STOP parameter ignored: {name.strip() or token} ({raw})."
+                )
+                continue
+            values[normalized_name] = value.strip()
+
+        event_id = values.get("id", "").strip()
+        if not event_id:
+            return cls._warning(raw, position, "STOP requires id=\"...\".")
+        fade_out_seconds: float | None = None
+        if "fade_out" in values:
+            fade_out_seconds = cls._parse_nonnegative_seconds(
+                values.get("fade_out"),
+                0.0,
+                "fade_out",
+                raw,
+                warnings,
+            )
+        return LTVMarkupEvent(
+            "stop",
+            raw=raw,
+            value=event_id,
+            attrs={
+                "id": event_id,
+                "fade_out_ms": (
+                    None if fade_out_seconds is None else round(fade_out_seconds * 1000)
+                ),
+                "warnings": tuple(warnings),
+            },
+            position=position,
+        )
+
+    @staticmethod
+    def _parse_boolean(
+        value: str | None,
+        default: bool,
+        name: str,
+        raw: str,
+        warnings: list[str],
+    ) -> bool:
+        if value is None:
+            return default
+        normalized = value.strip().casefold()
+        if normalized in {"true", "yes", "1", "on"}:
+            return True
+        if normalized in {"false", "no", "0", "off"}:
+            return False
+        warnings.append(f"Invalid PLAY {name} uses {str(default).lower()}: {value} ({raw}).")
+        return default
+
+    @staticmethod
+    def _parse_bounded_float(
+        value: str | None,
+        default: float,
+        minimum: float,
+        maximum: float,
+        name: str,
+        raw: str,
+        warnings: list[str],
+    ) -> float:
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = math.nan
+        if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+            warnings.append(f"Invalid PLAY {name} uses {default}: {value} ({raw}).")
+            return default
+        return parsed
+
+    @classmethod
+    def _parse_nonnegative_seconds(
+        cls,
+        value: str | None,
+        default: float,
+        name: str,
+        raw: str,
+        warnings: list[str],
+    ) -> float:
+        return cls._parse_bounded_float(
+            value,
+            default,
+            0.0,
+            86400.0,
+            name,
+            raw,
+            warnings,
+        )
+
+    @classmethod
+    def _parse_positive_seconds(
+        cls,
+        value: str | None,
+        default: float | None,
+        name: str,
+        raw: str,
+        warnings: list[str],
+    ) -> float | None:
+        if value is None:
+            return default
+        parsed = cls._parse_bounded_float(
+            value,
+            -1.0,
+            0.001,
+            86400.0,
+            name,
+            raw,
+            warnings,
+        )
+        return default if parsed < 0 else parsed
+
+    @staticmethod
+    def _parse_play_volume(
+        value: str | None,
+        raw: str,
+        warnings: list[str],
+    ) -> float:
+        if value is None:
+            return 0.0
+        token = value.strip().casefold()
+        if token.endswith("db"):
+            try:
+                db_value = float(token[:-2])
+            except ValueError:
+                db_value = math.nan
+        else:
+            try:
+                multiplier = float(token)
+            except ValueError:
+                multiplier = math.nan
+            db_value = 20 * math.log10(multiplier) if multiplier > 0 else math.nan
+        if not math.isfinite(db_value) or not -96.0 <= db_value <= 24.0:
+            warnings.append(f"Invalid PLAY volume uses original volume: {value} ({raw}).")
+            return 0.0
+        return db_value
+
+    @staticmethod
+    def _parse_duck_db(
+        value: str | None,
+        raw: str,
+        warnings: list[str],
+    ) -> float:
+        if value is None:
+            return 0.0
+        token = value.strip().casefold()
+        if token.endswith("db"):
+            token = token[:-2]
+        try:
+            db_value = float(token)
+        except ValueError:
+            db_value = math.nan
+        if not math.isfinite(db_value) or not 0.0 <= db_value <= 36.0:
+            warnings.append(f"Invalid PLAY duck_on_voice uses 0 dB: {value} ({raw}).")
+            return 0.0
+        return db_value
 
     @staticmethod
     def _parse_duration_ms(value: str) -> int | None:
@@ -608,18 +958,44 @@ class LTVMarkupCompiler:
         pending_config_overrides: dict[str, Any] = {}
         persistent_config_overrides: dict[str, Any] = {}
         buffer: list[str] = []
+        pending_audio_events: list[tuple[LTVAudioEvent, int, int]] = []
+        compiled_audio_events: list[LTVAudioEvent] = []
+        active_audio_ids: dict[str, str] = {}
+        audio_event_ordinal = 0
+        generated_play_ordinal = 0
 
         def current_section() -> LTVNarrationSection:
             return sections[-1]
 
         def flush_text(pause_after_ms: int | None = None) -> None:
-            nonlocal pending_pause_before_ms
-            text_value = cls._clean_segment_text("".join(buffer))
-            buffer.clear()
+            nonlocal pending_pause_before_ms, pending_audio_events
+            raw_text = "".join(buffer)
+            text_value = cls._clean_segment_text(raw_text)
             if not text_value:
+                buffer.clear()
+                pending_audio_events = [
+                    (audio_event, 0, pause_baseline)
+                    for audio_event, _offset, pause_baseline in pending_audio_events
+                ]
                 if pause_after_ms:
                     pending_pause_before_ms += pause_after_ms
                 return
+            anchored_audio_events: list[LTVAudioEvent] = []
+            for audio_event, char_offset, pause_baseline in pending_audio_events:
+                prefix = cls._clean_segment_text(raw_text[:char_offset])
+                anchored = replace(
+                    audio_event,
+                    anchor_source_word=max(
+                        0,
+                        cls._word_count(prefix) + audio_event.anchor_word_adjustment,
+                    ),
+                    anchor_pause_offset_ms=max(
+                        0,
+                        pending_pause_before_ms - pause_baseline,
+                    ),
+                )
+                anchored_audio_events.append(anchored)
+                compiled_audio_events.append(anchored)
             segment_state = {
                 key: state[key]
                 for key in explicit_state
@@ -638,8 +1014,11 @@ class LTVMarkupCompiler:
                     pause_before_ms=pending_pause_before_ms,
                     pause_after_ms=pause_after_ms,
                     state=segment_state,
+                    audio_events=tuple(anchored_audio_events),
                 )
             )
+            buffer.clear()
+            pending_audio_events.clear()
             pending_pause_before_ms = 0
 
         for event in parsed.events:
@@ -699,7 +1078,88 @@ class LTVMarkupCompiler:
                 replacement = str(event.attrs.get("replacement", ""))
                 if source:
                     aliases[source] = replacement
-            elif event.type in {"sfx", "music_start", "music_stop", "music_volume", "mark"}:
+            elif event.type in {"play", "stop"}:
+                audio_event_ordinal += 1
+                event_uid = f"audio-event-{audio_event_ordinal:04d}"
+                event_warnings = [
+                    str(item) for item in event.attrs.get("warnings", ())
+                ]
+                enabled = True
+                target_event_uid = ""
+                if event.type == "play":
+                    generated_play_ordinal += 1
+                    event_id = str(event.attrs.get("id", "")).strip()
+                    if not event_id:
+                        event_id = f"play-{generated_play_ordinal:04d}"
+                    identifier_key = event_id.casefold()
+                    if identifier_key in active_audio_ids:
+                        warning = (
+                            f"Duplicate active PLAY id ignored: {event_id} ({event.raw})."
+                        )
+                        warnings.append(warning)
+                        event_warnings.append(warning)
+                        enabled = False
+                    else:
+                        active_audio_ids[identifier_key] = event_uid
+                    audio_event = LTVAudioEvent(
+                        event_uid=event_uid,
+                        event_id=event_id,
+                        command_type="play",
+                        raw_command=event.raw,
+                        source_position=event.position,
+                        anchor_source_word=0,
+                        file_reference=str(event.attrs.get("file", event.value or "")),
+                        track=str(event.attrs.get("track", "sfx")),
+                        source_start_ms=int(event.attrs.get("source_start_ms", 0) or 0),
+                        duration_ms=event.attrs.get("duration_ms"),
+                        volume_db=float(event.attrs.get("volume_db", 0.0) or 0.0),
+                        loop=bool(event.attrs.get("loop", False)),
+                        fade_in_ms=int(event.attrs.get("fade_in_ms", 0) or 0),
+                        fade_out_ms=int(event.attrs.get("fade_out_ms", 0) or 0),
+                        pan=float(event.attrs.get("pan", 0.0) or 0.0),
+                        duck_db=float(event.attrs.get("duck_db", 0.0) or 0.0),
+                        trim_silence=bool(event.attrs.get("trim_silence", False)),
+                        enabled=enabled,
+                        warnings=tuple(event_warnings),
+                        anchor_word_adjustment=int(
+                            event.attrs.get("anchor_word_adjustment", 0) or 0
+                        ),
+                    )
+                else:
+                    event_id = str(event.attrs.get("id", event.value or "")).strip()
+                    identifier_key = event_id.casefold()
+                    target_event_uid = active_audio_ids.pop(identifier_key, "")
+                    if not target_event_uid:
+                        warning = f"STOP id is not active: {event_id} ({event.raw})."
+                        warnings.append(warning)
+                        event_warnings.append(warning)
+                        enabled = False
+                    fade_out_value = event.attrs.get("fade_out_ms")
+                    audio_event = LTVAudioEvent(
+                        event_uid=event_uid,
+                        event_id=event_id,
+                        command_type="stop",
+                        raw_command=event.raw,
+                        source_position=event.position,
+                        anchor_source_word=0,
+                        fade_out_ms=(
+                            -1 if fade_out_value is None else int(fade_out_value)
+                        ),
+                        target_event_uid=target_event_uid,
+                        enabled=enabled,
+                        warnings=tuple(event_warnings),
+                        anchor_word_adjustment=int(
+                            event.attrs.get("anchor_word_adjustment", 0) or 0
+                        ),
+                    )
+                pending_audio_events.append(
+                    (
+                        audio_event,
+                        len("".join(buffer)),
+                        pending_pause_before_ms,
+                    )
+                )
+            elif event.type == "mark":
                 flush_text()
                 cls._ignore_backend_command(
                     event,
@@ -734,12 +1194,38 @@ class LTVMarkupCompiler:
                 continue
 
         flush_text()
+        if pending_audio_events:
+            target_section = next(
+                (section for section in reversed(sections) if section.segments),
+                None,
+            )
+            if target_section is not None:
+                last_segment = target_section.segments[-1]
+                trailing_events = tuple(
+                    replace(
+                        audio_event,
+                        anchor_source_word=cls._word_count(last_segment.text),
+                        anchor_mode="timeline_end",
+                        anchor_pause_offset_ms=max(
+                            0,
+                            pending_pause_before_ms - pause_baseline,
+                        ),
+                    )
+                    for audio_event, _offset, pause_baseline in pending_audio_events
+                )
+                target_section.segments[-1] = replace(
+                    last_segment,
+                    audio_events=last_segment.audio_events + trailing_events,
+                )
+                compiled_audio_events.extend(trailing_events)
+            pending_audio_events.clear()
         sections = [section for section in sections if section.segments]
         return LTVMarkupCompileResult(
             sections=sections,
             warnings=warnings,
             ignored_commands=ignored_commands,
             events=parsed.events,
+            audio_events=compiled_audio_events,
         )
 
     @classmethod
@@ -761,7 +1247,7 @@ class LTVMarkupCompiler:
                 value = str(event.value or "")
                 if value and value.casefold() not in voices:
                     voices_not_found.append(value)
-            if event.type in {"sfx", "music_start"} and roots:
+            if event.type == "play" and roots:
                 filename = str(event.value or "")
                 if filename and not any((root / filename).is_file() for root in roots):
                     audio_files_not_found.append(filename)
@@ -803,6 +1289,10 @@ class LTVMarkupCompiler:
         lines = [" ".join(line.split()) for line in text.splitlines()]
         cleaned = "\n".join(line for line in lines if line)
         return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len(re.findall(r"\w+(?:['’-]\w+)*", text, flags=re.UNICODE))
 
     @staticmethod
     def _apply_aliases(text: str, aliases: dict[str, str]) -> str:
