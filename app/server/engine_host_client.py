@@ -112,6 +112,39 @@ class EngineHostClient:
             self.request_json("POST", f"/jobs/{job_id}/cancel", {}, timeout=10.0)
         )
 
+    def engine_memory(self) -> dict[str, dict[str, Any]]:
+        if not self.health():
+            return {}
+        value = self.request_json("GET", "/engines/memory", timeout=3.0)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def shutdown(self, timeout_seconds: float = 6.0) -> bool:
+        if not self.health():
+            self._process = None
+            return True
+        try:
+            self.request_json("POST", "/shutdown", {}, timeout=3.0)
+        except EngineHostClientError:
+            # The connection may close before the acknowledgement reaches us.
+            pass
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            if not self.health(timeout=0.25):
+                self._process = None
+                return True
+            time.sleep(0.1)
+        process = self._process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        stopped = not self.health(timeout=0.25)
+        if stopped:
+            self._process = None
+        return stopped
+
     def base_url(self) -> str:
         settings = self._server_settings()
         host = str(settings.get("host", "127.0.0.1") or "127.0.0.1")

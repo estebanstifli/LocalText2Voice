@@ -638,5 +638,11 @@
   "clip_not_resolved": "This clip is not resolved yet. Run Whisper review first.",
   "clip_outside_fast_preview": "This clip is outside the fast first-minute preview.",
   "whisper_required": "Faster Whisper required",
-  "play_requires_whisper": "PLAY requires word-level Whisper timestamps. Install Faster Whisper from Settings > Review before generating this project."
+  "play_requires_whisper": "PLAY requires word-level Whisper timestamps. Install Faster Whisper from Settings > Review before generating this project.",
+  "close_shared_engine_title": "Shared engine server is running",
+  "close_shared_engine_loaded": "Loaded model(s): {models}.",
+  "close_shared_engine_no_models": "No TTS model is currently reported as loaded.",
+  "close_shared_engine_message": "{loaded}\\n\\nClose the shared server and release its memory, or keep it running for MCP clients?",
+  "close_shared_engine_shutdown": "Close server and free memory",
+  "close_shared_engine_keep": "Keep running for MCP"
 }

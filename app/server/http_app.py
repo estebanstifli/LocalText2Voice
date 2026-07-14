@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -27,6 +27,7 @@ def _read_text_resource(relative_path: str) -> str:
 def create_http_app(
     settings_manager: SettingsManager | None = None,
     job_manager: LocalServerJobManager | None = None,
+    shutdown_callback: Callable[[], None] | None = None,
 ) -> FastAPI:
     settings_manager = settings_manager or SettingsManager()
     service = LocalText2VoiceService(settings_manager, keep_engines_alive=True)
@@ -243,6 +244,16 @@ def create_http_app(
             "name": "LocalText2Voice",
             "mcp_endpoint": mcp_url,
         }
+
+    @app.post("/shutdown")
+    def shutdown_server() -> dict[str, Any]:
+        if shutdown_callback is None:
+            raise HTTPException(
+                status_code=409,
+                detail="This server is managed by its parent process.",
+            )
+        shutdown_callback()
+        return {"status": "shutting_down"}
 
     @app.get("/info")
     def info() -> dict[str, Any]:

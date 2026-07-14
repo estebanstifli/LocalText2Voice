@@ -40,7 +40,17 @@ def main() -> int:
         host = "127.0.0.1"
     port = args.port or int(settings.get("port", 8765) or 8765)
 
-    app = create_http_app(settings_manager)
+    server_holder: dict[str, uvicorn.Server] = {}
+
+    def request_shutdown() -> None:
+        server = server_holder.get("server")
+        if server is not None:
+            server.should_exit = True
+
+    app = create_http_app(
+        settings_manager,
+        shutdown_callback=request_shutdown,
+    )
     config = uvicorn.Config(
         app,
         host=host,
@@ -50,7 +60,9 @@ def main() -> int:
         log_config=None,
         lifespan="on",
     )
-    uvicorn.Server(config).run()
+    server = uvicorn.Server(config)
+    server_holder["server"] = server
+    server.run()
     return 0
 
 

@@ -12513,6 +12513,69 @@ class MainWindow(QMainWindow):
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)
 
+    def _shared_engine_close_action(self) -> str:
+        if not self.engine_host_client.health(timeout=0.25):
+            return "none"
+        loaded_names: list[str] = []
+        try:
+            memory = self.engine_host_client.engine_memory()
+            loaded_names = [
+                self._tts_engine_label(engine_id)
+                for engine_id, status in memory.items()
+                if isinstance(status, dict) and bool(status.get("loaded", False))
+            ]
+        except Exception:
+            loaded_names = []
+        loaded_text = (
+            self.tr(
+                "close_shared_engine_loaded",
+                "Loaded model(s): {models}.",
+                models=", ".join(loaded_names),
+            )
+            if loaded_names
+            else self.tr(
+                "close_shared_engine_no_models",
+                "No TTS model is currently reported as loaded.",
+            )
+        )
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle(
+            self.tr("close_shared_engine_title", "Shared engine server is running")
+        )
+        dialog.setText(
+            self.tr(
+                "close_shared_engine_message",
+                "{loaded}\n\nClose the shared server and release its memory, or keep it running for MCP clients?",
+                loaded=loaded_text,
+            )
+        )
+        shutdown_button = dialog.addButton(
+            self.tr(
+                "close_shared_engine_shutdown",
+                "Close server and free memory",
+            ),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        keep_button = dialog.addButton(
+            self.tr(
+                "close_shared_engine_keep",
+                "Keep running for MCP",
+            ),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        cancel_button = dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(shutdown_button)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is shutdown_button:
+            return "shutdown"
+        if clicked is keep_button:
+            return "keep"
+        if clicked is cancel_button:
+            return "cancel"
+        return "cancel"
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._confirm_project_switch():
             event.ignore()
@@ -12544,6 +12607,10 @@ class MainWindow(QMainWindow):
                     )
                     event.ignore()
                     return
+        shared_engine_action = self._shared_engine_close_action()
+        if shared_engine_action == "cancel":
+            event.ignore()
+            return
         if self.preload_worker is not None:
             self.preload_worker.request_cancel()
             if self.preload_thread is not None:
@@ -12578,6 +12645,7 @@ class MainWindow(QMainWindow):
         else:
             self._unload_faster_whisper()
         self._unload_preloaded_tts_engine(log_message=False)
-        self.local_server_controller.stop()
+        if shared_engine_action in {"shutdown", "none"}:
+            self.local_server_controller.stop()
         self._save_settings()
         event.accept()

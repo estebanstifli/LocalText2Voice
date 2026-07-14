@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.settings_manager import SettingsManager
 from app.server.http_app import create_http_app
+from app.server.engine_host_client import EngineHostClient
 from app.server.job_manager import LocalServerJobManager, wait_for_job
 from app.server.ltv_service import LocalText2VoiceService
 
@@ -69,6 +70,43 @@ def test_http_server_protects_non_health_endpoints(tmp_path):
         )
         assert response.status_code == 200
         assert response.json()["name"] == "LocalText2Voice"
+
+
+def test_engine_host_shutdown_endpoint_is_authenticated_and_calls_owner(tmp_path):
+    settings = _settings(tmp_path)
+    manager = LocalServerJobManager(
+        service=FakeGenerationService(),
+        db_path=tmp_path / "jobs.sqlite3",
+    )
+    shutdown_requests: list[bool] = []
+    app = create_http_app(
+        settings,
+        job_manager=manager,
+        shutdown_callback=lambda: shutdown_requests.append(True),
+    )
+    with TestClient(app) as client:
+        assert client.post("/shutdown").status_code == 401
+        response = client.post(
+            "/shutdown",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "shutting_down"
+    assert shutdown_requests == [True]
+
+
+def test_engine_host_client_waits_until_shutdown_completes(tmp_path):
+    client = EngineHostClient(SettingsManager(tmp_path / "config.json"))
+    client.health = MagicMock(side_effect=[True, False])
+    client.request_json = MagicMock(return_value={"status": "shutting_down"})
+
+    assert client.shutdown(timeout_seconds=1.0)
+    client.request_json.assert_called_once_with(
+        "POST",
+        "/shutdown",
+        {},
+        timeout=3.0,
+    )
 
 
 def test_job_manager_runs_generation_job(tmp_path):
