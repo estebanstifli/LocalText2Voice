@@ -29,6 +29,7 @@ def test_stdio_bridge_exposes_expected_tools():
                     "get_markup_help",
                     "list_voices",
                     "list_background_music",
+                    "list_sfx",
                     "create_audiobook",
                     "generate_audio",
                     "get_job",

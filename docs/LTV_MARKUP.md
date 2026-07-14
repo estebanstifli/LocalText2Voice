@@ -379,6 +379,14 @@ accepted: assets are copied and content-deduplicated into the project under
 `assets/audio`, so the project stays portable. An unknown parameter produces a
 warning without aborting generation.
 
+When the first argument is only a filename, for example
+`{{play "door-close.mp3"}}`, LocalText2Voice searches recursively in the SFX
+library first and then in the background-music library. Their defaults are
+`music/sfx` and `music/background`; both can be changed in **Settings >
+Advanced**. Subfolders are supported for organizing either library. A reference
+that includes a directory is treated as an explicit path and does not fall back
+to an unrelated file with the same basename.
+
 `wait`, `pan_from`, and `pan_to` are deliberately not part of V1. If present,
 they produce a warning and are ignored. The former `music`, `music.stop`, and
 `sfx` commands are not aliases and are no longer supported. `music.volume` is

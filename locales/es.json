@@ -644,5 +644,20 @@
   "close_shared_engine_no_models": "No consta ning\u00fan modelo TTS cargado en este momento.",
   "close_shared_engine_message": "{loaded}\n\n\u00bfQuieres cerrar el servidor compartido y liberar su memoria, o mantenerlo activo para los clientes MCP?",
   "close_shared_engine_shutdown": "Cerrar servidor y liberar memoria",
-  "close_shared_engine_keep": "Mantener activo para MCP"
+  "close_shared_engine_keep": "Mantener activo para MCP",
+  "audio_libraries": "Bibliotecas de audio",
+  "audio_libraries_help": "Gestiona la m\u00fasica de fondo y los efectos usados por las mezclas y el markup PLAY.",
+  "sfx_library": "Biblioteca SFX",
+  "import_audio_library": "Importar {library}",
+  "open_audio_library": "Abrir carpeta de {library}",
+  "sfx": "SFX",
+  "sfx_library_count": "{count} efecto(s) de sonido en {folder}",
+  "import_sfx": "Importar efecto de sonido",
+  "rename_sfx": "Renombrar efecto de sonido",
+  "delete_sfx": "Eliminar efecto de sonido",
+  "delete_sfx_confirm": "\u00bfEliminar {name} de la biblioteca de efectos?",
+  "audio_library_folders": "Carpetas de bibliotecas de audio",
+  "background_music_folder": "Carpeta de m\u00fasica de fondo",
+  "sfx_folder": "Carpeta de efectos de sonido",
+  "audio_library_folders_help": "Las rutas relativas parten de la carpeta de la aplicaci\u00f3n. PLAY busca recursivamente en ambas carpetas cuando s\u00f3lo se indica un nombre de archivo."
 }

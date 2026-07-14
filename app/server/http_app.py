@@ -71,6 +71,10 @@ def create_http_app(
     def list_background_music() -> list[dict[str, Any]]:
         return service.list_background_music()
 
+    @mcp.tool(description="List sound effects available to PLAY markup commands.")
+    def list_sfx() -> list[dict[str, Any]]:
+        return service.list_sfx()
+
     @mcp.resource("localtext2voice://docs/markup")
     def markup_documentation() -> str:
         """Return the LocalText2Voice markup manual."""
@@ -293,6 +297,10 @@ def create_http_app(
     @app.get("/background-music")
     def http_list_background_music() -> list[dict[str, Any]]:
         return service.list_background_music()
+
+    @app.get("/sfx")
+    def http_list_sfx() -> list[dict[str, Any]]:
+        return service.list_sfx()
 
     @app.post("/jobs")
     async def create_job(request: Request) -> dict[str, Any]:

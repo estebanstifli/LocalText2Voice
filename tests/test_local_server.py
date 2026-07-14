@@ -26,6 +26,9 @@ class FakeGenerationService:
     def list_background_music(self):
         return []
 
+    def list_sfx(self):
+        return []
+
     def generate_audio(self, request, progress_callback=None, log_callback=None, on_pipeline=None):
         if log_callback is not None:
             log_callback("fake generation started")
@@ -70,6 +73,23 @@ def test_http_server_protects_non_health_endpoints(tmp_path):
         )
         assert response.status_code == 200
         assert response.json()["name"] == "LocalText2Voice"
+
+
+def test_http_server_exposes_both_audio_libraries(tmp_path):
+    settings = _settings(tmp_path)
+    manager = LocalServerJobManager(
+        service=FakeGenerationService(),
+        db_path=tmp_path / "jobs.sqlite3",
+    )
+    app = create_http_app(settings, job_manager=manager)
+    headers = {"Authorization": "Bearer secret-token"}
+    with TestClient(app) as client:
+        music_response = client.get("/background-music", headers=headers)
+        sfx_response = client.get("/sfx", headers=headers)
+        assert music_response.status_code == 200
+        assert sfx_response.status_code == 200
+        assert isinstance(music_response.json(), list)
+        assert isinstance(sfx_response.json(), list)
 
 
 def test_engine_host_shutdown_endpoint_is_authenticated_and_calls_owner(tmp_path):

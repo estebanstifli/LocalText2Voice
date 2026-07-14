@@ -15,6 +15,7 @@ Tools exposed here:
 - unload_engine -> POST /engines/{engine_id}/unload
 - list_voices -> GET /voices
 - list_background_music -> GET /background-music
+- list_sfx -> GET /sfx
 - get_markup_help -> docs/LTV_MARKUP.md fallback tool
 - create_audiobook -> POST /jobs, optional polling with GET /jobs/{job_id}
 - generate_audio -> alias of create_audiobook
@@ -300,6 +301,11 @@ def list_voices(
 @mcp.tool(description="List background music tracks available for podcast mixes.")
 def list_background_music() -> list[dict[str, Any]] | dict[str, str]:
     return _safe(lambda: _request_json("GET", "/background-music"))
+
+
+@mcp.tool(description="List sound effects available to PLAY markup commands.")
+def list_sfx() -> list[dict[str, Any]] | dict[str, str]:
+    return _safe(lambda: _request_json("GET", "/sfx"))
 
 
 @mcp.tool(

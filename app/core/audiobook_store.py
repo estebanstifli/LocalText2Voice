@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.utils.paths import app_data_root, application_root
+from app.utils.paths import app_data_root
 
+from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
 from .text_processor import TextChunk
 
 
@@ -789,25 +790,20 @@ class AudiobookStore:
         audiobook: StoredAudiobook,
         file_reference: str,
     ) -> tuple[Path, str]:
-        reference = Path(file_reference).expanduser()
-        roots = (
-            audiobook.project_dir,
-            application_root(),
-            application_root() / "music",
-            application_root() / "music" / "background",
-            application_root() / "effects",
-            application_root() / "ambient",
+        try:
+            project_settings = json.loads(audiobook.project_settings_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            project_settings = {}
+        if not isinstance(project_settings, dict):
+            project_settings = {}
+        source = resolve_audio_reference(
+            file_reference,
+            project_settings,
+            project_dir=audiobook.project_dir,
         )
-        candidates = [reference] if reference.is_absolute() else []
-        if not reference.is_absolute():
-            candidates.extend(root / reference for root in roots)
-            candidates.extend(root / reference.name for root in roots[2:])
-        source = next((candidate for candidate in candidates if candidate.is_file()), None)
         if source is None:
             return Path(), f"Audio file not found: {file_reference}"
-        if source.suffix.casefold() not in {
-            ".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a", ".aac"
-        }:
+        if source.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
             return Path(), f"Unsupported local audio file: {file_reference}"
 
         source = source.resolve()

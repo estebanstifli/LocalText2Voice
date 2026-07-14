@@ -644,5 +644,20 @@
   "close_shared_engine_no_models": "No TTS model is currently reported as loaded.",
   "close_shared_engine_message": "{loaded}\\n\\nClose the shared server and release its memory, or keep it running for MCP clients?",
   "close_shared_engine_shutdown": "Close server and free memory",
-  "close_shared_engine_keep": "Keep running for MCP"
+  "close_shared_engine_keep": "Keep running for MCP",
+  "audio_libraries": "Audio libraries",
+  "audio_libraries_help": "Manage background music and sound effects used by podcast mixes and PLAY markup.",
+  "sfx_library": "SFX Library",
+  "import_audio_library": "Import {library}",
+  "open_audio_library": "Open {library} folder",
+  "sfx": "SFX",
+  "sfx_library_count": "{count} sound effect(s) in {folder}",
+  "import_sfx": "Import sound effect",
+  "rename_sfx": "Rename sound effect",
+  "delete_sfx": "Delete sound effect",
+  "delete_sfx_confirm": "Delete {name} from the sound effects library?",
+  "audio_library_folders": "Audio library folders",
+  "background_music_folder": "Background music folder",
+  "sfx_folder": "Sound effects folder",
+  "audio_library_folders_help": "Relative paths are resolved from the application folder. PLAY searches both folders recursively when only a filename is given."
 }

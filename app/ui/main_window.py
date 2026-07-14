@@ -70,6 +70,7 @@ from PySide6.QtWidgets import (
 
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audio_mix import AudioMixSettings
+from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
 from app.core.audio_event_timeline import (
     resolve_audio_event_timeline,
@@ -1800,78 +1801,103 @@ class MainWindow(QMainWindow):
         card_layout.setContentsMargins(16, 14, 16, 14)
         card_layout.setSpacing(12)
 
-        header = QHBoxLayout()
-        title_box = QVBoxLayout()
-        title = QLabel(self.tr("music_library", "Music Library"))
+        title = QLabel(self.tr("audio_libraries", "Audio libraries"))
         title.setObjectName("sectionLabel")
         subtitle = QLabel(
             self.tr(
-                "music_library_help",
-                "Select the default music for your podcasts.",
+                "audio_libraries_help",
+                "Manage background music and sound effects used by podcast mixes and PLAY markup.",
             )
         )
         subtitle.setObjectName("helperLabel")
         subtitle.setWordWrap(True)
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box, 1)
+        card_layout.addWidget(title)
+        card_layout.addWidget(subtitle)
 
-        self.import_music_button = QPushButton(self.tr("import_music", "Import music"))
-        self.import_music_button.setIcon(ui_icon("file"))
-        self.import_music_button.setIconSize(QSize(18, 18))
-        self.import_music_button.clicked.connect(self._import_music_file)
-        self.open_music_folder_button = QPushButton(
-            self.tr("open_music_folder", "Open music folder")
+        self.audio_library_tabs = QTabWidget()
+        self.audio_library_tabs.addTab(
+            self._build_audio_library_tab("music"),
+            self.tr("background_music", "Background music"),
         )
-        self.open_music_folder_button.setIcon(ui_icon("folder"))
-        self.open_music_folder_button.setIconSize(QSize(18, 18))
-        self.open_music_folder_button.clicked.connect(self._open_music_folder)
-        header.addWidget(self.import_music_button)
-        header.addWidget(self.open_music_folder_button)
-        card_layout.addLayout(header)
-
-        self.music_table = QTableWidget(0, 5)
-        self.music_table.setHorizontalHeaderLabels(
-            [
-                self.tr("default", "Default"),
-                self.tr("track_name", "Track"),
-                self.tr("duration", "Duration"),
-                self.tr("file_size", "Size"),
-                self.tr("actions", "Actions"),
-            ]
+        self.audio_library_tabs.addTab(
+            self._build_audio_library_tab("sfx"),
+            self.tr("sfx_library", "SFX Library"),
         )
-        self.music_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.music_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.music_table.verticalHeader().setVisible(False)
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.ResizeMode.Stretch,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            2,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            3,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            4,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.setAlternatingRowColors(True)
-        card_layout.addWidget(self.music_table, 1)
-
-        self.music_status_label = QLabel()
-        self.music_status_label.setObjectName("helperLabel")
-        self.music_status_label.setWordWrap(True)
-        card_layout.addWidget(self.music_status_label)
+        card_layout.addWidget(self.audio_library_tabs, 1)
 
         layout.addWidget(card, 1)
+        return widget
+
+    def _build_audio_library_tab(self, library: str) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 12, 10, 10)
+        layout.setSpacing(10)
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        label = (
+            self.tr("music", "music")
+            if library == "music"
+            else self.tr("sfx", "SFX")
+        )
+        import_button = QPushButton(
+            self.tr("import_audio_library", "Import {library}", library=label)
+        )
+        import_button.setIcon(ui_icon("file"))
+        import_button.setIconSize(QSize(18, 18))
+        import_button.clicked.connect(
+            self._import_music_file if library == "music" else self._import_sfx_file
+        )
+        open_button = QPushButton(
+            self.tr("open_audio_library", "Open {library} folder", library=label)
+        )
+        open_button.setIcon(ui_icon("folder"))
+        open_button.setIconSize(QSize(18, 18))
+        open_button.clicked.connect(
+            self._open_music_folder if library == "music" else self._open_sfx_folder
+        )
+        controls.addWidget(import_button)
+        controls.addWidget(open_button)
+        layout.addLayout(controls)
+
+        columns = 5 if library == "music" else 4
+        table = QTableWidget(0, columns)
+        headers = [
+            self.tr("track_name", "Track"),
+            self.tr("duration", "Duration"),
+            self.tr("file_size", "Size"),
+            self.tr("actions", "Actions"),
+        ]
+        if library == "music":
+            headers.insert(0, self.tr("default", "Default"))
+        table.setHorizontalHeaderLabels(headers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        for column in range(columns):
+            table.horizontalHeader().setSectionResizeMode(
+                column,
+                QHeaderView.ResizeMode.Stretch
+                if column == (1 if library == "music" else 0)
+                else QHeaderView.ResizeMode.ResizeToContents,
+            )
+        table.setAlternatingRowColors(True)
+        layout.addWidget(table, 1)
+        status = QLabel()
+        status.setObjectName("helperLabel")
+        status.setWordWrap(True)
+        layout.addWidget(status)
+
+        if library == "music":
+            self.import_music_button = import_button
+            self.open_music_folder_button = open_button
+            self.music_table = table
+            self.music_status_label = status
+        else:
+            self.import_sfx_button = import_button
+            self.open_sfx_folder_button = open_button
+            self.sfx_table = table
+            self.sfx_status_label = status
         return widget
 
     def _build_review_page(self) -> QWidget:
@@ -7091,9 +7117,34 @@ class MainWindow(QMainWindow):
         )
         splitting_form.addRow("", splitting_help)
 
+        libraries_group = QGroupBox(
+            self.tr("audio_library_folders", "Audio library folders")
+        )
+        libraries_form = QFormLayout(libraries_group)
+        self.music_library_picker = PathPicker(self.tr("browse", "Browse"))
+        self.sfx_library_picker = PathPicker(self.tr("browse", "Browse"))
+        libraries_form.addRow(
+            self.tr("background_music_folder", "Background music folder"),
+            self.music_library_picker,
+        )
+        libraries_form.addRow(
+            self.tr("sfx_folder", "Sound effects folder"),
+            self.sfx_library_picker,
+        )
+        libraries_help = QLabel(
+            self.tr(
+                "audio_library_folders_help",
+                "Relative paths are resolved from the application folder. PLAY searches both folders recursively when only a filename is given.",
+            )
+        )
+        libraries_help.setObjectName("helperLabel")
+        libraries_help.setWordWrap(True)
+        libraries_form.addRow("", libraries_help)
+
         grid.addWidget(pause_group, 0, 0)
         grid.addWidget(podcast_group, 0, 1)
         grid.addWidget(splitting_group, 1, 0, 1, 2)
+        grid.addWidget(libraries_group, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -9235,6 +9286,12 @@ class MainWindow(QMainWindow):
             bool(self.settings.get("background_enabled", False))
         )
         self.background_picker.set_path(self.settings.get("background_path", ""))
+        self.music_library_picker.set_path(
+            self.settings.get("music_library_dir", "music/background")
+        )
+        self.sfx_library_picker.set_path(
+            self.settings.get("sfx_library_dir", "music/sfx")
+        )
         self.background_loop_checkbox.setChecked(
             bool(self.settings.get("background_loop", True))
         )
@@ -10142,9 +10199,10 @@ class MainWindow(QMainWindow):
         return False, 0
 
     def _music_library_dir(self) -> Path:
-        directory = application_root() / "music" / "background"
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory
+        return library_directory(self.settings, "music", create=True)
+
+    def _sfx_library_dir(self) -> Path:
+        return library_directory(self.settings, "sfx", create=True)
 
     def _ensure_default_music_selection(self) -> None:
         if self.settings.get("background_path"):
@@ -10157,15 +10215,10 @@ class MainWindow(QMainWindow):
             )
 
     def _music_files(self) -> list[Path]:
-        directory = self._music_library_dir()
-        return sorted(
-            (
-                path
-                for path in directory.iterdir()
-                if path.is_file() and path.suffix.lower() in {".mp3", ".wav"}
-            ),
-            key=lambda path: path.name.lower(),
-        )
+        return audio_library_files(self._music_library_dir())
+
+    def _sfx_files(self) -> list[Path]:
+        return audio_library_files(self._sfx_library_dir())
 
     def _refresh_music_library(self) -> None:
         if not hasattr(self, "music_table"):
@@ -10186,12 +10239,18 @@ class MainWindow(QMainWindow):
             default_item.setIcon(ui_icon("apply", active=is_default))
             self.music_table.setItem(row, 0, default_item)
 
-            name_item = QTableWidgetItem(path.stem)
+            name_item = QTableWidgetItem(
+                path.relative_to(self._music_library_dir()).with_suffix("").as_posix()
+            )
             name_item.setIcon(ui_icon("music"))
             name_item.setToolTip(str(path))
             self.music_table.setItem(row, 1, name_item)
-            self.music_table.setItem(row, 2, QTableWidgetItem(self._music_duration_text(path)))
-            self.music_table.setItem(row, 3, QTableWidgetItem(self._format_bytes(path.stat().st_size)))
+            self.music_table.setItem(
+                row, 2, QTableWidgetItem(self._music_duration_text(path))
+            )
+            self.music_table.setItem(
+                row, 3, QTableWidgetItem(self._format_bytes(path.stat().st_size))
+            )
             self.music_table.setCellWidget(row, 4, self._music_actions_widget(path))
             self.music_table.setRowHeight(row, 42)
         self.music_status_label.setText(
@@ -10200,6 +10259,37 @@ class MainWindow(QMainWindow):
                 "{count} music file(s) in {folder}",
                 count=len(files),
                 folder=str(self._music_library_dir()),
+            )
+        )
+        self._refresh_sfx_library()
+
+    def _refresh_sfx_library(self) -> None:
+        if not hasattr(self, "sfx_table"):
+            return
+        files = self._sfx_files()
+        self.sfx_table.setRowCount(0)
+        for row, path in enumerate(files):
+            self.sfx_table.insertRow(row)
+            name_item = QTableWidgetItem(
+                path.relative_to(self._sfx_library_dir()).with_suffix("").as_posix()
+            )
+            name_item.setIcon(ui_icon("music"))
+            name_item.setToolTip(str(path))
+            self.sfx_table.setItem(row, 0, name_item)
+            self.sfx_table.setItem(
+                row, 1, QTableWidgetItem(self._music_duration_text(path))
+            )
+            self.sfx_table.setItem(
+                row, 2, QTableWidgetItem(self._format_bytes(path.stat().st_size))
+            )
+            self.sfx_table.setCellWidget(row, 3, self._sfx_actions_widget(path))
+            self.sfx_table.setRowHeight(row, 42)
+        self.sfx_status_label.setText(
+            self.tr(
+                "sfx_library_count",
+                "{count} sound effect(s) in {folder}",
+                count=len(files),
+                folder=str(self._sfx_library_dir()),
             )
         )
 
@@ -10251,6 +10341,29 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
         return widget
 
+    def _sfx_actions_widget(self, path: Path) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        for icon_name, tooltip, callback in (
+            ("play", self.tr("play", "Play"), lambda _checked=False, item=path: self._play_music(item)),
+            ("pause", self.tr("pause", "Pause"), lambda _checked=False: self.music_library_player.pause()),
+            ("stop", self.tr("stop", "Stop"), lambda _checked=False: self.music_library_player.stop()),
+            ("file", self.tr("rename", "Rename"), lambda _checked=False, item=path: self._rename_sfx(item)),
+            ("delete", self.tr("delete", "Delete"), lambda _checked=False, item=path: self._delete_sfx(item)),
+        ):
+            button = QPushButton()
+            button.setIcon(ui_icon(icon_name))
+            button.setIconSize(QSize(16, 16))
+            button.setToolTip(tooltip)
+            button.setFixedSize(32, 30)
+            button.clicked.connect(callback)
+            if icon_name in {"stop", "delete"}:
+                button.setObjectName("dangerButton")
+            layout.addWidget(button)
+        return widget
+
     def _import_music_file(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
@@ -10273,8 +10386,31 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(f"Imported music: {destination.name}")
         self._refresh_music_library()
 
+    def _import_sfx_file(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("import_sfx", "Import sound effect"),
+            "",
+            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
+        )
+        if not selected:
+            return
+        source = Path(selected)
+        destination = self._unique_library_destination(self._sfx_library_dir(), source.name)
+        try:
+            shutil.copy2(source, destination)
+        except OSError as exc:
+            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        self.log_view.append_event(f"Imported SFX: {destination.name}")
+        self._refresh_sfx_library()
+
     def _unique_music_destination(self, file_name: str) -> Path:
-        destination = self._music_library_dir() / Path(file_name).name
+        return self._unique_library_destination(self._music_library_dir(), file_name)
+
+    @staticmethod
+    def _unique_library_destination(directory: Path, file_name: str) -> Path:
+        destination = directory / Path(file_name).name
         if not destination.exists():
             return destination
         stem = destination.stem
@@ -10287,7 +10423,10 @@ class MainWindow(QMainWindow):
             counter += 1
 
     def _select_default_music(self, path: Path) -> None:
-        relative = path.relative_to(application_root())
+        try:
+            relative: Path = path.relative_to(application_root())
+        except ValueError:
+            relative = path
         self.settings["background_enabled"] = True
         self.settings["background_path"] = str(relative)
         self.background_enabled_checkbox.setChecked(True)
@@ -10346,6 +10485,29 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_music_library()
 
+    def _rename_sfx(self, path: Path) -> None:
+        new_name, accepted = QInputDialog.getText(
+            self,
+            self.tr("rename_sfx", "Rename sound effect"),
+            self.tr("new_name", "New name"),
+            text=path.stem,
+        )
+        if not accepted or not new_name.strip():
+            return
+        destination = path.with_name(f"{new_name.strip()}{path.suffix}")
+        if destination.exists() and destination != path:
+            self._show_error(
+                self.tr("rename_failed", "Rename failed"),
+                self.tr("file_already_exists", "A file with that name already exists."),
+            )
+            return
+        try:
+            path.rename(destination)
+        except OSError as exc:
+            self._show_error(self.tr("rename_failed", "Rename failed"), str(exc))
+            return
+        self._refresh_sfx_library()
+
     def _delete_music(self, path: Path) -> None:
         choice = QMessageBox.question(
             self,
@@ -10373,6 +10535,27 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(f"Deleted music: {path.name}")
         self._refresh_music_library()
 
+    def _delete_sfx(self, path: Path) -> None:
+        choice = QMessageBox.question(
+            self,
+            self.tr("delete_sfx", "Delete sound effect"),
+            self.tr(
+                "delete_sfx_confirm",
+                "Delete {name} from the sound effects library?",
+                name=path.name,
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            self._show_error(self.tr("delete_failed", "Delete failed"), str(exc))
+            return
+        self.music_library_player.stop()
+        self.log_view.append_event(f"Deleted SFX: {path.name}")
+        self._refresh_sfx_library()
+
     def _is_default_music(self, path: Path) -> bool:
         configured = self.settings.get("background_path")
         if not configured:
@@ -10391,6 +10574,9 @@ class MainWindow(QMainWindow):
 
     def _open_music_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._music_library_dir())))
+
+    def _open_sfx_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._sfx_library_dir())))
 
     def _music_duration_text(self, path: Path) -> str:
         duration = self._probe_audio_duration(path)
@@ -12315,6 +12501,14 @@ class MainWindow(QMainWindow):
                     self.background_enabled_checkbox.isChecked()
                 ),
                 "background_path": str(self.background_picker.path() or ""),
+                "music_library_dir": (
+                    self.music_library_picker.path_edit.text().strip()
+                    or "music/background"
+                ),
+                "sfx_library_dir": (
+                    self.sfx_library_picker.path_edit.text().strip()
+                    or "music/sfx"
+                ),
                 "background_loop": self.background_loop_checkbox.isChecked(),
                 "background_volume_percent": (
                     self._db_to_percent(self.background_volume_spin.value())

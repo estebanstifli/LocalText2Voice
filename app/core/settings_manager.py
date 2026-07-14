@@ -7,7 +7,7 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 10
+CURRENT_SETTINGS_SCHEMA_VERSION = 11
 MIN_CHUNK_SIZE = 1
 
 
@@ -49,6 +49,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "podcast_enabled": False,
     "background_enabled": True,
     "background_path": "music/background/relax1.mp3",
+    "music_library_dir": "music/background",
+    "sfx_library_dir": "music/sfx",
     "background_loop": True,
     "background_volume_percent": 45,
     "voice_volume_db": 0.0,

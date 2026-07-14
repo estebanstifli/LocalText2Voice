@@ -15,6 +15,7 @@ from app.core.audio_event_timeline import (
 )
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
 from app.core.audiobook_store import AudiobookStore
+from app.core.audio_library import audio_library_files, library_directory
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.waveform_preview import probe_audio_duration
 from app.core.settings_manager import SettingsManager
@@ -191,22 +192,32 @@ class LocalText2VoiceService:
     def list_background_music(self) -> list[dict[str, Any]]:
         self.refresh_settings()
         selected = self._resolve_music_path("")
-        music_dir = application_root() / "music" / "background"
+        return self._list_audio_library("music", selected=selected)
+
+    def list_sfx(self) -> list[dict[str, Any]]:
+        self.refresh_settings()
+        return self._list_audio_library("sfx")
+
+    def _list_audio_library(
+        self,
+        library: str,
+        *,
+        selected: Path | None = None,
+    ) -> list[dict[str, Any]]:
+        library_dir = library_directory(self.settings, library)
         rows: list[dict[str, Any]] = []
-        if not music_dir.is_dir():
-            return rows
-        for path in sorted(music_dir.iterdir(), key=lambda item: item.name.casefold()):
-            if not path.is_file() or path.suffix.lower() not in {".mp3", ".wav"}:
-                continue
+        for path in audio_library_files(library_dir):
             try:
                 size = path.stat().st_size
             except OSError:
                 size = 0
+            relative = path.relative_to(library_dir)
             rows.append(
                 {
-                    "id": path.stem,
+                    "id": relative.with_suffix("").as_posix(),
                     "name": path.stem,
                     "filename": path.name,
+                    "relative_path": relative.as_posix(),
                     "path": str(path),
                     "size_bytes": size,
                     "selected": bool(selected and path.resolve() == selected.resolve()),
@@ -958,13 +969,9 @@ class LocalText2VoiceService:
                 candidate = resolve_app_path(candidate)
             if candidate.is_file():
                 return candidate
-        music_dir = application_root() / "music" / "background"
+        music_dir = library_directory(self.settings, "music")
         wanted = self._normalize_token(raw)
-        if not music_dir.is_dir():
-            return None
-        for path in music_dir.iterdir():
-            if not path.is_file() or path.suffix.lower() not in {".mp3", ".wav"}:
-                continue
+        for path in audio_library_files(music_dir):
             if wanted in {self._normalize_token(path.stem), self._normalize_token(path.name)}:
                 return path
         return None
