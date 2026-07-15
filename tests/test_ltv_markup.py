@@ -129,15 +129,106 @@ class LTVMarkupParserTests(unittest.TestCase):
 
         self.assertEqual(result.sections[0].segments[0].text, "ge pe te is useful.")
 
-    def test_music_and_sfx_events(self) -> None:
-        events = LTVMarkupParser.parse(
-            '{{music "dark.mp3"}}{{music.volume -20}}{{sfx "door.wav"}}{{music.stop}}'
-        ).events
-
-        self.assertEqual(
-            [event.type for event in events],
-            ["music_start", "music_volume", "sfx", "music_stop"],
+    def test_play_supports_v1_parameters_and_normalizes_values(self) -> None:
+        result = LTVMarkupParser.parse(
+            '{{PLAY "music/forest ambience.mp3" ID="Forest" TRACK=AMBIENT '
+            'start=1.25 duration=12 volume=-20db loop=TRUE fade_in=3 '
+            'fade_out=2 pan=-0.4 duck_on_voice=6db trim_silence=yes}}'
         )
+
+        event = result.events[0]
+        self.assertEqual(event.type, "play")
+        self.assertEqual(event.value, "music/forest ambience.mp3")
+        self.assertEqual(event.attrs["id"], "Forest")
+        self.assertEqual(event.attrs["track"], "ambient")
+        self.assertEqual(event.attrs["source_start_ms"], 1250)
+        self.assertEqual(event.attrs["duration_ms"], 12000)
+        self.assertEqual(event.attrs["volume_db"], -20.0)
+        self.assertTrue(event.attrs["loop"])
+        self.assertEqual(event.attrs["fade_in_ms"], 3000)
+        self.assertEqual(event.attrs["fade_out_ms"], 2000)
+        self.assertEqual(event.attrs["pan"], -0.4)
+        self.assertEqual(event.attrs["duck_db"], 6.0)
+        self.assertTrue(event.attrs["trim_silence"])
+        self.assertEqual(result.warnings, [])
+
+    def test_play_linear_volume_wait_and_unknown_parameter_are_non_destructive(self) -> None:
+        result = LTVMarkupParser.parse(
+            '{{play "door.mp3" volume=0.5 wait=true pan_from=-1 mystery=42}}'
+        )
+
+        event = result.events[0]
+        self.assertAlmostEqual(event.attrs["volume_db"], -6.0206, places=3)
+        self.assertEqual(len(result.warnings), 3)
+        self.assertTrue(any("wait" in warning for warning in result.warnings))
+        self.assertTrue(any("pan_from" in warning for warning in result.warnings))
+        self.assertTrue(any("mystery" in warning for warning in result.warnings))
+
+    def test_play_does_not_split_narration_and_anchors_at_word_boundary(self) -> None:
+        result = LTVMarkupCompiler.compile(
+            'Antes de {{play "door.mp3" volume=-6db}} cerrar la puerta.',
+            "piper",
+        )
+
+        self.assertEqual(len(result.sections[0].segments), 1)
+        segment = result.sections[0].segments[0]
+        self.assertEqual(segment.text, "Antes de cerrar la puerta.")
+        self.assertEqual(segment.pause_before_ms, 0)
+        self.assertIsNone(segment.pause_after_ms)
+        self.assertEqual(segment.audio_events[0].anchor_source_word, 2)
+        self.assertEqual(result.audio_events[0].track, "sfx")
+
+    def test_stop_links_case_insensitive_id_and_can_override_fade(self) -> None:
+        result = LTVMarkupCompiler.compile(
+            '{{play "rain.mp3" id="Rain" loop=true}}Llueve. '
+            '{{STOP ID="rain" fade_out=4}}Termina.',
+            "piper",
+        )
+
+        play, stop = result.audio_events
+        self.assertEqual(stop.target_event_uid, play.event_uid)
+        self.assertEqual(stop.fade_out_ms, 4000)
+        self.assertTrue(play.enabled)
+        self.assertTrue(stop.enabled)
+
+    def test_play_inside_word_warns_and_uses_nearest_boundary(self) -> None:
+        near_start = LTVMarkupCompiler.compile(
+            'h{{play "click.mp3"}}ello mundo.',
+            "piper",
+        )
+        near_end = LTVMarkupCompiler.compile(
+            'hell{{play "click.mp3"}}o mundo.',
+            "piper",
+        )
+
+        self.assertEqual(near_start.sections[0].segments[0].text, "hello mundo.")
+        self.assertEqual(near_start.audio_events[0].anchor_source_word, 0)
+        self.assertEqual(near_end.audio_events[0].anchor_source_word, 1)
+        self.assertTrue(any("inside a word" in item for item in near_start.warnings))
+
+    def test_play_order_relative_to_leading_pause_is_preserved(self) -> None:
+        before_pause = LTVMarkupCompiler.compile(
+            '{{play "intro.mp3"}}{{pause 2s}}Hola.',
+            "piper",
+        )
+        after_pause = LTVMarkupCompiler.compile(
+            '{{pause 2s}}{{play "intro.mp3"}}Hola.',
+            "piper",
+        )
+
+        self.assertEqual(before_pause.audio_events[0].anchor_pause_offset_ms, 2000)
+        self.assertEqual(after_pause.audio_events[0].anchor_pause_offset_ms, 0)
+        self.assertEqual(before_pause.sections[0].segments[0].pause_before_ms, 2000)
+
+    def test_old_music_and_sfx_commands_are_removed_not_aliases(self) -> None:
+        result = LTVMarkupParser.parse(
+            '{{music "dark.mp3"}}{{music.stop}}{{music.volume -20}}{{sfx "door.wav"}}'
+        )
+
+        self.assertEqual([event.type for event in result.events], ["warning"])
+        self.assertEqual(result.unknown_commands, ["music", "music", "sfx"])
+        self.assertEqual(len(result.warnings), 4)
+        self.assertIn("reserved", result.events[0].value)
 
     def test_unknown_command_warns_and_is_not_text(self) -> None:
         result = LTVMarkupParser.parse('Hola {{voz "Maria"}}.')

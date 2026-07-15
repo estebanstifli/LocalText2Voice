@@ -79,8 +79,8 @@ engines that explicitly support them.
 
 Useful future commands:
 
-- `{{sfx "door slam"}}`
-- `{{music "soft piano"}}`
+- `{{play "door-slam.mp3" track=sfx}}`
+- `{{play "soft-piano.mp3" track=music loop=true duration=30}}`
 - `{{image "wide shot of a classroom"}}`
 - `{{scene "forest at night"}}`
 - `{{subtitle.on}}`

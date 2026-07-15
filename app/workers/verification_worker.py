@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audiobook_store import AudiobookStore, StoredSegment
 from app.core.transcript_similarity import similarity_metrics, verification_status
+from app.core.audio_event_timeline import resolve_audio_event_timeline
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.tts.engine_registry import create_tts_engine
 from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
@@ -111,6 +112,7 @@ class SegmentVerificationWorker(QObject):
         piper_path: Path | None = None,
         fallback_voice_config: dict | None = None,
         only_unverified: bool = True,
+        shared_tts_engines: dict[str, BaseTTSEngine] | None = None,
     ) -> None:
         super().__init__()
         self.store = store
@@ -127,7 +129,8 @@ class SegmentVerificationWorker(QObject):
         self.fallback_voice_config = fallback_voice_config or {}
         self.only_unverified = only_unverified
         self._cancel_requested = threading.Event()
-        self._tts_engines: dict[str, BaseTTSEngine] = {}
+        self._tts_engines = shared_tts_engines if shared_tts_engines is not None else {}
+        self._owns_tts_engines = shared_tts_engines is None
         self._active_tts_engine: BaseTTSEngine | None = None
 
     @Slot()
@@ -153,6 +156,15 @@ class SegmentVerificationWorker(QObject):
                     if self.only_unverified
                     else "No rendered segments found for review."
                 )
+                summary = resolve_audio_event_timeline(
+                    self.store,
+                    self.audiobook_id,
+                )
+                if summary.total:
+                    self.log.emit(
+                        "PLAY/STOP timeline resolved: "
+                        f"{summary.resolved}/{summary.total} event(s) ready."
+                    )
                 self.finished.emit()
                 return
             for index, segment in enumerate(segments, start=1):
@@ -165,6 +177,16 @@ class SegmentVerificationWorker(QObject):
                 )
                 self._review_segment(segment)
                 self.progress.emit(index, total, f"Reviewed {index}/{total}.")
+            summary = resolve_audio_event_timeline(
+                self.store,
+                self.audiobook_id,
+            )
+            if summary.total:
+                self.log.emit(
+                    "PLAY/STOP timeline resolved: "
+                    f"{summary.resolved}/{summary.total} ready, "
+                    f"{summary.pending} pending, {summary.missing} missing."
+                )
             self.finished.emit()
         except FasterWhisperCancelled:
             self.cancelled.emit()
@@ -174,9 +196,10 @@ class SegmentVerificationWorker(QObject):
             traceback.print_exc()
             self.failed.emit(f"Unexpected verification error: {exc}")
         finally:
-            for engine in self._tts_engines.values():
-                engine.close()
-            self._tts_engines.clear()
+            if self._owns_tts_engines:
+                for engine in self._tts_engines.values():
+                    engine.close()
+                self._tts_engines.clear()
             self._active_tts_engine = None
             if self.owns_verifier:
                 self.verifier.close()

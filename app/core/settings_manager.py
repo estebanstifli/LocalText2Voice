@@ -7,7 +7,8 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 7
+CURRENT_SETTINGS_SCHEMA_VERSION = 11
+MIN_CHUNK_SIZE = 1
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -48,6 +49,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "podcast_enabled": False,
     "background_enabled": True,
     "background_path": "music/background/relax1.mp3",
+    "music_library_dir": "music/background",
+    "sfx_library_dir": "music/sfx",
     "background_loop": True,
     "background_volume_percent": 45,
     "voice_volume_db": 0.0,
@@ -60,6 +63,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "podcast_normalize": True,
     "podcast_ducking": True,
     "ducking_strength": "low",
+    "markup_music_volume_db": 0.0,
+    "ambient_volume_db": 0.0,
+    "sfx_volume_db": 0.0,
+    "voice_muted": False,
+    "background_music_muted": False,
+    "markup_music_muted": False,
+    "ambient_muted": False,
+    "sfx_muted": False,
+    "markup_audio_solo_track": "",
     "auto_delete_segment_wavs_after_mix": False,
     "open_output_on_finish": False,
     "mp3_bitrate": "128k",
@@ -114,6 +126,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "max_retries": 0,
         "preload_model": False,
     },
+    "local_server": {
+        "enabled": False,
+        "auto_start": False,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "auth_token": "",
+        "allow_lan": False,
+        "serve_files": True,
+        "max_parallel_jobs": 1,
+    },
     "api_tts": {
         "openai": {
             "api_key": "",
@@ -158,6 +180,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "local_catalog_path": "",
         "auto_sync": False,
         "last_sync_at": "",
+    },
+    "updates": {
+        "auto_check": True,
+        "last_checked_at": 0,
     },
     "installer_setup": {
         "profile": "",
@@ -218,8 +244,34 @@ def _migrate_settings(
         if result.get("ducking_strength") == "medium":
             result["ducking_strength"] = "low"
 
+    _sanitize_chunk_sizes(result)
     result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
     return result
+
+
+def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:
+    try:
+        chunk_size = int(settings.get("chunk_size", DEFAULT_SETTINGS["chunk_size"]))
+    except (TypeError, ValueError):
+        chunk_size = int(DEFAULT_SETTINGS["chunk_size"])
+    settings["chunk_size"] = max(MIN_CHUNK_SIZE, chunk_size)
+
+    engine_sizes = settings.get("engine_chunk_sizes")
+    if not isinstance(engine_sizes, dict):
+        engine_sizes = {}
+    sanitized: dict[str, int] = {}
+    defaults = DEFAULT_SETTINGS.get("engine_chunk_sizes", {})
+    if isinstance(defaults, dict):
+        engines = set(defaults.keys()) | set(engine_sizes.keys())
+    else:
+        engines = set(engine_sizes.keys())
+    for engine in engines:
+        try:
+            value = int(engine_sizes.get(engine, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        sanitized[str(engine)] = 0 if value <= 0 else max(MIN_CHUNK_SIZE, value)
+    settings["engine_chunk_sizes"] = sanitized
 
 
 class SettingsManager:

@@ -475,6 +475,24 @@ class AudioPipelineTests(unittest.TestCase):
             {"instruct": "[laugh]"},
         )
 
+    def test_ltv_play_is_kept_as_chunk_metadata_without_splitting_tts(self) -> None:
+        options = AudioGenerationOptions(
+            output_dir=Path("unused"),
+            voice_config={"engine": "piper", "speed": 1.0},
+            ffmpeg_path="ffmpeg",
+            chunk_size=2500,
+        )
+        groups = AudioPipeline(FakeTTSEngine())._prepare_groups(
+            'One two {{play "door.mp3" volume=-6db}} three four.',
+            options,
+        )
+
+        chunks = [chunk for group in groups for chunk in group.chunks]
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].text, "One two three four.")
+        self.assertEqual(len(chunks[0].markup_audio_events), 1)
+        self.assertEqual(chunks[0].markup_audio_events[0].anchor_source_word, 2)
+
     def test_ltv_markup_voice_and_language_state_are_applied_per_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             engine = FakeTTSEngine()

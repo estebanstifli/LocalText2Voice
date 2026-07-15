@@ -16,6 +16,63 @@ from app.core.transcript_similarity import similarity_metrics, verification_stat
 
 
 class AudiobookStoreTests(unittest.TestCase):
+    def test_play_asset_uses_configured_recursive_sfx_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            source = root / "custom-sfx" / "doors" / "close.mp3"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"sound effect")
+            store = AudiobookStore(root / "projects.sqlite3")
+            audiobook = store.create_audiobook(
+                "Door.",
+                {},
+                root / "output",
+                "safe_chunks",
+                "single",
+                project_settings={
+                    "music_library_dir": str(root / "custom-music"),
+                    "sfx_library_dir": str(root / "custom-sfx"),
+                },
+                project_dir=root / "project",
+            )
+
+            asset, warning = store._embed_audio_asset(audiobook, "close.mp3")
+
+            self.assertEqual(warning, "")
+            self.assertTrue(asset.is_file())
+            self.assertEqual(asset.read_bytes(), b"sound effect")
+
+    def test_audio_assets_are_deduplicated_by_content_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            first = root / "first.mp3"
+            second = root / "renamed.mp3"
+            first.write_bytes(b"identical audio bytes")
+            second.write_bytes(b"identical audio bytes")
+            store = AudiobookStore(root / "projects.sqlite3")
+            audiobook = store.create_audiobook(
+                "Text.",
+                {},
+                root / "output",
+                "safe_chunks",
+                "single",
+                project_dir=root / "project",
+            )
+
+            first_asset, first_warning = store._embed_audio_asset(
+                audiobook,
+                str(first),
+            )
+            second_asset, second_warning = store._embed_audio_asset(
+                audiobook,
+                str(second),
+            )
+
+            self.assertEqual(first_warning, "")
+            self.assertEqual(second_warning, "")
+            self.assertEqual(first_asset, second_asset)
+            self.assertEqual(len(list((audiobook.project_dir / "assets/audio").iterdir())), 1)
+
     def test_store_creates_audiobook_and_segments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)

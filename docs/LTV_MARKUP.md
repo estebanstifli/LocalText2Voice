@@ -73,10 +73,8 @@ Some commands are handled by LocalText2Voice before the text is sent to TTS. Tho
 | `{{sendcommand ...}}` | * | * | * | * | * | * | * | * | * | * | Alias of one-shot `cmd`. |
 | `{{sendcomand ...}}` | * | * | * | * | * | * | * | * | * | * | Tolerant misspelling alias of `sendcommand`. |
 | `{{volume ...}}` | * | * | * | * | * | * | * | * | * | * | App applies voice gain or loudness normalization after generation with FFmpeg. |
-| `{{music "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{music.stop}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{music.volume ...}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future markup timeline mixing. |
-| `{{sfx "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future sound effects. |
+| `{{play "..." ...}}` | * | * | * | * | * | * | * | * | * | * | App aligns the source position with mandatory Whisper word timestamps and mixes the local audio in postproduction. |
+| `{{stop id="..."}}` | * | * | * | * | * | * | * | * | * | * | Stops a previously identified looping or long PLAY event. |
 | `{{mark "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future editing/navigation markers. |
 
 Recommended mental model:
@@ -339,18 +337,77 @@ The TTS receives:
 gee pee tee can help transform a course into audio.
 ```
 
-## Music And Sound Effects
+## PLAY And STOP Audio
 
-Music and SFX commands are parsed as postproduction events. They are not sent to TTS.
+`PLAY` places a local music, ambient, or sound-effect file at its exact source
+word boundary. The command never changes or splits the clean narration sent to
+TTS. After voice generation, Faster Whisper word timestamps are mandatory; the
+app dynamically aligns the original words with the transcript and then renders
+the audio event in postproduction.
 
 ```text
-{{sfx "door.wav"}}
-{{music "background.mp3"}}
-{{music.stop}}
-{{music.volume -20}}
+The door closed. {{play "effects/door-close.mp3" volume=-6db}}
 ```
 
-Current first implementation records these commands and logs that they are reserved for postproduction. Full timeline mixing from markup will come later.
+Supported V1 parameters:
+
+| Parameter | Meaning | Default |
+| --- | --- | --- |
+| `id` | Name used by a later `STOP`; an internal id is generated when omitted. | generated |
+| `track` | Audio bus: `sfx`, `music`, or `ambient`. | `sfx` |
+| `start` | Offset inside the source file, in seconds. | `0` |
+| `duration` | Maximum playback duration, in seconds. | source remainder |
+| `volume` | Original gain as `1`, a linear multiplier, or a dB value such as `-6db`. | `1` |
+| `loop` | Repeat the source until `duration`, `STOP`, or the project safety limit. | `false` |
+| `fade_in` / `fade_out` | Fade duration in seconds. | `0` |
+| `pan` | Static stereo position from `-1` (left) to `1` (right). | `0` |
+| `duck_on_voice` | Exact target attenuation while Whisper detects narration, for example `6db`. | `0` |
+| `trim_silence` | Remove leading and trailing silence below the global `-50 dB` threshold before placing the clip. | `false` |
+
+Examples:
+
+```text
+{{play "music/forest.mp3" id="forest" track=ambient loop=true volume=-20db fade_in=3 duck_on_voice=6db}}
+{{play "music/theme.mp3" start=32 duration=12 fade_in=1 fade_out=2 track=music}}
+{{play "effects/car.mp3" duration=5 pan=-0.7}}
+{{stop id="forest" fade_out=4}}
+```
+
+Times accept decimals and are always seconds. Parameter names and ids are
+case-insensitive. Paths may be quoted to contain spaces. External URLs are not
+accepted: assets are copied and content-deduplicated into the project under
+`assets/audio`, so the project stays portable. An unknown parameter produces a
+warning without aborting generation.
+
+When the first argument is only a filename, for example
+`{{play "door-close.mp3"}}`, LocalText2Voice searches recursively in the SFX
+library first and then in the background-music library. Their defaults are
+`music/sfx` and `music/background`; both can be changed in **Settings >
+Advanced**. Subfolders are supported for organizing either library. A reference
+that includes a directory is treated as an explicit path and does not fall back
+to an unrelated file with the same basename.
+
+The extension may be omitted: `{{play "door-close"}}` tries `door-close.mp3`
+first and then `door-close.wav`. The same extension rule applies to explicit
+relative paths such as `{{play "doors/door-close"}}`.
+
+`wait`, `pan_from`, and `pan_to` are deliberately not part of V1. If present,
+they produce a warning and are ignored. The former `music`, `music.stop`, and
+`sfx` commands are not aliases and are no longer supported. `music.volume` is
+reserved for a future volume-automation version; in V1 it produces a warning
+and is ignored.
+
+A loop must have a `duration`, a later matching `STOP`, or it is limited to the
+remaining project duration and a global safety cap. A `STOP` fade starts at the
+word-aligned STOP position. If alignment confidence is too low, the event stays
+unresolved and is not mixed; Audio Mix lets you retry after correcting or
+regenerating the narration.
+
+The common renderer keeps the clean narration and builds cached PCM stems named
+`voice.wav`, `music_markup.wav`, `ambient.wav`, and `sfx.wav`, followed by the
+final master. Hash-keyed working copies let it rebuild only tracks whose clips,
+alignment, or source files changed. The existing global background-music input
+remains its own logical bus.
 
 ## Chapters And Marks
 
@@ -397,8 +454,7 @@ Defaults:
 ```text
 {{chapter "Chapter 1"}}
 {{voice.narrator}}
-{{music "dark_ambient.mp3"}}
-{{music.volume -24}}
+{{play "dark_ambient.mp3" id="room" track=ambient loop=true volume=-24db duck_on_voice=6db fade_in=2}}
 
 The house had been abandoned for years.
 
@@ -409,7 +465,7 @@ I do not like this place.
 {{voice.character "Pedro"}}
 It will only take a minute.
 
-{{sfx "door_creak.wav"}}
+{{play "door_creak.wav" volume=-6db}}
 {{pause 800}}
 
 {{voice.narrator}}
@@ -423,13 +479,13 @@ Did you hear that?
 {{voice.narrator}}
 No one answered.
 
-{{music.stop}}
+{{stop id="room" fade_out=3}}
 {{reset}}
 ```
 
 ## What Is Sent To TTS
 
-Commands such as `pause`, `voice`, `music`, `sfx`, `chapter`, `mark`, and `reset` are not sent as text to the TTS engine.
+Commands such as `pause`, `voice`, `play`, `stop`, `chapter`, `mark`, and `reset` are not sent as text to the TTS engine.
 
 TTS parameter commands are not sent as transcript text. They are added to the
 request configuration for the next segment (`cmd`) or all following segments
@@ -468,9 +524,14 @@ Implemented now:
 - Case-insensitive command parsing and voice matching.
 - Smart quotes and Unicode dash normalization inside commands.
 - Safe fallback for unsupported commands.
+- Word-aligned `PLAY` and `STOP` postproduction events with mandatory Whisper
+  timestamps, portable project assets, cached music/ambient/SFX stems, and a
+  common final mixer.
+- Advanced Audio Mix controls for markup buses, mute/solo, clip inspection,
+  source navigation, timeline re-resolution, and clip preview. The fast waveform
+  preview remains limited to the first 60 seconds; final rendering uses the full
+  project timeline.
 
 Planned later:
 
-- UI help panel and quick insert buttons.
-- Timeline music and SFX mixing from markup events.
 - Visual markup validation before generation.

@@ -4,7 +4,9 @@ import ctypes
 import ctypes.wintypes
 import math
 import json
+import os
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -26,11 +28,13 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QTextCursor,
 )
 from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -48,6 +52,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -64,11 +69,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import __version__
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audio_mix import AudioMixSettings
+from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.audio_event_timeline import (
+    resolve_audio_event_timeline,
+    resolved_audio_clips,
+    speech_intervals_for_audiobook,
+)
+from app.core.ltv_markup import LTVMarkupParser
 from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
+from app.core.update_manager import (
+    CHECK_INTERVAL_SECONDS,
+    UpdateError,
+    UpdateInfo,
+    UpdateManager,
+    launch_installer,
+)
+from app.server.engine_host_client import EngineHostClient
+from app.server.server_controller import LocalServerController
 from app.tts.base import BaseTTSEngine, TTSEngineError
 from app.tts.engine_registry import TTS_ENGINES
 from app.tts.chatterbox_manager import ChatterboxManager
@@ -96,14 +118,14 @@ from app.workers.chatterbox_worker import (
     ChatterboxPreviewWorker,
 )
 from app.workers.chatterbox_voice_worker import ChatterboxVoiceWorker
-from app.workers.generation_worker import GenerationWorker
+from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
+from app.workers.engine_host_memory_worker import EngineHostMemoryWorker
 from app.workers.kokoro_worker import KokoroInstallWorker, KokoroPreviewWorker
 from app.workers.omnivoice_worker import (
     OmniVoiceHardwareWorker,
     OmniVoiceInstallWorker,
     OmniVoicePreviewWorker,
 )
-from app.workers.preload_worker import TTSEnginePreloadWorker
 from app.workers.qwen_worker import (
     QwenHardwareWorker,
     QwenInstallWorker,
@@ -117,6 +139,7 @@ from app.workers.verification_worker import (
     SegmentVerificationWorker,
 )
 from app.workers.voice_catalog_worker import VoiceGalleryWorker
+from app.workers.update_worker import UpdateCheckWorker, UpdateDownloadWorker
 from app.verification.faster_whisper_manager import (
     FasterWhisperManager,
     FasterWhisperVerifier,
@@ -424,6 +447,24 @@ MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
         "color": "#b45309",
         "background": "#fffbeb",
         "help": "Applies TTS parameters to every following segment until {{reset.preset}}. One-shot {{cmd}} can override it for one segment.",
+    },
+    {
+        "name": "play",
+        "label": "Play",
+        "template": "{{play \"\" track=sfx volume=1}}",
+        "cursor": "{{play \"",
+        "color": "#047857",
+        "background": "#ecfdf5",
+        "help": "Plays a local audio file at this word position after mandatory Whisper alignment. Example: {{play \"effects/door.mp3\" volume=-6db pan=0}}.",
+    },
+    {
+        "name": "stop",
+        "label": "Stop Audio",
+        "template": "{{stop id=\"\" fade_out=2}}",
+        "cursor": "{{stop id=\"",
+        "color": "#b91c1c",
+        "background": "#fef2f2",
+        "help": "Stops an active PLAY id. Example: {{stop id=\"rain\" fade_out=4}}.",
     },
     {
         "name": "reset",
@@ -828,6 +869,8 @@ class MainWindow(QMainWindow):
         self._resize_border_px = 8
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
+        self.engine_host_client = EngineHostClient(self.settings_manager)
+        self.local_server_controller = LocalServerController(self.settings_manager)
         self.translator = Translator(str(self.settings.get("ui_language", "en")))
         self.kokoro_python_manager = KokoroPythonManager()
         self.chatterbox_manager = ChatterboxManager()
@@ -850,7 +893,7 @@ class MainWindow(QMainWindow):
         self._loading_project = False
         self.voices: list[VoiceInfo] = []
         self.voice_page_rows: list[dict[str, object]] = []
-        self.worker: GenerationWorker | None = None
+        self.worker: EngineHostGenerationWorker | None = None
         self.worker_thread: QThread | None = None
         self.worker_uses_preloaded_engine = False
         self.kokoro_python_worker: KokoroInstallWorker | None = None
@@ -883,7 +926,7 @@ class MainWindow(QMainWindow):
         self.omnivoice_design_thread: QThread | None = None
         self.omnivoice_hardware_worker: OmniVoiceHardwareWorker | None = None
         self.omnivoice_hardware_thread: QThread | None = None
-        self.preload_worker: TTSEnginePreloadWorker | None = None
+        self.preload_worker: EngineHostMemoryWorker | None = None
         self.preload_thread: QThread | None = None
         self.whisper_worker: FasterWhisperInstallWorker | None = None
         self.whisper_thread: QThread | None = None
@@ -905,14 +948,24 @@ class MainWindow(QMainWindow):
         self.review_candidate_segment_id: int | None = None
         self.review_candidate_wav: Path | None = None
         self.review_after_generation_outputs: list[str] = []
+        self.markup_audio_review_required = False
         self.preloaded_whisper_verifier: FasterWhisperVerifier | None = None
         self.whisper_model_loaded = False
         self.preloaded_tts_engine: BaseTTSEngine | None = None
         self.preloaded_tts_engine_id: str | None = None
+        self.host_loaded_tts_engine_ids: set[str] = set()
+        self.host_generation_engine_id: str | None = None
         self.preloading_tts_engine_id: str | None = None
         self.loaded_tts_engine_id: str | None = None
         self.installer_setup_queue: list[str] = []
         self.installer_setup_running = False
+        self.update_manager = UpdateManager()
+        self.update_check_worker: UpdateCheckWorker | None = None
+        self.update_check_thread: QThread | None = None
+        self.update_download_worker: UpdateDownloadWorker | None = None
+        self.update_download_thread: QThread | None = None
+        self.update_progress_dialog: QProgressDialog | None = None
+        self._update_check_manual = False
         self.generation_started_at: float | None = None
         self.progress_current = 0
         self.progress_total = 0
@@ -970,7 +1023,10 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._restore_active_project()
         self._set_running(False)
+        QTimer.singleShot(700, self._maybe_start_local_server)
         QTimer.singleShot(900, self._run_pending_installer_setup)
+        QTimer.singleShot(1200, self._sync_engine_host_memory_state)
+        QTimer.singleShot(3000, self._maybe_check_for_updates)
 
     def tr(self, key: str, default: str | None = None, **values: object) -> str:
         return self.translator.text(key, default, **values)
@@ -1038,6 +1094,12 @@ class MainWindow(QMainWindow):
             lambda message: self.log_view.append_event(message)
         )
         self.audio_mix_preview_panel.log.connect(self.log_view.append_event)
+        self.audio_mix_preview_panel.sourcePositionRequested.connect(
+            self._jump_to_markup_source_position
+        )
+        self.audio_mix_preview_panel.resolveTimelineRequested.connect(
+            self._resolve_current_audio_timeline
+        )
         self.page_stack.addWidget(self.audio_mix_preview_panel)
         self.page_stack.addWidget(self._build_voices_page())
         content_layout.addWidget(self.page_stack, 1)
@@ -1277,6 +1339,15 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.markup_toolbar_action)
 
         help_menu = self.app_menu_bar.addMenu(self.tr("menu_help", "Help"))
+        self.check_updates_action = QAction(
+            self.tr("check_for_updates", "Check for updates..."),
+            self,
+        )
+        self.check_updates_action.triggered.connect(
+            lambda _checked=False: self._check_for_updates(manual=True)
+        )
+        help_menu.addAction(self.check_updates_action)
+        help_menu.addSeparator()
         about_action = QAction(self.tr("help_about", "About LocalText2Voice"), self)
         about_action.triggered.connect(self._show_about_dialog)
         help_menu.addAction(about_action)
@@ -1645,7 +1716,7 @@ class MainWindow(QMainWindow):
                     "Unknown command",
                     self.tr(
                         "markup_unknown_command_help",
-                        "Unknown markup command. Try {{pause}}, {{voice}}, {{lang}}, {{speed}}, {{chapter}}, {{cmd}} or {{preset}}.",
+                        "Unknown markup command. Try {{pause}}, {{voice}}, {{lang}}, {{speed}}, {{play}}, {{stop}}, {{chapter}}, {{cmd}} or {{preset}}.",
                     ),
                 ),
                 self.text_editor,
@@ -1757,79 +1828,309 @@ class MainWindow(QMainWindow):
         card_layout.setContentsMargins(16, 14, 16, 14)
         card_layout.setSpacing(12)
 
-        header = QHBoxLayout()
-        title_box = QVBoxLayout()
-        title = QLabel(self.tr("music_library", "Music Library"))
+        title = QLabel(self.tr("audio_libraries", "Audio libraries"))
         title.setObjectName("sectionLabel")
         subtitle = QLabel(
             self.tr(
-                "music_library_help",
-                "Select the default music for your podcasts.",
+                "audio_libraries_help",
+                "Manage background music and sound effects used by podcast mixes and PLAY markup.",
             )
         )
         subtitle.setObjectName("helperLabel")
         subtitle.setWordWrap(True)
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box, 1)
+        card_layout.addWidget(title)
+        card_layout.addWidget(subtitle)
 
-        self.import_music_button = QPushButton(self.tr("import_music", "Import music"))
-        self.import_music_button.setIcon(ui_icon("file"))
-        self.import_music_button.setIconSize(QSize(18, 18))
-        self.import_music_button.clicked.connect(self._import_music_file)
-        self.open_music_folder_button = QPushButton(
-            self.tr("open_music_folder", "Open music folder")
+        self.audio_library_tabs = QTabWidget()
+        self.audio_library_tabs.addTab(
+            self._build_audio_library_tab("music"),
+            self.tr("background_music", "Background music"),
         )
-        self.open_music_folder_button.setIcon(ui_icon("folder"))
-        self.open_music_folder_button.setIconSize(QSize(18, 18))
-        self.open_music_folder_button.clicked.connect(self._open_music_folder)
-        header.addWidget(self.import_music_button)
-        header.addWidget(self.open_music_folder_button)
-        card_layout.addLayout(header)
-
-        self.music_table = QTableWidget(0, 5)
-        self.music_table.setHorizontalHeaderLabels(
-            [
-                self.tr("default", "Default"),
-                self.tr("track_name", "Track"),
-                self.tr("duration", "Duration"),
-                self.tr("file_size", "Size"),
-                self.tr("actions", "Actions"),
-            ]
+        self.audio_library_tabs.addTab(
+            self._build_audio_library_tab("sfx"),
+            self.tr("sfx_library", "SFX Library"),
         )
-        self.music_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.music_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.music_table.verticalHeader().setVisible(False)
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.ResizeMode.Stretch,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            2,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            3,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.horizontalHeader().setSectionResizeMode(
-            4,
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
-        self.music_table.setAlternatingRowColors(True)
-        card_layout.addWidget(self.music_table, 1)
-
-        self.music_status_label = QLabel()
-        self.music_status_label.setObjectName("helperLabel")
-        self.music_status_label.setWordWrap(True)
-        card_layout.addWidget(self.music_status_label)
+        card_layout.addWidget(self.audio_library_tabs, 1)
 
         layout.addWidget(card, 1)
         return widget
+
+    def _build_audio_library_tab(self, library: str) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 12, 10, 10)
+        layout.setSpacing(10)
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        label = (
+            self.tr("music", "music")
+            if library == "music"
+            else self.tr("sfx", "SFX")
+        )
+        import_button = QPushButton(
+            self.tr("import_audio_library", "Import {library}", library=label)
+        )
+        import_button.setIcon(ui_icon("file"))
+        import_button.setIconSize(QSize(18, 18))
+        import_button.clicked.connect(
+            self._import_music_file if library == "music" else self._import_sfx_file
+        )
+        download_button = QPushButton(
+            self.tr(
+                "download_remote_music"
+                if library == "music"
+                else "download_remote_sfx",
+                "Download Remote Music"
+                if library == "music"
+                else "Download Remote SFX",
+            )
+        )
+        download_button.setIcon(ui_icon("export"))
+        download_button.setIconSize(QSize(18, 18))
+        download_button.clicked.connect(
+            lambda _checked=False, item=library: self._show_remote_audio_sources(
+                item
+            )
+        )
+        open_button = QPushButton(
+            self.tr("open_audio_library", "Open {library} folder", library=label)
+        )
+        open_button.setIcon(ui_icon("folder"))
+        open_button.setIconSize(QSize(18, 18))
+        open_button.clicked.connect(
+            self._open_music_folder if library == "music" else self._open_sfx_folder
+        )
+        controls.addWidget(import_button)
+        controls.addWidget(download_button)
+        controls.addWidget(open_button)
+        layout.addLayout(controls)
+
+        columns = 5 if library == "music" else 4
+        table = QTableWidget(0, columns)
+        headers = [
+            self.tr("track_name", "Track"),
+            self.tr("duration", "Duration"),
+            self.tr("file_size", "Size"),
+            self.tr("actions", "Actions"),
+        ]
+        if library == "music":
+            headers.insert(0, self.tr("default", "Default"))
+        table.setHorizontalHeaderLabels(headers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        for column in range(columns):
+            table.horizontalHeader().setSectionResizeMode(
+                column,
+                QHeaderView.ResizeMode.Stretch
+                if column == (1 if library == "music" else 0)
+                else QHeaderView.ResizeMode.ResizeToContents,
+            )
+        table.setAlternatingRowColors(True)
+        layout.addWidget(table, 1)
+        status = QLabel()
+        status.setObjectName("helperLabel")
+        status.setWordWrap(True)
+        layout.addWidget(status)
+
+        if library == "music":
+            self.import_music_button = import_button
+            self.download_remote_music_button = download_button
+            self.open_music_folder_button = open_button
+            self.music_table = table
+            self.music_status_label = status
+        else:
+            self.import_sfx_button = import_button
+            self.download_remote_sfx_button = download_button
+            self.open_sfx_folder_button = open_button
+            self.sfx_table = table
+            self.sfx_status_label = status
+        return widget
+
+    def _show_remote_audio_sources(self, library: str) -> None:
+        is_music = library == "music"
+        dialog = QDialog(self)
+        dialog.setModal(True)
+        dialog.setWindowTitle(
+            self.tr(
+                "remote_music_sources_title"
+                if is_music
+                else "remote_sfx_sources_title",
+                "Download Remote Music"
+                if is_music
+                else "Download Remote SFX",
+            )
+        )
+        dialog.setMinimumSize(680, 480)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        title = QLabel(dialog.windowTitle())
+        title.setObjectName("sectionLabel")
+        layout.addWidget(title)
+        help_label = QLabel(
+            self.tr(
+                "remote_audio_sources_help",
+                "These links open in your browser. Review the license of each "
+                "download before publishing it; free does not always mean "
+                "attribution-free or commercial use.",
+            )
+        )
+        help_label.setObjectName("helperLabel")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        source_container = QWidget()
+        source_layout = QVBoxLayout(source_container)
+        source_layout.setContentsMargins(0, 0, 4, 0)
+        source_layout.setSpacing(8)
+        for name, url, description in self._remote_audio_sources(library):
+            source_frame = QFrame()
+            source_frame.setObjectName("inlineStatusFrame")
+            item_layout = QVBoxLayout(source_frame)
+            item_layout.setContentsMargins(12, 10, 12, 10)
+            item_layout.setSpacing(4)
+            name_label = QLabel(name)
+            name_font = name_label.font()
+            name_font.setBold(True)
+            name_label.setFont(name_font)
+            link_label = QLabel(
+                f'<a href="{escape(url)}">{escape(url)}</a>'
+            )
+            link_label.setOpenExternalLinks(True)
+            link_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            description_label = QLabel(description)
+            description_label.setObjectName("helperLabel")
+            description_label.setWordWrap(True)
+            item_layout.addWidget(name_label)
+            item_layout.addWidget(link_label)
+            item_layout.addWidget(description_label)
+            source_layout.addWidget(source_frame)
+        source_layout.addStretch(1)
+        scroll.setWidget(source_container)
+        layout.addWidget(scroll, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        close_button = QPushButton(self.tr("close", "Close"))
+        close_button.setIcon(ui_icon("close"))
+        close_button.setMinimumWidth(120)
+        close_button.setDefault(True)
+        close_button.clicked.connect(dialog.accept)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+        dialog.exec()
+
+    def _remote_audio_sources(
+        self,
+        library: str,
+    ) -> tuple[tuple[str, str, str], ...]:
+        if library == "music":
+            return (
+                (
+                    "Pixabay Music",
+                    "https://pixabay.com/es/music/",
+                    self.tr(
+                        "remote_music_pixabay_description",
+                        "260,000+ royalty-free music tracks. The Pixabay "
+                        "Content License generally allows use without "
+                        "attribution, subject to its prohibited uses.",
+                    ),
+                ),
+                (
+                    "Mixkit Music",
+                    "https://mixkit.co/free-stock-music/",
+                    self.tr(
+                        "remote_music_mixkit_description",
+                        "Free stock music organized by genre and mood under "
+                        "the Mixkit Stock Music Free License.",
+                    ),
+                ),
+                (
+                    "Free Music Archive",
+                    "https://freemusicarchive.org/home",
+                    self.tr(
+                        "remote_music_fma_description",
+                        "Original music under Creative Commons, public-domain "
+                        "or custom licenses. Check the license shown on every track.",
+                    ),
+                ),
+                (
+                    "Incompetech",
+                    "https://incompetech.com/music/royalty-free/",
+                    self.tr(
+                        "remote_music_incompetech_description",
+                        "Kevin MacLeod's royalty-free catalog. Free Creative "
+                        "Commons use requires visible attribution; a paid "
+                        "license is available when credit is not possible.",
+                    ),
+                ),
+                (
+                    "YouTube Audio Library",
+                    "https://www.youtube.com/audiolibrary",
+                    self.tr(
+                        "remote_music_youtube_description",
+                        "Royalty-free production music in YouTube Studio. A "
+                        "Google sign-in is required and some Creative Commons "
+                        "tracks require attribution.",
+                    ),
+                ),
+            )
+        return (
+            (
+                "Pixabay Sound Effects",
+                "https://pixabay.com/es/sound-effects/",
+                self.tr(
+                    "remote_sfx_pixabay_description",
+                    "120,000+ free sound-effect tracks under the Pixabay "
+                    "Content License, generally without required attribution.",
+                ),
+            ),
+            (
+                "Mixkit Sound Effects",
+                "https://mixkit.co/free-sound-effects/",
+                self.tr(
+                    "remote_sfx_mixkit_description",
+                    "Free MP3 and WAV effects for personal and commercial "
+                    "projects, with no sign-up or attribution required.",
+                ),
+            ),
+            (
+                "Freesound",
+                "https://freesound.org/",
+                self.tr(
+                    "remote_sfx_freesound_description",
+                    "A large community library of recordings, ambiences, loops "
+                    "and samples. Each sound has its own CC0, CC BY or CC BY-NC "
+                    "license, so check attribution and commercial-use terms.",
+                ),
+            ),
+            (
+                "ZapSplat",
+                "https://www.zapsplat.com/",
+                self.tr(
+                    "remote_sfx_zapsplat_description",
+                    "160,000+ effects. The free Basic account provides MP3 "
+                    "downloads and requires attribution; Premium removes that "
+                    "requirement.",
+                ),
+            ),
+            (
+                "YouTube Audio Library",
+                "https://www.youtube.com/audiolibrary",
+                self.tr(
+                    "remote_sfx_youtube_description",
+                    "Downloadable MP3 sound effects inside YouTube Studio, "
+                    "searchable by category and duration. Google sign-in required.",
+                ),
+            ),
+        )
 
     def _build_review_page(self) -> QWidget:
         widget = QWidget()
@@ -2213,6 +2514,11 @@ class MainWindow(QMainWindow):
             self._build_review_settings(),
             ui_icon("review"),
             self.tr("review_settings", "Review"),
+        )
+        self.settings_tabs.addTab(
+            self._build_local_server_settings(),
+            ui_icon("server"),
+            self.tr("local_server_settings", "Local Server"),
         )
         self.settings_tabs.addTab(
             self._build_advanced_settings(),
@@ -2728,6 +3034,551 @@ class MainWindow(QMainWindow):
         scroll.setWidget(widget)
         return scroll
 
+    def _build_local_server_settings(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        desktop_group = QGroupBox(
+            self.tr("desktop_mcp_settings", "MCP Desktop Clients")
+        )
+        desktop_layout = QVBoxLayout(desktop_group)
+        desktop_layout.setSpacing(10)
+
+        desktop_intro = QLabel(
+            self.tr(
+                "desktop_mcp_intro",
+                "Use this stdio MCP configuration for Claude Desktop and other "
+                "desktop clients that launch local MCP servers.",
+            )
+        )
+        desktop_intro.setObjectName("helperLabel")
+        desktop_intro.setWordWrap(True)
+        desktop_layout.addWidget(desktop_intro)
+
+        claude_title = QLabel(self.tr("claude_desktop", "Claude Desktop"))
+        claude_title.setObjectName("sectionTitle")
+        desktop_layout.addWidget(claude_title)
+
+        self.local_mcp_json_edit = QTextEdit()
+        self.local_mcp_json_edit.setReadOnly(True)
+        self.local_mcp_json_edit.setMinimumHeight(150)
+        self.local_mcp_json_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        desktop_layout.addWidget(self.local_mcp_json_edit)
+
+        mcp_actions = QHBoxLayout()
+        self.copy_mcp_json_button = QPushButton(
+            self.tr("copy_mcp_json", "Copy JSON")
+        )
+        self.copy_mcp_json_button.setIcon(ui_icon("copy"))
+        self.copy_mcp_json_button.clicked.connect(self._copy_mcp_desktop_json)
+        self.open_claude_config_button = QPushButton(
+            self.tr("open_claude_config", "Open Claude config")
+        )
+        self.open_claude_config_button.setIcon(ui_icon("open"))
+        self.open_claude_config_button.clicked.connect(self._open_claude_config)
+        mcp_actions.addWidget(self.copy_mcp_json_button)
+        mcp_actions.addWidget(self.open_claude_config_button)
+        mcp_actions.addStretch(1)
+        desktop_layout.addLayout(mcp_actions)
+
+        claude_help = QLabel(
+            self.tr(
+                "claude_mcp_help",
+                "Paste or merge this block into %APPDATA%\\Claude\\claude_desktop_config.json, "
+                "then restart Claude Desktop. Use Developer settings or Connectors in Claude "
+                "to confirm that LocalText2Voice tools are loaded.",
+            )
+        )
+        claude_help.setObjectName("helperLabel")
+        claude_help.setWordWrap(True)
+        desktop_layout.addWidget(claude_help)
+
+        codex_separator = QFrame()
+        codex_separator.setFrameShape(QFrame.Shape.HLine)
+        codex_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        desktop_layout.addWidget(codex_separator)
+
+        codex_title = QLabel(
+            self.tr("codex_chatgpt_desktop", "Codex / ChatGPT Desktop")
+        )
+        codex_title.setObjectName("sectionTitle")
+        desktop_layout.addWidget(codex_title)
+
+        self.local_codex_toml_edit = QTextEdit()
+        self.local_codex_toml_edit.setReadOnly(True)
+        self.local_codex_toml_edit.setMinimumHeight(135)
+        self.local_codex_toml_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        desktop_layout.addWidget(self.local_codex_toml_edit)
+
+        codex_actions = QHBoxLayout()
+        self.copy_codex_toml_button = QPushButton(
+            self.tr("copy_codex_toml", "Copy TOML")
+        )
+        self.copy_codex_toml_button.setIcon(ui_icon("copy"))
+        self.copy_codex_toml_button.clicked.connect(self._copy_codex_mcp_toml)
+        self.open_codex_config_button = QPushButton(
+            self.tr("open_codex_config", "Open Codex config")
+        )
+        self.open_codex_config_button.setIcon(ui_icon("open"))
+        self.open_codex_config_button.clicked.connect(self._open_codex_config)
+        codex_actions.addWidget(self.copy_codex_toml_button)
+        codex_actions.addWidget(self.open_codex_config_button)
+        codex_actions.addStretch(1)
+        desktop_layout.addLayout(codex_actions)
+
+        codex_help = QLabel(
+            self.tr(
+                "codex_mcp_help",
+                "Paste or merge this block into ~/.codex/config.toml, then restart Codex "
+                "or ChatGPT Desktop. The paths are generated for this Windows user and the "
+                "current LocalText2Voice installation.",
+            )
+        )
+        codex_help.setObjectName("helperLabel")
+        codex_help.setWordWrap(True)
+        desktop_layout.addWidget(codex_help)
+
+        layout.addWidget(desktop_group)
+
+        group = QGroupBox(
+            self.tr("local_server_settings", "Advanced HTTP / Remote MCP Server")
+        )
+        form = QFormLayout(group)
+        form.setSpacing(10)
+
+        intro = QLabel(
+            self.tr(
+                "local_server_intro",
+                "Optional advanced server for HTTP clients or future remote workflows. "
+                "For Claude Desktop, prefer the stdio configuration above.",
+            )
+        )
+        intro.setObjectName("helperLabel")
+        intro.setWordWrap(True)
+        form.addRow("", intro)
+
+        self.local_server_enabled_checkbox = QCheckBox(
+            self.tr("enable_local_server", "Enable local server")
+        )
+        self.local_server_enabled_checkbox.toggled.connect(
+            self._on_local_server_enabled_changed
+        )
+        form.addRow("", self.local_server_enabled_checkbox)
+
+        self.local_server_auto_start_checkbox = QCheckBox(
+            self.tr("local_server_auto_start", "Start server when LocalText2Voice opens")
+        )
+        self.local_server_auto_start_checkbox.toggled.connect(
+            lambda _checked: self._save_settings()
+        )
+        form.addRow("", self.local_server_auto_start_checkbox)
+
+        host_row = QWidget()
+        host_layout = QHBoxLayout(host_row)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(8)
+        self.local_server_host_edit = QLineEdit("127.0.0.1")
+        self.local_server_host_edit.textChanged.connect(
+            lambda _text: self._on_local_server_field_changed()
+        )
+        self.local_server_port_spin = QSpinBox()
+        self.local_server_port_spin.setRange(1024, 65535)
+        self.local_server_port_spin.setValue(8765)
+        self.local_server_port_spin.valueChanged.connect(
+            lambda _value: self._on_local_server_field_changed()
+        )
+        host_layout.addWidget(self.local_server_host_edit, 1)
+        host_layout.addWidget(QLabel(":"))
+        host_layout.addWidget(self.local_server_port_spin)
+        form.addRow(self.tr("local_server_bind", "Bind address"), host_row)
+
+        self.local_server_allow_lan_checkbox = QCheckBox(
+            self.tr("local_server_allow_lan", "Allow access from this LAN")
+        )
+        self.local_server_allow_lan_checkbox.setToolTip(
+            self.tr(
+                "local_server_allow_lan_tip",
+                "Keep this off unless you need another device on your network to connect.",
+            )
+        )
+        self.local_server_allow_lan_checkbox.toggled.connect(
+            lambda _checked: self._on_local_server_field_changed()
+        )
+        form.addRow("", self.local_server_allow_lan_checkbox)
+
+        token_row = QWidget()
+        token_layout = QHBoxLayout(token_row)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        token_layout.setSpacing(8)
+        self.local_server_token_edit = QLineEdit()
+        self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.local_server_token_edit.textChanged.connect(
+            lambda _text: self._on_local_server_field_changed()
+        )
+        self.local_server_show_token_button = QPushButton(
+            self.tr("show_token", "Show")
+        )
+        self.local_server_show_token_button.setIcon(ui_icon("show"))
+        self.local_server_show_token_button.setCheckable(True)
+        self.local_server_show_token_button.toggled.connect(
+            self._toggle_local_server_token_visibility
+        )
+        self.local_server_copy_token_button = QPushButton(
+            self.tr("copy_token", "Copy")
+        )
+        self.local_server_copy_token_button.setIcon(ui_icon("copy"))
+        self.local_server_copy_token_button.clicked.connect(
+            self._copy_local_server_token
+        )
+        self.local_server_generate_token_button = QPushButton(
+            self.tr("generate_token", "Generate token")
+        )
+        self.local_server_generate_token_button.setIcon(ui_icon("refresh"))
+        self.local_server_generate_token_button.clicked.connect(
+            self._generate_local_server_token
+        )
+        token_layout.addWidget(self.local_server_token_edit, 1)
+        token_layout.addWidget(self.local_server_show_token_button)
+        token_layout.addWidget(self.local_server_copy_token_button)
+        token_layout.addWidget(self.local_server_generate_token_button)
+        form.addRow(self.tr("local_server_token", "Access token"), token_row)
+
+        self.local_server_max_jobs_spin = QSpinBox()
+        self.local_server_max_jobs_spin.setRange(1, 1)
+        self.local_server_max_jobs_spin.setValue(1)
+        self.local_server_max_jobs_spin.setToolTip(
+            self.tr(
+                "local_server_one_job_tip",
+                "Heavy TTS models are safest with one generation job at a time.",
+            )
+        )
+        self.local_server_max_jobs_spin.valueChanged.connect(
+            lambda _value: self._on_local_server_field_changed()
+        )
+        form.addRow(
+            self.tr("local_server_parallel_jobs", "Parallel jobs"),
+            self.local_server_max_jobs_spin,
+        )
+
+        self.local_server_status_label = QLabel("")
+        self.local_server_status_label.setObjectName("helperLabel")
+        self.local_server_status_label.setWordWrap(True)
+        form.addRow("", self.local_server_status_label)
+
+        self.local_server_endpoint_label = QLabel("")
+        self.local_server_endpoint_label.setObjectName("helperLabel")
+        self.local_server_endpoint_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.local_server_endpoint_label.setWordWrap(True)
+        form.addRow(self.tr("local_server_mcp_url", "MCP endpoint"), self.local_server_endpoint_label)
+
+        http_help = QLabel(
+            self.tr(
+                "local_server_http_help",
+                "HTTP endpoints: GET /health, GET /voices, GET /background-music, "
+                "POST /jobs, GET /jobs/{job_id}, POST /jobs/{job_id}/cancel.",
+            )
+        )
+        http_help.setObjectName("helperLabel")
+        http_help.setWordWrap(True)
+        form.addRow("", http_help)
+
+        actions = QHBoxLayout()
+        self.local_server_start_stop_button = QPushButton()
+        self.local_server_start_stop_button.setIcon(ui_icon("server"))
+        self.local_server_start_stop_button.clicked.connect(
+            self._toggle_local_server
+        )
+        actions.addWidget(self.local_server_start_stop_button)
+        actions.addStretch(1)
+        form.addRow("", actions)
+
+        layout.addWidget(group)
+        layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        self._refresh_local_server_status()
+        self._refresh_mcp_desktop_json()
+        return scroll
+
+    def _local_server_settings_from_ui(self) -> dict[str, object]:
+        current = self.settings.get("local_server", {})
+        fallback = dict(current) if isinstance(current, dict) else {}
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return fallback
+        return {
+            "enabled": self.local_server_enabled_checkbox.isChecked(),
+            "auto_start": self.local_server_auto_start_checkbox.isChecked(),
+            "host": self.local_server_host_edit.text().strip() or "127.0.0.1",
+            "port": self.local_server_port_spin.value(),
+            "auth_token": self.local_server_token_edit.text().strip(),
+            "allow_lan": self.local_server_allow_lan_checkbox.isChecked(),
+            "serve_files": True,
+            "max_parallel_jobs": self.local_server_max_jobs_spin.value(),
+        }
+
+    def _mcp_desktop_config(self) -> dict[str, object]:
+        app_root = application_root()
+        if getattr(sys, "frozen", False):
+            command = app_root / "LocalText2VoiceMCP.exe"
+            args: list[str] = []
+        else:
+            venv_python = app_root / ".venv" / "Scripts" / "python.exe"
+            command = venv_python if venv_python.exists() else Path(sys.executable)
+            args = [str(app_root / "mcp_stdio_bridge.py")]
+        return {
+            "mcpServers": {
+                "localtext2voice": {
+                    "command": str(command),
+                    "args": args,
+                    "cwd": str(app_root),
+                }
+            }
+        }
+
+    def _mcp_desktop_config_text(self) -> str:
+        return json.dumps(self._mcp_desktop_config(), indent=2, ensure_ascii=False)
+
+    def _refresh_mcp_desktop_json(self) -> None:
+        if hasattr(self, "local_mcp_json_edit"):
+            self.local_mcp_json_edit.setPlainText(self._mcp_desktop_config_text())
+        if hasattr(self, "local_codex_toml_edit"):
+            self.local_codex_toml_edit.setPlainText(self._codex_mcp_config_text())
+
+    def _copy_mcp_desktop_json(self) -> None:
+        QApplication.clipboard().setText(self._mcp_desktop_config_text())
+        self.statusBar().showMessage(
+            self.tr("mcp_json_copied", "MCP configuration copied to clipboard."),
+            3000,
+        )
+
+    def _claude_config_path(self) -> Path:
+        app_data = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        return app_data / "Claude" / "claude_desktop_config.json"
+
+    def _codex_mcp_config_text(self) -> str:
+        app_root = application_root()
+        if getattr(sys, "frozen", False):
+            command = app_root / "LocalText2VoiceMCP.exe"
+            args: list[str] = []
+        else:
+            venv_python = app_root / ".venv" / "Scripts" / "python.exe"
+            command = venv_python if venv_python.exists() else Path(sys.executable)
+            args = [str(app_root / "mcp_stdio_bridge.py")]
+
+        def literal(value: str) -> str:
+            if "'" not in value:
+                return f"'{value}'"
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+
+        args_text = ", ".join(literal(value) for value in args)
+        return "\n".join(
+            [
+                "[mcp_servers.localtext2voice]",
+                f"command = {literal(str(command))}",
+                f"args = [{args_text}]",
+                f"cwd = {literal(str(app_root))}",
+            ]
+        )
+
+    def _copy_codex_mcp_toml(self) -> None:
+        QApplication.clipboard().setText(self._codex_mcp_config_text())
+        self.statusBar().showMessage(
+            self.tr("codex_toml_copied", "Codex MCP configuration copied to clipboard."),
+            3000,
+        )
+
+    @staticmethod
+    def _codex_config_path() -> Path:
+        codex_home = os.environ.get("CODEX_HOME", "").strip()
+        return (Path(codex_home) if codex_home else Path.home() / ".codex") / "config.toml"
+
+    def _open_codex_config(self) -> None:
+        path = self._codex_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _open_claude_config(self) -> None:
+        path = self._claude_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text('{\n  "mcpServers": {}\n}\n', encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _restore_local_server_settings(self) -> None:
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return
+        settings = self.settings.get("local_server", {})
+        if not isinstance(settings, dict):
+            settings = {}
+        if not str(settings.get("auth_token", "")).strip():
+            settings = dict(settings)
+            settings["auth_token"] = secrets.token_urlsafe(24)
+            self.settings["local_server"] = settings
+            self.settings_manager.save(self.settings)
+        widgets = (
+            self.local_server_enabled_checkbox,
+            self.local_server_auto_start_checkbox,
+            self.local_server_host_edit,
+            self.local_server_port_spin,
+            self.local_server_token_edit,
+            self.local_server_allow_lan_checkbox,
+            self.local_server_max_jobs_spin,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.local_server_enabled_checkbox.setChecked(bool(settings.get("enabled", False)))
+        self.local_server_auto_start_checkbox.setChecked(bool(settings.get("auto_start", False)))
+        self.local_server_host_edit.setText(str(settings.get("host", "127.0.0.1")))
+        self.local_server_port_spin.setValue(int(settings.get("port", 8765) or 8765))
+        self.local_server_token_edit.setText(str(settings.get("auth_token", "")))
+        self.local_server_allow_lan_checkbox.setChecked(bool(settings.get("allow_lan", False)))
+        self.local_server_max_jobs_spin.setValue(1)
+        for widget in widgets:
+            widget.blockSignals(False)
+        self._refresh_local_server_status()
+        self._refresh_mcp_desktop_json()
+
+    def _maybe_start_local_server(self) -> None:
+        settings = self.settings.get("local_server", {})
+        if not isinstance(settings, dict):
+            return
+        if bool(settings.get("enabled", False)) or bool(settings.get("auto_start", False)):
+            self._start_local_server(show_errors=False)
+        else:
+            self._refresh_local_server_status()
+
+    def _toggle_local_server(self) -> None:
+        if self.local_server_controller.is_running():
+            self._stop_local_server()
+            return
+        self._start_local_server(show_errors=True)
+
+    def _start_local_server(self, show_errors: bool = True) -> None:
+        if not hasattr(self, "local_server_enabled_checkbox"):
+            return
+        if not self.local_server_token_edit.text().strip():
+            self.local_server_token_edit.setText(secrets.token_urlsafe(24))
+        self.local_server_enabled_checkbox.blockSignals(True)
+        self.local_server_enabled_checkbox.setChecked(True)
+        self.local_server_enabled_checkbox.blockSignals(False)
+        self._save_settings()
+        try:
+            self.local_server_controller.start()
+            self.log_view.append_event(
+                f"Local MCP/HTTP server started: {self.local_server_controller.endpoint_url()}"
+            )
+        except Exception as exc:
+            self.local_server_enabled_checkbox.blockSignals(True)
+            self.local_server_enabled_checkbox.setChecked(False)
+            self.local_server_enabled_checkbox.blockSignals(False)
+            self._save_settings()
+            message = f"Could not start local server: {exc}"
+            self.log_view.append_event(message)
+            if show_errors:
+                self._show_error(
+                    self.tr("local_server_start_failed", "Local server failed"),
+                    message,
+                )
+        self._refresh_local_server_status()
+
+    def _stop_local_server(self) -> None:
+        self.local_server_controller.stop()
+        if hasattr(self, "local_server_enabled_checkbox"):
+            self.local_server_enabled_checkbox.blockSignals(True)
+            self.local_server_enabled_checkbox.setChecked(False)
+            self.local_server_enabled_checkbox.blockSignals(False)
+        self._save_settings()
+        self.log_view.append_event("Local MCP/HTTP server stopped.")
+        self._refresh_local_server_status()
+
+    def _on_local_server_enabled_changed(self, enabled: bool) -> None:
+        if enabled:
+            self._start_local_server(show_errors=True)
+        else:
+            self._stop_local_server()
+
+    def _on_local_server_field_changed(self) -> None:
+        self._save_settings()
+        self._refresh_local_server_status()
+
+    def _generate_local_server_token(self) -> None:
+        self.local_server_token_edit.setText(secrets.token_urlsafe(24))
+        self._save_settings()
+        self._refresh_local_server_status()
+
+    def _toggle_local_server_token_visibility(self, checked: bool) -> None:
+        if checked:
+            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.local_server_show_token_button.setText(self.tr("hide_token", "Hide"))
+            self.local_server_show_token_button.setIcon(ui_icon("hide"))
+        else:
+            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.local_server_show_token_button.setText(self.tr("show_token", "Show"))
+            self.local_server_show_token_button.setIcon(ui_icon("show"))
+
+    def _copy_local_server_token(self) -> None:
+        token = self.local_server_token_edit.text().strip()
+        if not token:
+            QMessageBox.information(
+                self,
+                self.tr("local_server_token", "Access token"),
+                self.tr("no_token_to_copy", "There is no access token to copy yet."),
+            )
+            return
+        QApplication.clipboard().setText(token)
+        self.statusBar().showMessage(
+            self.tr("token_copied", "Access token copied to clipboard."),
+            3000,
+        )
+
+    def _refresh_local_server_status(self) -> None:
+        if not hasattr(self, "local_server_status_label"):
+            return
+        running = self.local_server_controller.is_running()
+        endpoint = self.local_server_controller.endpoint_url()
+        self.local_server_endpoint_label.setText(endpoint)
+        self.local_server_start_stop_button.setText(
+            self.tr("stop_server", "Stop server")
+            if running
+            else self.tr("start_server", "Start server")
+        )
+        self.local_server_start_stop_button.setIcon(
+            ui_icon("stop", danger=True) if running else ui_icon("server")
+        )
+        token_hint = (
+            self.tr(
+                "local_server_token_hint",
+                "Use the access token as a Bearer token, or as ?token=... for file URLs.",
+            )
+            if self.local_server_token_edit.text().strip()
+            else self.tr(
+                "local_server_no_token_hint",
+                "No token is configured. This is acceptable only for localhost experiments.",
+            )
+        )
+        status = (
+            self.tr("local_server_running", "Running")
+            if running
+            else self.tr("local_server_stopped", "Stopped")
+        )
+        self.local_server_status_label.setText(
+            self.tr(
+                "local_server_status_text",
+                "Status: {status}. {token_hint}",
+                status=status,
+                token_hint=token_hint,
+            )
+        )
+
     def _build_tts_engine_settings(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -2845,6 +3696,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(widget)
+        self._refresh_mcp_desktop_json()
         return scroll
 
     def _build_piper_engine_panel(self) -> QWidget:
@@ -5443,7 +6295,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "sidebar_engine_detail_label"):
             if self.preloading_tts_engine_id == engine_id:
                 memory_text = self.tr("loading_into_memory", "Loading into memory...")
-            elif self.preloaded_tts_engine_id == engine_id:
+            elif (
+                self.preloaded_tts_engine_id == engine_id
+                or engine_id in self.host_loaded_tts_engine_ids
+            ):
                 memory_text = self.tr("loaded_in_memory", "Loaded in memory")
             else:
                 memory_text = self.tr("not_loaded_in_memory", "Not loaded in memory")
@@ -5704,7 +6559,10 @@ class MainWindow(QMainWindow):
                 row["selected"] = ""
             elif self.preloading_tts_engine_id == engine_id:
                 row["selected"] = self.tr("selected_loading", "Selected / loading")
-            elif self.preloaded_tts_engine_id == engine_id:
+            elif (
+                self.preloaded_tts_engine_id == engine_id
+                or engine_id in self.host_loaded_tts_engine_ids
+            ):
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
             elif engine_id in {"chatterbox", "qwen", "omnivoice"}:
                 row["selected"] = self.tr(
@@ -5924,8 +6782,11 @@ class MainWindow(QMainWindow):
         can_load: bool,
     ) -> None:
         loaded = (
-            self.preloaded_tts_engine is not None
-            and self.preloaded_tts_engine_id == engine_id
+            engine_id in self.host_loaded_tts_engine_ids
+            or (
+                self.preloaded_tts_engine is not None
+                and self.preloaded_tts_engine_id == engine_id
+            )
         )
         loading = self.preloading_tts_engine_id == engine_id
         if loaded:
@@ -5944,11 +6805,8 @@ class MainWindow(QMainWindow):
             )
 
     def _toggle_preloaded_tts_engine(self, engine_id: str) -> None:
-        if (
-            self.preloaded_tts_engine is not None
-            and self.preloaded_tts_engine_id == engine_id
-        ):
-            self._unload_preloaded_tts_engine()
+        if engine_id in self.host_loaded_tts_engine_ids:
+            self._start_engine_host_memory_action(engine_id, load=False)
             return
         self._start_preload_tts_engine(engine_id)
 
@@ -5962,21 +6820,40 @@ class MainWindow(QMainWindow):
         if voice_config is None:
             return
         self._unload_preloaded_tts_engine(log_message=False)
-        piper_path = resolve_app_path(
-            self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
+        self._save_settings()
+        self._start_engine_host_memory_action(
+            engine_id,
+            load=True,
+            voice_config=voice_config,
         )
+
+    def _start_engine_host_memory_action(
+        self,
+        engine_id: str,
+        load: bool,
+        voice_config: dict[str, object] | None = None,
+    ) -> None:
+        if self.preload_thread is not None:
+            return
         self.preloading_tts_engine_id = engine_id
         self.log_view.append_event(
             self.tr(
-                "preloading_engine",
-                "Loading {engine} into memory...",
+                "preloading_engine" if load else "unloading_engine",
+                "Loading {engine} into memory..."
+                if load
+                else "Unloading {engine} from memory...",
                 engine=self._tts_engine_label(engine_id),
             )
         )
         self._refresh_all_engine_status()
 
         thread = QThread(self)
-        worker = TTSEnginePreloadWorker(engine_id, piper_path, voice_config)
+        worker = EngineHostMemoryWorker(
+            self.engine_host_client,
+            engine_id,
+            load,
+            voice_config,
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.log.connect(self.log_view.append_event)
@@ -5994,15 +6871,21 @@ class MainWindow(QMainWindow):
     def _on_tts_engine_preloaded(
         self,
         engine_id: str,
-        engine: BaseTTSEngine,
+        loaded: bool,
     ) -> None:
-        self.preloaded_tts_engine = engine
-        self.preloaded_tts_engine_id = engine_id
-        self.loaded_tts_engine_id = engine_id
+        if loaded:
+            self.host_loaded_tts_engine_ids.add(engine_id)
+            self.loaded_tts_engine_id = engine_id
+        else:
+            self.host_loaded_tts_engine_ids.discard(engine_id)
+            if self.loaded_tts_engine_id == engine_id:
+                self.loaded_tts_engine_id = None
         self.log_view.append_event(
             self.tr(
-                "engine_loaded_in_memory",
-                "{engine} loaded in memory and waiting for requests.",
+                "engine_loaded_in_memory" if loaded else "engine_unloaded_from_memory",
+                "{engine} loaded in memory and waiting for requests."
+                if loaded
+                else "{engine} unloaded from memory.",
                 engine=self._tts_engine_label(engine_id),
             )
         )
@@ -6052,6 +6935,30 @@ class MainWindow(QMainWindow):
         self._refresh_qwen_status()
         self._refresh_omnivoice_status()
         self._refresh_custom_engine_panel()
+
+    def _sync_engine_host_memory_state(self) -> None:
+        if not self.engine_host_client.health(timeout=0.25):
+            return
+        try:
+            status = self.engine_host_client.request_json(
+                "GET",
+                "/engines/memory",
+                timeout=3.0,
+            )
+        except Exception as exc:
+            self.log_view.append_event(f"Engine host status warning: {exc}")
+            return
+        if not isinstance(status, dict):
+            return
+        self.host_loaded_tts_engine_ids = {
+            str(engine_id)
+            for engine_id, details in status.items()
+            if isinstance(details, dict) and bool(details.get("loaded", False))
+        }
+        selected_engine = str(self.tts_engine_combo.currentData() or "piper")
+        if selected_engine in self.host_loaded_tts_engine_ids:
+            self.loaded_tts_engine_id = selected_engine
+        self._refresh_all_engine_status()
 
     def _build_general_settings(self) -> QWidget:
         widget = QWidget()
@@ -6407,7 +7314,7 @@ class MainWindow(QMainWindow):
         splitting_help.setObjectName("helperLabel")
         splitting_help.setWordWrap(True)
         self.chunk_size_spin = QSpinBox()
-        self.chunk_size_spin.setRange(120, 5000)
+        self.chunk_size_spin.setRange(1, 5000)
         self.chunk_size_spin.setSingleStep(20)
         self.chunk_size_spin.setSuffix(self.tr("characters_suffix", " chars"))
         self.chatterbox_chunk_size_spin = self._engine_chunk_spin()
@@ -6442,9 +7349,34 @@ class MainWindow(QMainWindow):
         )
         splitting_form.addRow("", splitting_help)
 
+        libraries_group = QGroupBox(
+            self.tr("audio_library_folders", "Audio library folders")
+        )
+        libraries_form = QFormLayout(libraries_group)
+        self.music_library_picker = PathPicker(self.tr("browse", "Browse"))
+        self.sfx_library_picker = PathPicker(self.tr("browse", "Browse"))
+        libraries_form.addRow(
+            self.tr("background_music_folder", "Background music folder"),
+            self.music_library_picker,
+        )
+        libraries_form.addRow(
+            self.tr("sfx_folder", "Sound effects folder"),
+            self.sfx_library_picker,
+        )
+        libraries_help = QLabel(
+            self.tr(
+                "audio_library_folders_help",
+                "Relative paths are resolved from the application folder. PLAY searches both folders recursively when only a filename is given.",
+            )
+        )
+        libraries_help.setObjectName("helperLabel")
+        libraries_help.setWordWrap(True)
+        libraries_form.addRow("", libraries_help)
+
         grid.addWidget(pause_group, 0, 0)
         grid.addWidget(podcast_group, 0, 1)
         grid.addWidget(splitting_group, 1, 0, 1, 2)
+        grid.addWidget(libraries_group, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -6472,10 +7404,13 @@ class MainWindow(QMainWindow):
         return spin
 
     def _current_chunk_size(self, engine_id: str | None = None) -> int:
-        default_size = int(
-            self.chunk_size_spin.value()
-            if hasattr(self, "chunk_size_spin")
-            else self.settings.get("chunk_size", 2500)
+        default_size = max(
+            1,
+            int(
+                self.chunk_size_spin.value()
+                if hasattr(self, "chunk_size_spin")
+                else self.settings.get("chunk_size", 2500)
+            ),
         )
         engine = str(
             engine_id
@@ -6504,6 +7439,8 @@ class MainWindow(QMainWindow):
                     override = int(overrides.get(engine, 0) or 0)
                 except (TypeError, ValueError):
                     override = 0
+        if 0 < override < 1:
+            override = 1
         return override if override > 0 else default_size
 
     @staticmethod
@@ -6749,6 +7686,59 @@ class MainWindow(QMainWindow):
             QTextEdit:focus, QPlainTextEdit:focus, QLineEdit:focus,
             QComboBox:focus, QDoubleSpinBox:focus {
                 border: 1px solid #1769ff;
+            }
+            QPlainTextEdit#timelineTextPanel {
+                background: #f8fafc;
+                color: #64748b;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+                font-size: 9.5pt;
+            }
+            QPlainTextEdit#segmentTextPanel {
+                background: #ffffff;
+                color: #111827;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+                font-size: 9.5pt;
+            }
+            QListWidget#sfxEventPanel {
+                background: #fff7ed;
+                border: 1px solid #fed7aa;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QListWidget#sfxEventPanel::item {
+                color: #9a3412;
+                padding: 7px;
+                border-radius: 5px;
+            }
+            QListWidget#sfxEventPanel::item:selected {
+                background: #ffedd5;
+                color: #7c2d12;
+            }
+            QListWidget#sfxEventPanel[audioTrack="music"] {
+                background: #eff6ff;
+                border-color: #bfdbfe;
+            }
+            QListWidget#sfxEventPanel[audioTrack="music"]::item:selected {
+                background: #dbeafe;
+                color: #1e3a8a;
+            }
+            QListWidget#sfxEventPanel[audioTrack="ambient"] {
+                background: #ecfdf5;
+                border-color: #a7f3d0;
+            }
+            QListWidget#sfxEventPanel[audioTrack="ambient"]::item:selected {
+                background: #d1fae5;
+                color: #064e3b;
+            }
+            QFrame#eventDetailsPanel {
+                background: #f8fafc;
+                border: 1px solid #dbe2ec;
+                border-radius: 8px;
+            }
+            QTabBar#eventDetailTabs::tab {
+                padding: 6px 12px;
             }
             QPushButton {
                 background: #ffffff;
@@ -8440,6 +9430,7 @@ class MainWindow(QMainWindow):
         )
         self.review_max_retries_spin.setValue(int(review.get("max_retries", 0)))
         self._refresh_whisper_status()
+        self._restore_local_server_settings()
 
         elevenlabs = api_tts.get("elevenlabs", {})
         self.elevenlabs_api_key_edit.setText(str(elevenlabs.get("api_key", "")))
@@ -8580,6 +9571,12 @@ class MainWindow(QMainWindow):
             bool(self.settings.get("background_enabled", False))
         )
         self.background_picker.set_path(self.settings.get("background_path", ""))
+        self.music_library_picker.set_path(
+            self.settings.get("music_library_dir", "music/background")
+        )
+        self.sfx_library_picker.set_path(
+            self.settings.get("sfx_library_dir", "music/sfx")
+        )
         self.background_loop_checkbox.setChecked(
             bool(self.settings.get("background_loop", True))
         )
@@ -9346,11 +10343,268 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             self.tr("help_about", "About LocalText2Voice"),
-            self.tr(
-                "about_text",
-                "LocalText2Voice\nAI Voice & Audio Production\nBy Esteban, AndromedaNova.com",
+            (
+                self.tr(
+                    "about_text",
+                    "LocalText2Voice\nAI Voice & Audio Production\n"
+                    "By Esteban, AndromedaNova.com",
+                )
+                + "\n"
+                + self.tr("version_label", "Version: {version}", version=__version__)
             ),
         )
+
+    def _maybe_check_for_updates(self) -> None:
+        if not getattr(sys, "frozen", False):
+            return
+        if self.installer_setup_running:
+            QTimer.singleShot(60_000, self._maybe_check_for_updates)
+            return
+        update_settings = self.settings.get("updates", {})
+        if not isinstance(update_settings, dict) or not bool(
+            update_settings.get("auto_check", True)
+        ):
+            return
+        try:
+            last_checked_at = float(update_settings.get("last_checked_at", 0) or 0)
+        except (TypeError, ValueError):
+            last_checked_at = 0
+        if time.time() - last_checked_at < CHECK_INTERVAL_SECONDS:
+            return
+        self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, manual: bool) -> None:
+        if self.update_check_thread is not None:
+            return
+        self._update_check_manual = manual
+        update_settings = self.settings.setdefault("updates", {})
+        if isinstance(update_settings, dict):
+            update_settings["last_checked_at"] = int(time.time())
+            try:
+                self.settings_manager.save(self.settings)
+            except OSError as exc:
+                self.log_view.append_event(
+                    f"Could not save the update check timestamp: {exc}"
+                )
+
+        self.check_updates_action.setEnabled(False)
+        if manual:
+            self.status_label.setText(
+                self.tr("checking_for_updates", "Checking for updates...")
+            )
+
+        thread = QThread(self)
+        worker = UpdateCheckWorker(self.update_manager)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.update_available.connect(self._on_update_available)
+        worker.no_update.connect(self._on_no_update_available)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(self._on_update_check_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self.update_check_thread = thread
+        self.update_check_worker = worker
+        thread.start()
+
+    def _on_update_check_thread_finished(self) -> None:
+        self.update_check_thread = None
+        self.update_check_worker = None
+        if self.update_download_thread is None:
+            self.check_updates_action.setEnabled(True)
+
+    def _on_no_update_available(self) -> None:
+        if not self._update_check_manual:
+            return
+        self.status_label.setText(
+            self.tr("no_updates_status", "LocalText2Voice is up to date.")
+        )
+        QMessageBox.information(
+            self,
+            self.tr("updates_title", "LocalText2Voice updates"),
+            self.tr(
+                "no_updates_message",
+                "You already have the latest version ({version}).",
+                version=__version__,
+            ),
+        )
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self.log_view.append_event(f"Update check failed: {message}")
+        if self._update_check_manual:
+            QMessageBox.warning(
+                self,
+                self.tr("update_check_failed", "Could not check for updates"),
+                message,
+            )
+
+    def _on_update_available(self, info: object) -> None:
+        if not isinstance(info, UpdateInfo):
+            return
+        published = info.published_at.replace("T", " ").removesuffix("Z")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.tr("update_available", "Update available"))
+        box.setText(
+            self.tr(
+                "update_available_message",
+                "LocalText2Voice {version} is available.",
+                version=info.version,
+            )
+        )
+        details = [info.release_name]
+        if published:
+            details.append(
+                self.tr("update_published", "Published: {date}", date=published)
+            )
+        if info.installer_size:
+            details.append(
+                self.tr(
+                    "update_download_size",
+                    "Download: {size}",
+                    size=self._format_bytes(info.installer_size),
+                )
+            )
+        box.setInformativeText("\n".join(details))
+        if info.release_notes.strip():
+            box.setDetailedText(info.release_notes.strip())
+        download_button = box.addButton(
+            self.tr("download_update", "Download update"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(
+            self.tr("remind_me_later", "Later"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        if box.clickedButton() is download_button:
+            self._download_update(info)
+
+    def _download_update(self, info: UpdateInfo) -> None:
+        if self.update_download_thread is not None:
+            return
+        self.check_updates_action.setEnabled(False)
+        dialog = QProgressDialog(
+            self.tr("downloading_update", "Downloading update..."),
+            self.tr("cancel", "Cancel"),
+            0,
+            100,
+            self,
+        )
+        dialog.setWindowTitle(self.tr("updates_title", "LocalText2Voice updates"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+
+        thread = QThread(self)
+        worker = UpdateDownloadWorker(self.update_manager, info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.cancelled.connect(self._on_update_download_cancelled)
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(self._on_update_download_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        dialog.canceled.connect(lambda: worker.request_cancel())
+        self.update_progress_dialog = dialog
+        self.update_download_thread = thread
+        self.update_download_worker = worker
+        dialog.show()
+        thread.start()
+
+    def _on_update_download_progress(self, percent: int, size_text: str) -> None:
+        dialog = self.update_progress_dialog
+        if dialog is None:
+            return
+        if percent < 0:
+            dialog.setRange(0, 0)
+        else:
+            if dialog.maximum() == 0:
+                dialog.setRange(0, 100)
+            dialog.setValue(percent)
+        dialog.setLabelText(
+            self.tr(
+                "downloading_update_progress",
+                "Downloading update... {progress}",
+                progress=size_text,
+            )
+        )
+
+    def _on_update_download_finished(self, installer_path: object) -> None:
+        self._close_update_progress_dialog()
+        path = Path(installer_path)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.tr("update_ready", "Update ready"))
+        box.setText(
+            self.tr(
+                "update_verified_message",
+                "The update was downloaded and its SHA-256 checksum was verified.",
+            )
+        )
+        box.setInformativeText(
+            self.tr(
+                "install_update_prompt",
+                "Install it now? LocalText2Voice will close before the installer opens.",
+            )
+        )
+        install_button = box.addButton(
+            self.tr("install_now", "Install now"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(
+            self.tr("install_later", "Later"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        if box.clickedButton() is install_button:
+            self._launch_update_installer(path)
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._close_update_progress_dialog()
+        self.log_view.append_event(f"Update download failed: {message}")
+        QMessageBox.warning(
+            self,
+            self.tr("update_download_failed", "Could not download the update"),
+            message,
+        )
+
+    def _on_update_download_cancelled(self) -> None:
+        self._close_update_progress_dialog()
+        self.status_label.setText(
+            self.tr("update_download_cancelled", "Update download cancelled.")
+        )
+
+    def _on_update_download_thread_finished(self) -> None:
+        self.update_download_thread = None
+        self.update_download_worker = None
+        if self.update_check_thread is None:
+            self.check_updates_action.setEnabled(True)
+
+    def _close_update_progress_dialog(self) -> None:
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+            self.update_progress_dialog.deleteLater()
+            self.update_progress_dialog = None
+
+    def _launch_update_installer(self, installer_path: Path) -> None:
+        if not self.close():
+            return
+        try:
+            launch_installer(installer_path)
+        except UpdateError as exc:
+            self.show()
+            QMessageBox.critical(
+                self,
+                self.tr("update_install_failed", "Could not start the installer"),
+                str(exc),
+            )
 
     def _enable_windows_native_resize_border(self) -> None:
         if sys.platform != "win32":
@@ -9487,9 +10741,10 @@ class MainWindow(QMainWindow):
         return False, 0
 
     def _music_library_dir(self) -> Path:
-        directory = application_root() / "music" / "background"
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory
+        return library_directory(self.settings, "music", create=True)
+
+    def _sfx_library_dir(self) -> Path:
+        return library_directory(self.settings, "sfx", create=True)
 
     def _ensure_default_music_selection(self) -> None:
         if self.settings.get("background_path"):
@@ -9502,15 +10757,10 @@ class MainWindow(QMainWindow):
             )
 
     def _music_files(self) -> list[Path]:
-        directory = self._music_library_dir()
-        return sorted(
-            (
-                path
-                for path in directory.iterdir()
-                if path.is_file() and path.suffix.lower() in {".mp3", ".wav"}
-            ),
-            key=lambda path: path.name.lower(),
-        )
+        return audio_library_files(self._music_library_dir())
+
+    def _sfx_files(self) -> list[Path]:
+        return audio_library_files(self._sfx_library_dir())
 
     def _refresh_music_library(self) -> None:
         if not hasattr(self, "music_table"):
@@ -9531,12 +10781,18 @@ class MainWindow(QMainWindow):
             default_item.setIcon(ui_icon("apply", active=is_default))
             self.music_table.setItem(row, 0, default_item)
 
-            name_item = QTableWidgetItem(path.stem)
+            name_item = QTableWidgetItem(
+                path.relative_to(self._music_library_dir()).with_suffix("").as_posix()
+            )
             name_item.setIcon(ui_icon("music"))
             name_item.setToolTip(str(path))
             self.music_table.setItem(row, 1, name_item)
-            self.music_table.setItem(row, 2, QTableWidgetItem(self._music_duration_text(path)))
-            self.music_table.setItem(row, 3, QTableWidgetItem(self._format_bytes(path.stat().st_size)))
+            self.music_table.setItem(
+                row, 2, QTableWidgetItem(self._music_duration_text(path))
+            )
+            self.music_table.setItem(
+                row, 3, QTableWidgetItem(self._format_bytes(path.stat().st_size))
+            )
             self.music_table.setCellWidget(row, 4, self._music_actions_widget(path))
             self.music_table.setRowHeight(row, 42)
         self.music_status_label.setText(
@@ -9545,6 +10801,37 @@ class MainWindow(QMainWindow):
                 "{count} music file(s) in {folder}",
                 count=len(files),
                 folder=str(self._music_library_dir()),
+            )
+        )
+        self._refresh_sfx_library()
+
+    def _refresh_sfx_library(self) -> None:
+        if not hasattr(self, "sfx_table"):
+            return
+        files = self._sfx_files()
+        self.sfx_table.setRowCount(0)
+        for row, path in enumerate(files):
+            self.sfx_table.insertRow(row)
+            name_item = QTableWidgetItem(
+                path.relative_to(self._sfx_library_dir()).with_suffix("").as_posix()
+            )
+            name_item.setIcon(ui_icon("music"))
+            name_item.setToolTip(str(path))
+            self.sfx_table.setItem(row, 0, name_item)
+            self.sfx_table.setItem(
+                row, 1, QTableWidgetItem(self._music_duration_text(path))
+            )
+            self.sfx_table.setItem(
+                row, 2, QTableWidgetItem(self._format_bytes(path.stat().st_size))
+            )
+            self.sfx_table.setCellWidget(row, 3, self._sfx_actions_widget(path))
+            self.sfx_table.setRowHeight(row, 42)
+        self.sfx_status_label.setText(
+            self.tr(
+                "sfx_library_count",
+                "{count} sound effect(s) in {folder}",
+                count=len(files),
+                folder=str(self._sfx_library_dir()),
             )
         )
 
@@ -9596,6 +10883,29 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
         return widget
 
+    def _sfx_actions_widget(self, path: Path) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        for icon_name, tooltip, callback in (
+            ("play", self.tr("play", "Play"), lambda _checked=False, item=path: self._play_music(item)),
+            ("pause", self.tr("pause", "Pause"), lambda _checked=False: self.music_library_player.pause()),
+            ("stop", self.tr("stop", "Stop"), lambda _checked=False: self.music_library_player.stop()),
+            ("file", self.tr("rename", "Rename"), lambda _checked=False, item=path: self._rename_sfx(item)),
+            ("delete", self.tr("delete", "Delete"), lambda _checked=False, item=path: self._delete_sfx(item)),
+        ):
+            button = QPushButton()
+            button.setIcon(ui_icon(icon_name))
+            button.setIconSize(QSize(16, 16))
+            button.setToolTip(tooltip)
+            button.setFixedSize(32, 30)
+            button.clicked.connect(callback)
+            if icon_name in {"stop", "delete"}:
+                button.setObjectName("dangerButton")
+            layout.addWidget(button)
+        return widget
+
     def _import_music_file(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
             self,
@@ -9618,8 +10928,31 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(f"Imported music: {destination.name}")
         self._refresh_music_library()
 
+    def _import_sfx_file(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("import_sfx", "Import sound effect"),
+            "",
+            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
+        )
+        if not selected:
+            return
+        source = Path(selected)
+        destination = self._unique_library_destination(self._sfx_library_dir(), source.name)
+        try:
+            shutil.copy2(source, destination)
+        except OSError as exc:
+            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        self.log_view.append_event(f"Imported SFX: {destination.name}")
+        self._refresh_sfx_library()
+
     def _unique_music_destination(self, file_name: str) -> Path:
-        destination = self._music_library_dir() / Path(file_name).name
+        return self._unique_library_destination(self._music_library_dir(), file_name)
+
+    @staticmethod
+    def _unique_library_destination(directory: Path, file_name: str) -> Path:
+        destination = directory / Path(file_name).name
         if not destination.exists():
             return destination
         stem = destination.stem
@@ -9632,7 +10965,10 @@ class MainWindow(QMainWindow):
             counter += 1
 
     def _select_default_music(self, path: Path) -> None:
-        relative = path.relative_to(application_root())
+        try:
+            relative: Path = path.relative_to(application_root())
+        except ValueError:
+            relative = path
         self.settings["background_enabled"] = True
         self.settings["background_path"] = str(relative)
         self.background_enabled_checkbox.setChecked(True)
@@ -9691,6 +11027,29 @@ class MainWindow(QMainWindow):
         else:
             self._refresh_music_library()
 
+    def _rename_sfx(self, path: Path) -> None:
+        new_name, accepted = QInputDialog.getText(
+            self,
+            self.tr("rename_sfx", "Rename sound effect"),
+            self.tr("new_name", "New name"),
+            text=path.stem,
+        )
+        if not accepted or not new_name.strip():
+            return
+        destination = path.with_name(f"{new_name.strip()}{path.suffix}")
+        if destination.exists() and destination != path:
+            self._show_error(
+                self.tr("rename_failed", "Rename failed"),
+                self.tr("file_already_exists", "A file with that name already exists."),
+            )
+            return
+        try:
+            path.rename(destination)
+        except OSError as exc:
+            self._show_error(self.tr("rename_failed", "Rename failed"), str(exc))
+            return
+        self._refresh_sfx_library()
+
     def _delete_music(self, path: Path) -> None:
         choice = QMessageBox.question(
             self,
@@ -9718,6 +11077,27 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(f"Deleted music: {path.name}")
         self._refresh_music_library()
 
+    def _delete_sfx(self, path: Path) -> None:
+        choice = QMessageBox.question(
+            self,
+            self.tr("delete_sfx", "Delete sound effect"),
+            self.tr(
+                "delete_sfx_confirm",
+                "Delete {name} from the sound effects library?",
+                name=path.name,
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            self._show_error(self.tr("delete_failed", "Delete failed"), str(exc))
+            return
+        self.music_library_player.stop()
+        self.log_view.append_event(f"Deleted SFX: {path.name}")
+        self._refresh_sfx_library()
+
     def _is_default_music(self, path: Path) -> bool:
         configured = self.settings.get("background_path")
         if not configured:
@@ -9736,6 +11116,9 @@ class MainWindow(QMainWindow):
 
     def _open_music_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._music_library_dir())))
+
+    def _open_sfx_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._sfx_library_dir())))
 
     def _music_duration_text(self, path: Path) -> str:
         duration = self._probe_audio_duration(path)
@@ -9897,6 +11280,23 @@ class MainWindow(QMainWindow):
             )
             return
 
+        parsed_markup = LTVMarkupParser.parse(text)
+        self.markup_audio_review_required = any(
+            event.type == "play" for event in parsed_markup.events
+        )
+        if (
+            self.markup_audio_review_required
+            and not self.faster_whisper_manager.is_installed()
+        ):
+            self._show_error(
+                self.tr("whisper_required", "Faster Whisper required"),
+                self.tr(
+                    "play_requires_whisper",
+                    "PLAY requires word-level Whisper timestamps. Install Faster Whisper from Settings > Review before generating this project.",
+                ),
+            )
+            return
+
         voice_config = self._current_voice_config()
         if voice_config is None:
             return
@@ -9915,69 +11315,32 @@ class MainWindow(QMainWindow):
             return
 
         self._save_settings()
-        options = AudioGenerationOptions(
-            output_dir=output_dir,
-            voice_config=voice_config,
-            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
-            split_mode=str(self.split_combo.currentData()),
-            export_mode=str(self.export_combo.currentData()),
-            chunk_size=self._current_chunk_size(engine_id),
-            pause_between_blocks_ms=int(
-                self.settings.get("pause_between_blocks_ms", 350)
-            ),
-            pause_between_chapters_ms=int(
-                self.settings.get("pause_between_chapters_ms", 900)
-            ),
-            paragraph_pause_min_ms=round(
-                self.paragraph_pause_min_spin.value() * 1000
-            ),
-            paragraph_pause_max_ms=round(
-                self.paragraph_pause_max_spin.value() * 1000
-            ),
-            adaptive_paragraph_pause=self.adaptive_pause_checkbox.isChecked(),
-            paragraph_length_reference_chars=(
-                self.paragraph_length_reference_spin.value()
-            ),
-            paragraph_length_extra_ms=round(
-                self.paragraph_length_extra_spin.value() * 1000
-            ),
-            periodic_pause_every_paragraphs=(
-                self.periodic_pause_every_spin.value()
-            ),
-            periodic_pause_min_ms=round(
-                self.periodic_pause_min_spin.value() * 1000
-            ),
-            periodic_pause_max_ms=round(
-                self.periodic_pause_max_spin.value() * 1000
-            ),
-            normalize_audio=self.normalize_checkbox.isChecked(),
-            podcast_enabled=False,
-            background_enabled=bool(self.settings.get("background_enabled", True)),
-            background_path=self._selected_music_path(),
-            background_loop=self.background_loop_checkbox.isChecked(),
-            background_volume_percent=self._db_to_percent(
-                self.background_volume_spin.value()
-            ),
-            voice_volume_db=self.voice_volume_db_spin.value(),
-            music_volume_db=self.background_volume_spin.value(),
-            voice_start_offset_ms=self.voice_start_offset_spin.value(),
-            music_tail_ms=self.music_tail_spin.value(),
-            music_fade_in_seconds=self.fade_in_spin.value(),
-            music_fade_out_seconds=self.fade_out_spin.value(),
-            podcast_gap_ms=round(self.podcast_gap_spin.value() * 1000),
-            podcast_normalize=self.podcast_normalize_checkbox.isChecked(),
-            podcast_ducking=self.podcast_ducking_checkbox.isChecked(),
-            ducking_strength=str(
-                self.ducking_strength_combo.currentData() or "low"
-            ),
-            mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
-            metadata=dict(self.settings.get("metadata", {})),
-            project_audiobook_id=self.current_audiobook_id,
-            project_settings=json.loads(json.dumps(self.settings)),
+        metadata = self.settings.get("metadata", {})
+        title = (
+            str(metadata.get("title", "Audiobook"))
+            if isinstance(metadata, dict)
+            else "Audiobook"
         )
-        piper_path = resolve_app_path(
-            self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
-        )
+        request = {
+            "text": text,
+            "title": title or "Audiobook",
+            "engine_id": engine_id,
+            "voice": str(
+                voice_config.get("voice") or voice_config.get("voice_id") or ""
+            ),
+            "language": str(
+                voice_config.get("language") or voice_config.get("lang") or ""
+            ),
+            "speed": float(voice_config.get("speed", self.speed_spin.value())),
+            "output_dir": str(output_dir),
+            "split_mode": str(self.split_combo.currentData()),
+            "export_mode": str(self.export_combo.currentData()),
+            "project_audiobook_id": self.current_audiobook_id,
+            # The desktop UI owns the interactive Review and Audio Mix transitions.
+            "review_policy": "off",
+            "mix_policy": "clean_only",
+            "client": "desktop_ui",
+        }
         self.log_view.clear()
         self.log_view.append_event(self.tr("starting", "Starting generation..."))
         self.progress_bar.setValue(0)
@@ -9991,35 +11354,29 @@ class MainWindow(QMainWindow):
         self.time_label.setVisible(True)
         self._update_generation_time()
         self.generation_timer.start()
-        preloaded_engine = (
-            self.preloaded_tts_engine
-            if self.preloaded_tts_engine_id == engine_id
-            else None
-        )
-        self.worker_uses_preloaded_engine = preloaded_engine is not None
-        if preloaded_engine is not None:
+        if self.preloaded_tts_engine is not None:
             self.log_view.append_event(
                 self.tr(
-                    "using_preloaded_engine",
-                    "Using preloaded {engine} engine.",
+                    "moving_generation_to_shared_host",
+                    "Generation uses the shared engine host; releasing the legacy "
+                    "in-process {engine} copy.",
                     engine=self._tts_engine_label(engine_id),
                 )
             )
-        self.loaded_tts_engine_id = (
-            engine_id
-            if engine_id in {"kokoro", "chatterbox", "qwen", "omnivoice"}
-            else self.preloaded_tts_engine_id
-        )
+            self._unload_preloaded_tts_engine(log_message=False)
+        self.worker_uses_preloaded_engine = False
+        self.host_generation_engine_id = engine_id
+        self.loaded_tts_engine_id = engine_id
         self._update_header_engine_label()
         self._set_running(True)
 
         thread = QThread(self)
-        worker = GenerationWorker(text, options, piper_path, preloaded_engine)
+        worker = EngineHostGenerationWorker(self.engine_host_client, request)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
         worker.log.connect(self.log_view.append_event)
-        worker.finished.connect(self._on_finished)
+        worker.finished.connect(self._on_host_generation_finished)
         worker.failed.connect(self._on_failed)
         worker.cancelled.connect(self._on_cancelled)
         worker.finished.connect(thread.quit)
@@ -10031,6 +11388,29 @@ class MainWindow(QMainWindow):
         self.worker_thread = thread
         self.worker = worker
         thread.start()
+
+    def _on_host_generation_finished(self, result: dict[str, object]) -> None:
+        audiobook_id = result.get("audiobook_id")
+        try:
+            resolved_id = int(audiobook_id) if audiobook_id is not None else None
+        except (TypeError, ValueError):
+            resolved_id = None
+        if resolved_id is not None:
+            self._set_current_project(resolved_id)
+        engine_id = self.host_generation_engine_id
+        if engine_id:
+            self.host_loaded_tts_engine_ids.add(engine_id)
+        outputs_value = result.get("outputs", [])
+        outputs = (
+            [str(path) for path in outputs_value]
+            if isinstance(outputs_value, list)
+            else []
+        )
+        if not outputs:
+            clean_mp3 = str(result.get("clean_mp3", "") or "")
+            mix_mp3 = str(result.get("mix_mp3", "") or "")
+            outputs = [path for path in (clean_mp3, mix_mp3) if path]
+        self._on_finished(outputs)
 
     def _cancel_generation(self) -> None:
         if self.worker is None:
@@ -10072,10 +11452,11 @@ class MainWindow(QMainWindow):
                 self.header_open_output_button.isVisible()
                 and self._current_output_folder() is not None
             )
-            if (
+            should_review = self.markup_audio_review_required or (
                 self.review_enabled_checkbox.isChecked()
                 and self.review_auto_checkbox.isChecked()
-            ):
+            )
+            if should_review:
                 if (
                     self.faster_whisper_manager.is_installed()
                     and self.verification_thread is None
@@ -10084,7 +11465,7 @@ class MainWindow(QMainWindow):
                     self._start_verification_for_latest(show_review=False)
                     return
                 self.log_view.append_event(
-                    "Automatic review skipped: Faster Whisper is not ready."
+                    "Required review skipped: Faster Whisper is not ready."
                 )
             self._show_audio_mix_preview(output_paths)
 
@@ -10114,7 +11495,13 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.worker_thread = None
         self.worker_uses_preloaded_engine = False
-        self.loaded_tts_engine_id = self.preloaded_tts_engine_id
+        selected_engine = str(self.tts_engine_combo.currentData() or "piper")
+        self.loaded_tts_engine_id = (
+            selected_engine
+            if selected_engine in self.host_loaded_tts_engine_ids
+            else self.preloaded_tts_engine_id
+        )
+        self.host_generation_engine_id = None
         self._update_header_engine_label()
         self._set_running(False)
 
@@ -10208,6 +11595,30 @@ class MainWindow(QMainWindow):
         self.header_open_output_button.setEnabled(
             self.header_open_output_button.isVisible()
         )
+        audiobook = self._current_audiobook()
+        segments = ()
+        audio_events = ()
+        timeline_clips = ()
+        speech_intervals = ()
+        stem_cache_dir = None
+        if audiobook is not None:
+            segments = tuple(self.audiobook_store.list_segments(audiobook.id))
+            audio_events = tuple(self.audiobook_store.list_audio_events(audiobook.id))
+            duration_seconds = self._probe_audio_duration(narration_path) or 0.0
+            timeline_clips = tuple(
+                resolved_audio_clips(
+                    self.audiobook_store,
+                    audiobook.id,
+                    max(1, round(duration_seconds * 1000)),
+                )
+            )
+            speech_intervals = tuple(
+                speech_intervals_for_audiobook(
+                    self.audiobook_store,
+                    audiobook.id,
+                )
+            )
+            stem_cache_dir = audiobook.project_dir / "cache" / "stems"
         context = AudioMixPreviewContext(
             voice_path=narration_path,
             output_dir=output_dir,
@@ -10215,6 +11626,18 @@ class MainWindow(QMainWindow):
             music_path=self._selected_music_path(),
             settings=self._current_mix_settings(),
             metadata=dict(self.settings.get("metadata", {})),
+            audiobook_id=audiobook.id if audiobook is not None else None,
+            project_dir=audiobook.project_dir if audiobook is not None else None,
+            project_settings=(
+                json.loads(audiobook.project_settings_json or "{}")
+                if audiobook is not None
+                else {}
+            ),
+            segments=segments,
+            audio_events=audio_events,
+            timeline_clips=timeline_clips,
+            speech_intervals=speech_intervals,
+            stem_cache_dir=stem_cache_dir,
         )
         self.audio_mix_preview_panel.set_context(context)
 
@@ -10242,6 +11665,21 @@ class MainWindow(QMainWindow):
             loop_background=self.background_loop_checkbox.isChecked(),
             normalize=self.podcast_normalize_checkbox.isChecked(),
             mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
+            markup_music_volume_db=float(
+                self.settings.get("markup_music_volume_db", 0.0)
+            ),
+            ambient_volume_db=float(self.settings.get("ambient_volume_db", 0.0)),
+            sfx_volume_db=float(self.settings.get("sfx_volume_db", 0.0)),
+            voice_muted=bool(self.settings.get("voice_muted", False)),
+            background_music_muted=bool(
+                self.settings.get("background_music_muted", False)
+            ),
+            markup_music_muted=bool(
+                self.settings.get("markup_music_muted", False)
+            ),
+            ambient_muted=bool(self.settings.get("ambient_muted", False)),
+            sfx_muted=bool(self.settings.get("sfx_muted", False)),
+            solo_track=str(self.settings.get("markup_audio_solo_track", "")),
         )
 
     def _on_mix_preview_settings_changed(self, settings: AudioMixSettings) -> None:
@@ -10272,14 +11710,65 @@ class MainWindow(QMainWindow):
         self.fade_out_spin.blockSignals(False)
         self.podcast_ducking_checkbox.blockSignals(False)
         self.ducking_strength_combo.blockSignals(False)
+        self.settings.update(
+            {
+                "markup_music_volume_db": settings.markup_music_volume_db,
+                "ambient_volume_db": settings.ambient_volume_db,
+                "sfx_volume_db": settings.sfx_volume_db,
+                "voice_muted": settings.voice_muted,
+                "background_music_muted": settings.background_music_muted,
+                "markup_music_muted": settings.markup_music_muted,
+                "ambient_muted": settings.ambient_muted,
+                "sfx_muted": settings.sfx_muted,
+                "markup_audio_solo_track": settings.solo_track,
+            }
+        )
         self._save_settings()
+
+    def _jump_to_markup_source_position(self, position: int) -> None:
+        self._show_generation()
+        cursor = self.text_editor.textCursor()
+        cursor.setPosition(
+            max(0, min(position, len(self.text_editor.toPlainText()))),
+            QTextCursor.MoveMode.MoveAnchor,
+        )
+        self.text_editor.setTextCursor(cursor)
+        self.text_editor.setFocus()
+
+    def _resolve_current_audio_timeline(self) -> None:
+        audiobook = self._current_audiobook()
+        if audiobook is None:
+            return
+        summary = resolve_audio_event_timeline(
+            self.audiobook_store,
+            audiobook.id,
+        )
+        self.log_view.append_event(
+            "PLAY/STOP timeline: "
+            f"{summary.resolved}/{summary.total} ready, "
+            f"{summary.pending} pending, {summary.missing} missing."
+        )
+        if summary.pending and self.verification_thread is None:
+            if self.faster_whisper_manager.is_installed():
+                self._start_verification_for_latest(show_review=False)
+                return
+        narration_path = self._latest_clean_narration_path()
+        if narration_path is not None:
+            self._set_audio_mix_preview_context(narration_path)
 
     def _on_mix_preview_render_finished(self, path: str) -> None:
         self.last_output_folder = Path(path).parent
         self.log_view.append_event(f"Saved mix preview render: {path}")
+        audiobook = self._current_audiobook()
+        if audiobook is not None:
+            clean_path, _old_mix = self.audiobook_store.audiobook_output_paths(
+                audiobook.id
+            )
+            outputs = [Path(clean_path)] if clean_path else []
+            outputs.append(Path(path))
+            self.audiobook_store.complete_audiobook(audiobook.id, outputs)
         if not bool(self.settings.get("auto_delete_segment_wavs_after_mix", False)):
             return
-        audiobook = self._current_audiobook()
         if audiobook is None:
             return
         try:
@@ -11563,6 +13052,14 @@ class MainWindow(QMainWindow):
                     self.background_enabled_checkbox.isChecked()
                 ),
                 "background_path": str(self.background_picker.path() or ""),
+                "music_library_dir": (
+                    self.music_library_picker.path_edit.text().strip()
+                    or "music/background"
+                ),
+                "sfx_library_dir": (
+                    self.sfx_library_picker.path_edit.text().strip()
+                    or "music/sfx"
+                ),
                 "background_loop": self.background_loop_checkbox.isChecked(),
                 "background_volume_percent": (
                     self._db_to_percent(self.background_volume_spin.value())
@@ -11656,6 +13153,7 @@ class MainWindow(QMainWindow):
                     "max_retries": self.review_max_retries_spin.value(),
                     "preload_model": self.whisper_model_loaded,
                 },
+                "local_server": self._local_server_settings_from_ui(),
                 "voice_gallery": {
                     "catalog_url": str(
                         self.settings.get("voice_gallery", {}).get(
@@ -11760,6 +13258,69 @@ class MainWindow(QMainWindow):
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)
 
+    def _shared_engine_close_action(self) -> str:
+        if not self.engine_host_client.health(timeout=0.25):
+            return "none"
+        loaded_names: list[str] = []
+        try:
+            memory = self.engine_host_client.engine_memory()
+            loaded_names = [
+                self._tts_engine_label(engine_id)
+                for engine_id, status in memory.items()
+                if isinstance(status, dict) and bool(status.get("loaded", False))
+            ]
+        except Exception:
+            loaded_names = []
+        loaded_text = (
+            self.tr(
+                "close_shared_engine_loaded",
+                "Loaded model(s): {models}.",
+                models=", ".join(loaded_names),
+            )
+            if loaded_names
+            else self.tr(
+                "close_shared_engine_no_models",
+                "No TTS model is currently reported as loaded.",
+            )
+        )
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle(
+            self.tr("close_shared_engine_title", "Shared engine server is running")
+        )
+        dialog.setText(
+            self.tr(
+                "close_shared_engine_message",
+                "{loaded}\n\nClose the shared server and release its memory, or keep it running for MCP clients?",
+                loaded=loaded_text,
+            )
+        )
+        shutdown_button = dialog.addButton(
+            self.tr(
+                "close_shared_engine_shutdown",
+                "Close server and free memory",
+            ),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        keep_button = dialog.addButton(
+            self.tr(
+                "close_shared_engine_keep",
+                "Keep running for MCP",
+            ),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        cancel_button = dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(shutdown_button)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is shutdown_button:
+            return "shutdown"
+        if clicked is keep_button:
+            return "keep"
+        if clicked is cancel_button:
+            return "cancel"
+        return "cancel"
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._confirm_project_switch():
             event.ignore()
@@ -11791,6 +13352,19 @@ class MainWindow(QMainWindow):
                     )
                     event.ignore()
                     return
+        if self.update_download_worker is not None:
+            self.update_download_worker.request_cancel()
+        for update_thread in (
+            self.update_check_thread,
+            self.update_download_thread,
+        ):
+            if update_thread is not None:
+                update_thread.quit()
+                update_thread.wait(3000)
+        shared_engine_action = self._shared_engine_close_action()
+        if shared_engine_action == "cancel":
+            event.ignore()
+            return
         if self.preload_worker is not None:
             self.preload_worker.request_cancel()
             if self.preload_thread is not None:
@@ -11825,5 +13399,7 @@ class MainWindow(QMainWindow):
         else:
             self._unload_faster_whisper()
         self._unload_preloaded_tts_engine(log_message=False)
+        if shared_engine_action in {"shutdown", "none"}:
+            self.local_server_controller.stop()
         self._save_settings()
         event.accept()

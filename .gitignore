@@ -25,5 +25,3 @@ engines/chatterbox/chatterbox_engine/
 voices/**/*.onnx
 voices/**/*.onnx.json
 ffmpeg/*.exe
-music/**/*.mp3
-music/**/*.wav

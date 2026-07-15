@@ -13,10 +13,11 @@ from typing import Any, Iterator
 
 from app.utils.paths import app_data_root
 
+from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
 from .text_processor import TextChunk
 
 
-CURRENT_DB_SCHEMA_VERSION = 1
+CURRENT_DB_SCHEMA_VERSION = 2
 PROJECT_MANIFEST_NAME = "project.localtext2voice.json"
 LEGACY_PROJECT_MANIFEST_NAME = "project.json"
 
@@ -66,6 +67,40 @@ class StoredSegment:
     attempt_count: int = 0
     error_message: str = ""
     needs_rebuild: bool = False
+
+
+@dataclass(frozen=True)
+class StoredAudioEvent:
+    id: int
+    audiobook_id: int
+    segment_id: int
+    event_uid: str
+    event_id: str
+    command_type: str
+    raw_command: str
+    source_position: int
+    anchor_segment_sequence: int
+    anchor_source_word: int
+    anchor_mode: str
+    anchor_pause_offset_ms: int = 0
+    file_reference: str = ""
+    file_path: str = ""
+    track: str = "sfx"
+    source_start_ms: int = 0
+    duration_ms: int | None = None
+    volume_db: float = 0.0
+    loop: bool = False
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
+    pan: float = 0.0
+    duck_db: float = 0.0
+    trim_silence: bool = False
+    target_event_uid: str = ""
+    enabled: bool = True
+    resolved_time_ms: int | None = None
+    resolution_status: str = "pending_whisper"
+    resolution_confidence: float | None = None
+    warnings_json: str = "[]"
 
 
 class AudiobookStore:
@@ -272,13 +307,14 @@ class AudiobookStore:
                 """,
                 (source_id,),
             ).fetchall()
+            cloned_segment_ids: dict[int, int] = {}
             for row in source_rows:
                 wav_path = self._clone_project_path(
                     Path(str(row["wav_path"] or "")),
                     source.project_dir,
                     clone.project_dir,
                 )
-                connection.execute(
+                cursor = connection.execute(
                     """
                     INSERT INTO audiobook_segments (
                         audiobook_id, sequence_index, chapter_index,
@@ -332,6 +368,48 @@ class AudiobookStore:
                         now,
                         now,
                     ),
+                )
+                cloned_segment_ids[int(row["sequence_index"])] = int(
+                    cursor.lastrowid
+                )
+            source_audio_events = connection.execute(
+                """
+                SELECT event_uid, event_id, command_type, raw_command,
+                       source_position, anchor_segment_sequence,
+                       anchor_source_word, anchor_mode, anchor_pause_offset_ms,
+                       file_reference,
+                       file_path, track, source_start_ms, duration_ms,
+                       volume_db, loop, fade_in_ms, fade_out_ms, pan,
+                       duck_db, trim_silence, target_event_uid, enabled,
+                       resolved_time_ms, resolution_status,
+                       resolution_confidence, warnings_json
+                FROM audio_events
+                WHERE audiobook_id = ?
+                ORDER BY source_position, id
+                """,
+                (source_id,),
+            ).fetchall()
+            for row in source_audio_events:
+                anchor_sequence = int(row["anchor_segment_sequence"] or 0)
+                segment_id = cloned_segment_ids.get(anchor_sequence)
+                if segment_id is None:
+                    continue
+                value = dict(row)
+                value["file_path"] = str(
+                    self._clone_project_path(
+                        Path(str(row["file_path"] or "")),
+                        source.project_dir,
+                        clone.project_dir,
+                    )
+                )
+                value["warnings"] = self._json_to_list(row["warnings_json"])
+                self._insert_manifest_audio_event(
+                    connection,
+                    clone.id,
+                    segment_id,
+                    clone.project_dir,
+                    value,
+                    now,
                 )
         self._write_project_manifest(clone)
         return clone
@@ -421,9 +499,14 @@ class AudiobookStore:
                     ),
                 )
             connection.execute(
+                "DELETE FROM audio_events WHERE audiobook_id = ?",
+                (audiobook_id,),
+            )
+            connection.execute(
                 "DELETE FROM audiobook_segments WHERE audiobook_id = ?",
                 (audiobook_id,),
             )
+            imported_segment_ids: dict[int, int] = {}
             segments = data.get("segments", [])
             if isinstance(segments, list):
                 for segment in segments:
@@ -434,7 +517,10 @@ class AudiobookStore:
                         segment.get("wav_path"),
                         project_dir,
                     )
-                    connection.execute(
+                    segment_sequence = self._manifest_int(
+                        segment.get("sequence_index")
+                    )
+                    cursor = connection.execute(
                         """
                         INSERT INTO audiobook_segments (
                             audiobook_id, sequence_index, chapter_index,
@@ -454,7 +540,7 @@ class AudiobookStore:
                         """,
                         (
                             audiobook_id,
-                            self._manifest_int(segment.get("sequence_index")),
+                            segment_sequence,
                             self._manifest_int(segment.get("chapter_index"), 1),
                             str(segment.get("chapter_title") or ""),
                             self._manifest_int(segment.get("paragraph_index")),
@@ -506,6 +592,26 @@ class AudiobookStore:
                             now,
                         ),
                     )
+                    imported_segment_ids[segment_sequence] = int(cursor.lastrowid)
+            audio_events = data.get("audio_events", [])
+            if isinstance(audio_events, list):
+                for audio_event in audio_events:
+                    if not isinstance(audio_event, dict):
+                        continue
+                    anchor_sequence = self._manifest_int(
+                        audio_event.get("anchor_segment_sequence")
+                    )
+                    segment_id = imported_segment_ids.get(anchor_sequence)
+                    if segment_id is None:
+                        continue
+                    self._insert_manifest_audio_event(
+                        connection,
+                        audiobook_id,
+                        segment_id,
+                        project_dir,
+                        audio_event,
+                        now,
+                    )
         audiobook = self.get_audiobook_by_uuid(audiobook_uuid)
         if audiobook is None:
             raise ValueError("Project was imported but could not be loaded.")
@@ -521,6 +627,10 @@ class AudiobookStore:
         now = self._now()
         sequence = 0
         with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM audio_events WHERE audiobook_id = ?",
+                (audiobook.id,),
+            )
             connection.execute(
                 "DELETE FROM audiobook_segments WHERE audiobook_id = ?",
                 (audiobook.id,),
@@ -571,9 +681,20 @@ class AudiobookStore:
                             now,
                         ),
                     )
-                    mapping[(chapter_index, chunk_index)] = int(cursor.lastrowid)
+                    segment_id = int(cursor.lastrowid)
+                    mapping[(chapter_index, chunk_index)] = segment_id
+                    for audio_event in getattr(chunk, "markup_audio_events", ()):
+                        self._insert_audio_event(
+                            connection,
+                            audiobook,
+                            segment_id,
+                            sequence,
+                            audio_event,
+                            now,
+                        )
             connection.execute(
-                "UPDATE audiobooks SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE audiobooks SET status = ?, mix_mp3_path = '', "
+                "updated_at = ? WHERE id = ?",
                 ("rendering", now, audiobook.id),
             )
         refreshed = self.get_audiobook(audiobook.id)
@@ -590,6 +711,192 @@ class AudiobookStore:
         directory = audiobook.project_dir / "segments"
         directory.mkdir(parents=True, exist_ok=True)
         return directory / f"group_{chapter_index:03d}_block_{chunk_index:04d}.wav"
+
+    def _insert_audio_event(
+        self,
+        connection: sqlite3.Connection,
+        audiobook: StoredAudiobook,
+        segment_id: int,
+        segment_sequence: int,
+        audio_event: Any,
+        now: str,
+    ) -> None:
+        warnings = [str(item) for item in getattr(audio_event, "warnings", ())]
+        file_path = Path()
+        status = "pending_whisper"
+        if not bool(getattr(audio_event, "enabled", True)):
+            status = "invalid"
+        elif str(getattr(audio_event, "command_type", "")) == "play":
+            file_path, asset_warning = self._embed_audio_asset(
+                audiobook,
+                str(getattr(audio_event, "file_reference", "")),
+            )
+            if asset_warning:
+                warnings.append(asset_warning)
+            if not str(file_path) or str(file_path) == ".":
+                status = "missing"
+        connection.execute(
+            """
+            INSERT INTO audio_events (
+                audiobook_id, segment_id, event_uid, event_id, command_type,
+                raw_command, source_position, anchor_segment_sequence,
+                anchor_source_word, anchor_mode, anchor_pause_offset_ms,
+                file_reference, file_path,
+                track, source_start_ms, duration_ms, volume_db, loop,
+                fade_in_ms, fade_out_ms, pan, duck_db, trim_silence,
+                target_event_uid, enabled, resolved_time_ms,
+                resolution_status, resolution_confidence, warnings_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audiobook.id,
+                segment_id,
+                str(audio_event.event_uid),
+                str(audio_event.event_id),
+                str(audio_event.command_type),
+                str(audio_event.raw_command),
+                int(audio_event.source_position),
+                segment_sequence,
+                int(audio_event.anchor_source_word),
+                str(getattr(audio_event, "anchor_mode", "word_boundary")),
+                int(getattr(audio_event, "anchor_pause_offset_ms", 0) or 0),
+                str(getattr(audio_event, "file_reference", "")),
+                str(file_path) if str(file_path) != "." else "",
+                str(getattr(audio_event, "track", "sfx")),
+                int(getattr(audio_event, "source_start_ms", 0) or 0),
+                getattr(audio_event, "duration_ms", None),
+                float(getattr(audio_event, "volume_db", 0.0) or 0.0),
+                1 if bool(getattr(audio_event, "loop", False)) else 0,
+                int(getattr(audio_event, "fade_in_ms", 0) or 0),
+                int(getattr(audio_event, "fade_out_ms", 0) or 0),
+                float(getattr(audio_event, "pan", 0.0) or 0.0),
+                float(getattr(audio_event, "duck_db", 0.0) or 0.0),
+                1 if bool(getattr(audio_event, "trim_silence", False)) else 0,
+                str(getattr(audio_event, "target_event_uid", "")),
+                1 if bool(getattr(audio_event, "enabled", True)) else 0,
+                None,
+                status,
+                None,
+                json.dumps(warnings, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+
+    def _embed_audio_asset(
+        self,
+        audiobook: StoredAudiobook,
+        file_reference: str,
+    ) -> tuple[Path, str]:
+        try:
+            project_settings = json.loads(audiobook.project_settings_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            project_settings = {}
+        if not isinstance(project_settings, dict):
+            project_settings = {}
+        source = resolve_audio_reference(
+            file_reference,
+            project_settings,
+            project_dir=audiobook.project_dir,
+        )
+        if source is None:
+            return Path(), f"Audio file not found: {file_reference}"
+        if source.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
+            return Path(), f"Unsupported local audio file: {file_reference}"
+
+        source = source.resolve()
+        assets_dir = audiobook.project_dir / "assets" / "audio"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            source.relative_to(assets_dir.resolve())
+            return source, ""
+        except ValueError:
+            pass
+
+        digest = hashlib.sha256()
+        with source.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        content_hash = digest.hexdigest()
+        existing_asset = next(
+            (
+                candidate
+                for candidate in assets_dir.glob(f"{content_hash}.*")
+                if candidate.is_file()
+            ),
+            None,
+        )
+        if existing_asset is not None:
+            return existing_asset.resolve(), ""
+        destination = assets_dir / f"{content_hash}{source.suffix.casefold()}"
+        if not destination.is_file():
+            shutil.copy2(source, destination)
+        return destination.resolve(), ""
+
+    def _insert_manifest_audio_event(
+        self,
+        connection: sqlite3.Connection,
+        audiobook_id: int,
+        segment_id: int,
+        project_dir: Path,
+        value: dict[str, Any],
+        now: str,
+    ) -> None:
+        file_path = self._path_from_manifest(value.get("file_path"), project_dir)
+        connection.execute(
+            """
+            INSERT INTO audio_events (
+                audiobook_id, segment_id, event_uid, event_id, command_type,
+                raw_command, source_position, anchor_segment_sequence,
+                anchor_source_word, anchor_mode, anchor_pause_offset_ms,
+                file_reference, file_path,
+                track, source_start_ms, duration_ms, volume_db, loop,
+                fade_in_ms, fade_out_ms, pan, duck_db, trim_silence,
+                target_event_uid, enabled, resolved_time_ms,
+                resolution_status, resolution_confidence, warnings_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audiobook_id,
+                segment_id,
+                str(value.get("event_uid") or ""),
+                str(value.get("event_id") or ""),
+                str(value.get("command_type") or "play"),
+                str(value.get("raw_command") or ""),
+                self._manifest_int(value.get("source_position")),
+                self._manifest_int(value.get("anchor_segment_sequence")),
+                self._manifest_int(value.get("anchor_source_word")),
+                str(value.get("anchor_mode") or "word_boundary"),
+                self._manifest_int(value.get("anchor_pause_offset_ms")),
+                str(value.get("file_reference") or ""),
+                str(file_path) if str(file_path) != "." else "",
+                str(value.get("track") or "sfx"),
+                self._manifest_int(value.get("source_start_ms")),
+                value.get("duration_ms"),
+                float(value.get("volume_db") or 0.0),
+                1 if bool(value.get("loop")) else 0,
+                self._manifest_int(value.get("fade_in_ms")),
+                self._manifest_int(value.get("fade_out_ms")),
+                float(value.get("pan") or 0.0),
+                float(value.get("duck_db") or 0.0),
+                1 if bool(value.get("trim_silence")) else 0,
+                str(value.get("target_event_uid") or ""),
+                1 if bool(value.get("enabled", True)) else 0,
+                value.get("resolved_time_ms"),
+                str(value.get("resolution_status") or "pending_whisper"),
+                self._manifest_float(value.get("resolution_confidence")),
+                json.dumps(
+                    self._json_to_list(value.get("warnings", [])),
+                    ensure_ascii=False,
+                ),
+                now,
+                now,
+            ),
+        )
 
     def mark_segment_rendering(self, segment_id: int, voice_config: dict[str, Any]) -> None:
         with self._connect() as connection:
@@ -639,6 +946,7 @@ class AudiobookStore:
                     segment_id,
                 ),
             )
+            self._invalidate_audio_events_from_segment(connection, segment_id)
         self._write_project_manifest_for_segment(segment_id)
 
     def update_segment_pause(
@@ -658,6 +966,7 @@ class AudiobookStore:
                 """,
                 (before_ms, after_ms, self._now(), segment_id),
             )
+            self._invalidate_audio_events_from_segment(connection, segment_id)
         self._write_project_manifest_for_segment(segment_id)
 
     def update_segment_text(self, segment_id: int, source_text: str) -> None:
@@ -682,7 +991,43 @@ class AudiobookStore:
                     segment_id,
                 ),
             )
+            self._invalidate_audio_events_from_segment(connection, segment_id)
         self._write_project_manifest_for_segment(segment_id)
+
+    @staticmethod
+    def _invalidate_audio_events_from_segment(
+        connection: sqlite3.Connection,
+        segment_id: int,
+    ) -> None:
+        row = connection.execute(
+            "SELECT audiobook_id, sequence_index FROM audiobook_segments WHERE id = ?",
+            (segment_id,),
+        ).fetchone()
+        if row is None:
+            return
+        connection.execute(
+            """
+            UPDATE audio_events
+            SET resolved_time_ms = NULL,
+                resolution_confidence = NULL,
+                resolution_status = CASE
+                    WHEN enabled = 0 THEN 'invalid'
+                    WHEN resolution_status = 'missing' THEN 'missing'
+                    ELSE 'pending_whisper'
+                END,
+                updated_at = ?
+            WHERE audiobook_id = ? AND anchor_segment_sequence >= ?
+            """,
+            (
+                AudiobookStore._now(),
+                int(row["audiobook_id"]),
+                int(row["sequence_index"]),
+            ),
+        )
+        connection.execute(
+            "UPDATE audiobooks SET mix_mp3_path = '', updated_at = ? WHERE id = ?",
+            (AudiobookStore._now(), int(row["audiobook_id"])),
+        )
 
     def get_segment(self, segment_id: int) -> StoredSegment | None:
         with self._connect() as connection:
@@ -801,6 +1146,60 @@ class AudiobookStore:
                 (audiobook_id,),
             ).fetchall()
         return [self._row_to_segment(row) for row in rows]
+
+    def list_audio_events(self, audiobook_id: int) -> list[StoredAudioEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, audiobook_id, segment_id, event_uid, event_id,
+                       command_type, raw_command, source_position,
+                       anchor_segment_sequence, anchor_source_word, anchor_mode,
+                       anchor_pause_offset_ms, file_reference, file_path,
+                       track, source_start_ms,
+                       duration_ms, volume_db, loop, fade_in_ms, fade_out_ms,
+                       pan, duck_db, trim_silence, target_event_uid, enabled,
+                       resolved_time_ms, resolution_status,
+                       resolution_confidence, warnings_json
+                FROM audio_events
+                WHERE audiobook_id = ?
+                ORDER BY source_position, id
+                """,
+                (audiobook_id,),
+            ).fetchall()
+        return [self._row_to_audio_event(row) for row in rows]
+
+    def update_audio_event_resolutions(
+        self,
+        audiobook_id: int,
+        resolutions: dict[str, tuple[int | None, str, float | None]],
+    ) -> None:
+        now = self._now()
+        with self._connect() as connection:
+            for event_uid, (resolved_time_ms, status, confidence) in resolutions.items():
+                connection.execute(
+                    """
+                    UPDATE audio_events
+                    SET resolved_time_ms = ?, resolution_status = ?,
+                        resolution_confidence = ?, updated_at = ?
+                    WHERE audiobook_id = ? AND event_uid = ?
+                    """,
+                    (
+                        resolved_time_ms,
+                        status,
+                        confidence,
+                        now,
+                        audiobook_id,
+                        event_uid,
+                    ),
+                )
+            if resolutions:
+                connection.execute(
+                    "UPDATE audiobooks SET mix_mp3_path = '', updated_at = ? WHERE id = ?",
+                    (now, audiobook_id),
+                )
+        audiobook = self.get_audiobook(audiobook_id)
+        if audiobook is not None:
+            self._write_project_manifest(audiobook)
 
     def segment_wav_cache_stats(self, audiobook_id: int | None = None) -> tuple[int, int]:
         paths = self._segment_wav_cache_paths(audiobook_id)
@@ -1018,6 +1417,48 @@ class AudiobookStore:
             self._ensure_audiobook_columns(connection)
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS audio_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    audiobook_id INTEGER NOT NULL REFERENCES audiobooks(id)
+                        ON DELETE CASCADE,
+                    segment_id INTEGER NOT NULL REFERENCES audiobook_segments(id)
+                        ON DELETE CASCADE,
+                    event_uid TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    command_type TEXT NOT NULL,
+                    raw_command TEXT NOT NULL,
+                    source_position INTEGER NOT NULL,
+                    anchor_segment_sequence INTEGER NOT NULL,
+                    anchor_source_word INTEGER NOT NULL,
+                    anchor_mode TEXT DEFAULT 'word_boundary',
+                    anchor_pause_offset_ms INTEGER DEFAULT 0,
+                    file_reference TEXT DEFAULT '',
+                    file_path TEXT DEFAULT '',
+                    track TEXT DEFAULT 'sfx',
+                    source_start_ms INTEGER DEFAULT 0,
+                    duration_ms INTEGER,
+                    volume_db REAL DEFAULT 0,
+                    loop INTEGER DEFAULT 0,
+                    fade_in_ms INTEGER DEFAULT 0,
+                    fade_out_ms INTEGER DEFAULT 0,
+                    pan REAL DEFAULT 0,
+                    duck_db REAL DEFAULT 0,
+                    trim_silence INTEGER DEFAULT 0,
+                    target_event_uid TEXT DEFAULT '',
+                    enabled INTEGER DEFAULT 1,
+                    resolved_time_ms INTEGER,
+                    resolution_status TEXT DEFAULT 'pending_whisper',
+                    resolution_confidence REAL,
+                    warnings_json TEXT DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (audiobook_id, event_uid)
+                )
+                """
+            )
+            self._ensure_audio_event_columns(connection)
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS segment_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     segment_id INTEGER NOT NULL REFERENCES audiobook_segments(id)
@@ -1037,6 +1478,12 @@ class AudiobookStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_segments_audiobook_sequence
                 ON audiobook_segments(audiobook_id, sequence_index)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audio_events_audiobook_position
+                ON audio_events(audiobook_id, source_position)
                 """
             )
 
@@ -1074,6 +1521,17 @@ class AudiobookStore:
                 connection.execute(
                     f"ALTER TABLE audiobooks ADD COLUMN {name} {definition}"
                 )
+
+    def _ensure_audio_event_columns(self, connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(audio_events)")
+        }
+        if "anchor_pause_offset_ms" not in existing:
+            connection.execute(
+                "ALTER TABLE audio_events ADD COLUMN "
+                "anchor_pause_offset_ms INTEGER DEFAULT 0"
+            )
 
     @staticmethod
     def _row_to_segment(row: sqlite3.Row) -> StoredSegment:
@@ -1121,6 +1579,51 @@ class AudiobookStore:
             attempt_count=int(row["attempt_count"] or 0),
             error_message=str(row["error_message"] or ""),
             needs_rebuild=bool(row["needs_rebuild"]),
+        )
+
+    @staticmethod
+    def _row_to_audio_event(row: sqlite3.Row) -> StoredAudioEvent:
+        return StoredAudioEvent(
+            id=int(row["id"]),
+            audiobook_id=int(row["audiobook_id"]),
+            segment_id=int(row["segment_id"]),
+            event_uid=str(row["event_uid"]),
+            event_id=str(row["event_id"]),
+            command_type=str(row["command_type"]),
+            raw_command=str(row["raw_command"]),
+            source_position=int(row["source_position"] or 0),
+            anchor_segment_sequence=int(row["anchor_segment_sequence"] or 0),
+            anchor_source_word=int(row["anchor_source_word"] or 0),
+            anchor_mode=str(row["anchor_mode"] or "word_boundary"),
+            anchor_pause_offset_ms=int(row["anchor_pause_offset_ms"] or 0),
+            file_reference=str(row["file_reference"] or ""),
+            file_path=str(row["file_path"] or ""),
+            track=str(row["track"] or "sfx"),
+            source_start_ms=int(row["source_start_ms"] or 0),
+            duration_ms=(
+                None if row["duration_ms"] is None else int(row["duration_ms"])
+            ),
+            volume_db=float(row["volume_db"] or 0.0),
+            loop=bool(row["loop"]),
+            fade_in_ms=int(row["fade_in_ms"] or 0),
+            fade_out_ms=int(row["fade_out_ms"] or 0),
+            pan=float(row["pan"] or 0.0),
+            duck_db=float(row["duck_db"] or 0.0),
+            trim_silence=bool(row["trim_silence"]),
+            target_event_uid=str(row["target_event_uid"] or ""),
+            enabled=bool(row["enabled"]),
+            resolved_time_ms=(
+                None
+                if row["resolved_time_ms"] is None
+                else int(row["resolved_time_ms"])
+            ),
+            resolution_status=str(row["resolution_status"] or "pending_whisper"),
+            resolution_confidence=(
+                None
+                if row["resolution_confidence"] is None
+                else float(row["resolution_confidence"])
+            ),
+            warnings_json=str(row["warnings_json"] or "[]"),
         )
 
     @staticmethod
@@ -1180,6 +1683,23 @@ class AudiobookStore:
                 """,
                 (audiobook.id,),
             ).fetchall()
+            audio_event_rows = connection.execute(
+                """
+                SELECT event_uid, event_id, command_type, raw_command,
+                       source_position, anchor_segment_sequence,
+                       anchor_source_word, anchor_mode, anchor_pause_offset_ms,
+                       file_reference,
+                       file_path, track, source_start_ms, duration_ms,
+                       volume_db, loop, fade_in_ms, fade_out_ms, pan,
+                       duck_db, trim_silence, target_event_uid, enabled,
+                       resolved_time_ms, resolution_status,
+                       resolution_confidence, warnings_json
+                FROM audio_events
+                WHERE audiobook_id = ?
+                ORDER BY source_position, id
+                """,
+                (audiobook.id,),
+            ).fetchall()
         segments = []
         for row in rows:
             segments.append(
@@ -1223,11 +1743,49 @@ class AudiobookStore:
                     "needs_rebuild": bool(row["needs_rebuild"]),
                 }
             )
+        audio_events = [
+            {
+                "event_uid": str(row["event_uid"]),
+                "event_id": str(row["event_id"]),
+                "command_type": str(row["command_type"]),
+                "raw_command": str(row["raw_command"]),
+                "source_position": int(row["source_position"] or 0),
+                "anchor_segment_sequence": int(
+                    row["anchor_segment_sequence"] or 0
+                ),
+                "anchor_source_word": int(row["anchor_source_word"] or 0),
+                "anchor_mode": str(row["anchor_mode"] or "word_boundary"),
+                "anchor_pause_offset_ms": int(
+                    row["anchor_pause_offset_ms"] or 0
+                ),
+                "file_reference": str(row["file_reference"] or ""),
+                "file_path": self._path_for_manifest(row["file_path"], project_dir),
+                "track": str(row["track"] or "sfx"),
+                "source_start_ms": int(row["source_start_ms"] or 0),
+                "duration_ms": row["duration_ms"],
+                "volume_db": float(row["volume_db"] or 0.0),
+                "loop": bool(row["loop"]),
+                "fade_in_ms": int(row["fade_in_ms"] or 0),
+                "fade_out_ms": int(row["fade_out_ms"] or 0),
+                "pan": float(row["pan"] or 0.0),
+                "duck_db": float(row["duck_db"] or 0.0),
+                "trim_silence": bool(row["trim_silence"]),
+                "target_event_uid": str(row["target_event_uid"] or ""),
+                "enabled": bool(row["enabled"]),
+                "resolved_time_ms": row["resolved_time_ms"],
+                "resolution_status": str(
+                    row["resolution_status"] or "pending_whisper"
+                ),
+                "resolution_confidence": row["resolution_confidence"],
+                "warnings": self._json_to_list(row["warnings_json"]),
+            }
+            for row in audio_event_rows
+        ]
         project_settings = self._json_to_dict(audiobook.project_settings_json)
         project_settings.pop("current_project_id", None)
         manifest = {
             "schema": "localtext2voice.project",
-            "version": 1,
+            "version": 2,
             "uuid": audiobook.uuid,
             "title": audiobook.title,
             "source_text": audiobook.source_text,
@@ -1246,6 +1804,7 @@ class AudiobookStore:
                 project_dir,
             ),
             "segments": segments,
+            "audio_events": audio_events,
             "updated_at": self._now(),
         }
         project_dir.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,7 @@ class TextChunk:
     markup_pause_before_ms: int = 0
     markup_pause_after_ms: int | None = None
     markup_state: dict[str, Any] = field(default_factory=dict)
+    markup_audio_events: tuple[Any, ...] = ()
 
 
 class TextProcessor:
@@ -107,8 +108,8 @@ class TextProcessor:
 
     @classmethod
     def split_safe_chunks(cls, text: str, max_chars: int = 2500) -> list[str]:
-        if max_chars < 200:
-            raise ValueError("max_chars must be at least 200.")
+        if max_chars < 1:
+            raise ValueError("max_chars must be at least 1.")
 
         normalized = cls.normalize_text(text)
         if not normalized:
@@ -160,8 +161,8 @@ class TextProcessor:
         max_chars: int = 2500,
     ) -> list[TextChunk]:
         """Split text safely while retaining real paragraph boundaries."""
-        if max_chars < 200:
-            raise ValueError("max_chars must be at least 200.")
+        if max_chars < 1:
+            raise ValueError("max_chars must be at least 1.")
 
         normalized = cls.normalize_text(text)
         if not normalized:
