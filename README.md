@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/estebanstifli/LocalText2Voice/releases/download/v1.0.0/LocalText2Voice-Setup-1.0.0.exe"><strong>Download Windows installer</strong></a>
+  <a href="https://github.com/estebanstifli/LocalText2Voice/releases/latest/download/LocalText2Voice-Setup.exe"><strong>Download Windows installer</strong></a>
   ·
   <a href="https://youtu.be/CuoBJlbknp4"><strong>Watch 1-minute demo</strong></a>
   ·
@@ -233,7 +233,7 @@ You choose the engine. The app does not force subscriptions.
 ## Quick Start On Windows
 
 1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
-2. Download `LocalText2Voice-Setup-1.0.0.exe`.
+2. Download `LocalText2Voice-Setup.exe`.
 3. Run the installer.
 4. Choose the setup profile:
    - **CPU light**: fast offline Piper workflow.
@@ -246,6 +246,8 @@ You choose the engine. The app does not force subscriptions.
 10. Open **Audio Mix** to create the podcast version.
 
 The Windows installer is the recommended distribution artifact. LocalText2Voice still uses a folder-style app internally, so models, voices, FFmpeg, Python runtime assets, and optional engine dependencies remain easy to update and download on demand.
+
+Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 
 Unsigned build note: early public builds may be unsigned until the open source code-signing process is ready. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
 
@@ -464,16 +466,17 @@ Large models and optional engine dependencies should stay outside the main execu
 
 ## Windows Installer Build
 
-The Inno Setup installer is built from the portable `dist/LocalText2Voice/` folder. The local installer tooling lives in `.util_instalador_y_firmas/`, which is intentionally ignored by Git because it may later contain signing tools and temporary artifacts.
+The tracked Inno Setup definition is `installer/LocalText2Voice.iss`. It is built from the portable `dist/LocalText2Voice/` folder using the local compiler in `.util_instalador_y_firmas/`, which remains ignored because it may contain signing tools and temporary artifacts.
 
 ```powershell
-& .\.util_instalador_y_firmas\InnoSetup\ISCC.exe .\.util_instalador_y_firmas\installer\LocalText2Voice.iss
+.\tools\build_windows_installer.ps1
 ```
 
 The generated installer is:
 
 ```text
-.util_instalador_y_firmas/output/LocalText2Voice-Setup-1.0.0.exe
+.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe
+.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe.sha256
 ```
 
 Installer details, first-run GPU setup behavior, validation notes, and future signing plan are documented in [docs/WINDOWS_INSTALLER_AND_SIGNING.md](docs/WINDOWS_INSTALLER_AND_SIGNING.md).

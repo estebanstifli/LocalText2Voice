@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -68,6 +69,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import __version__
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audio_mix import AudioMixSettings
 from app.core.audio_library import audio_library_files, library_directory
@@ -80,6 +82,13 @@ from app.core.audio_event_timeline import (
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.project_manager import DocumentImportError, ProjectManager
 from app.core.settings_manager import SettingsManager
+from app.core.update_manager import (
+    CHECK_INTERVAL_SECONDS,
+    UpdateError,
+    UpdateInfo,
+    UpdateManager,
+    launch_installer,
+)
 from app.server.engine_host_client import EngineHostClient
 from app.server.server_controller import LocalServerController
 from app.tts.base import BaseTTSEngine, TTSEngineError
@@ -130,6 +139,7 @@ from app.workers.verification_worker import (
     SegmentVerificationWorker,
 )
 from app.workers.voice_catalog_worker import VoiceGalleryWorker
+from app.workers.update_worker import UpdateCheckWorker, UpdateDownloadWorker
 from app.verification.faster_whisper_manager import (
     FasterWhisperManager,
     FasterWhisperVerifier,
@@ -949,6 +959,13 @@ class MainWindow(QMainWindow):
         self.loaded_tts_engine_id: str | None = None
         self.installer_setup_queue: list[str] = []
         self.installer_setup_running = False
+        self.update_manager = UpdateManager()
+        self.update_check_worker: UpdateCheckWorker | None = None
+        self.update_check_thread: QThread | None = None
+        self.update_download_worker: UpdateDownloadWorker | None = None
+        self.update_download_thread: QThread | None = None
+        self.update_progress_dialog: QProgressDialog | None = None
+        self._update_check_manual = False
         self.generation_started_at: float | None = None
         self.progress_current = 0
         self.progress_total = 0
@@ -1009,6 +1026,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(700, self._maybe_start_local_server)
         QTimer.singleShot(900, self._run_pending_installer_setup)
         QTimer.singleShot(1200, self._sync_engine_host_memory_state)
+        QTimer.singleShot(3000, self._maybe_check_for_updates)
 
     def tr(self, key: str, default: str | None = None, **values: object) -> str:
         return self.translator.text(key, default, **values)
@@ -1321,6 +1339,15 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.markup_toolbar_action)
 
         help_menu = self.app_menu_bar.addMenu(self.tr("menu_help", "Help"))
+        self.check_updates_action = QAction(
+            self.tr("check_for_updates", "Check for updates..."),
+            self,
+        )
+        self.check_updates_action.triggered.connect(
+            lambda _checked=False: self._check_for_updates(manual=True)
+        )
+        help_menu.addAction(self.check_updates_action)
+        help_menu.addSeparator()
         about_action = QAction(self.tr("help_about", "About LocalText2Voice"), self)
         about_action.triggered.connect(self._show_about_dialog)
         help_menu.addAction(about_action)
@@ -1848,6 +1875,23 @@ class MainWindow(QMainWindow):
         import_button.clicked.connect(
             self._import_music_file if library == "music" else self._import_sfx_file
         )
+        download_button = QPushButton(
+            self.tr(
+                "download_remote_music"
+                if library == "music"
+                else "download_remote_sfx",
+                "Download Remote Music"
+                if library == "music"
+                else "Download Remote SFX",
+            )
+        )
+        download_button.setIcon(ui_icon("export"))
+        download_button.setIconSize(QSize(18, 18))
+        download_button.clicked.connect(
+            lambda _checked=False, item=library: self._show_remote_audio_sources(
+                item
+            )
+        )
         open_button = QPushButton(
             self.tr("open_audio_library", "Open {library} folder", library=label)
         )
@@ -1857,6 +1901,7 @@ class MainWindow(QMainWindow):
             self._open_music_folder if library == "music" else self._open_sfx_folder
         )
         controls.addWidget(import_button)
+        controls.addWidget(download_button)
         controls.addWidget(open_button)
         layout.addLayout(controls)
 
@@ -1890,15 +1935,202 @@ class MainWindow(QMainWindow):
 
         if library == "music":
             self.import_music_button = import_button
+            self.download_remote_music_button = download_button
             self.open_music_folder_button = open_button
             self.music_table = table
             self.music_status_label = status
         else:
             self.import_sfx_button = import_button
+            self.download_remote_sfx_button = download_button
             self.open_sfx_folder_button = open_button
             self.sfx_table = table
             self.sfx_status_label = status
         return widget
+
+    def _show_remote_audio_sources(self, library: str) -> None:
+        is_music = library == "music"
+        dialog = QDialog(self)
+        dialog.setModal(True)
+        dialog.setWindowTitle(
+            self.tr(
+                "remote_music_sources_title"
+                if is_music
+                else "remote_sfx_sources_title",
+                "Download Remote Music"
+                if is_music
+                else "Download Remote SFX",
+            )
+        )
+        dialog.setMinimumSize(680, 480)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        title = QLabel(dialog.windowTitle())
+        title.setObjectName("sectionLabel")
+        layout.addWidget(title)
+        help_label = QLabel(
+            self.tr(
+                "remote_audio_sources_help",
+                "These links open in your browser. Review the license of each "
+                "download before publishing it; free does not always mean "
+                "attribution-free or commercial use.",
+            )
+        )
+        help_label.setObjectName("helperLabel")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        source_container = QWidget()
+        source_layout = QVBoxLayout(source_container)
+        source_layout.setContentsMargins(0, 0, 4, 0)
+        source_layout.setSpacing(8)
+        for name, url, description in self._remote_audio_sources(library):
+            source_frame = QFrame()
+            source_frame.setObjectName("inlineStatusFrame")
+            item_layout = QVBoxLayout(source_frame)
+            item_layout.setContentsMargins(12, 10, 12, 10)
+            item_layout.setSpacing(4)
+            name_label = QLabel(name)
+            name_font = name_label.font()
+            name_font.setBold(True)
+            name_label.setFont(name_font)
+            link_label = QLabel(
+                f'<a href="{escape(url)}">{escape(url)}</a>'
+            )
+            link_label.setOpenExternalLinks(True)
+            link_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            description_label = QLabel(description)
+            description_label.setObjectName("helperLabel")
+            description_label.setWordWrap(True)
+            item_layout.addWidget(name_label)
+            item_layout.addWidget(link_label)
+            item_layout.addWidget(description_label)
+            source_layout.addWidget(source_frame)
+        source_layout.addStretch(1)
+        scroll.setWidget(source_container)
+        layout.addWidget(scroll, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        close_button = QPushButton(self.tr("close", "Close"))
+        close_button.setIcon(ui_icon("close"))
+        close_button.setMinimumWidth(120)
+        close_button.setDefault(True)
+        close_button.clicked.connect(dialog.accept)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+        dialog.exec()
+
+    def _remote_audio_sources(
+        self,
+        library: str,
+    ) -> tuple[tuple[str, str, str], ...]:
+        if library == "music":
+            return (
+                (
+                    "Pixabay Music",
+                    "https://pixabay.com/es/music/",
+                    self.tr(
+                        "remote_music_pixabay_description",
+                        "260,000+ royalty-free music tracks. The Pixabay "
+                        "Content License generally allows use without "
+                        "attribution, subject to its prohibited uses.",
+                    ),
+                ),
+                (
+                    "Mixkit Music",
+                    "https://mixkit.co/free-stock-music/",
+                    self.tr(
+                        "remote_music_mixkit_description",
+                        "Free stock music organized by genre and mood under "
+                        "the Mixkit Stock Music Free License.",
+                    ),
+                ),
+                (
+                    "Free Music Archive",
+                    "https://freemusicarchive.org/home",
+                    self.tr(
+                        "remote_music_fma_description",
+                        "Original music under Creative Commons, public-domain "
+                        "or custom licenses. Check the license shown on every track.",
+                    ),
+                ),
+                (
+                    "Incompetech",
+                    "https://incompetech.com/music/royalty-free/",
+                    self.tr(
+                        "remote_music_incompetech_description",
+                        "Kevin MacLeod's royalty-free catalog. Free Creative "
+                        "Commons use requires visible attribution; a paid "
+                        "license is available when credit is not possible.",
+                    ),
+                ),
+                (
+                    "YouTube Audio Library",
+                    "https://www.youtube.com/audiolibrary",
+                    self.tr(
+                        "remote_music_youtube_description",
+                        "Royalty-free production music in YouTube Studio. A "
+                        "Google sign-in is required and some Creative Commons "
+                        "tracks require attribution.",
+                    ),
+                ),
+            )
+        return (
+            (
+                "Pixabay Sound Effects",
+                "https://pixabay.com/es/sound-effects/",
+                self.tr(
+                    "remote_sfx_pixabay_description",
+                    "120,000+ free sound-effect tracks under the Pixabay "
+                    "Content License, generally without required attribution.",
+                ),
+            ),
+            (
+                "Mixkit Sound Effects",
+                "https://mixkit.co/free-sound-effects/",
+                self.tr(
+                    "remote_sfx_mixkit_description",
+                    "Free MP3 and WAV effects for personal and commercial "
+                    "projects, with no sign-up or attribution required.",
+                ),
+            ),
+            (
+                "Freesound",
+                "https://freesound.org/",
+                self.tr(
+                    "remote_sfx_freesound_description",
+                    "A large community library of recordings, ambiences, loops "
+                    "and samples. Each sound has its own CC0, CC BY or CC BY-NC "
+                    "license, so check attribution and commercial-use terms.",
+                ),
+            ),
+            (
+                "ZapSplat",
+                "https://www.zapsplat.com/",
+                self.tr(
+                    "remote_sfx_zapsplat_description",
+                    "160,000+ effects. The free Basic account provides MP3 "
+                    "downloads and requires attribution; Premium removes that "
+                    "requirement.",
+                ),
+            ),
+            (
+                "YouTube Audio Library",
+                "https://www.youtube.com/audiolibrary",
+                self.tr(
+                    "remote_sfx_youtube_description",
+                    "Downloadable MP3 sound effects inside YouTube Studio, "
+                    "searchable by category and duration. Google sign-in required.",
+                ),
+            ),
+        )
 
     def _build_review_page(self) -> QWidget:
         widget = QWidget()
@@ -10111,11 +10343,268 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             self.tr("help_about", "About LocalText2Voice"),
-            self.tr(
-                "about_text",
-                "LocalText2Voice\nAI Voice & Audio Production\nBy Esteban, AndromedaNova.com",
+            (
+                self.tr(
+                    "about_text",
+                    "LocalText2Voice\nAI Voice & Audio Production\n"
+                    "By Esteban, AndromedaNova.com",
+                )
+                + "\n"
+                + self.tr("version_label", "Version: {version}", version=__version__)
             ),
         )
+
+    def _maybe_check_for_updates(self) -> None:
+        if not getattr(sys, "frozen", False):
+            return
+        if self.installer_setup_running:
+            QTimer.singleShot(60_000, self._maybe_check_for_updates)
+            return
+        update_settings = self.settings.get("updates", {})
+        if not isinstance(update_settings, dict) or not bool(
+            update_settings.get("auto_check", True)
+        ):
+            return
+        try:
+            last_checked_at = float(update_settings.get("last_checked_at", 0) or 0)
+        except (TypeError, ValueError):
+            last_checked_at = 0
+        if time.time() - last_checked_at < CHECK_INTERVAL_SECONDS:
+            return
+        self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, manual: bool) -> None:
+        if self.update_check_thread is not None:
+            return
+        self._update_check_manual = manual
+        update_settings = self.settings.setdefault("updates", {})
+        if isinstance(update_settings, dict):
+            update_settings["last_checked_at"] = int(time.time())
+            try:
+                self.settings_manager.save(self.settings)
+            except OSError as exc:
+                self.log_view.append_event(
+                    f"Could not save the update check timestamp: {exc}"
+                )
+
+        self.check_updates_action.setEnabled(False)
+        if manual:
+            self.status_label.setText(
+                self.tr("checking_for_updates", "Checking for updates...")
+            )
+
+        thread = QThread(self)
+        worker = UpdateCheckWorker(self.update_manager)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.update_available.connect(self._on_update_available)
+        worker.no_update.connect(self._on_no_update_available)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(self._on_update_check_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self.update_check_thread = thread
+        self.update_check_worker = worker
+        thread.start()
+
+    def _on_update_check_thread_finished(self) -> None:
+        self.update_check_thread = None
+        self.update_check_worker = None
+        if self.update_download_thread is None:
+            self.check_updates_action.setEnabled(True)
+
+    def _on_no_update_available(self) -> None:
+        if not self._update_check_manual:
+            return
+        self.status_label.setText(
+            self.tr("no_updates_status", "LocalText2Voice is up to date.")
+        )
+        QMessageBox.information(
+            self,
+            self.tr("updates_title", "LocalText2Voice updates"),
+            self.tr(
+                "no_updates_message",
+                "You already have the latest version ({version}).",
+                version=__version__,
+            ),
+        )
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self.log_view.append_event(f"Update check failed: {message}")
+        if self._update_check_manual:
+            QMessageBox.warning(
+                self,
+                self.tr("update_check_failed", "Could not check for updates"),
+                message,
+            )
+
+    def _on_update_available(self, info: object) -> None:
+        if not isinstance(info, UpdateInfo):
+            return
+        published = info.published_at.replace("T", " ").removesuffix("Z")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.tr("update_available", "Update available"))
+        box.setText(
+            self.tr(
+                "update_available_message",
+                "LocalText2Voice {version} is available.",
+                version=info.version,
+            )
+        )
+        details = [info.release_name]
+        if published:
+            details.append(
+                self.tr("update_published", "Published: {date}", date=published)
+            )
+        if info.installer_size:
+            details.append(
+                self.tr(
+                    "update_download_size",
+                    "Download: {size}",
+                    size=self._format_bytes(info.installer_size),
+                )
+            )
+        box.setInformativeText("\n".join(details))
+        if info.release_notes.strip():
+            box.setDetailedText(info.release_notes.strip())
+        download_button = box.addButton(
+            self.tr("download_update", "Download update"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(
+            self.tr("remind_me_later", "Later"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        if box.clickedButton() is download_button:
+            self._download_update(info)
+
+    def _download_update(self, info: UpdateInfo) -> None:
+        if self.update_download_thread is not None:
+            return
+        self.check_updates_action.setEnabled(False)
+        dialog = QProgressDialog(
+            self.tr("downloading_update", "Downloading update..."),
+            self.tr("cancel", "Cancel"),
+            0,
+            100,
+            self,
+        )
+        dialog.setWindowTitle(self.tr("updates_title", "LocalText2Voice updates"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+
+        thread = QThread(self)
+        worker = UpdateDownloadWorker(self.update_manager, info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.cancelled.connect(self._on_update_download_cancelled)
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(self._on_update_download_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        dialog.canceled.connect(lambda: worker.request_cancel())
+        self.update_progress_dialog = dialog
+        self.update_download_thread = thread
+        self.update_download_worker = worker
+        dialog.show()
+        thread.start()
+
+    def _on_update_download_progress(self, percent: int, size_text: str) -> None:
+        dialog = self.update_progress_dialog
+        if dialog is None:
+            return
+        if percent < 0:
+            dialog.setRange(0, 0)
+        else:
+            if dialog.maximum() == 0:
+                dialog.setRange(0, 100)
+            dialog.setValue(percent)
+        dialog.setLabelText(
+            self.tr(
+                "downloading_update_progress",
+                "Downloading update... {progress}",
+                progress=size_text,
+            )
+        )
+
+    def _on_update_download_finished(self, installer_path: object) -> None:
+        self._close_update_progress_dialog()
+        path = Path(installer_path)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self.tr("update_ready", "Update ready"))
+        box.setText(
+            self.tr(
+                "update_verified_message",
+                "The update was downloaded and its SHA-256 checksum was verified.",
+            )
+        )
+        box.setInformativeText(
+            self.tr(
+                "install_update_prompt",
+                "Install it now? LocalText2Voice will close before the installer opens.",
+            )
+        )
+        install_button = box.addButton(
+            self.tr("install_now", "Install now"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(
+            self.tr("install_later", "Later"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        if box.clickedButton() is install_button:
+            self._launch_update_installer(path)
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._close_update_progress_dialog()
+        self.log_view.append_event(f"Update download failed: {message}")
+        QMessageBox.warning(
+            self,
+            self.tr("update_download_failed", "Could not download the update"),
+            message,
+        )
+
+    def _on_update_download_cancelled(self) -> None:
+        self._close_update_progress_dialog()
+        self.status_label.setText(
+            self.tr("update_download_cancelled", "Update download cancelled.")
+        )
+
+    def _on_update_download_thread_finished(self) -> None:
+        self.update_download_thread = None
+        self.update_download_worker = None
+        if self.update_check_thread is None:
+            self.check_updates_action.setEnabled(True)
+
+    def _close_update_progress_dialog(self) -> None:
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+            self.update_progress_dialog.deleteLater()
+            self.update_progress_dialog = None
+
+    def _launch_update_installer(self, installer_path: Path) -> None:
+        if not self.close():
+            return
+        try:
+            launch_installer(installer_path)
+        except UpdateError as exc:
+            self.show()
+            QMessageBox.critical(
+                self,
+                self.tr("update_install_failed", "Could not start the installer"),
+                str(exc),
+            )
 
     def _enable_windows_native_resize_border(self) -> None:
         if sys.platform != "win32":
@@ -12863,6 +13352,15 @@ class MainWindow(QMainWindow):
                     )
                     event.ignore()
                     return
+        if self.update_download_worker is not None:
+            self.update_download_worker.request_cancel()
+        for update_thread in (
+            self.update_check_thread,
+            self.update_download_thread,
+        ):
+            if update_thread is not None:
+                update_thread.quit()
+                update_thread.wait(3000)
         shared_engine_action = self._shared_engine_close_action()
         if shared_engine_action == "cancel":
             event.ignore()

@@ -11,7 +11,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+)
 
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import StoredAudioEvent
@@ -58,6 +64,8 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.windowTitle(), "LocalText2Voice")
         self.assertTrue(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
         self.assertTrue(hasattr(window, "app_menu_bar"))
+        self.assertTrue(hasattr(window, "check_updates_action"))
+        self.assertTrue(window.check_updates_action.isEnabled())
         self.assertTrue(hasattr(window, "title_close_button"))
         self.assertTrue(hasattr(window, "resize_handles"))
         self.assertEqual(len(window.resize_handles), 8)
@@ -105,11 +113,38 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "music_table"))
         self.assertGreaterEqual(window.music_table.columnCount(), 5)
         self.assertFalse(window.import_music_button.icon().isNull())
+        self.assertFalse(window.download_remote_music_button.icon().isNull())
         self.assertFalse(window.open_music_folder_button.icon().isNull())
         self.assertEqual(window.audio_library_tabs.count(), 2)
         self.assertEqual(window.sfx_table.columnCount(), 4)
         self.assertFalse(window.import_sfx_button.icon().isNull())
+        self.assertFalse(window.download_remote_sfx_button.icon().isNull())
         self.assertFalse(window.open_sfx_folder_button.icon().isNull())
+        music_sources = window._remote_audio_sources("music")
+        sfx_sources = window._remote_audio_sources("sfx")
+        self.assertEqual(len(music_sources), 5)
+        self.assertEqual(len(sfx_sources), 5)
+        self.assertNotIn("Freesound", {source[0] for source in music_sources})
+        self.assertIn("Freesound", {source[0] for source in sfx_sources})
+        shown_dialogs: list[QDialog] = []
+        with patch.object(
+            QDialog,
+            "exec",
+            autospec=True,
+            side_effect=lambda dialog: shown_dialogs.append(dialog) or 0,
+        ) as show_dialog:
+            window.download_remote_music_button.click()
+            window.download_remote_sfx_button.click()
+        self.assertEqual(show_dialog.call_count, 2)
+        self.assertTrue(
+            all(
+                any(
+                    button.text() == window.tr("close", "Close")
+                    for button in dialog.findChildren(QPushButton)
+                )
+                for dialog in shown_dialogs
+            )
+        )
 
         window._show_voices_page()
         self.assertEqual(window.page_stack.currentIndex(), 5)
@@ -271,6 +306,22 @@ class MainWindowUITests(unittest.TestCase):
             {"music-1", "sfx-1"},
         )
         self.assertEqual(panel.event_detail_tabs.count(), 2)
+
+        window.page_stack.setCurrentWidget(panel)
+        panel.mix_tabs.setCurrentWidget(panel.advanced_tab)
+        panel.segment_text_view.setFixedWidth(180)
+        panel.segment_text_view.setPlainText("palabra " * 300)
+        panel.segment_line_by_sequence = {0: 0}
+        panel.current_highlighted_segment = None
+        panel.current_highlighted_word = None
+        window.show()
+        self.application.processEvents()
+        horizontal_scroll = panel.segment_text_view.horizontalScrollBar()
+        self.assertGreater(horizontal_scroll.maximum(), 0)
+        horizontal_scroll.setValue(horizontal_scroll.maximum() // 2)
+        fixed_horizontal_position = horizontal_scroll.value()
+        panel._highlight_advanced_segment(0, (0, 120, 127))
+        self.assertEqual(horizontal_scroll.value(), fixed_horizontal_position)
 
         panel.pending_advanced_full_play = True
         panel.pending_advanced_play_position_seconds = 4.25

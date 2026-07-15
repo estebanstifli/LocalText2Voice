@@ -2,9 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-set "DIST_DIR=dist\LocalText2Voice"
+set "DIST_ROOT=%LTV_DIST_ROOT%"
+if "%DIST_ROOT%"=="" set "DIST_ROOT=dist"
+set "DIST_DIR=%DIST_ROOT%\LocalText2Voice"
 set "RUNTIME_BACKUP=build\preserved_runtime\python311"
 set "CONFIG_BACKUP=build\preserved_config\config.json"
+set "PRESERVE_RUNTIME=%LTV_PRESERVE_RUNTIME%"
+if "%PRESERVE_RUNTIME%"=="" set "PRESERVE_RUNTIME=1"
 set "PRESERVE_LOCAL_CONFIG=%LTV_PRESERVE_CONFIG%"
 if "%PRESERVE_LOCAL_CONFIG%"=="" set "PRESERVE_LOCAL_CONFIG=0"
 if not exist "%DIST_DIR%" goto :dist_check_done
@@ -32,11 +36,11 @@ if errorlevel 1 goto :error
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto :error
 
-if exist "%DIST_DIR%\runtimes\python311\python\python.exe" (
+if /I "%PRESERVE_RUNTIME%"=="1" if exist "%DIST_DIR%\runtimes\python311\python\python.exe" (
     echo Preserving installed embedded Python runtime from previous build...
     if exist "%RUNTIME_BACKUP%" rmdir /S /Q "%RUNTIME_BACKUP%"
-    xcopy /E /I /Y "%DIST_DIR%\runtimes\python311" "%RUNTIME_BACKUP%" >nul
-    if errorlevel 1 goto :error
+    robocopy "%DIST_DIR%\runtimes\python311" "%RUNTIME_BACKUP%" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+    if errorlevel 8 goto :error
 )
 if /I "%PRESERVE_LOCAL_CONFIG%"=="1" if exist "%DIST_DIR%\config.json" (
     echo Preserving local app configuration from previous build...
@@ -51,6 +55,7 @@ echo Building portable application folder...
     --clean ^
     --windowed ^
     --onedir ^
+    --distpath "%DIST_ROOT%" ^
     --name LocalText2Voice ^
     --icon "assets\LocalText2Voice.ico" ^
     --paths "%CD%" ^
@@ -141,11 +146,24 @@ xcopy /E /I /Y "ffmpeg" "%DIST_DIR%\ffmpeg" >nul
 xcopy /E /I /Y "music" "%DIST_DIR%\music" >nul
 xcopy /E /I /Y "licenses" "%DIST_DIR%\licenses" >nul
 xcopy /E /I /Y "docs" "%DIST_DIR%\docs" >nul
-if exist "%RUNTIME_BACKUP%\python\python.exe" (
+if /I not "%PRESERVE_RUNTIME%"=="1" goto :use_clean_runtime
+if not exist "%RUNTIME_BACKUP%\python\python.exe" goto :use_clean_runtime
+(
     echo Restoring preserved embedded Python runtime with installed engine dependencies...
-    xcopy /E /I /Y "%RUNTIME_BACKUP%" "%DIST_DIR%\runtimes\python311" >nul
-) else (
-    xcopy /E /I /Y "build\python_runtime\python311" "%DIST_DIR%\runtimes\python311" >nul
+    robocopy "%RUNTIME_BACKUP%" "%DIST_DIR%\runtimes\python311" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+    if errorlevel 8 goto :error
+)
+goto :runtime_ready
+
+:use_clean_runtime
+echo Using clean embedded Python runtime for distributable build...
+robocopy "build\python_runtime\python311" "%DIST_DIR%\runtimes\python311" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 goto :error
+
+:runtime_ready
+if not exist "%DIST_DIR%\runtimes\python311\python\python.exe" (
+    echo Embedded Python runtime is missing from %DIST_DIR%.
+    goto :error
 )
 ".venv\Scripts\python.exe" tools\stamp_python_runtime.py "%DIST_DIR%\runtimes\python311"
 if errorlevel 1 goto :error

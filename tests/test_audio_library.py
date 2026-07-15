@@ -80,3 +80,17 @@ def test_explicit_play_path_without_extension_adds_supported_suffix(
     assert resolve_audio_reference(
         "music/sfx/doors/close", {}, root=tmp_path
     ) == source.resolve()
+
+
+def test_windows_distribution_includes_starter_sfx_library() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    bundled_sfx = repository_root / "music/sfx"
+
+    assert {path.name for path in bundled_sfx.glob("*.mp3")} == {
+        "laughing witch.mp3",
+        "thunder.mp3",
+        "womans_scream.mp3",
+    }
+    assert "xcopy /E /I /Y \"music\" \"%DIST_DIR%\\music\"" in (
+        repository_root / "build_windows.bat"
+    ).read_text(encoding="utf-8")

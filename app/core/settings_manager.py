@@ -181,6 +181,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_sync": False,
         "last_sync_at": "",
     },
+    "updates": {
+        "auto_check": True,
+        "last_checked_at": 0,
+    },
     "installer_setup": {
         "profile": "",
         "pending_installs": [],

@@ -2854,8 +2854,11 @@ class AudioMixPreviewPanel(QWidget):
                     )
                 selection.format.setBackground(QColor("#fef08a"))
                 selections.append(selection)
+                horizontal_scroll = self.segment_text_view.horizontalScrollBar()
+                horizontal_position = horizontal_scroll.value()
                 self.segment_text_view.setTextCursor(cursor)
                 self.segment_text_view.ensureCursorVisible()
+                horizontal_scroll.setValue(horizontal_position)
                 self.segment_timeline_view.set_active_line(line)
         else:
             self.segment_timeline_view.set_active_line(

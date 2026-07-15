@@ -9,18 +9,19 @@ This document records the current LocalText2Voice Windows installer setup so it 
 - This folder is intentionally ignored by Git.
 - Inno Setup was installed locally into:
   - `.util_instalador_y_firmas/InnoSetup/`
-- Installer script:
-  - `.util_instalador_y_firmas/installer/LocalText2Voice.iss`
-- Installer output:
-  - `.util_instalador_y_firmas/output/LocalText2Voice-Setup-1.0.0.exe`
+- Tracked installer script:
+  - `installer/LocalText2Voice.iss`
+- Release outputs:
+  - `.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe`
+  - `.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe.sha256`
 
 The installer is not signed yet.
 
-## Why the installer folder is ignored
+## Why the local tooling folder is ignored
 
-The installer tooling is local build infrastructure, not application source code. It may later contain certificate tooling, signing configuration, temporary build artifacts, and private signing experiments. It should not be committed.
+The Inno Setup installation and signing tooling are local build infrastructure. They may later contain certificate tooling, signing configuration, temporary build artifacts, and private signing experiments. They should not be committed.
 
-The app source, installer behavior, and first-run setup hooks are committed in the normal repository files.
+The installer definition is now tracked in `installer/`, while the compiler remains local in `.util_instalador_y_firmas/`.
 
 ## Installer behavior
 
@@ -89,14 +90,66 @@ The base installer still includes the application, Piper runtime, FFmpeg, bundle
 From the repository root:
 
 ```powershell
-cmd /c build_windows.bat
-& .\.util_instalador_y_firmas\InnoSetup\ISCC.exe .\.util_instalador_y_firmas\installer\LocalText2Voice.iss
+.\tools\build_windows_installer.ps1
+```
+
+The script reads the version from `app/__init__.py`, builds the portable app with a clean embedded Python runtime, passes that same version to Inno Setup, and generates the SHA-256 file. It deliberately ignores locally preserved runtime packages so development-only engine dependencies cannot inflate the public installer. To rebuild only the installer from an existing `dist/LocalText2Voice/` folder:
+
+```powershell
+.\tools\build_windows_installer.ps1 -SkipAppBuild
+```
+
+If the normal `dist/` is being used by a running MCP or app process, build a clean release distribution elsewhere without interrupting it:
+
+```powershell
+.\tools\build_windows_installer.ps1 -DistRoot "build\release_dist"
 ```
 
 The generated installer is:
 
 ```text
-.util_instalador_y_firmas/output/LocalText2Voice-Setup-1.0.0.exe
+.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe
+.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe.sha256
+```
+
+The filename deliberately stays unchanged across releases. The version remains embedded in the EXE metadata and in the application itself.
+
+## Automatic update flow
+
+The installed Windows app checks:
+
+```text
+https://api.github.com/repos/estebanstifli/LocalText2Voice/releases/latest
+```
+
+The stable release endpoint excludes drafts and prereleases. The updater:
+
+1. Compares `tag_name` with the version in `app/__init__.py` using PEP 440 version ordering.
+2. Requires exact assets named `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256`.
+3. Downloads both files into `%LOCALAPPDATA%\LocalText2Voice\updates\<version>\`.
+4. Verifies the downloaded size and SHA-256 hash.
+5. Offers to close LocalText2Voice and open the verified installer.
+
+Automatic checks run only in the frozen app and at most once every 24 hours. Manual checks are always available from **Help > Check for updates**. Automatic errors stay silent and are written to the app log; manual errors are shown to the user.
+
+Version `1.1.0` is the first build containing the updater. Existing `1.0.0` installations must install it manually once; releases after that can be detected automatically.
+
+## Publishing an update
+
+1. Update `__version__` in `app/__init__.py`.
+2. Run `tools/build_windows_installer.ps1`.
+3. Create a matching Git tag, for example `v1.2.0`.
+4. Create a normal GitHub Release for that tag (not a draft or prerelease).
+5. Add the release notes.
+6. Upload exactly:
+   - `LocalText2Voice-Setup.exe`
+   - `LocalText2Voice-Setup.exe.sha256`
+7. Publish the release.
+
+The permanent installer URL is:
+
+```text
+https://github.com/estebanstifli/LocalText2Voice/releases/latest/download/LocalText2Voice-Setup.exe
 ```
 
 ## Validation performed
@@ -106,7 +159,7 @@ The installer was tested in silent mode:
 CPU profile:
 
 ```powershell
-LocalText2Voice-Setup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TYPE=cpu /DIR="<temp>"
+LocalText2Voice-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TYPE=cpu /DIR="<temp>"
 ```
 
 Expected config:
@@ -123,7 +176,7 @@ Expected config:
 GPU profile:
 
 ```powershell
-LocalText2Voice-Setup-1.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TYPE=gpu /DIR="<temp>"
+LocalText2Voice-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TYPE=gpu /DIR="<temp>"
 ```
 
 Expected config:
@@ -144,7 +197,7 @@ Expected config:
 Spanish language mapping:
 
 ```powershell
-LocalText2Voice-Setup-1.0.0.exe /VERYSILENT /LANG=spanish /TYPE=cpu /DIR="<temp>"
+LocalText2Voice-Setup.exe /VERYSILENT /LANG=spanish /TYPE=cpu /DIR="<temp>"
 ```
 
 Expected config:
@@ -161,7 +214,7 @@ Recommended signing order when a certificate is available:
 
 1. Sign `dist/LocalText2Voice/LocalText2Voice.exe`.
 2. Build the Inno Setup installer.
-3. Sign `LocalText2Voice-Setup-<version>.exe`.
+3. Sign `LocalText2Voice-Setup.exe`.
 
 Signing only the installer is workable for early distribution, but signing both is more professional because the installed EXE still has publisher identity if Windows Defender, SmartScreen, or antivirus inspects it directly.
 
@@ -175,4 +228,3 @@ For open source signing, SignPath Foundation is the preferred future path:
 - Manual approval of signed releases.
 
 Until the certificate/signing flow is ready, distribute the unsigned installer through GitHub Releases and clearly label it as unsigned.
-
