@@ -7455,6 +7455,40 @@ class MainWindow(QMainWindow):
             QComboBox:focus, QDoubleSpinBox:focus {
                 border: 1px solid #1769ff;
             }
+            QPlainTextEdit#timelineTextPanel {
+                background: #f8fafc;
+                color: #64748b;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+                font-size: 9.5pt;
+            }
+            QPlainTextEdit#segmentTextPanel {
+                background: #ffffff;
+                color: #111827;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+                font-size: 9.5pt;
+            }
+            QListWidget#sfxEventPanel {
+                background: #fff7ed;
+                border: 1px solid #fed7aa;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QListWidget#sfxEventPanel::item {
+                color: #9a3412;
+                padding: 7px;
+                border-radius: 5px;
+            }
+            QListWidget#sfxEventPanel::item:selected {
+                background: #ffedd5;
+                color: #7c2d12;
+            }
+            QFrame#eventDetailsPanel {
+                background: #f8fafc;
+                border: 1px solid #dbe2ec;
+                border-radius: 8px;
+            }
             QPushButton {
                 background: #ffffff;
                 border: 1px solid #dbe2ec;
@@ -11054,11 +11088,13 @@ class MainWindow(QMainWindow):
             self.header_open_output_button.isVisible()
         )
         audiobook = self._current_audiobook()
+        segments = ()
         audio_events = ()
         timeline_clips = ()
         speech_intervals = ()
         stem_cache_dir = None
         if audiobook is not None:
+            segments = tuple(self.audiobook_store.list_segments(audiobook.id))
             audio_events = tuple(self.audiobook_store.list_audio_events(audiobook.id))
             duration_seconds = self._probe_audio_duration(narration_path) or 0.0
             timeline_clips = tuple(
@@ -11083,6 +11119,13 @@ class MainWindow(QMainWindow):
             settings=self._current_mix_settings(),
             metadata=dict(self.settings.get("metadata", {})),
             audiobook_id=audiobook.id if audiobook is not None else None,
+            project_dir=audiobook.project_dir if audiobook is not None else None,
+            project_settings=(
+                json.loads(audiobook.project_settings_json or "{}")
+                if audiobook is not None
+                else {}
+            ),
+            segments=segments,
             audio_events=audio_events,
             timeline_clips=timeline_clips,
             speech_intervals=speech_intervals,

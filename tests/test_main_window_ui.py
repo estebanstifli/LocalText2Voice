@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton
 
 from app.ui.main_window import MainWindow
 
@@ -68,18 +68,21 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "audio_mix_preview_panel"))
         self.assertTrue(hasattr(window.audio_mix_preview_panel, "waveform_worker"))
         self.assertTrue(hasattr(window.audio_mix_preview_panel, "render_worker"))
-        self.assertEqual(window.audio_mix_preview_panel.audio_event_table.columnCount(), 9)
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "segment_text_view"))
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "segment_timeline_view"))
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "audio_event_list"))
+        self.assertTrue(hasattr(window.audio_mix_preview_panel, "event_details_frame"))
+        self.assertEqual(
+            window.audio_mix_preview_panel.segment_text_view.lineWrapMode(),
+            QPlainTextEdit.LineWrapMode.NoWrap,
+        )
         self.assertEqual(
             set(window.audio_mix_preview_panel.track_volume_spins),
             {"voice", "background", "music", "ambient", "sfx"},
         )
         self.assertEqual(window.audio_mix_preview_panel.mix_tabs.count(), 2)
         self.assertFalse(hasattr(window.audio_mix_preview_panel, "advanced_toggle"))
-        self.assertTrue(hasattr(window.audio_mix_preview_panel, "multitrack_graph"))
-        window.audio_mix_preview_panel.multitrack_graph.resize(900, 360)
-        self.assertFalse(
-            window.audio_mix_preview_panel.multitrack_graph.grab().isNull()
-        )
+        self.assertFalse(hasattr(window.audio_mix_preview_panel, "multitrack_graph"))
         window.audio_mix_preview_panel.total_duration_seconds = 10.0
         window.audio_mix_preview_panel._set_shared_cursor(4.0)
         window.audio_mix_preview_panel._on_media_status_changed(
