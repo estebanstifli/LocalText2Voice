@@ -5,6 +5,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,6 +13,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton
 
+from app.core.audio_mix import AudioMixSettings
+from app.core.audiobook_store import StoredAudioEvent
+from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
 from app.ui.main_window import MainWindow
 
 
@@ -216,6 +220,63 @@ class MainWindowUITests(unittest.TestCase):
         self.assertNotIn("Not installed", window.chatterbox_status_label.text())
         self.assertNotIn("No instalado", window.chatterbox_status_label.text())
         self.assertTrue(window.chatterbox_remove_button.isEnabled())
+
+    def test_advanced_mix_groups_tracks_and_preserves_render_play_position(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        panel = window.audio_mix_preview_panel
+        settings = AudioMixSettings(voice_start_offset_ms=0)
+
+        def audio_event(uid: str, track: str, filename: str) -> StoredAudioEvent:
+            return StoredAudioEvent(
+                id=len(uid),
+                audiobook_id=1,
+                segment_id=1,
+                event_uid=uid,
+                event_id=uid,
+                command_type="play",
+                raw_command="",
+                source_position=0,
+                anchor_segment_sequence=0,
+                anchor_source_word=0,
+                anchor_mode="after",
+                file_reference=filename,
+                file_path=f"C:/missing/{filename}",
+                track=track,
+                duration_ms=2000,
+                resolved_time_ms=1000,
+                resolution_status="resolved",
+            )
+
+        music_event = audio_event("music-1", "music", "theme.mp3")
+        sfx_event = audio_event("sfx-1", "sfx", "door.mp3")
+        panel.context = AudioMixPreviewContext(
+            voice_path=Path("C:/missing/voice.mp3"),
+            output_dir=Path("C:/missing"),
+            ffmpeg_path="ffmpeg",
+            music_path=None,
+            settings=settings,
+            metadata={},
+            audio_events=(music_event, sfx_event),
+        )
+        panel.editable_audio_events = [music_event, sfx_event]
+        panel._apply_settings(settings)
+        panel._refresh_audio_event_table()
+
+        self.assertEqual(set(panel.audio_event_lists), {"music", "sfx"})
+        panel.advanced_playback_active = True
+        panel._sync_active_audio_events(1.5)
+        self.assertEqual(
+            set(panel.active_audio_event_uids),
+            {"music-1", "sfx-1"},
+        )
+        self.assertEqual(panel.event_detail_tabs.count(), 2)
+
+        panel.pending_advanced_full_play = True
+        panel.pending_advanced_play_position_seconds = 4.25
+        with patch.object(panel, "_play_advanced_cached") as play_cached:
+            panel._on_advanced_full_preview_rendered("C:/missing/rendered.mp3")
+        play_cached.assert_called_once_with(4.25)
 
 
 if __name__ == "__main__":

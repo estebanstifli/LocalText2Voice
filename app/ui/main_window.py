@@ -7484,10 +7484,29 @@ class MainWindow(QMainWindow):
                 background: #ffedd5;
                 color: #7c2d12;
             }
+            QListWidget#sfxEventPanel[audioTrack="music"] {
+                background: #eff6ff;
+                border-color: #bfdbfe;
+            }
+            QListWidget#sfxEventPanel[audioTrack="music"]::item:selected {
+                background: #dbeafe;
+                color: #1e3a8a;
+            }
+            QListWidget#sfxEventPanel[audioTrack="ambient"] {
+                background: #ecfdf5;
+                border-color: #a7f3d0;
+            }
+            QListWidget#sfxEventPanel[audioTrack="ambient"]::item:selected {
+                background: #d1fae5;
+                color: #064e3b;
+            }
             QFrame#eventDetailsPanel {
                 background: #f8fafc;
                 border: 1px solid #dbe2ec;
                 border-radius: 8px;
+            }
+            QTabBar#eventDetailTabs::tab {
+                padding: 6px 12px;
             }
             QPushButton {
                 background: #ffffff;

@@ -673,6 +673,8 @@
   "rendering_full_playback_mix": "Renderizando mezcla completa para reproducir...",
   "select_fx_event": "Selecciona un evento FX para editar.",
   "pending_render": "pendiente de render",
+  "fx_waveform": "Onda FX",
+  "fx_waveform_missing": "No se encuentra el archivo de audio FX.",
   "enabled": "Activado",
   "loop": "Bucle",
   "trim_silence": "Recortar silencio",

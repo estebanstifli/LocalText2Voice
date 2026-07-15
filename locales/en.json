@@ -673,6 +673,8 @@
   "rendering_full_playback_mix": "Rendering full mix for playback...",
   "select_fx_event": "Select an FX event to edit.",
   "pending_render": "pending render",
+  "fx_waveform": "FX waveform",
+  "fx_waveform_missing": "FX audio file not found.",
   "enabled": "Enabled",
   "loop": "Loop",
   "trim_silence": "Trim silence",
