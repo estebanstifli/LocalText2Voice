@@ -200,6 +200,18 @@ def _with_file_uris(payload: dict[str, Any]) -> dict[str, Any]:
                 payload[uri_key] = Path(value).resolve().as_uri()
             except Exception:
                 pass
+    project = payload.get("project")
+    if isinstance(project, dict):
+        for key, uri_key in (
+            ("project_dir", "project_dir_uri"),
+            ("manifest_path", "manifest_file_uri"),
+        ):
+            value = str(project.get(key, "") or "")
+            if value:
+                try:
+                    project[uri_key] = Path(value).resolve().as_uri()
+                except Exception:
+                    pass
     return payload
 
 
@@ -408,7 +420,12 @@ def generate_audio(
     )
 
 
-@mcp.tool(description="Get one generation job by id.")
+@mcp.tool(
+    description=(
+        "Get one generation job by id. Completed jobs include the editable "
+        "LocalText2Voice project name, manifest path, and file URI."
+    )
+)
 def get_job(job_id: str) -> dict[str, Any]:
     return _safe(
         lambda: _with_file_uris(

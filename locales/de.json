@@ -12,6 +12,8 @@
   "menu_help": "Help",
   "file_new_project": "New Project",
   "file_open_project": "Open Project",
+  "file_open_recent": "Zuletzt geoeffnet",
+  "file_no_recent_projects": "Keine kuerzlich verwendeten Projekte",
   "file_save": "Save",
   "file_save_as": "Save As",
   "file_export_source_text": "Export Source Text...",

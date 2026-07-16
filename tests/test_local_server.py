@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -7,9 +8,9 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from app.core.settings_manager import SettingsManager
-from app.server.http_app import create_http_app
+from app.server.http_app import _job_response, create_http_app
 from app.server.engine_host_client import EngineHostClient
-from app.server.job_manager import LocalServerJobManager, wait_for_job
+from app.server.job_manager import LocalServerJobManager, ServerJob, wait_for_job
 from app.server.ltv_service import LocalText2VoiceService
 
 
@@ -147,6 +148,37 @@ def test_job_manager_runs_generation_job(tmp_path):
         manager.shutdown()
 
 
+def test_completed_job_response_exposes_editable_project(tmp_path):
+    settings = _settings(tmp_path)
+    project_dir = tmp_path / "projects" / "project-uuid"
+    project = {
+        "audiobook_id": 123,
+        "uuid": "project-uuid",
+        "title": "Tiny test",
+        "project_dir": str(project_dir),
+        "manifest_path": str(project_dir / "project.localtext2voice.json"),
+    }
+    job = ServerJob(
+        job_id="job-123",
+        status="complete",
+        title="Tiny test",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:01:00Z",
+        audiobook_id=123,
+        result_json=json.dumps(
+            {
+                "project": project,
+                "project_edit_message": "Puedes editar este proyecto.",
+            }
+        ),
+    )
+
+    payload = _job_response(job, settings)
+
+    assert payload["project"] == project
+    assert payload["message"] == "Puedes editar este proyecto."
+
+
 def test_service_reloads_ui_settings_and_keeps_project_id(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["tts_engine"] = "piper"
@@ -180,7 +212,12 @@ def test_external_play_forces_whisper_review_and_postproduction_mix(tmp_path):
     mixed = tmp_path / "output" / "podcast1_mix.mp3"
     pipeline = MagicMock()
     pipeline.generate.return_value = [clean]
-    pipeline._active_audiobook = SimpleNamespace(id=7)
+    pipeline._active_audiobook = SimpleNamespace(
+        id=7,
+        uuid="project-uuid",
+        title="Prueba MCP",
+        project_dir=tmp_path / "projects" / "project-uuid",
+    )
 
     with (
         patch("app.server.ltv_service.AudioPipeline", return_value=pipeline),
@@ -203,4 +240,11 @@ def test_external_play_forces_whisper_review_and_postproduction_mix(tmp_path):
     review.assert_called_once()
     render.assert_called_once()
     assert result["clean_mp3"] == str(clean)
+    assert result["project"]["audiobook_id"] == 7
+    assert result["project"]["uuid"] == "project-uuid"
+    assert result["project"]["title"] == "Prueba MCP"
+    assert result["project"]["manifest_path"].endswith(
+        "project.localtext2voice.json"
+    )
+    assert "LocalText2Voice" in result["project_edit_message"]
     assert result["mix_mp3"] == str(mixed)

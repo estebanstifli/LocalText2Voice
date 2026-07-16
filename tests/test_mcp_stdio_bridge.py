@@ -6,6 +6,8 @@ import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from mcp_stdio_bridge import _with_file_uris
+
 
 def test_stdio_bridge_exposes_expected_tools():
     async def run_client() -> None:
@@ -43,3 +45,18 @@ def test_stdio_bridge_exposes_expected_tools():
                 assert "localtext2voice://docs/engines" in resource_uris
 
     anyio.run(run_client)
+
+
+def test_stdio_bridge_adds_project_file_uris(tmp_path):
+    project_dir = tmp_path / "project"
+    payload = {
+        "project": {
+            "project_dir": str(project_dir),
+            "manifest_path": str(project_dir / "project.localtext2voice.json"),
+        }
+    }
+
+    enriched = _with_file_uris(payload)
+
+    assert enriched["project"]["project_dir_uri"].startswith("file:")
+    assert enriched["project"]["manifest_file_uri"].startswith("file:")

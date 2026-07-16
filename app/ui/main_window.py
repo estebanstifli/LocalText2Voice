@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ctypes
-import ctypes.wintypes
 import math
 import json
 import os
@@ -17,7 +15,7 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QPoint, QSize, QThread, QTimer, Qt
+from PySide6.QtCore import QSize, QThread, QTimer, Qt
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -25,8 +23,6 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QIcon,
-    QPainter,
-    QPen,
     QPixmap,
     QTextCursor,
 )
@@ -43,7 +39,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -151,228 +146,6 @@ from .icons import ICON_LIGHT, ui_icon
 from .markup_highlighter import LTVMarkupHighlighter
 from .voice_manager_dialog import VoiceManagerDialog
 from .widgets import FilePicker, LogView, PathPicker
-
-
-class WindowResizeHandle(QWidget):
-    def __init__(
-        self,
-        main_window: "MainWindow",
-        edges: Qt.Edge,
-        parent: QWidget,
-    ) -> None:
-        super().__init__(parent)
-        self.main_window = main_window
-        self.edges = edges
-        self._manual_start_pos: QPoint | None = None
-        self._manual_start_geometry = None
-        self.setObjectName("windowResizeHandle")
-        self.setMouseTracking(True)
-        self.setCursor(self._cursor_for_edges(edges))
-        self.setStyleSheet(
-            "QWidget#windowResizeHandle { background: rgba(255, 255, 255, 1); }"
-        )
-
-    @staticmethod
-    def _cursor_for_edges(edges: Qt.Edge) -> Qt.CursorShape:
-        left = bool(edges & Qt.Edge.LeftEdge)
-        right = bool(edges & Qt.Edge.RightEdge)
-        top = bool(edges & Qt.Edge.TopEdge)
-        bottom = bool(edges & Qt.Edge.BottomEdge)
-        if (top and left) or (bottom and right):
-            return Qt.CursorShape.SizeFDiagCursor
-        if (top and right) or (bottom and left):
-            return Qt.CursorShape.SizeBDiagCursor
-        if left or right:
-            return Qt.CursorShape.SizeHorCursor
-        return Qt.CursorShape.SizeVerCursor
-
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        if event.button() != Qt.MouseButton.LeftButton or self.main_window.isMaximized():
-            super().mousePressEvent(event)
-            return
-
-        window_handle = self.main_window.windowHandle()
-        if window_handle is not None and window_handle.startSystemResize(self.edges):
-            event.accept()
-            return
-
-        self._manual_start_pos = event.globalPosition().toPoint()
-        self._manual_start_geometry = self.main_window.geometry()
-        event.accept()
-
-    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
-        if self._manual_start_pos is None or self._manual_start_geometry is None:
-            super().mouseMoveEvent(event)
-            return
-
-        delta = event.globalPosition().toPoint() - self._manual_start_pos
-        geometry = self._manual_start_geometry
-        new_geometry = geometry.__class__(geometry)
-        minimum_width = self.main_window.minimumWidth()
-        minimum_height = self.main_window.minimumHeight()
-
-        if self.edges & Qt.Edge.LeftEdge:
-            new_geometry.setLeft(
-                min(geometry.right() - minimum_width + 1, geometry.left() + delta.x())
-            )
-        if self.edges & Qt.Edge.RightEdge:
-            new_geometry.setRight(
-                max(geometry.left() + minimum_width - 1, geometry.right() + delta.x())
-            )
-        if self.edges & Qt.Edge.TopEdge:
-            new_geometry.setTop(
-                min(geometry.bottom() - minimum_height + 1, geometry.top() + delta.y())
-            )
-        if self.edges & Qt.Edge.BottomEdge:
-            new_geometry.setBottom(
-                max(geometry.top() + minimum_height - 1, geometry.bottom() + delta.y())
-            )
-
-        self.main_window.setGeometry(new_geometry)
-        event.accept()
-
-    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
-        self._manual_start_pos = None
-        self._manual_start_geometry = None
-        super().mouseReleaseEvent(event)
-
-
-class WindowTitleBar(QFrame):
-    def __init__(self, main_window: "MainWindow") -> None:
-        super().__init__(main_window)
-        self.main_window = main_window
-        self._drag_offset: QPoint | None = None
-        self.setObjectName("windowTitleBar")
-        self.setFixedHeight(38)
-
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_offset = (
-                event.globalPosition().toPoint() - self.main_window.frameGeometry().topLeft()
-            )
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
-        if (
-            self._drag_offset is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
-            if self.main_window.isMaximized():
-                self.main_window.showNormal()
-                self.main_window._update_window_button_state()
-            self.main_window.move(event.globalPosition().toPoint() - self._drag_offset)
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.main_window._toggle_maximized_window()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-
-class WindowControlButton(QPushButton):
-    _CUSTOM_GLYPH_NAMES = {"window_minimize", "window_maximize", "window_restore", "close"}
-
-    def __init__(
-        self,
-        icon_name: str,
-        *,
-        hover_icon_name: str | None = None,
-        normal_color: str = "#475569",
-        hover_color: str | None = None,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.icon_name = icon_name
-        self.hover_icon_name = hover_icon_name or icon_name
-        self.normal_color = normal_color
-        self.hover_color = hover_color or normal_color
-        self._hovered = False
-        self._refresh_icon()
-
-    def _uses_custom_glyph(self) -> bool:
-        return self.icon_name in self._CUSTOM_GLYPH_NAMES
-
-    def _refresh_icon(self) -> None:
-        if self._uses_custom_glyph():
-            self.setIcon(QIcon())
-            self.update()
-            return
-        icon_name = self.hover_icon_name if self._hovered else self.icon_name
-        icon_color = self.hover_color if self._hovered else self.normal_color
-        self.setIcon(ui_icon(icon_name, color=icon_color))
-
-    def _active_color(self) -> str:
-        return self.hover_color if self._hovered else self.normal_color
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        super().paintEvent(event)
-        if not self._uses_custom_glyph():
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(QColor(self._active_color()))
-        pen.setWidthF(1.0)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        center_x = self.width() // 2
-        center_y = self.height() // 2
-
-        if self.icon_name == "window_minimize":
-            line_half = 5
-            y = center_y + 3
-            painter.drawLine(center_x - line_half, y, center_x + line_half, y)
-        elif self.icon_name == "window_maximize":
-            side = 11
-            painter.drawRect(center_x - side // 2, center_y - side // 2 + 1, side, side)
-        elif self.icon_name == "window_restore":
-            side = 9
-            painter.drawRect(center_x - side // 2 + 2, center_y - side // 2 - 1, side, side)
-            painter.drawRect(center_x - side // 2 - 2, center_y - side // 2 + 3, side, side)
-        elif self.icon_name == "close":
-            line_half = 5
-            painter.drawLine(
-                center_x - line_half,
-                center_y - line_half,
-                center_x + line_half,
-                center_y + line_half,
-            )
-            painter.drawLine(
-                center_x + line_half,
-                center_y - line_half,
-                center_x - line_half,
-                center_y + line_half,
-            )
-
-        painter.end()
-
-    def set_icon_name(self, icon_name: str) -> None:
-        self.icon_name = icon_name
-        self.hover_icon_name = icon_name
-        self._refresh_icon()
-
-    def enterEvent(self, event) -> None:  # type: ignore[override]
-        self._hovered = True
-        self._refresh_icon()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # type: ignore[override]
-        self._hovered = False
-        self._refresh_icon()
-        super().leaveEvent(event)
 
 
 MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
@@ -863,10 +636,6 @@ class OmniVoiceDesignDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._window_shadow_margin = 5
-        self._resize_border_px = 8
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
         self.engine_host_client = EngineHostClient(self.settings_manager)
@@ -1035,28 +804,13 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setObjectName("rootWidget")
         root_layout = QVBoxLayout(central_widget)
-        self.root_layout = root_layout
-        root_layout.setContentsMargins(
-            self._window_shadow_margin,
-            self._window_shadow_margin,
-            self._window_shadow_margin,
-            self._window_shadow_margin,
-        )
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        self.app_frame = QFrame()
-        self.app_frame.setObjectName("appFrame")
-        self.app_shadow_effect = QGraphicsDropShadowEffect(self)
-        self.app_shadow_effect.setBlurRadius(10)
-        self.app_shadow_effect.setOffset(0, 0)
-        self.app_shadow_effect.setColor(QColor(15, 23, 42, 82))
-        self.app_frame.setGraphicsEffect(self.app_shadow_effect)
-
-        frame_layout = QVBoxLayout(self.app_frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
-
-        frame_layout.addWidget(self._build_title_bar())
+        self.app_menu_bar = QMenuBar(self)
+        self.app_menu_bar.setObjectName("appMenuBar")
+        self._populate_app_menus()
+        self.setMenuBar(self.app_menu_bar)
 
         body_widget = QWidget()
         body_widget.setObjectName("appBody")
@@ -1105,139 +859,10 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.page_stack, 1)
 
         body_layout.addWidget(content_widget, 1)
-        frame_layout.addWidget(body_widget, 1)
-        root_layout.addWidget(self.app_frame, 1)
+        root_layout.addWidget(body_widget, 1)
         self.setCentralWidget(central_widget)
-        self.resize_handles = self._create_resize_handles(self.app_frame)
-        self._position_resize_handles()
-        self._update_window_frame_margins()
-        QTimer.singleShot(0, self._enable_windows_native_resize_border)
         self._apply_language_direction()
         self._show_generation()
-
-    def _create_resize_handles(self, parent: QWidget) -> list[WindowResizeHandle]:
-        handles = [
-            WindowResizeHandle(self, Qt.Edge.TopEdge | Qt.Edge.LeftEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.TopEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.TopEdge | Qt.Edge.RightEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.RightEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.BottomEdge | Qt.Edge.RightEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.BottomEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.BottomEdge | Qt.Edge.LeftEdge, parent),
-            WindowResizeHandle(self, Qt.Edge.LeftEdge, parent),
-        ]
-        for handle in handles:
-            handle.raise_()
-        return handles
-
-    def _position_resize_handles(self) -> None:
-        if not hasattr(self, "resize_handles"):
-            return
-        host = self.app_frame if hasattr(self, "app_frame") else self
-        width = host.width()
-        height = host.height()
-        edge = max(10, self._resize_border_px)
-        corner = max(18, edge * 2)
-        geometries = (
-            (0, 0, corner, corner),
-            (corner, 0, max(0, width - corner * 2), edge),
-            (max(0, width - corner), 0, corner, corner),
-            (max(0, width - edge), corner, edge, max(0, height - corner * 2)),
-            (
-                max(0, width - corner),
-                max(0, height - corner),
-                corner,
-                corner,
-            ),
-            (corner, max(0, height - edge), max(0, width - corner * 2), edge),
-            (0, max(0, height - corner), corner, corner),
-            (0, corner, edge, max(0, height - corner * 2)),
-        )
-        visible = not self.isMaximized() and not self.isFullScreen()
-        for handle, geometry in zip(self.resize_handles, geometries, strict=True):
-            handle.setGeometry(*geometry)
-            handle.setVisible(visible)
-            handle.raise_()
-
-    def _build_title_bar(self) -> QWidget:
-        title_bar = WindowTitleBar(self)
-        layout = QHBoxLayout(title_bar)
-        layout.setContentsMargins(10, 0, 6, 0)
-        layout.setSpacing(8)
-
-        logo_label = QLabel()
-        logo_label.setObjectName("titleBarLogoLabel")
-        logo_label.setFixedSize(24, 24)
-        logo_label.setPixmap(
-            QPixmap(str(resource_root() / "assets" / "logotipo.png")).scaled(
-                24,
-                24,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self.app_menu_bar = QMenuBar()
-        self.app_menu_bar.setObjectName("appMenuBar")
-        self.app_menu_bar.setFixedHeight(30)
-        self._populate_app_menus()
-        layout.addWidget(self.app_menu_bar, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addStretch(1)
-
-        self.title_minimize_button = WindowControlButton("window_minimize")
-        self.title_minimize_button.setObjectName("titleBarButton")
-        self.title_minimize_button.setToolTip("Minimize")
-        self.title_minimize_button.setIconSize(QSize(13, 13))
-        self.title_minimize_button.clicked.connect(self.showMinimized)
-        layout.addWidget(self.title_minimize_button)
-
-        self.title_maximize_button = WindowControlButton("window_maximize")
-        self.title_maximize_button.setObjectName("titleBarButton")
-        self.title_maximize_button.setToolTip("Maximize")
-        self.title_maximize_button.setIconSize(QSize(12, 12))
-        self.title_maximize_button.clicked.connect(self._toggle_maximized_window)
-        layout.addWidget(self.title_maximize_button)
-
-        self.title_close_button = WindowControlButton(
-            "close",
-            hover_color="#ffffff",
-        )
-        self.title_close_button.setObjectName("titleBarCloseButton")
-        self.title_close_button.setToolTip(self.tr("close", "Close"))
-        self.title_close_button.setIconSize(QSize(13, 13))
-        self.title_close_button.clicked.connect(self.close)
-        layout.addWidget(self.title_close_button)
-        return title_bar
-
-    def _build_app_menu_row(self) -> QWidget:
-        row = QWidget()
-        row.setObjectName("appMenuRow")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        logo_label = QLabel()
-        logo_label.setObjectName("menuLogoLabel")
-        logo_label.setFixedSize(28, 28)
-        logo_label.setPixmap(
-            QPixmap(str(resource_root() / "assets" / "logotipo.png")).scaled(
-                28,
-                28,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(logo_label)
-
-        self.app_menu_bar = QMenuBar()
-        self.app_menu_bar.setObjectName("appMenuBar")
-        self._populate_app_menus()
-        layout.addWidget(self.app_menu_bar)
-        layout.addStretch(1)
-        return row
 
     def _populate_app_menus(self) -> None:
         file_menu = self.app_menu_bar.addMenu(self.tr("menu_file", "File"))
@@ -1256,6 +881,13 @@ class MainWindow(QMainWindow):
         self.open_project_action.setShortcut("Ctrl+O")
         self.open_project_action.triggered.connect(self._open_project_dialog)
         file_menu.addAction(self.open_project_action)
+
+        self.recent_projects_menu = file_menu.addMenu(
+            self.tr("file_open_recent", "Open Recent")
+        )
+        self.recent_projects_menu.aboutToShow.connect(
+            self._populate_recent_projects_menu
+        )
 
         file_menu.addSeparator()
         self.save_project_action = QAction(self.tr("file_save", "Save"), self)
@@ -7486,7 +7118,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background: transparent;
+                background: #f8fafc;
             }
             QWidget {
                 background: #f8fafc;
@@ -7495,12 +7127,7 @@ class MainWindow(QMainWindow):
                 font-size: 10pt;
             }
             QWidget#rootWidget {
-                background: transparent;
-            }
-            QFrame#appFrame {
                 background: #f8fafc;
-                border: 1px solid rgba(148, 163, 184, 0.35);
-                border-radius: 10px;
             }
             QWidget#contentArea {
                 background: #f8fafc;
@@ -7508,21 +7135,13 @@ class MainWindow(QMainWindow):
             QWidget#appBody {
                 background: #f8fafc;
             }
-            QFrame#windowTitleBar {
-                background: #ffffff;
-                border-bottom: 1px solid #e5eaf3;
-                border-top-left-radius: 10px;
-                border-top-right-radius: 10px;
-            }
-            QLabel#titleBarLogoLabel, QLabel#menuLogoLabel {
-                background: transparent;
-            }
             QMenuBar#appMenuBar {
-                background: transparent;
+                background: #ffffff;
                 border: none;
+                border-bottom: 1px solid #e5eaf3;
                 color: #374151;
                 spacing: 2px;
-                padding: 0;
+                padding: 2px 8px;
                 margin: 0;
             }
             QMenuBar#appMenuBar::item {
@@ -7548,27 +7167,6 @@ class MainWindow(QMainWindow):
             QMenu::item:selected {
                 background: #eef5ff;
                 color: #1769ff;
-            }
-            QPushButton#titleBarButton,
-            QPushButton#titleBarCloseButton {
-                background: transparent;
-                border: none;
-                border-radius: 0px;
-                color: #475569;
-                font-weight: 700;
-                min-width: 42px;
-                max-width: 42px;
-                min-height: 28px;
-                max-height: 28px;
-                padding: 0;
-            }
-            QPushButton#titleBarButton:hover {
-                background: #edf2f7;
-                color: #111827;
-            }
-            QPushButton#titleBarCloseButton:hover {
-                background: #e81123;
-                color: #ffffff;
             }
             QFrame#sidebar {
                 background: #ffffff;
@@ -10229,6 +9827,48 @@ class MainWindow(QMainWindow):
         self.settings["last_project_parent"] = str(Path(path_text).parent.parent)
         self._load_project(audiobook.id)
 
+    def _populate_recent_projects_menu(self) -> None:
+        self.recent_projects_menu.clear()
+        projects = self.audiobook_store.list_audiobooks()[:10]
+        if not projects:
+            empty_action = self.recent_projects_menu.addAction(
+                self.tr("file_no_recent_projects", "No recent projects")
+            )
+            empty_action.setEnabled(False)
+            return
+
+        duplicate_titles = {
+            project.title
+            for project in projects
+            if sum(item.title == project.title for item in projects) > 1
+        }
+        for project in projects:
+            label = project.title or self.tr("untitled_project", "Untitled Audiobook")
+            if project.title in duplicate_titles:
+                label = f"{label} ({project.project_dir.name})"
+            action = self.recent_projects_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(project.id == self.current_audiobook_id)
+            action.setStatusTip(str(project.project_dir))
+            action.triggered.connect(
+                lambda _checked=False, audiobook_id=project.id: (
+                    self._open_recent_project(audiobook_id)
+                )
+            )
+
+    def _open_recent_project(self, audiobook_id: int) -> None:
+        if audiobook_id == self.current_audiobook_id:
+            return
+        if not self._confirm_project_switch():
+            return
+        if self.audiobook_store.get_audiobook(audiobook_id) is None:
+            self._show_error(
+                self.tr("file_open_recent", "Open Recent"),
+                self.tr("project_not_found", "Project not found."),
+            )
+            return
+        self._load_project(audiobook_id)
+
     def _export_source_text(self) -> None:
         text = self.text_editor.toPlainText()
         audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
@@ -10605,140 +10245,6 @@ class MainWindow(QMainWindow):
                 self.tr("update_install_failed", "Could not start the installer"),
                 str(exc),
             )
-
-    def _enable_windows_native_resize_border(self) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            hwnd = int(self.winId())
-            user32 = ctypes.windll.user32
-            get_window_long = user32.GetWindowLongPtrW
-            set_window_long = user32.SetWindowLongPtrW
-            get_window_long.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
-            get_window_long.restype = ctypes.c_void_p
-            set_window_long.argtypes = [
-                ctypes.wintypes.HWND,
-                ctypes.c_int,
-                ctypes.c_void_p,
-            ]
-            set_window_long.restype = ctypes.c_void_p
-
-            gwl_style = -16
-            ws_thickframe = 0x00040000
-            ws_sysmenu = 0x00080000
-            ws_minimizebox = 0x00020000
-            ws_maximizebox = 0x00010000
-            style = int(get_window_long(hwnd, gwl_style) or 0)
-            style |= ws_thickframe | ws_sysmenu | ws_minimizebox | ws_maximizebox
-            set_window_long(hwnd, gwl_style, ctypes.c_void_p(style))
-
-            swp_nosize = 0x0001
-            swp_nomove = 0x0002
-            swp_nozorder = 0x0004
-            swp_noactivate = 0x0010
-            swp_framechanged = 0x0020
-            user32.SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                0,
-                0,
-                swp_nomove
-                | swp_nosize
-                | swp_nozorder
-                | swp_noactivate
-                | swp_framechanged,
-            )
-        except Exception as exc:
-            if hasattr(self, "log_view"):
-                self.log_view.append_event(f"Windows resize border setup failed: {exc}")
-
-    def _toggle_maximized_window(self) -> None:
-        was_maximized = self._is_window_maximized()
-        if was_maximized:
-            self.showNormal()
-        else:
-            self.showMaximized()
-        self._set_maximize_button_state(not was_maximized)
-        self._update_window_frame_margins()
-
-    def _is_window_maximized(self) -> bool:
-        return bool(self.windowState() & Qt.WindowState.WindowMaximized)
-
-    def _set_maximize_button_state(self, maximized: bool) -> None:
-        self.title_maximize_button.set_icon_name(
-            "window_restore" if maximized else "window_maximize"
-        )
-        self.title_maximize_button.setToolTip(
-            "Restore" if maximized else "Maximize"
-        )
-
-    def _update_window_button_state(self) -> None:
-        if not hasattr(self, "title_maximize_button"):
-            return
-        self._set_maximize_button_state(self._is_window_maximized())
-
-    def _update_window_frame_margins(self) -> None:
-        if not hasattr(self, "root_layout"):
-            return
-        margin = 0 if self.isMaximized() or self.isFullScreen() else self._window_shadow_margin
-        self.root_layout.setContentsMargins(margin, margin, margin, margin)
-        if hasattr(self, "app_shadow_effect"):
-            self.app_shadow_effect.setEnabled(margin > 0)
-        self._position_resize_handles()
-
-    def changeEvent(self, event) -> None:  # type: ignore[override]
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            self._update_window_button_state()
-            self._update_window_frame_margins()
-            self._position_resize_handles()
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._position_resize_handles()
-
-    def nativeEvent(self, event_type, message):  # type: ignore[override]
-        if sys.platform != "win32" or self.isMaximized():
-            return super().nativeEvent(event_type, message)
-        try:
-            message_address = (
-                message.__int__() if hasattr(message, "__int__") else int(message)
-            )
-            msg = ctypes.wintypes.MSG.from_address(message_address)
-        except (TypeError, ValueError, OSError):
-            return super().nativeEvent(event_type, message)
-        if msg.message != 0x0084:  # WM_NCHITTEST
-            return super().nativeEvent(event_type, message)
-
-        x = ctypes.c_short(msg.lParam & 0xFFFF).value
-        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-        position = self.mapFromGlobal(QPoint(x, y))
-        border = self._resize_border_px
-        left = position.x() <= border
-        right = position.x() >= self.width() - border
-        top = position.y() <= border
-        bottom = position.y() >= self.height() - border
-
-        hit_test_values = {
-            (True, False, True, False): 13,  # HTTOPLEFT
-            (False, True, True, False): 14,  # HTTOPRIGHT
-            (True, False, False, True): 16,  # HTBOTTOMLEFT
-            (False, True, False, True): 17,  # HTBOTTOMRIGHT
-        }
-        for flags, result in hit_test_values.items():
-            if (left, right, top, bottom) == flags:
-                return True, result
-        if top:
-            return True, 12  # HTTOP
-        if bottom:
-            return True, 15  # HTBOTTOM
-        if left:
-            return True, 10  # HTLEFT
-        if right:
-            return True, 11  # HTRIGHT
-        return False, 0
 
     def _music_library_dir(self) -> Path:
         return library_directory(self.settings, "music", create=True)

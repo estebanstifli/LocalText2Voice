@@ -14,7 +14,7 @@ from app.core.audio_event_timeline import (
     speech_intervals_for_audiobook,
 )
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
-from app.core.audiobook_store import AudiobookStore
+from app.core.audiobook_store import AudiobookStore, PROJECT_MANIFEST_NAME
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.waveform_preview import probe_audio_duration
@@ -357,7 +357,8 @@ class LocalText2VoiceService:
         if on_pipeline is not None:
             on_pipeline(pipeline)
         outputs = pipeline.generate(text, options)
-        audiobook_id = getattr(getattr(pipeline, "_active_audiobook", None), "id", None)
+        active_audiobook = getattr(pipeline, "_active_audiobook", None)
+        audiobook_id = getattr(active_audiobook, "id", None)
         review_summary: dict[str, Any] | None = None
         if review_enabled and audiobook_id is not None:
             review_summary, rebuilt_clean = self._run_automatic_review(
@@ -391,12 +392,35 @@ class LocalText2VoiceService:
                 outputs = [clean_path, mix_path]
         clean_outputs = [path for path in outputs if not path.stem.endswith("_mix")]
         mix_outputs = [path for path in outputs if path.stem.endswith("_mix")]
+        project: dict[str, Any] = {}
+        project_dir = getattr(active_audiobook, "project_dir", None)
+        if audiobook_id is not None and project_dir is not None:
+            resolved_project_dir = Path(project_dir).resolve()
+            project = {
+                "audiobook_id": audiobook_id,
+                "uuid": str(getattr(active_audiobook, "uuid", "") or ""),
+                "title": str(
+                    getattr(active_audiobook, "title", "")
+                    or requested_options.metadata.get("title", "Audiobook")
+                ),
+                "project_dir": str(resolved_project_dir),
+                "manifest_path": str(
+                    resolved_project_dir / PROJECT_MANIFEST_NAME
+                ),
+            }
         return {
             "audiobook_id": audiobook_id,
             "outputs": [str(path) for path in outputs],
             "clean_mp3": str(clean_outputs[0]) if clean_outputs else "",
             "mix_mp3": str(mix_outputs[0]) if mix_outputs else "",
             "review": review_summary or {"enabled": False},
+            "project": project,
+            "project_edit_message": (
+                "Puedes editar los parametros de este audiolibro desde "
+                f"LocalText2Voice abriendo el proyecto '{project['title']}'."
+                if project
+                else ""
+            ),
         }
 
     def _review_enabled(self, request: dict[str, Any]) -> bool:

@@ -21,8 +21,6 @@
 <p align="center">
   <a href="https://github.com/estebanstifli/LocalText2Voice/releases/latest/download/LocalText2Voice-Setup.exe"><strong>Download Windows installer</strong></a>
   ·
-  <a href="https://youtu.be/CuoBJlbknp4"><strong>Watch 1-minute demo</strong></a>
-  ·
   <a href="docs/LTV_MARKUP.md"><strong>Markup manual</strong></a>
   ·
   <a href="https://andromedanova.com"><strong>AndromedaNova.com</strong></a>
@@ -54,12 +52,6 @@ The goal is simple: paste or import a long text, choose a voice engine, generate
 ### Markup Editor
 
 ![LocalText2Voice editor with custom markup commands for voice, language, pauses, speed, volume, and model parameters](capturas/captura_lt2v_editor_markup.png)
-
-## Video Demo
-
-[![LocalText2Voice 1-minute demo video](https://img.youtube.com/vi/CuoBJlbknp4/maxresdefault.jpg)](https://youtu.be/CuoBJlbknp4)
-
-Watch the short demo on YouTube: [LocalText2Voice demo](https://youtu.be/CuoBJlbknp4).
 
 ## Complete Workflow
 
@@ -250,10 +242,6 @@ The Windows installer is the recommended distribution artifact. LocalText2Voice 
 Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 
 Unsigned build note: early public builds may be unsigned until the open source code-signing process is ready. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
-
-## Product Demo
-
-Watch the 1-minute demo video: [https://youtu.be/CuoBJlbknp4](https://youtu.be/CuoBJlbknp4)
 
 ## Technical Highlights For AI Engineering
 

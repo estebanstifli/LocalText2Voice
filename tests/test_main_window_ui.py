@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 import tomllib
 import unittest
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.audio_mix import AudioMixSettings
-from app.core.audiobook_store import StoredAudioEvent
+from app.core.audiobook_store import AudiobookStore, StoredAudioEvent
 from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
 from app.ui.main_window import MainWindow
 
@@ -62,15 +63,14 @@ class MainWindowUITests(unittest.TestCase):
         window.markup_toolbar_action.setChecked(True)
         self.assertFalse(window.markup_toolbar.isHidden())
         self.assertEqual(window.windowTitle(), "LocalText2Voice")
-        self.assertTrue(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        self.assertFalse(window.windowFlags() & Qt.WindowType.FramelessWindowHint)
         self.assertTrue(hasattr(window, "app_menu_bar"))
+        self.assertIs(window.menuBar(), window.app_menu_bar)
+        self.assertGreaterEqual(len(window.app_menu_bar.actions()), 5)
         self.assertTrue(hasattr(window, "check_updates_action"))
         self.assertTrue(window.check_updates_action.isEnabled())
-        self.assertTrue(hasattr(window, "title_close_button"))
-        self.assertTrue(hasattr(window, "resize_handles"))
-        self.assertEqual(len(window.resize_handles), 8)
-        self.assertTrue(all(handle.main_window is window for handle in window.resize_handles))
-        self.assertTrue(all(handle.parent() is window.app_frame for handle in window.resize_handles))
+        self.assertFalse(hasattr(window, "title_close_button"))
+        self.assertFalse(hasattr(window, "resize_handles"))
         logo = window.findChild(QLabel, "logoLabel")
         self.assertIsNotNone(logo)
         self.assertIsNotNone(logo.pixmap())
@@ -255,6 +255,46 @@ class MainWindowUITests(unittest.TestCase):
         self.assertNotIn("Not installed", window.chatterbox_status_label.text())
         self.assertNotIn("No instalado", window.chatterbox_status_label.text())
         self.assertTrue(window.chatterbox_remove_button.isEnabled())
+
+    def test_recent_projects_menu_opens_a_stored_project(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        store = AudiobookStore(root / "projects.sqlite3")
+        older = store.create_audiobook(
+            "Primer texto",
+            {"engine": "piper"},
+            root / "output-1",
+            "safe_chunks",
+            "single",
+            "Proyecto anterior",
+            project_dir=root / "project-1",
+        )
+        recent = store.create_audiobook(
+            "Segundo texto",
+            {"engine": "piper"},
+            root / "output-2",
+            "safe_chunks",
+            "single",
+            "Proyecto MCP",
+            project_dir=root / "project-2",
+        )
+        window.audiobook_store = store
+        window.current_audiobook_id = None
+
+        window._populate_recent_projects_menu()
+
+        actions = window.recent_projects_menu.actions()
+        self.assertEqual(
+            [action.text() for action in actions],
+            ["Proyecto MCP", "Proyecto anterior"],
+        )
+        with patch.object(window, "_load_project") as load_project:
+            actions[0].trigger()
+        load_project.assert_called_once_with(recent.id)
+        self.assertNotEqual(older.id, recent.id)
 
     def test_advanced_mix_groups_tracks_and_preserves_render_play_position(self) -> None:
         window = MainWindow()
