@@ -12,6 +12,8 @@
   "menu_help": "Ayuda",
   "file_new_project": "Nuevo proyecto",
   "file_open_project": "Abrir proyecto",
+  "file_open_recent": "Abrir recientes",
+  "file_no_recent_projects": "No hay proyectos recientes",
   "file_save": "Guardar",
   "file_save_as": "Guardar como",
   "file_export_source_text": "Exportar texto fuente...",

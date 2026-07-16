@@ -189,7 +189,12 @@ def create_http_app(
             review_policy=review_policy,
         )
 
-    @mcp.tool(description="Get one generation job by id.")
+    @mcp.tool(
+        description=(
+            "Get one generation job by id. Completed jobs include the editable "
+            "LocalText2Voice project name and manifest path."
+        )
+    )
     def get_job(job_id: str) -> dict[str, Any]:
         job = manager.get_job(job_id)
         if job is None:
@@ -394,4 +399,12 @@ def _job_response(
         payload["clean_mp3_url"] = f"{base}/files/jobs/{job.job_id}/clean{suffix}"
     if payload.get("mix_mp3_path"):
         payload["mix_mp3_url"] = f"{base}/files/jobs/{job.job_id}/mix{suffix}"
+    result = payload.get("result", {})
+    if isinstance(result, dict):
+        project = result.get("project")
+        if isinstance(project, dict) and project:
+            payload["project"] = project
+        project_message = str(result.get("project_edit_message", "") or "")
+        if project_message:
+            payload["message"] = project_message
     return payload
