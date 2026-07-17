@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import time
 import tomllib
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,12 +18,14 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
 )
 
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredAudioEvent
+from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
 from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
 from app.ui.main_window import MainWindow
 
@@ -69,6 +73,23 @@ class MainWindowUITests(unittest.TestCase):
         self.assertGreaterEqual(len(window.app_menu_bar.actions()), 5)
         self.assertTrue(hasattr(window, "check_updates_action"))
         self.assertTrue(window.check_updates_action.isEnabled())
+        self.assertEqual(
+            window.general_documentation_action.text(),
+            "General Documentation",
+        )
+        self.assertEqual(window.markup_help_action.text(), "Markup Help")
+        with patch("app.ui.main_window.QDesktopServices.openUrl") as open_url:
+            window.general_documentation_action.trigger()
+            window.markup_help_action.trigger()
+        self.assertEqual(open_url.call_count, 2)
+        self.assertEqual(
+            open_url.call_args_list[0].args[0].toString(),
+            "https://github.com/estebanstifli/LocalText2Voice",
+        )
+        self.assertEqual(
+            open_url.call_args_list[1].args[0].toString(),
+            "https://github.com/estebanstifli/LocalText2Voice/blob/main/docs/LTV_MARKUP.md",
+        )
         self.assertFalse(hasattr(window, "title_close_button"))
         self.assertFalse(hasattr(window, "resize_handles"))
         logo = window.findChild(QLabel, "logoLabel")
@@ -206,6 +227,7 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.review_model_combo.currentData(), "small")
         self.assertTrue(window.language_combo.isEnabled())
         self.assertTrue(hasattr(window, "markup_toolbar_checkbox"))
+        self.assertTrue(hasattr(window, "reset_settings_button"))
         self.assertTrue(window.markup_toolbar_checkbox.isChecked())
         self.assertIn("min-width", window._markup_help_card("{{pause}}", "Example."))
         codex_config = window._codex_mcp_config_text()
@@ -232,6 +254,46 @@ class MainWindowUITests(unittest.TestCase):
         window._update_generation_time()
         self.assertIn("01:00", window.time_label.text())
 
+    def test_restore_is_non_destructive_and_reset_uses_safe_defaults(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.json"
+        manager = SettingsManager(config_path)
+        initial = deepcopy(manager.settings)
+        initial["ui_language"] = "es"
+        initial["chunk_size"] = 2500
+        initial["review"]["enabled"] = True
+        initial["review"]["auto_verify_after_generation"] = True
+        manager.save(initial)
+
+        with patch(
+            "app.ui.main_window.SettingsManager",
+            return_value=SettingsManager(config_path),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        restored_file = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(restored_file["ui_language"], "es")
+        self.assertEqual(restored_file["chunk_size"], 2500)
+        self.assertEqual(window.ui_language_combo.currentData(), "es")
+        self.assertEqual(window.chunk_size_spin.value(), 2500)
+
+        window.text_editor.setPlainText("Texto que no debe borrarse.")
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            window._reset_settings_to_defaults()
+
+        reset_file = SettingsManager(config_path).settings
+        self.assertEqual(reset_file["ui_language"], DEFAULT_SETTINGS["ui_language"])
+        self.assertEqual(reset_file["chunk_size"], DEFAULT_SETTINGS["chunk_size"])
+        self.assertFalse(reset_file["review"]["enabled"])
+        self.assertEqual(window.text_editor.toPlainText(), "Texto que no debe borrarse.")
+        self.assertTrue(hasattr(window, "reset_settings_button"))
+
     def test_chatterbox_installed_state_is_shown(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
@@ -255,6 +317,46 @@ class MainWindowUITests(unittest.TestCase):
         self.assertNotIn("Not installed", window.chatterbox_status_label.text())
         self.assertNotIn("No instalado", window.chatterbox_status_label.text())
         self.assertTrue(window.chatterbox_remove_button.isEnabled())
+
+    def test_tts_engine_install_uses_confirmation_and_progress_modal(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        with (
+            patch(
+                "app.ui.main_window.available_disk_space_gb",
+                return_value=(40.0, "C:\\"),
+            ),
+            patch(
+                "app.ui.main_window.EngineInstallDialog.open",
+                autospec=True,
+            ) as open_dialog,
+            patch.object(window, "_start_omnivoice_operation") as start_install,
+        ):
+            window._install_omnivoice()
+
+            dialog = window.engine_install_dialogs["omnivoice"]
+            open_dialog.assert_called_once_with()
+            self.assertIn(
+                "30",
+                " ".join(label.text() for label in dialog.findChildren(QLabel)),
+            )
+            dialog.install_button.click()
+            start_install.assert_called_once_with("install")
+
+            window._on_omnivoice_progress(35, 100, "Downloading OmniVoice...")
+            self.assertEqual(dialog.progress_bar.value(), 35)
+            self.assertEqual(dialog.progress_label.text(), "Downloading OmniVoice...")
+
+            window._finish_tts_engine_install_dialog(
+                "omnivoice",
+                True,
+                "OmniVoice installation completed.",
+            )
+            self.assertEqual(dialog.progress_bar.value(), 100)
+            self.assertEqual(dialog.install_button.text(), window.tr("close", "Close"))
+            dialog.install_button.click()
+            self.assertNotIn("omnivoice", window.engine_install_dialogs)
 
     def test_recent_projects_menu_opens_a_stored_project(self) -> None:
         window = MainWindow()

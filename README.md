@@ -545,12 +545,13 @@ course-generator
 - [x] Faster Whisper review and segment similarity scoring.
 - [x] SQLite project/segment persistence.
 - [x] Word-level timestamps for future subtitle and timeline features.
-- [ ] Sound effects and music timeline commands from markup.
+- [x] Sound effects and music timeline commands from markup.
 - [ ] Subtitle export from Whisper timestamps.
 - [ ] Video/audio cover workflow.
 - [ ] Visual chapter and segment editor.
 - [x] Windows installer with CPU/GPU setup profiles.
-- [ ] Signed Windows installer and auto-update system.
+- [x] Automatic update system with SHA-256 verification.
+- [ ] Signed Windows installer.
 - [ ] macOS/Linux packaging experiments.
 - [ ] Optional LLM-assisted course/script generation.
 

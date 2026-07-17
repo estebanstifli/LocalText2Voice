@@ -18,7 +18,12 @@ from app.core.audiobook_store import AudiobookStore, PROJECT_MANIFEST_NAME
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.waveform_preview import probe_audio_duration
-from app.core.settings_manager import SettingsManager
+from app.core.settings_manager import (
+    MAX_CHUNK_SIZE,
+    MIN_CHUNK_SIZE,
+    SettingsManager,
+    sanitize_chunk_size,
+)
 from app.tts.base import BaseTTSEngine
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
@@ -1003,7 +1008,7 @@ class LocalText2VoiceService:
     def _chunk_size(self, engine_id: str, request: dict[str, Any]) -> int:
         try:
             requested = int(request.get("chunk_size", 0) or 0)
-            if requested > 0:
+            if MIN_CHUNK_SIZE <= requested <= MAX_CHUNK_SIZE:
                 return requested
         except (TypeError, ValueError):
             pass
@@ -1011,14 +1016,11 @@ class LocalText2VoiceService:
         if isinstance(engine_sizes, dict):
             try:
                 value = int(engine_sizes.get(engine_id, 0) or 0)
-                if value > 0:
+                if MIN_CHUNK_SIZE <= value <= MAX_CHUNK_SIZE:
                     return value
             except (TypeError, ValueError):
                 pass
-        try:
-            return max(1, int(self.settings.get("chunk_size", 2500)))
-        except (TypeError, ValueError):
-            return 2500
+        return sanitize_chunk_size(self.settings.get("chunk_size"))
 
     def _engine_installed(self, engine_id: str) -> bool | None:
         if engine_id == "piper":

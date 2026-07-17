@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import wave
+from copy import deepcopy
 from dataclasses import replace
 from html import escape
 from pathlib import Path
@@ -76,7 +77,13 @@ from app.core.audio_event_timeline import (
 )
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.project_manager import DocumentImportError, ProjectManager
-from app.core.settings_manager import SettingsManager
+from app.core.settings_manager import (
+    DEFAULT_SETTINGS,
+    MAX_CHUNK_SIZE,
+    MIN_CHUNK_SIZE,
+    SettingsManager,
+    sanitize_chunk_size,
+)
 from app.core.update_manager import (
     CHECK_INTERVAL_SECONDS,
     UpdateError,
@@ -104,8 +111,18 @@ from app.tts.voice_gallery_manager import (
     VoiceGalleryManager,
 )
 from app.tts.voice_manager import VoiceInfo, VoiceManager
+from app.ui.engine_install_dialog import (
+    ENGINE_INSTALL_REQUIREMENTS,
+    EngineInstallDialog,
+    available_disk_space_gb,
+)
 from app.utils.i18n import Translator
-from app.utils.paths import application_root, resolve_app_path, resource_root
+from app.utils.paths import (
+    app_data_root,
+    application_root,
+    resolve_app_path,
+    resource_root,
+)
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
 from app.workers.chatterbox_worker import (
     ChatterboxHardwareWorker,
@@ -638,6 +655,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
+        self._restoring_settings = False
         self.engine_host_client = EngineHostClient(self.settings_manager)
         self.local_server_controller = LocalServerController(self.settings_manager)
         self.translator = Translator(str(self.settings.get("ui_language", "en")))
@@ -734,6 +752,7 @@ class MainWindow(QMainWindow):
         self.update_download_worker: UpdateDownloadWorker | None = None
         self.update_download_thread: QThread | None = None
         self.update_progress_dialog: QProgressDialog | None = None
+        self.engine_install_dialogs: dict[str, EngineInstallDialog] = {}
         self._update_check_manual = False
         self.generation_started_at: float | None = None
         self.progress_current = 0
@@ -971,6 +990,32 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.markup_toolbar_action)
 
         help_menu = self.app_menu_bar.addMenu(self.tr("menu_help", "Help"))
+        self.general_documentation_action = QAction(
+            self.tr("help_general_documentation", "General Documentation"),
+            self,
+        )
+        self.general_documentation_action.triggered.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl("https://github.com/estebanstifli/LocalText2Voice")
+            )
+        )
+        help_menu.addAction(self.general_documentation_action)
+
+        self.markup_help_action = QAction(
+            self.tr("help_markup", "Markup Help"),
+            self,
+        )
+        self.markup_help_action.triggered.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl(
+                    "https://github.com/estebanstifli/LocalText2Voice/"
+                    "blob/main/docs/LTV_MARKUP.md"
+                )
+            )
+        )
+        help_menu.addAction(self.markup_help_action)
+        help_menu.addSeparator()
+
         self.check_updates_action = QAction(
             self.tr("check_for_updates", "Check for updates..."),
             self,
@@ -1127,6 +1172,7 @@ class MainWindow(QMainWindow):
                 locale.name,
                 locale.code,
             )
+        self._select_combo_data(self.ui_language_combo, self.translator.language)
         self.ui_language_combo.currentIndexChanged.connect(
             self._change_ui_language
         )
@@ -3536,7 +3582,7 @@ class MainWindow(QMainWindow):
         self._refresh_tts_engine_table()
 
     def _install_kokoro_python(self) -> None:
-        self._start_kokoro_python_operation("install")
+        self._show_tts_engine_install_dialog("kokoro")
 
     def _remove_kokoro_python(self) -> None:
         if self.preloaded_tts_engine_id == "kokoro":
@@ -3590,16 +3636,27 @@ class MainWindow(QMainWindow):
         percentage = int((current / total) * 100) if total else 0
         self.kokoro_python_progress_bar.setValue(max(0, min(100, percentage)))
         self.kokoro_python_status_label.setText(message)
+        self._update_tts_engine_install_dialog("kokoro", current, total, message)
         self.log_view.append_event(message)
 
     def _on_kokoro_python_finished(self, path: str) -> None:
         self.kokoro_python_progress_bar.setValue(100)
+        self._finish_tts_engine_install_dialog(
+            "kokoro",
+            True,
+            self.tr(
+                "engine_install_complete",
+                "{engine} installation completed.",
+                engine=self._tts_engine_label("kokoro"),
+            ),
+        )
         self.log_view.append_event(
             self.tr("kokoro_ready", "Kokoro ready: {path}", path=path)
         )
 
     def _on_kokoro_python_failed(self, message: str) -> None:
         self.kokoro_python_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog("kokoro", False, message)
         self._hide_voice_preview_status()
         if (
             hasattr(self, "kokoro_python_preview_frame")
@@ -3611,6 +3668,11 @@ class MainWindow(QMainWindow):
 
     def _on_kokoro_python_cancelled(self) -> None:
         self.kokoro_python_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog(
+            "kokoro",
+            False,
+            self.tr("engine_install_cancelled", "Installation cancelled."),
+        )
         self.log_view.append_event(
             self.tr(
                 "kokoro_cancelled",
@@ -4017,7 +4079,7 @@ class MainWindow(QMainWindow):
         self._refresh_tts_engine_table()
 
     def _install_chatterbox(self) -> None:
-        self._start_chatterbox_operation("install")
+        self._show_tts_engine_install_dialog("chatterbox")
 
     def _remove_chatterbox(self) -> None:
         if self.preloaded_tts_engine_id == "chatterbox":
@@ -4074,17 +4136,30 @@ class MainWindow(QMainWindow):
             percentage = int((current / total) * 100)
             self.chatterbox_progress_bar.setValue(max(0, min(100, percentage)))
         self.chatterbox_status_label.setText(message)
+        self._update_tts_engine_install_dialog(
+            "chatterbox", current, total, message
+        )
         self.log_view.append_event(message)
 
     def _on_chatterbox_finished(self, path: str) -> None:
         self.chatterbox_progress_bar.setRange(0, 100)
         self.chatterbox_progress_bar.setValue(100)
+        self._finish_tts_engine_install_dialog(
+            "chatterbox",
+            True,
+            self.tr(
+                "engine_install_complete",
+                "{engine} installation completed.",
+                engine=self._tts_engine_label("chatterbox"),
+            ),
+        )
         self.log_view.append_event(
             self.tr("chatterbox_ready", "Chatterbox ready: {path}", path=path)
         )
 
     def _on_chatterbox_failed(self, message: str) -> None:
         self.chatterbox_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog("chatterbox", False, message)
         self._hide_voice_preview_status()
         if (
             hasattr(self, "chatterbox_preview_frame")
@@ -4096,6 +4171,11 @@ class MainWindow(QMainWindow):
 
     def _on_chatterbox_cancelled(self) -> None:
         self.chatterbox_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog(
+            "chatterbox",
+            False,
+            self.tr("engine_install_cancelled", "Installation cancelled."),
+        )
         self.log_view.append_event(
             self.tr("chatterbox_cancelled", "Chatterbox operation cancelled.")
         )
@@ -4521,7 +4601,7 @@ class MainWindow(QMainWindow):
         self._refresh_tts_engine_table()
 
     def _install_qwen(self) -> None:
-        self._start_qwen_operation("install")
+        self._show_tts_engine_install_dialog("qwen")
 
     def _remove_qwen(self) -> None:
         if self.preloaded_tts_engine_id == "qwen":
@@ -4578,17 +4658,28 @@ class MainWindow(QMainWindow):
             percentage = int((current / total) * 100)
             self.qwen_progress_bar.setValue(max(0, min(100, percentage)))
         self.qwen_status_label.setText(message)
+        self._update_tts_engine_install_dialog("qwen", current, total, message)
         self.log_view.append_event(message)
 
     def _on_qwen_finished(self, path: str) -> None:
         self.qwen_progress_bar.setRange(0, 100)
         self.qwen_progress_bar.setValue(100)
+        self._finish_tts_engine_install_dialog(
+            "qwen",
+            True,
+            self.tr(
+                "engine_install_complete",
+                "{engine} installation completed.",
+                engine=self._tts_engine_label("qwen"),
+            ),
+        )
         self.log_view.append_event(
             self.tr("qwen_ready", "Qwen3 TTS ready: {path}", path=path)
         )
 
     def _on_qwen_failed(self, message: str) -> None:
         self.qwen_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog("qwen", False, message)
         self._hide_voice_preview_status()
         if (
             hasattr(self, "qwen_preview_frame")
@@ -4600,6 +4691,11 @@ class MainWindow(QMainWindow):
 
     def _on_qwen_cancelled(self) -> None:
         self.qwen_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog(
+            "qwen",
+            False,
+            self.tr("engine_install_cancelled", "Installation cancelled."),
+        )
         self.log_view.append_event(
             self.tr("qwen_cancelled", "Qwen3 TTS operation cancelled.")
         )
@@ -5109,7 +5205,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _install_omnivoice(self) -> None:
-        self._start_omnivoice_operation("install")
+        self._show_tts_engine_install_dialog("omnivoice")
 
     def _remove_omnivoice(self) -> None:
         if self.preloaded_tts_engine_id == "omnivoice":
@@ -5166,11 +5262,23 @@ class MainWindow(QMainWindow):
             percentage = int((current / total) * 100)
             self.omnivoice_progress_bar.setValue(max(0, min(100, percentage)))
         self.omnivoice_status_label.setText(message)
+        self._update_tts_engine_install_dialog(
+            "omnivoice", current, total, message
+        )
         self.log_view.append_event(message)
 
     def _on_omnivoice_finished(self, path: str) -> None:
         self.omnivoice_progress_bar.setRange(0, 100)
         self.omnivoice_progress_bar.setValue(100)
+        self._finish_tts_engine_install_dialog(
+            "omnivoice",
+            True,
+            self.tr(
+                "engine_install_complete",
+                "{engine} installation completed.",
+                engine=self._tts_engine_label("omnivoice"),
+            ),
+        )
         self.log_view.append_event(
             self.tr("omnivoice_ready", "OmniVoice ready: {path}", path=path)
         )
@@ -5180,6 +5288,7 @@ class MainWindow(QMainWindow):
 
     def _on_omnivoice_failed(self, message: str) -> None:
         self.omnivoice_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog("omnivoice", False, message)
         self._hide_voice_preview_status()
         if (
             hasattr(self, "omnivoice_preview_frame")
@@ -5192,6 +5301,11 @@ class MainWindow(QMainWindow):
 
     def _on_omnivoice_cancelled(self) -> None:
         self.omnivoice_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog(
+            "omnivoice",
+            False,
+            self.tr("engine_install_cancelled", "Installation cancelled."),
+        )
         self.log_view.append_event(
             self.tr("omnivoice_cancelled", "OmniVoice operation cancelled.")
         )
@@ -6407,6 +6521,138 @@ class MainWindow(QMainWindow):
         elif engine_id == "omnivoice":
             self._install_omnivoice()
 
+    def _show_tts_engine_install_dialog(self, engine_id: str) -> None:
+        requirement = ENGINE_INSTALL_REQUIREMENTS.get(engine_id)
+        if requirement is None:
+            return
+        existing = self.engine_install_dialogs.get(engine_id)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        if self._tts_engine_install_thread(engine_id) is not None:
+            return
+
+        free_gb, volume = available_disk_space_gb(app_data_root())
+        dialog = EngineInstallDialog(
+            self._tts_engine_label(engine_id),
+            requirement,
+            free_gb,
+            volume,
+            self.tr,
+            self,
+        )
+        self.engine_install_dialogs[engine_id] = dialog
+        dialog.install_requested.connect(
+            lambda selected=engine_id: self._start_tts_engine_install(selected)
+        )
+        dialog.cancel_requested.connect(
+            lambda selected=engine_id: self._cancel_tts_engine_install(selected)
+        )
+        dialog.rejected.connect(
+            lambda selected=engine_id, opened=dialog: self._defer_tts_engine_install(
+                selected, opened
+            )
+        )
+        dialog.finished.connect(
+            lambda _result, selected=engine_id, opened=dialog: (
+                self._forget_tts_engine_install_dialog(selected, opened)
+            )
+        )
+        dialog.open()
+
+    def _tts_engine_install_thread(self, engine_id: str) -> QThread | None:
+        return {
+            "kokoro": self.kokoro_python_thread,
+            "chatterbox": self.chatterbox_thread,
+            "qwen": self.qwen_thread,
+            "omnivoice": self.omnivoice_thread,
+        }.get(engine_id)
+
+    def _start_tts_engine_install(self, engine_id: str) -> None:
+        if self._tts_engine_install_thread(engine_id) is not None:
+            return
+        if engine_id == "kokoro":
+            self._start_kokoro_python_operation("install")
+        elif engine_id == "chatterbox":
+            self._start_chatterbox_operation("install")
+        elif engine_id == "qwen":
+            self._start_qwen_operation("install")
+        elif engine_id == "omnivoice":
+            self._start_omnivoice_operation("install")
+
+    def _cancel_tts_engine_install(self, engine_id: str) -> None:
+        if engine_id == "kokoro":
+            self._cancel_kokoro_python_operation()
+        elif engine_id == "chatterbox":
+            self._cancel_chatterbox_operation()
+        elif engine_id == "qwen":
+            self._cancel_qwen_operation()
+        elif engine_id == "omnivoice":
+            self._cancel_omnivoice_operation()
+
+    def _update_tts_engine_install_dialog(
+        self,
+        engine_id: str,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        dialog = self.engine_install_dialogs.get(engine_id)
+        if dialog is not None:
+            dialog.update_progress(current, total, message)
+
+    def _finish_tts_engine_install_dialog(
+        self,
+        engine_id: str,
+        success: bool,
+        message: str,
+    ) -> None:
+        dialog = self.engine_install_dialogs.get(engine_id)
+        if dialog is not None:
+            dialog.finish(success, message)
+
+    def _defer_tts_engine_install(
+        self,
+        engine_id: str,
+        dialog: EngineInstallDialog,
+    ) -> None:
+        if dialog.installation_started:
+            return
+        self.log_view.append_event(
+            self.tr(
+                "engine_install_deferred",
+                "{engine} installation postponed.",
+                engine=self._tts_engine_label(engine_id),
+            )
+        )
+        if self.installer_setup_running:
+            if engine_id not in self.installer_setup_queue:
+                self.installer_setup_queue.insert(0, engine_id)
+            self._abort_pending_installer_setup(
+                self.tr(
+                    "engine_install_deferred",
+                    "{engine} installation postponed.",
+                    engine=self._tts_engine_label(engine_id),
+                )
+            )
+
+    def _forget_tts_engine_install_dialog(
+        self,
+        engine_id: str,
+        dialog: EngineInstallDialog,
+    ) -> None:
+        if self.engine_install_dialogs.get(engine_id) is dialog:
+            self.engine_install_dialogs.pop(engine_id, None)
+        dialog.deleteLater()
+
+    def _tts_engine_install_in_progress(self) -> bool:
+        return any(
+            dialog.installation_active
+            for dialog in self.engine_install_dialogs.values()
+        )
+
     def _configure_preload_button(
         self,
         button: QPushButton,
@@ -6753,9 +6999,31 @@ class MainWindow(QMainWindow):
         cache_layout.addWidget(self.wav_cache_stats_label)
         cache_layout.addLayout(cleanup_buttons)
 
+        reset_group = QGroupBox(
+            self.tr("reset_settings_group", "Reset settings")
+        )
+        reset_layout = QHBoxLayout(reset_group)
+        reset_help = QLabel(
+            self.tr(
+                "reset_settings_description",
+                "Restore application preferences to their safe defaults. "
+                "Downloaded models, voices, projects, music, and generated audio are not deleted.",
+            )
+        )
+        reset_help.setObjectName("helperLabel")
+        reset_help.setWordWrap(True)
+        self.reset_settings_button = QPushButton(
+            self.tr("reset_settings_button", "Restore defaults")
+        )
+        self.reset_settings_button.setIcon(ui_icon("refresh"))
+        self.reset_settings_button.clicked.connect(self._reset_settings_to_defaults)
+        reset_layout.addWidget(reset_help, 1)
+        reset_layout.addWidget(self.reset_settings_button)
+
         grid.addWidget(narration_group, 0, 0)
         grid.addWidget(editor_group, 0, 1)
         grid.addWidget(cache_group, 1, 0, 1, 2)
+        grid.addWidget(reset_group, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -6946,7 +7214,7 @@ class MainWindow(QMainWindow):
         splitting_help.setObjectName("helperLabel")
         splitting_help.setWordWrap(True)
         self.chunk_size_spin = QSpinBox()
-        self.chunk_size_spin.setRange(1, 5000)
+        self.chunk_size_spin.setRange(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE)
         self.chunk_size_spin.setSingleStep(20)
         self.chunk_size_spin.setSuffix(self.tr("characters_suffix", " chars"))
         self.chatterbox_chunk_size_spin = self._engine_chunk_spin()
@@ -7029,20 +7297,17 @@ class MainWindow(QMainWindow):
 
     def _engine_chunk_spin(self) -> QSpinBox:
         spin = QSpinBox()
-        spin.setRange(0, 5000)
+        spin.setRange(0, MAX_CHUNK_SIZE)
         spin.setSingleStep(20)
         spin.setSpecialValueText(self.tr("use_default", "Use default"))
         spin.setSuffix(self.tr("characters_suffix", " chars"))
         return spin
 
     def _current_chunk_size(self, engine_id: str | None = None) -> int:
-        default_size = max(
-            1,
-            int(
-                self.chunk_size_spin.value()
-                if hasattr(self, "chunk_size_spin")
-                else self.settings.get("chunk_size", 2500)
-            ),
+        default_size = sanitize_chunk_size(
+            self.chunk_size_spin.value()
+            if hasattr(self, "chunk_size_spin")
+            else self.settings.get("chunk_size", DEFAULT_SETTINGS["chunk_size"])
         )
         engine = str(
             engine_id
@@ -7071,9 +7336,7 @@ class MainWindow(QMainWindow):
                     override = int(overrides.get(engine, 0) or 0)
                 except (TypeError, ValueError):
                     override = 0
-        if 0 < override < 1:
-            override = 1
-        return override if override > 0 else default_size
+        return sanitize_chunk_size(override, default_size) if override > 0 else default_size
 
     @staticmethod
     def _db_spin(
@@ -8875,6 +9138,14 @@ class MainWindow(QMainWindow):
         self._refresh_voices_page()
 
     def _restore_settings(self) -> None:
+        previous = self._restoring_settings
+        self._restoring_settings = True
+        try:
+            self._restore_settings_widgets()
+        finally:
+            self._restoring_settings = previous
+
+    def _restore_settings_widgets(self) -> None:
         self._ensure_default_music_selection()
         selected_engine = self.settings.get("tts_engine", "piper")
         if selected_engine == "kokoro_python":
@@ -9260,12 +9531,48 @@ class MainWindow(QMainWindow):
         self.settings_manager.save(self.settings)
         self.translator.set_language(language)
 
+        self._rebuild_interface(text, page_index)
+
+    def _reset_settings_to_defaults(self, _checked: bool = False) -> None:
+        choice = QMessageBox.question(
+            self,
+            self.tr("reset_settings_confirm_title", "Restore default settings"),
+            self.tr(
+                "reset_settings_confirm_message",
+                "All application preferences, engine selections, and saved API keys "
+                "will be reset. Downloaded models, voices, projects, music, and generated "
+                "audio will not be deleted. Continue?",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+
+        text = self.text_editor.toPlainText()
+        page_index = self.page_stack.currentIndex()
+        self.settings_manager.save(deepcopy(DEFAULT_SETTINGS))
+        self.settings = self.settings_manager.settings
+        self.translator.set_language(str(self.settings["ui_language"]))
+        self._rebuild_interface(text, page_index)
+        self.statusBar().showMessage(
+            self.tr("reset_settings_done", "Default settings restored."),
+            5000,
+        )
+
+    def _rebuild_interface(self, text: str, page_index: int) -> None:
         old_central = self.takeCentralWidget()
-        self.setWindowTitle(self.tr("app_title", "LocalText2Voice"))
-        self._build_ui()
-        self._apply_style()
-        self._load_voices()
-        self._restore_settings()
+        previous = self._restoring_settings
+        self._restoring_settings = True
+        try:
+            self.setWindowTitle(self.tr("app_title", "LocalText2Voice"))
+            self._build_ui()
+            self._apply_style()
+            self._load_voices()
+            self._restore_settings()
+        finally:
+            self._restoring_settings = previous
+
         self.text_editor.setPlainText(text)
         if page_index == 1:
             self._show_settings_page()
@@ -10841,6 +11148,7 @@ class MainWindow(QMainWindow):
             "output_dir": str(output_dir),
             "split_mode": str(self.split_combo.currentData()),
             "export_mode": str(self.export_combo.currentData()),
+            "chunk_size": self._current_chunk_size(engine_id),
             "project_audiobook_id": self.current_audiobook_id,
             # The desktop UI owns the interactive Review and Audio Mix transitions.
             "review_policy": "off",
@@ -12490,6 +12798,8 @@ class MainWindow(QMainWindow):
             self._refresh_wav_cache_stats()
 
     def _save_settings(self) -> None:
+        if self._restoring_settings:
+            return
         output_dir = self.output_picker.path()
         self.settings.pop("kokoro_python", None)
         self.settings.update(
@@ -12828,6 +13138,22 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._tts_engine_install_in_progress():
+            QMessageBox.warning(
+                self,
+                self.tr(
+                    "engine_install_running_title",
+                    "Engine installation in progress",
+                ),
+                self.tr(
+                    "engine_install_running_close_message",
+                    "Do not close LocalText2Voice while a TTS engine is being "
+                    "installed. Cancel the installation from its progress window "
+                    "and wait for it to stop safely.",
+                ),
+            )
+            event.ignore()
+            return
         if not self._confirm_project_switch():
             event.ignore()
             return

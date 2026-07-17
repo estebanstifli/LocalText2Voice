@@ -202,6 +202,16 @@ def test_service_reloads_ui_settings_and_keeps_project_id(tmp_path):
     assert options.project_audiobook_id == 42
 
 
+def test_service_rejects_unsafe_requested_chunk_size(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["chunk_size"] = 2500
+    settings.save()
+    service = LocalText2VoiceService(settings)
+
+    assert service._chunk_size("omnivoice", {"chunk_size": 1}) == 2500
+    assert service._chunk_size("omnivoice", {"chunk_size": 120}) == 120
+
+
 def test_external_play_forces_whisper_review_and_postproduction_mix(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["output_dir"] = str(tmp_path / "output")
