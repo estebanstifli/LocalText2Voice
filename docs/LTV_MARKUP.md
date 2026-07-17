@@ -346,7 +346,7 @@ app dynamically aligns the original words with the transcript and then renders
 the audio event in postproduction.
 
 ```text
-The door closed. {{play "effects/door-close.mp3" volume=-6db}}
+The door closed. {{play "door-close.mp3" volume=-6db}}
 ```
 
 Supported V1 parameters:
@@ -369,7 +369,7 @@ Examples:
 ```text
 {{play "music/forest.mp3" id="forest" track=ambient loop=true volume=-20db fade_in=3 duck_on_voice=6db}}
 {{play "music/theme.mp3" start=32 duration=12 fade_in=1 fade_out=2 track=music}}
-{{play "effects/car.mp3" duration=5 pan=-0.7}}
+{{play "car" duration=5 pan=-0.7}}
 {{stop id="forest" fade_out=4}}
 ```
 
@@ -465,7 +465,7 @@ I do not like this place.
 {{voice.character "Pedro"}}
 It will only take a minute.
 
-{{play "door_creak.wav" volume=-6db}}
+{{play "door_creak" volume=-6db}}
 {{pause 800}}
 
 {{voice.narrator}}

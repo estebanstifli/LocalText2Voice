@@ -7,8 +7,13 @@ from typing import Any
 
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 11
-MIN_CHUNK_SIZE = 1
+CURRENT_SETTINGS_SCHEMA_VERSION = 12
+MIN_CHUNK_SIZE = 50
+MAX_CHUNK_SIZE = 5000
+
+SUPPORTED_UI_LANGUAGES = {"ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "zh"}
+SUPPORTED_SPLIT_MODES = {"safe_chunks", "chapters"}
+SUPPORTED_EXPORT_MODES = {"single", "chapters"}
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -244,17 +249,85 @@ def _migrate_settings(
         if result.get("ducking_strength") == "medium":
             result["ducking_strength"] = "low"
 
-    _sanitize_chunk_sizes(result)
+    invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
+    _sanitize_core_settings(result)
+    if (
+        version < 12
+        and invalid_legacy_chunk_size
+        and result.get("ui_language") == "ar"
+    ):
+        # Builds before schema 12 could save the first UI option (Arabic) and a
+        # one-character chunk size while the widgets were only half restored.
+        result["ui_language"] = DEFAULT_SETTINGS["ui_language"]
     result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
     return result
 
 
-def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:
+def _valid_chunk_size(value: object) -> bool:
     try:
-        chunk_size = int(settings.get("chunk_size", DEFAULT_SETTINGS["chunk_size"]))
+        parsed = int(value)
     except (TypeError, ValueError):
-        chunk_size = int(DEFAULT_SETTINGS["chunk_size"])
-    settings["chunk_size"] = max(MIN_CHUNK_SIZE, chunk_size)
+        return False
+    return MIN_CHUNK_SIZE <= parsed <= MAX_CHUNK_SIZE
+
+
+def sanitize_chunk_size(value: object, fallback: int | None = None) -> int:
+    """Return a safe chunk size, falling back instead of silently clamping."""
+    if _valid_chunk_size(value):
+        return int(value)
+    if fallback is not None and _valid_chunk_size(fallback):
+        return int(fallback)
+    return int(DEFAULT_SETTINGS["chunk_size"])
+
+
+def _sanitize_choice(
+    settings: dict[str, Any],
+    key: str,
+    allowed: set[str],
+) -> None:
+    value = settings.get(key)
+    if not isinstance(value, str) or value not in allowed:
+        settings[key] = DEFAULT_SETTINGS[key]
+
+
+def _sanitize_core_settings(settings: dict[str, Any]) -> None:
+    _sanitize_choice(settings, "ui_language", SUPPORTED_UI_LANGUAGES)
+    _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
+    _sanitize_choice(settings, "export_mode", SUPPORTED_EXPORT_MODES)
+
+    engine = settings.get("tts_engine")
+    if not isinstance(engine, str) or not engine.strip():
+        settings["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
+
+    try:
+        speed = float(settings.get("speed", DEFAULT_SETTINGS["speed"]))
+    except (TypeError, ValueError):
+        speed = float(DEFAULT_SETTINGS["speed"])
+    settings["speed"] = (
+        speed if 0.5 <= speed <= 2.0 else float(DEFAULT_SETTINGS["speed"])
+    )
+
+    for section in (
+        "metadata",
+        "kokoro",
+        "chatterbox",
+        "qwen",
+        "omnivoice",
+        "review",
+        "local_server",
+        "api_tts",
+        "voice_gallery",
+        "updates",
+        "installer_setup",
+    ):
+        if not isinstance(settings.get(section), dict):
+            settings[section] = deepcopy(DEFAULT_SETTINGS[section])
+
+    _sanitize_chunk_sizes(settings)
+
+
+def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:
+    settings["chunk_size"] = sanitize_chunk_size(settings.get("chunk_size"))
 
     engine_sizes = settings.get("engine_chunk_sizes")
     if not isinstance(engine_sizes, dict):
@@ -266,11 +339,12 @@ def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:
     else:
         engines = set(engine_sizes.keys())
     for engine in engines:
+        raw_value = engine_sizes.get(engine, 0)
         try:
-            value = int(engine_sizes.get(engine, 0) or 0)
+            value = int(raw_value or 0)
         except (TypeError, ValueError):
             value = 0
-        sanitized[str(engine)] = 0 if value <= 0 else max(MIN_CHUNK_SIZE, value)
+        sanitized[str(engine)] = value if _valid_chunk_size(value) else 0
     settings["engine_chunk_sizes"] = sanitized
 
 
@@ -295,9 +369,12 @@ class SettingsManager:
 
     def save(self, values: dict[str, Any] | None = None) -> None:
         if values is not None:
-            self.settings = _migrate_settings(_deep_merge(DEFAULT_SETTINGS, values))
+            normalized = _migrate_settings(_deep_merge(DEFAULT_SETTINGS, values))
         else:
-            self.settings = _migrate_settings(self.settings)
+            normalized = _migrate_settings(self.settings)
+        # Keep references held by the UI valid after every normalization/save.
+        self.settings.clear()
+        self.settings.update(normalized)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = self.path.with_suffix(".json.tmp")
         temporary_path.write_text(
