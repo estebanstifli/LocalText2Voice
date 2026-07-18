@@ -12,8 +12,24 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.audio_tail_review import (
+    analyze_audio_tail,
+    candidate_is_better,
+    candidate_selection_score,
+    comparison_normalization_is_current,
+    combined_review_status,
+    parse_review_metrics,
+    tail_analysis_is_current,
+)
+from app.core.audio_tail_cut import (
+    automatic_tail_cut_seconds,
+    removable_tail_seconds,
+    trim_wav_at,
+)
 from app.core.transcript_similarity import similarity_metrics, verification_status
 from app.core.audio_event_timeline import resolve_audio_event_timeline
+from app.core.subtitle_export import export_audiobook_subtitles
+from app.core.text_normalization import TextNormalizer, normalization_rule_settings
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.tts.engine_registry import create_tts_engine
 from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
@@ -113,6 +129,16 @@ class SegmentVerificationWorker(QObject):
         fallback_voice_config: dict | None = None,
         only_unverified: bool = True,
         shared_tts_engines: dict[str, BaseTTSEngine] | None = None,
+        tail_analysis_enabled: bool = False,
+        tail_safety_margin_seconds: float = 0.40,
+        tail_warning_threshold_seconds: float = 0.50,
+        tail_failure_threshold_seconds: float = 1.00,
+        comparison_normalization_enabled: bool = False,
+        comparison_normalization_language: str = "auto",
+        comparison_normalization_db_path: Path | None = None,
+        tail_autocut_enabled: bool = False,
+        ffmpeg_path: str | Path = "ffmpeg/ffmpeg.exe",
+        comparison_normalization_rules: object = None,
     ) -> None:
         super().__init__()
         self.store = store
@@ -128,10 +154,39 @@ class SegmentVerificationWorker(QObject):
         self.piper_path = piper_path or Path("engines/piper/piper.exe")
         self.fallback_voice_config = fallback_voice_config or {}
         self.only_unverified = only_unverified
+        self.tail_analysis_enabled = bool(tail_analysis_enabled)
+        self.tail_safety_margin_seconds = max(0.0, tail_safety_margin_seconds)
+        self.tail_warning_threshold_seconds = max(
+            0.01,
+            tail_warning_threshold_seconds,
+        )
+        self.tail_failure_threshold_seconds = max(
+            self.tail_warning_threshold_seconds + 0.01,
+            tail_failure_threshold_seconds,
+        )
+        self.tail_autocut_enabled = bool(
+            tail_autocut_enabled and self.tail_analysis_enabled
+        )
+        self.ffmpeg_path = ffmpeg_path
+        self.comparison_normalization_enabled = bool(
+            comparison_normalization_enabled
+        )
+        self.comparison_normalization_language = str(
+            comparison_normalization_language or "auto"
+        )
+        self.comparison_normalization_rules = normalization_rule_settings(
+            comparison_normalization_rules
+        )
+        self.comparison_normalizer = (
+            TextNormalizer(db_path=comparison_normalization_db_path)
+            if self.comparison_normalization_enabled
+            else None
+        )
         self._cancel_requested = threading.Event()
         self._tts_engines = shared_tts_engines if shared_tts_engines is not None else {}
         self._owns_tts_engines = shared_tts_engines is None
         self._active_tts_engine: BaseTTSEngine | None = None
+        self._active_ffmpeg_runner: FFmpegRunner | None = None
 
     @Slot()
     def run(self) -> None:
@@ -143,11 +198,7 @@ class SegmentVerificationWorker(QObject):
                 if segment.status in {"rendered", "verified"}
                 and segment.wav_path
                 and Path(segment.wav_path).is_file()
-                and (
-                    not self.only_unverified
-                    or segment.verification_status in {"not_verified", ""}
-                    or segment.similarity_score is None
-                )
+                and self._segment_needs_review(segment)
             ]
             total = len(segments)
             if total == 0:
@@ -165,6 +216,7 @@ class SegmentVerificationWorker(QObject):
                         "PLAY/STOP timeline resolved: "
                         f"{summary.resolved}/{summary.total} event(s) ready."
                     )
+                self._export_subtitles()
                 self.finished.emit()
                 return
             for index, segment in enumerate(segments, start=1):
@@ -187,10 +239,11 @@ class SegmentVerificationWorker(QObject):
                     f"{summary.resolved}/{summary.total} ready, "
                     f"{summary.pending} pending, {summary.missing} missing."
                 )
+            self._export_subtitles()
             self.finished.emit()
-        except FasterWhisperCancelled:
+        except (FasterWhisperCancelled, FFmpegCancelled):
             self.cancelled.emit()
-        except (FasterWhisperError, PythonRuntimeError) as exc:
+        except (FasterWhisperError, PythonRuntimeError, FFmpegError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()
@@ -209,6 +262,21 @@ class SegmentVerificationWorker(QObject):
         self.verifier.cancel_current()
         if self._active_tts_engine is not None:
             self._active_tts_engine.cancel_current()
+        if self._active_ffmpeg_runner is not None:
+            self._active_ffmpeg_runner.cancel_current()
+
+    def _export_subtitles(self) -> None:
+        result = export_audiobook_subtitles(self.store, self.audiobook_id)
+        if result.files:
+            self.log.emit(
+                f"Created {len(result.files)} subtitle file(s) next to the MP3 output(s)."
+            )
+        elif result.skipped_reason == "needs_rebuild":
+            self.log.emit(
+                "Subtitle export is waiting for the audiobook to be rebuilt."
+            )
+        elif result.skipped_reason == "no_word_timestamps":
+            self.log.emit("No Whisper word timestamps are available for subtitles.")
 
     def _review_segment(self, segment: StoredSegment) -> None:
         source_wav = Path(segment.wav_path)
@@ -219,35 +287,78 @@ class SegmentVerificationWorker(QObject):
         )
         best = self._transcribe_and_score(segment, source_wav, language)
         self._save_verification(segment, best)
-        if best["status"] == "approved" or self.max_retries <= 0:
+        candidate_paths: list[Path] = []
+        if self.tail_autocut_enabled:
+            autocut_result = self._autocut_and_review(
+                segment,
+                source_wav,
+                language,
+                best,
+            )
+            if autocut_result is not None:
+                candidate_paths.append(Path(str(autocut_result["wav_path"])))
+                if candidate_is_better(autocut_result, best):
+                    self._annotate_audio_tail_cut(
+                        autocut_result,
+                        mode="automatic",
+                        cut_seconds=float(autocut_result["tail_cut_seconds"]),
+                        removed_seconds=float(
+                            autocut_result["tail_removed_seconds"]
+                        ),
+                        accepted=True,
+                    )
+                    best = autocut_result
+                    self.log.emit(
+                        f"Segment {segment.sequence_index}: the automatically "
+                        "trimmed and re-reviewed audio is the new best."
+                    )
+                else:
+                    self._annotate_audio_tail_cut(
+                        best,
+                        mode="automatic",
+                        cut_seconds=float(autocut_result["tail_cut_seconds"]),
+                        removed_seconds=float(
+                            autocut_result["tail_removed_seconds"]
+                        ),
+                        accepted=False,
+                    )
+                    self.log.emit(
+                        f"Segment {segment.sequence_index}: the automatically "
+                        "trimmed audio did not review better; keeping the original."
+                    )
+
+        if not candidate_paths and (
+            best["status"] == "approved" or self.max_retries <= 0
+        ):
             return
 
-        self.log.emit(
-            f"Segment {segment.sequence_index}: below threshold "
-            f"({best['score']:.1f}% < {self.approve_threshold:.1f}%). "
-            f"Starting up to {self.max_retries} automatic retry attempt(s)."
-        )
-        candidate_paths: list[Path] = []
-        for attempt in range(1, self.max_retries + 1):
-            if self._cancel_requested.is_set():
-                raise FasterWhisperCancelled("Verification cancelled.")
-            candidate = self._candidate_wav_path(segment, attempt)
-            candidate_paths.append(candidate)
-            synthesis_ms = self._regenerate_candidate(segment, candidate, attempt)
-            attempt_result = self._transcribe_and_score(segment, candidate, language)
-            attempt_result["synthesis_ms"] = synthesis_ms
+        if best["status"] != "approved" and self.max_retries > 0:
             self.log.emit(
-                f"Segment {segment.sequence_index} retry {attempt}/{self.max_retries}: "
-                f"{attempt_result['score']:.1f}% similarity "
-                f"({attempt_result['status']})."
+                f"Segment {segment.sequence_index}: review did not pass "
+                f"({self._result_summary(best)}). Starting up to "
+                f"{self.max_retries} automatic retry attempt(s)."
             )
-            if float(attempt_result["score"]) > float(best["score"]):
-                best = attempt_result
+            for attempt in range(1, self.max_retries + 1):
+                if self._cancel_requested.is_set():
+                    raise FasterWhisperCancelled("Verification cancelled.")
+                candidate = self._candidate_wav_path(segment, attempt)
+                candidate_paths.append(candidate)
+                synthesis_ms = self._regenerate_candidate(segment, candidate, attempt)
+                attempt_result = self._transcribe_and_score(segment, candidate, language)
+                attempt_result["synthesis_ms"] = synthesis_ms
                 self.log.emit(
-                    f"Segment {segment.sequence_index}: retry {attempt} is the new best."
+                    f"Segment {segment.sequence_index} retry "
+                    f"{attempt}/{self.max_retries}: "
+                    f"{self._result_summary(attempt_result)}."
                 )
-            if attempt_result["status"] == "approved":
-                break
+                if candidate_is_better(attempt_result, best):
+                    best = attempt_result
+                    self.log.emit(
+                        f"Segment {segment.sequence_index}: retry {attempt} "
+                        "is the new best."
+                    )
+                if attempt_result["status"] == "approved":
+                    break
 
         original_path = source_wav.resolve()
         best_path = Path(str(best["wav_path"]))
@@ -261,12 +372,12 @@ class SegmentVerificationWorker(QObject):
             )
             self.log.emit(
                 f"Segment {segment.sequence_index}: keeping best audio "
-                f"({float(best['score']):.1f}%) -> {best_path}"
+                f"({self._result_summary(best)}) -> {best_path}"
             )
         else:
             self.log.emit(
                 f"Segment {segment.sequence_index}: original audio remains best "
-                f"({float(best['score']):.1f}%)."
+                f"({self._result_summary(best)})."
             )
         self._save_verification(segment, best)
         for candidate in candidate_paths:
@@ -276,6 +387,81 @@ class SegmentVerificationWorker(QObject):
                 candidate.unlink(missing_ok=True)
             except OSError as exc:
                 self.log.emit(f"Could not delete retry candidate {candidate}: {exc}")
+
+    def _autocut_and_review(
+        self,
+        segment: StoredSegment,
+        source_wav: Path,
+        language: str,
+        initial: dict[str, object],
+    ) -> dict[str, object] | None:
+        tail = initial.get("tail_analysis")
+        if not isinstance(tail, dict):
+            return None
+        cut_seconds = automatic_tail_cut_seconds(tail)
+        if cut_seconds is None:
+            return None
+        removed_seconds = removable_tail_seconds(tail, cut_seconds)
+        if removed_seconds <= 0.01:
+            return None
+
+        candidate = self._autocut_wav_path(segment)
+        ffmpeg = FFmpegRunner(find_ffmpeg(self.ffmpeg_path))
+        self._active_ffmpeg_runner = ffmpeg
+        self.log.emit(
+            f"Segment {segment.sequence_index}: audio tail exceeds the possible-"
+            f"artifact threshold; trimming {removed_seconds:.2f}s at "
+            f"{cut_seconds:.2f}s and sending the candidate back to Whisper."
+        )
+        try:
+            trim_wav_at(
+                source_wav,
+                candidate,
+                cut_seconds,
+                self.ffmpeg_path,
+                runner=ffmpeg,
+            )
+        finally:
+            self._active_ffmpeg_runner = None
+        result = self._transcribe_and_score(segment, candidate, language)
+        self._annotate_audio_tail_cut(
+            result,
+            mode="automatic",
+            cut_seconds=cut_seconds,
+            removed_seconds=removed_seconds,
+            accepted=None,
+        )
+        result["tail_cut_seconds"] = cut_seconds
+        result["tail_removed_seconds"] = removed_seconds
+        self.log.emit(
+            f"Segment {segment.sequence_index} automatic tail cut: "
+            f"{self._result_summary(result)}."
+        )
+        return result
+
+    @staticmethod
+    def _annotate_audio_tail_cut(
+        result: dict[str, object],
+        *,
+        mode: str,
+        cut_seconds: float,
+        removed_seconds: float,
+        accepted: bool | None,
+    ) -> None:
+        try:
+            metrics = json.loads(str(result.get("review_metrics_json", "{}")))
+        except json.JSONDecodeError:
+            metrics = {}
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["audio_tail_cut"] = {
+            "mode": mode,
+            "cut_seconds": round(cut_seconds, 3),
+            "removed_seconds": round(removed_seconds, 3),
+            "whisper_rechecked": True,
+            "accepted": accepted,
+        }
+        result["review_metrics_json"] = json.dumps(metrics, ensure_ascii=False)
 
     def _transcribe_and_score(
         self,
@@ -295,22 +481,121 @@ class SegmentVerificationWorker(QObject):
         word_timestamps = result.get("words", [])
         if not isinstance(word_timestamps, list):
             word_timestamps = []
-        metrics = similarity_metrics(segment.source_text, transcript)
+        raw_metrics = similarity_metrics(segment.source_text, transcript)
+        comparison_language_hint = str(result.get("language") or language)
+        comparison_language = self._comparison_language(
+            comparison_language_hint
+        )
+        comparison_source, comparison_transcript, comparison_words = (
+            self._comparison_values(
+                segment.source_text,
+                transcript,
+                word_timestamps,
+                comparison_language_hint,
+            )
+        )
+        metrics = similarity_metrics(comparison_source, comparison_transcript)
         score = float(metrics["similarity_score"])
-        status = verification_status(score, self.approve_threshold)
+        transcript_status = verification_status(score, self.approve_threshold)
+        tail_analysis: dict[str, object] = {"enabled": False, "status": "disabled"}
+        if self.tail_analysis_enabled:
+            tail_analysis = analyze_audio_tail(
+                comparison_source,
+                comparison_words,
+                _wav_duration_seconds(wav_path),
+                safety_margin_seconds=self.tail_safety_margin_seconds,
+                warning_threshold_seconds=self.tail_warning_threshold_seconds,
+                failure_threshold_seconds=self.tail_failure_threshold_seconds,
+            )
+        status = combined_review_status(
+            transcript_status,
+            str(tail_analysis.get("status", "disabled")),
+        )
+        selection_score = candidate_selection_score(score, tail_analysis)
+        review_metrics = {
+            "transcript_status": transcript_status,
+            "tail_analysis": tail_analysis,
+            "selection_score": round(selection_score, 3),
+            "comparison_normalization_applied": (
+                comparison_language is not None
+                and (
+                    comparison_source != segment.source_text
+                    or comparison_transcript != transcript
+                )
+            ),
+            "comparison_normalization": {
+                "enabled": comparison_language is not None,
+                "language": comparison_language or "",
+                "rules": dict(self.comparison_normalization_rules),
+            },
+            "raw_similarity_score": float(raw_metrics["similarity_score"]),
+        }
         return {
             "wav_path": wav_path,
             "transcript": transcript,
             "score": score,
+            "raw_score": float(raw_metrics["similarity_score"]),
             "wer": float(metrics["wer"]),
             "cer": float(metrics["cer"]),
             "status": status,
+            "transcript_status": transcript_status,
+            "tail_analysis": tail_analysis,
+            "selection_score": selection_score,
+            "review_metrics_json": json.dumps(review_metrics, ensure_ascii=False),
             "word_timestamps_json": json.dumps(
                 word_timestamps,
                 ensure_ascii=False,
             ),
             "transcription_ms": round((time.perf_counter() - started) * 1000),
         }
+
+    def _comparison_values(
+        self,
+        source_text: str,
+        transcript: str,
+        word_timestamps: list[object],
+        language_hint: str,
+    ) -> tuple[str, str, list[object]]:
+        normalizer = self.comparison_normalizer
+        if normalizer is None:
+            return source_text, transcript, word_timestamps
+        resolved_language = self._comparison_language(language_hint)
+        if resolved_language is None:
+            return source_text, transcript, word_timestamps
+        normalized_source = normalizer.normalize(
+            source_text,
+            language=resolved_language,
+            preserve_markup=False,
+            rules=self.comparison_normalization_rules,
+        )
+        normalized_transcript = normalizer.normalize(
+            transcript,
+            language=resolved_language,
+            preserve_markup=False,
+            rules=self.comparison_normalization_rules,
+        )
+        normalized_words: list[object] = []
+        for value in word_timestamps:
+            if not isinstance(value, dict):
+                normalized_words.append(value)
+                continue
+            normalized_value = dict(value)
+            normalized_value["word"] = normalizer.normalize(
+                str(value.get("word", "")),
+                language=resolved_language,
+                preserve_markup=False,
+                rules=self.comparison_normalization_rules,
+            )
+            normalized_words.append(normalized_value)
+        return normalized_source, normalized_transcript, normalized_words
+
+    def _comparison_language(self, language_hint: str) -> str | None:
+        if self.comparison_normalizer is None:
+            return None
+        return TextNormalizer.resolve_language(
+            self.comparison_normalization_language,
+            language_hint,
+        )
 
     def _save_verification(
         self,
@@ -326,11 +611,79 @@ class SegmentVerificationWorker(QObject):
             str(result["status"]),
             int(result["transcription_ms"]),
             str(result.get("word_timestamps_json", "[]")),
+            str(result.get("review_metrics_json", "{}")),
         )
         self.log.emit(
-            f"Segment {segment.sequence_index}: {float(result['score']):.1f}% "
-            f"similarity ({result['status']})."
+            f"Segment {segment.sequence_index}: {self._result_summary(result)}."
         )
+
+    def _segment_needs_review(self, segment: StoredSegment) -> bool:
+        if not self.only_unverified:
+            return True
+        transcript_pending = (
+            segment.verification_status in {"not_verified", ""}
+            or segment.similarity_score is None
+        )
+        if transcript_pending:
+            return True
+        language = self._language_for_segment(segment)
+        comparison_language = self._comparison_language(language)
+        normalization_current = comparison_normalization_is_current(
+            segment.review_metrics_json,
+            enabled=comparison_language is not None,
+            language=comparison_language or "",
+            rules=self.comparison_normalization_rules,
+        )
+        tail_current = tail_analysis_is_current(
+            segment.review_metrics_json,
+            enabled=self.tail_analysis_enabled,
+            safety_margin_seconds=self.tail_safety_margin_seconds,
+            warning_threshold_seconds=self.tail_warning_threshold_seconds,
+            failure_threshold_seconds=self.tail_failure_threshold_seconds,
+        )
+        if not normalization_current or not tail_current:
+            return True
+        if self.tail_autocut_enabled:
+            metrics = parse_review_metrics(segment.review_metrics_json)
+            tail = metrics.get("tail_analysis")
+            autocut = metrics.get("audio_tail_cut")
+            if isinstance(tail, dict):
+                try:
+                    excess = float(tail.get("excess_tail_seconds"))
+                except (TypeError, ValueError):
+                    excess = 0.0
+                already_rechecked = isinstance(autocut, dict) and bool(
+                    autocut.get("whisper_rechecked", False)
+                )
+                if (
+                    excess > self.tail_warning_threshold_seconds
+                    and not already_rechecked
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _result_summary(result: dict[str, object]) -> str:
+        summary = (
+            f"{float(result['score']):.1f}% similarity, "
+            f"status {result['status']}"
+        )
+        raw_score = result.get("raw_score")
+        if (
+            raw_score is not None
+            and abs(float(raw_score) - float(result["score"])) >= 0.1
+        ):
+            summary += f" (raw Whisper comparison {float(raw_score):.1f}%)"
+        tail = result.get("tail_analysis")
+        if isinstance(tail, dict) and bool(tail.get("enabled", False)):
+            excess = tail.get("excess_tail_seconds")
+            excess_label = "unavailable" if excess is None else f"{float(excess):.2f}s"
+            summary += (
+                f", tail {excess_label} after margin / "
+                f"{float(tail.get('risk_percent', 100.0)):.0f}% risk "
+                f"({tail.get('status', 'unavailable')})"
+            )
+        return summary
 
     def _regenerate_candidate(
         self,
@@ -421,6 +774,102 @@ class SegmentVerificationWorker(QObject):
         base_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         return base_dir / f"segment_{segment.sequence_index:04d}_retry_{attempt}_{stamp}.wav"
+
+    @staticmethod
+    def _autocut_wav_path(segment: StoredSegment) -> Path:
+        current = Path(segment.wav_path)
+        base_dir = (
+            current.parent
+            if current.parent.name == "candidates"
+            else current.parent / "candidates"
+        )
+        base_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        return base_dir / f"segment_{segment.sequence_index:04d}_autocut_{stamp}.wav"
+
+
+class AudioTailCutWorker(QObject):
+    log = Signal(str)
+    finished = Signal(int, str, float, float)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        store: AudiobookStore,
+        segment_id: int,
+        output_wav: Path,
+        cut_seconds: float,
+        ffmpeg_path: str | Path,
+    ) -> None:
+        super().__init__()
+        self.store = store
+        self.segment_id = segment_id
+        self.output_wav = Path(output_wav)
+        self.cut_seconds = float(cut_seconds)
+        self.ffmpeg_path = ffmpeg_path
+        self._runner: FFmpegRunner | None = None
+        self._cancel_requested = threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            segment = self.store.get_segment(self.segment_id)
+            if segment is None:
+                raise FFmpegError("Segment not found.")
+            source_wav = Path(segment.wav_path)
+            duration_seconds = _wav_duration_seconds(source_wav)
+            if not 0.01 < self.cut_seconds < duration_seconds - 0.01:
+                raise FFmpegError(
+                    "The selected cut point must be inside the audio clip."
+                )
+            if self._cancel_requested.is_set():
+                raise FFmpegCancelled("Audio tail cut cancelled.")
+            removed_seconds = duration_seconds - self.cut_seconds
+            self.log.emit(
+                f"Segment {segment.sequence_index}: cutting {removed_seconds:.2f}s "
+                f"of audio at {self.cut_seconds:.2f}s."
+            )
+            self._runner = FFmpegRunner(find_ffmpeg(self.ffmpeg_path))
+            trim_wav_at(
+                source_wav,
+                self.output_wav,
+                self.cut_seconds,
+                self.ffmpeg_path,
+                runner=self._runner,
+            )
+            if self._cancel_requested.is_set():
+                raise FFmpegCancelled("Audio tail cut cancelled.")
+            output_duration = _wav_duration_seconds(self.output_wav)
+            self.store.mark_segment_rendered(
+                segment.id,
+                self.output_wav,
+                round(output_duration * 1000),
+                0,
+            )
+            self.finished.emit(
+                segment.id,
+                str(self.output_wav),
+                self.cut_seconds,
+                removed_seconds,
+            )
+        except FFmpegCancelled:
+            self.output_wav.unlink(missing_ok=True)
+            self.cancelled.emit()
+        except (FFmpegError, FileNotFoundError, OSError, ValueError, wave.Error) as exc:
+            self.output_wav.unlink(missing_ok=True)
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.output_wav.unlink(missing_ok=True)
+            traceback.print_exc()
+            self.failed.emit(f"Unexpected audio tail cut error: {exc}")
+        finally:
+            self._runner = None
+
+    def request_cancel(self) -> None:
+        self._cancel_requested.set()
+        if self._runner is not None:
+            self._runner.cancel_current()
 
 
 class SegmentRegenerationWorker(QObject):
@@ -569,8 +1018,17 @@ class AudiobookRebuildWorker(QObject):
                 output_mp3 = self._next_review_filename(self.output_dir)
                 self._encode_mp3(joined_wav, output_mp3, runner)
                 self.store.complete_audiobook(self.audiobook_id, [output_mp3])
+                subtitle_result = export_audiobook_subtitles(
+                    self.store,
+                    self.audiobook_id,
+                    [output_mp3],
+                )
             self.progress.emit(1, 1, "Audiobook rebuilt.")
             self.log.emit(f"Rebuilt audiobook: {output_mp3}")
+            if subtitle_result.files:
+                self.log.emit(
+                    f"Created {len(subtitle_result.files)} subtitle file(s)."
+                )
             self.finished.emit(str(output_mp3))
         except (FFmpegCancelled, TTSCancelled):
             self.cancelled.emit()

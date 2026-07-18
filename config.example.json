@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 9,
+  "settings_schema_version": 16,
   "ui_language": "en",
   "output_dir": "output",
   "voice_id": "",
@@ -21,6 +21,20 @@
   "editor_syntax_highlighting": true,
   "show_markup_toolbar": true,
   "markup_corrector_enabled": true,
+  "text_normalization": {
+    "enabled": false,
+    "language": "auto",
+    "rules": {
+      "enabled": true,
+      "numbers": true,
+      "ordinals": true,
+      "dates": true,
+      "currencies": true,
+      "percentages": true,
+      "measurements": true,
+      "roman_numerals": true
+    }
+  },
   "pause_between_blocks_ms": 350,
   "pause_between_chapters_ms": 900,
   "paragraph_pause_min_ms": 450,
@@ -99,7 +113,12 @@
     "beam_size": 1,
     "approve_threshold": 92.0,
     "max_retries": 0,
-    "preload_model": false
+    "preload_model": false,
+    "tail_analysis_enabled": false,
+    "tail_autocut_enabled": false,
+    "tail_safety_margin_seconds": 0.4,
+    "tail_warning_threshold_seconds": 0.5,
+    "tail_failure_threshold_seconds": 1.0
   },
   "local_server": {
     "enabled": false,

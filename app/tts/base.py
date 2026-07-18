@@ -14,6 +14,12 @@ class TTSCancelled(TTSEngineError):
 
 
 class BaseTTSEngine(ABC):
+    def cancellation_requested(self) -> bool:
+        """Return whether this instance has received a sticky cancellation."""
+        event = getattr(self, "_cancel_requested", None)
+        is_set = getattr(event, "is_set", None)
+        return bool(is_set()) if callable(is_set) else False
+
     def set_log_callback(self, callback: Callable[[str], None]) -> None:
         """Allow engines to report optional runtime diagnostics."""
 

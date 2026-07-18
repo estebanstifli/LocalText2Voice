@@ -24,7 +24,9 @@ from app.utils.ffmpeg_utils import (
 )
 
 from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
+from .subtitle_export import export_audiobook_subtitles
 from .text_processor import TextChunk, TextProcessor
+from .text_normalization import TextNormalizer
 
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[[str], None]
@@ -74,6 +76,11 @@ class AudioGenerationOptions:
     ducking_strength: str = "low"
     mp3_bitrate: str = "128k"
     metadata: dict[str, str] = field(default_factory=dict)
+    text_normalization_enabled: bool = False
+    text_normalization_language: str = "auto"
+    text_normalization_language_hint: str = ""
+    text_normalization_db_path: Path | None = None
+    text_normalization_rules: dict[str, bool] = field(default_factory=dict)
     project_audiobook_id: int | None = None
     project_settings: dict[str, Any] = field(default_factory=dict)
 
@@ -289,6 +296,15 @@ class AudioPipeline:
                         self._active_audiobook.id,
                         outputs,
                     )
+                    subtitle_result = export_audiobook_subtitles(
+                        self.audiobook_store,
+                        self._active_audiobook.id,
+                        outputs,
+                    )
+                    if subtitle_result.files:
+                        self.log_callback(
+                            f"Created {len(subtitle_result.files)} subtitle file(s)."
+                        )
                 self.log_callback(
                     "Generation pipeline completed in "
                     f"{self._format_duration(time.perf_counter() - generation_started)}."
@@ -405,6 +421,7 @@ class AudioPipeline:
         text: str,
         options: AudioGenerationOptions,
     ) -> list[AudioGroup]:
+        text = self._normalize_text_for_tts(text, options)
         if LTVMarkupParser.contains_markup(text):
             backend = str(options.voice_config.get("engine", "piper"))
             markup = LTVMarkupCompiler.compile(text, backend)
@@ -447,6 +464,42 @@ class AudioPipeline:
                 )
             ]
         return [AudioGroup(title="Course", chunks=tuple(chunks))]
+
+    def _normalize_text_for_tts(
+        self,
+        text: str,
+        options: AudioGenerationOptions,
+    ) -> str:
+        if not options.text_normalization_enabled:
+            return text
+        language_hint = options.text_normalization_language_hint or str(
+            options.voice_config.get("language")
+            or options.voice_config.get("lang")
+            or options.voice_config.get("locale")
+            or ""
+        )
+        resolved_language = TextNormalizer.resolve_language(
+            options.text_normalization_language,
+            language_hint,
+        )
+        if resolved_language is None:
+            self.log_callback(
+                "Text normalization skipped: no dictionary matches the selected language."
+            )
+            return text
+        normalized = TextNormalizer(
+            db_path=options.text_normalization_db_path
+        ).normalize(
+            text,
+            language=resolved_language,
+            language_hint=language_hint,
+            preserve_markup=True,
+            rules=options.text_normalization_rules,
+        )
+        self.log_callback(
+            f"Text normalization applied with the {resolved_language} dictionary."
+        )
+        return normalized
 
     def _prepare_markup_groups(
         self,

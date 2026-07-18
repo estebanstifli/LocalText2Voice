@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -393,10 +395,12 @@ class OmniVoiceManager:
     INSTALL_FILENAME = "omnivoice-install.json"
     RUNTIME_INSTALL_FILENAME = "omnivoice-runtime-install.json"
     CLI_FILENAME = "omnivoice_worker.py"
-    OMNIVOICE_PACKAGE = "omnivoice"
+    OMNIVOICE_PACKAGE_VERSION = "0.2.0"
+    OMNIVOICE_PACKAGE = f"omnivoice=={OMNIVOICE_PACKAGE_VERSION}"
     MODEL_REPO = "k2-fsa/OmniVoice"
     TORCH_VERSION = "2.8.0"
     GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu128"
+    CPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cpu"
     MODELS: tuple[OmniVoiceModel, ...] = (
         OmniVoiceModel(
             "omnivoice",
@@ -411,7 +415,7 @@ class OmniVoiceManager:
         OmniVoiceMode("auto", "Auto voice"),
     )
     SUPPORT_REQUIREMENTS = (
-        "omnivoice",
+        OMNIVOICE_PACKAGE,
         "soundfile",
         "huggingface-hub",
     )
@@ -638,37 +642,28 @@ class OmniVoiceManager:
         gpu_summary = format_gpu_detection(gpu_detection)
         progress(30, 100, gpu_summary.splitlines()[0])
 
-        self._remove_path(self.dependency_dir)
-        self.dependency_dir.mkdir(parents=True, exist_ok=True)
+        self._reset_dependency_dir()
         requirements: list[str] = []
         backend = "cpu"
         torch_requirements = [
             f"torch=={self.TORCH_VERSION}",
             f"torchaudio=={self.TORCH_VERSION}",
         ]
+        install_requirements = [*torch_requirements, *self.SUPPORT_REQUIREMENTS]
 
         if gpu_detection.has_nvidia_gpu:
-            progress(38, 100, "Installing OmniVoice PyTorch CUDA runtime...")
+            progress(38, 100, "Installing OmniVoice with the CUDA runtime...")
             try:
-                self._run_pip(
-                    [
-                        "install",
-                        "--upgrade",
-                        "--target",
-                        str(self.dependency_dir),
-                        "--no-warn-script-location",
-                        "--index-url",
-                        self.GPU_TORCH_INDEX_URL,
-                        "--extra-index-url",
-                        "https://pypi.org/simple",
-                        *torch_requirements,
-                    ],
+                self._install_pinned_environment(
+                    install_requirements,
+                    self.GPU_TORCH_INDEX_URL,
                     cancel_token,
                 )
                 requirements.extend(
                     [
                         f"torch=={self.TORCH_VERSION} ({self.GPU_TORCH_INDEX_URL})",
                         f"torchaudio=={self.TORCH_VERSION} ({self.GPU_TORCH_INDEX_URL})",
+                        *self.SUPPORT_REQUIREMENTS,
                     ]
                 )
                 backend = "cuda"
@@ -679,73 +674,21 @@ class OmniVoiceManager:
                     "OmniVoice CUDA PyTorch install failed; falling back to CPU: "
                     f"{exc}",
                 )
+                self._reset_dependency_dir()
 
         if backend != "cuda":
-            progress(40, 100, "Installing OmniVoice PyTorch CPU runtime...")
-            self._run_pip(
-                [
-                    "install",
-                    "--upgrade",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    *torch_requirements,
-                ],
+            progress(40, 100, "Installing OmniVoice with the CPU runtime...")
+            self._install_pinned_environment(
+                install_requirements,
+                self.CPU_TORCH_INDEX_URL,
                 cancel_token,
             )
-            requirements.extend(torch_requirements)
-
-        progress(56, 100, "Installing OmniVoice Python package...")
-        self._run_pip(
-            [
-                "install",
-                "--upgrade",
-                "--target",
-                str(self.dependency_dir),
-                "--no-warn-script-location",
-                *self.SUPPORT_REQUIREMENTS,
-            ],
-            cancel_token,
-        )
-        requirements.extend(self.SUPPORT_REQUIREMENTS)
-
-        progress(68, 100, "Finalizing OmniVoice PyTorch backend...")
-        self._remove_python_package_artifacts(
-            "torch",
-            "torchaudio",
-            "functorch",
-            "triton",
-            "nvidia",
-        )
-        if backend == "cuda":
-            self._run_pip(
+            requirements.extend(
                 [
-                    "install",
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    "--index-url",
-                    self.GPU_TORCH_INDEX_URL,
-                    "--extra-index-url",
-                    "https://pypi.org/simple",
-                    *torch_requirements,
-                ],
-                cancel_token,
-            )
-        else:
-            self._run_pip(
-                [
-                    "install",
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    *torch_requirements,
-                ],
-                cancel_token,
+                    f"torch=={self.TORCH_VERSION} ({self.CPU_TORCH_INDEX_URL})",
+                    f"torchaudio=={self.TORCH_VERSION} ({self.CPU_TORCH_INDEX_URL})",
+                    *self.SUPPORT_REQUIREMENTS,
+                ]
             )
 
         progress(74, 100, "Validating OmniVoice runtime...")
@@ -761,6 +704,43 @@ class OmniVoiceManager:
             gpu_summary,
             runtime_info,
         )
+
+    def _install_pinned_environment(
+        self,
+        requirements: list[str],
+        torch_index_url: str,
+        cancel_token: threading.Event | None,
+    ) -> None:
+        # Resolve OmniVoice and the selected PyTorch build together. Installing
+        # them separately lets OmniVoice's broad ``torch>=2.4`` dependency pull
+        # a second, newer PyTorch tree into the same --target directory.
+        self._run_pip(
+            [
+                "install",
+                "--upgrade",
+                "--target",
+                str(self.dependency_dir),
+                "--no-warn-script-location",
+                "--index-url",
+                torch_index_url,
+                "--extra-index-url",
+                "https://pypi.org/simple",
+                *requirements,
+            ],
+            cancel_token,
+        )
+
+    def _reset_dependency_dir(self) -> None:
+        try:
+            self._remove_path(self.dependency_dir)
+        except OSError as exc:
+            raise OmniVoiceError(
+                "Could not clean a previous OmniVoice dependency installation. "
+                "Close other LocalText2Voice processes and allow the application "
+                "folder in Windows Security, then try again. "
+                f"Windows reported: {exc}"
+            ) from exc
+        self.dependency_dir.mkdir(parents=True, exist_ok=True)
 
     def _run_pip(
         self,
@@ -981,22 +961,29 @@ class OmniVoiceManager:
     @staticmethod
     def _remove_path(path: Path) -> None:
         if path.is_dir():
-            import shutil
-
-            shutil.rmtree(path)
+            retryable_winerrors = {5, 32, 145}
+            for attempt in range(6):
+                try:
+                    shutil.rmtree(
+                        path,
+                        onerror=OmniVoiceManager._retry_readonly_removal,
+                    )
+                    return
+                except OSError as exc:
+                    if (
+                        attempt == 5
+                        or getattr(exc, "winerror", None)
+                        not in retryable_winerrors
+                    ):
+                        raise
+                    time.sleep(0.2 * (attempt + 1))
         elif path.exists():
             path.unlink()
 
-    def _remove_python_package_artifacts(self, *package_names: str) -> None:
-        normalized = {name.lower().replace("-", "_") for name in package_names}
-        if not self.dependency_dir.exists():
-            return
-        for child in self.dependency_dir.iterdir():
-            child_name = child.name.lower().replace("-", "_")
-            stem = child_name.split(".dist_info", 1)[0].split(".egg_info", 1)[0]
-            if (
-                child_name in normalized
-                or stem in normalized
-                or any(child_name.startswith(f"{name}_") for name in normalized)
-            ):
-                self._remove_path(child)
+    @staticmethod
+    def _retry_readonly_removal(function, path: str, exc_info) -> None:
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            function(path)
+        except OSError:
+            raise exc_info[1]
