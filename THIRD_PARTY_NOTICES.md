@@ -134,7 +134,12 @@ relevant Qt and PySide6 notices.
 
 ## Other Python Packages
 
-The Python environment may include PyInstaller, python-docx, and their
+The main application includes `num2words` 0.5.14 for multilingual number and
+ordinal expansion. The package identifies its license as LGPL and its source
+headers permit redistribution under LGPL 2.1 or later. Upstream:
+https://github.com/savoirfairelinux/num2words
+
+The Python environment may also include PyInstaller, python-docx, and their
 dependencies. Their package metadata and license files are authoritative.
 Review the installed versions before distributing a modified build.
 

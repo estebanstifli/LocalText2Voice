@@ -70,6 +70,12 @@ from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audio_mix import AudioMixSettings
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.audio_tail_review import (
+    comparison_normalization_is_current,
+    parse_review_metrics,
+    tail_analysis_is_current,
+)
+from app.core.audio_tail_cut import full_tail_cut_seconds
 from app.core.audio_event_timeline import (
     resolve_audio_event_timeline,
     resolved_audio_clips,
@@ -84,6 +90,8 @@ from app.core.settings_manager import (
     SettingsManager,
     sanitize_chunk_size,
 )
+from app.core.subtitle_export import export_audiobook_subtitles
+from app.core.text_normalization import TextNormalizer
 from app.core.update_manager import (
     CHECK_INTERVAL_SECONDS,
     UpdateError,
@@ -116,6 +124,8 @@ from app.ui.engine_install_dialog import (
     EngineInstallDialog,
     available_disk_space_gb,
 )
+from app.ui.text_normalization_settings import TextNormalizationSettingsWidget
+from app.ui.audio_tail_cut_dialog import AudioTailCutDialog
 from app.utils.i18n import Translator
 from app.utils.paths import (
     app_data_root,
@@ -144,6 +154,7 @@ from app.workers.qwen_worker import (
     QwenPreviewWorker,
 )
 from app.workers.verification_worker import (
+    AudioTailCutWorker,
     AudiobookRebuildWorker,
     FasterWhisperInstallWorker,
     FasterWhisperPreloadWorker,
@@ -724,6 +735,9 @@ class MainWindow(QMainWindow):
         self.segment_regeneration_worker: SegmentRegenerationWorker | None = None
         self.segment_regeneration_thread: QThread | None = None
         self.segment_regeneration_uses_preloaded_engine = False
+        self.audio_tail_cut_worker: AudioTailCutWorker | None = None
+        self.audio_tail_cut_thread: QThread | None = None
+        self.review_tail_cut_reverify_pending = False
         self.audiobook_rebuild_worker: AudiobookRebuildWorker | None = None
         self.audiobook_rebuild_thread: QThread | None = None
         self.review_segments: list[StoredSegment] = []
@@ -1118,7 +1132,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(engine_card)
 
         footer = QHBoxLayout()
-        footer.addWidget(QLabel("v1.0.0"))
+        footer.addWidget(QLabel(f"v{__version__}"))
         footer.addStretch(1)
         author_credit = QLabel(
             'By Esteban, <a href="https://andromedanova.com">'
@@ -1302,8 +1316,12 @@ class MainWindow(QMainWindow):
         self.markup_toolbar.setVisible(
             bool(self.settings.get("show_markup_toolbar", True))
         )
-        layout.addWidget(self.markup_toolbar)
-
+        self.editor_tabs = QTabWidget()
+        original_page = QWidget()
+        original_layout = QVBoxLayout(original_page)
+        original_layout.setContentsMargins(0, 0, 0, 0)
+        original_layout.setSpacing(8)
+        original_layout.addWidget(self.markup_toolbar)
         self.text_editor = QTextEdit()
         self.text_editor.setAcceptRichText(False)
         self.text_editor.setPlaceholderText(
@@ -1317,9 +1335,62 @@ class MainWindow(QMainWindow):
             bool(self.settings.get("editor_syntax_highlighting", True))
         )
         self.text_editor.textChanged.connect(self._mark_project_dirty)
+        self.text_editor.textChanged.connect(
+            self._mark_normalization_preview_stale
+        )
         self.text_editor.textChanged.connect(self._update_markup_editor_assist)
         self.text_editor.cursorPositionChanged.connect(self._update_markup_editor_assist)
-        layout.addWidget(self.text_editor, 1)
+        original_layout.addWidget(self.text_editor, 1)
+        self.editor_tabs.addTab(
+            original_page,
+            self.tr("original_text_tab", "Original"),
+        )
+
+        normalized_page = QWidget()
+        normalized_layout = QVBoxLayout(normalized_page)
+        normalized_layout.setContentsMargins(0, 0, 0, 0)
+        normalized_layout.setSpacing(8)
+        normalized_header = QHBoxLayout()
+        self.normalization_preview_status = QLabel(
+            self.tr(
+                "normalization_preview_stale",
+                "Preview pending. Normalize to review the spoken text.",
+            )
+        )
+        self.normalization_preview_status.setObjectName("helperLabel")
+        self.normalization_preview_status.setWordWrap(True)
+        self.normalize_preview_button = QPushButton(
+            self.tr("normalize_preview_button", "Normalize / Refresh")
+        )
+        self.normalize_preview_button.setIcon(ui_icon("refresh"))
+        self.normalize_preview_button.clicked.connect(
+            self._refresh_normalized_preview
+        )
+        normalized_header.addWidget(self.normalization_preview_status, 1)
+        normalized_header.addWidget(self.normalize_preview_button)
+        normalized_layout.addLayout(normalized_header)
+        self.normalized_text_editor = QTextEdit()
+        self.normalized_text_editor.setAcceptRichText(False)
+        self.normalized_text_editor.setReadOnly(True)
+        self.normalized_text_editor.setPlaceholderText(
+            self.tr(
+                "normalized_text_placeholder",
+                "The normalized preview will appear here.",
+            )
+        )
+        self.normalized_markup_highlighter = LTVMarkupHighlighter(
+            self.normalized_text_editor.document()
+        )
+        self.normalized_markup_highlighter.set_corrector_enabled(False)
+        normalized_layout.addWidget(self.normalized_text_editor, 1)
+        self.editor_tabs.addTab(
+            normalized_page,
+            self.tr("normalized_text_tab", "Normalized"),
+        )
+        self.normalization_preview_stale = True
+        self.editor_tabs.currentChanged.connect(self._on_editor_tab_changed)
+        layout.addWidget(self.editor_tabs, 1)
+        self._update_text_normalization_editor_state()
         return frame
 
     def _build_markup_toolbar(self) -> QWidget:
@@ -1355,6 +1426,124 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
         layout.addStretch(1)
         return toolbar
+
+    def _text_normalization_configuration(self) -> dict[str, object]:
+        if hasattr(self, "text_normalization_panel"):
+            return self.text_normalization_panel.configuration()
+        value = self.settings.get("text_normalization", {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _on_text_normalization_settings_changed(self) -> None:
+        self._update_text_normalization_editor_state()
+        self._mark_normalization_preview_stale()
+        self._save_settings()
+        # A project/settings refresh may run during persistence; finish by
+        # making the editor reflect the checkbox that is currently visible.
+        self._update_text_normalization_editor_state()
+
+    def _update_text_normalization_editor_state(self) -> None:
+        if not hasattr(self, "editor_tabs"):
+            return
+        enabled = bool(
+            self._text_normalization_configuration().get("enabled", False)
+        )
+        self.editor_tabs.setTabVisible(1, enabled)
+        if not enabled and self.editor_tabs.currentIndex() == 1:
+            self.editor_tabs.setCurrentIndex(0)
+
+    def _mark_normalization_preview_stale(self) -> None:
+        if not hasattr(self, "normalized_text_editor"):
+            return
+        self.normalization_preview_stale = True
+        self.normalization_preview_status.setText(
+            self.tr(
+                "normalization_preview_stale",
+                "Preview pending. Normalize to review the spoken text.",
+            )
+        )
+
+    def _on_editor_tab_changed(self, index: int) -> None:
+        if index == 1 and self.normalization_preview_stale:
+            self._refresh_normalized_preview()
+
+    def _show_original_text_tab(self) -> None:
+        if hasattr(self, "editor_tabs"):
+            self.editor_tabs.setCurrentIndex(0)
+
+    def _normalization_language_hint(self) -> str:
+        if hasattr(self, "generation_voice_combo"):
+            row = self.generation_voice_combo.currentData()
+            if isinstance(row, dict):
+                language = str(
+                    row.get("language") or row.get("language_name") or ""
+                ).strip()
+                if language:
+                    return language
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        combo_by_engine = {
+            "piper": self.language_combo,
+            "chatterbox": self.chatterbox_language_combo,
+            "qwen": self.qwen_language_combo,
+            "omnivoice": self.omnivoice_language_combo,
+        }
+        combo = combo_by_engine.get(engine_id)
+        if combo is not None:
+            return str(combo.currentData() or "")
+        if engine_id == "kokoro":
+            voice_id = str(
+                self.kokoro_python_voice_combo.currentData() or "af_heart"
+            )
+            return self._kokoro_python_language_for_voice(voice_id)
+        return ""
+
+    def _refresh_normalized_preview(
+        self,
+        _checked: bool = False,
+        *,
+        language_hint: str = "",
+    ) -> str:
+        if not hasattr(self, "normalized_text_editor"):
+            return ""
+        source = self.text_editor.toPlainText()
+        config = self._text_normalization_configuration()
+        if not bool(config.get("enabled", False)):
+            self.normalized_text_editor.clear()
+            self.normalization_preview_stale = True
+            self._update_text_normalization_editor_state()
+            return ""
+        selected_language = str(config.get("language", "auto"))
+        hint = language_hint or self._normalization_language_hint()
+        resolved_language = TextNormalizer.resolve_language(
+            selected_language,
+            hint,
+        )
+        if resolved_language is None:
+            normalized = source
+            status = self.tr(
+                "normalization_preview_no_dictionary",
+                "No dictionary matches the selected voice language. The original text is shown unchanged.",
+            )
+        else:
+            normalizer = TextNormalizer(
+                store=self.text_normalization_panel.store
+                if hasattr(self, "text_normalization_panel")
+                else None
+            )
+            normalized = normalizer.normalize(
+                source,
+                language=resolved_language,
+                language_hint=hint,
+                preserve_markup=True,
+                rules=config.get("rules"),
+            )
+            status = self.tr(
+                "normalization_preview_ready",
+                "Preview updated. This is the text that will be prepared for speech.",
+            )
+        self.normalized_text_editor.setPlainText(normalized)
+        self.normalization_preview_status.setText(status)
+        self.normalization_preview_stale = False
+        return normalized
 
     def _insert_markup_template(self, command: dict[str, str]) -> None:
         if not hasattr(self, "text_editor"):
@@ -1896,13 +2085,14 @@ class MainWindow(QMainWindow):
         header.addWidget(self.review_rebuild_button)
         card_layout.addLayout(header)
 
-        self.review_table = QTableWidget(0, 7)
+        self.review_table = QTableWidget(0, 8)
         self.review_table.setHorizontalHeaderLabels(
             [
                 "#",
                 self.tr("chapter", "Chapter"),
                 self.tr("status", "Status"),
                 self.tr("similarity", "Similarity"),
+                self.tr("review_tail", "Audio tail"),
                 self.tr("source_text", "Source text"),
                 self.tr("transcript", "Transcript"),
                 self.tr("actions", "Actions"),
@@ -1922,9 +2112,10 @@ class MainWindow(QMainWindow):
         review_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         review_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         review_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        review_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        review_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         review_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        review_header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        review_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        review_header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         card_layout.addWidget(self.review_table, 1)
 
         detail_frame = QFrame()
@@ -1987,6 +2178,22 @@ class MainWindow(QMainWindow):
         )
         self.review_play_current_button.setIcon(ui_icon("play"))
         self.review_play_current_button.clicked.connect(self._play_selected_review_audio)
+        self.review_waveform_cut_button = QPushButton(
+            self.tr("review_waveform_cut", "Waveform & Cut")
+        )
+        self.review_waveform_cut_button.setIcon(ui_icon("edit"))
+        self.review_waveform_cut_button.clicked.connect(
+            self._open_selected_tail_waveform
+        )
+        self.review_waveform_cut_button.setVisible(False)
+        self.review_cut_audio_tail_button = QPushButton(
+            self.tr("review_cut_audio_tail", "Cut Audio Tail")
+        )
+        self.review_cut_audio_tail_button.setIcon(ui_icon("edit"))
+        self.review_cut_audio_tail_button.clicked.connect(
+            self._quick_cut_selected_audio_tail
+        )
+        self.review_cut_audio_tail_button.setVisible(False)
         self.review_regenerate_button = QPushButton(
             self.tr("review_regenerate_segment", "Regenerate segment")
         )
@@ -1996,6 +2203,8 @@ class MainWindow(QMainWindow):
         )
         detail_actions.addWidget(self.review_save_text_button)
         detail_actions.addWidget(self.review_play_current_button)
+        detail_actions.addWidget(self.review_waveform_cut_button)
+        detail_actions.addWidget(self.review_cut_audio_tail_button)
         detail_actions.addWidget(self.review_regenerate_button)
         detail_actions.addStretch(1)
         detail_layout.addLayout(detail_actions)
@@ -2193,6 +2402,18 @@ class MainWindow(QMainWindow):
             ui_icon("review"),
             self.tr("review_settings", "Review"),
         )
+        self.text_normalization_panel = TextNormalizationSettingsWidget(self.tr)
+        self.text_normalization_panel.settingsChanged.connect(
+            self._on_text_normalization_settings_changed
+        )
+        self.text_normalization_panel.dictionaryChanged.connect(
+            self._mark_normalization_preview_stale
+        )
+        self.settings_tabs.addTab(
+            self.text_normalization_panel,
+            ui_icon("language"),
+            self.tr("text_normalization_tab", "Text Normalization"),
+        )
         self.settings_tabs.addTab(
             self._build_local_server_settings(),
             ui_icon("server"),
@@ -2213,6 +2434,7 @@ class MainWindow(QMainWindow):
             self._show_generation()
 
     def _show_generation(self) -> None:
+        self._update_text_normalization_editor_state()
         self._show_page(
             0,
             "generate",
@@ -2583,7 +2805,7 @@ class MainWindow(QMainWindow):
         self.review_enabled_checkbox = QCheckBox(
             self.tr("review_enable", "Enable generation review")
         )
-        self.review_enabled_checkbox.toggled.connect(lambda _checked: self._save_settings())
+        self.review_enabled_checkbox.toggled.connect(self._on_review_enabled_toggled)
         self.review_auto_checkbox = QCheckBox(
             self.tr(
                 "review_auto",
@@ -2654,10 +2876,10 @@ class MainWindow(QMainWindow):
         )
         retries_help = QLabel(
             self.tr(
-                "review_retries_help",
-                "Automatic retries only run for segments below the threshold. "
+                "review_retries_layers_help",
+                "Automatic retries run when either enabled review layer does not pass. "
                 "Each retry regenerates a candidate, transcribes it with Whisper, "
-                "scores it, and keeps the best-scoring audio in the database.",
+                "checks its audio tail, and keeps the best combined result.",
             )
         )
         retries_help.setObjectName("helperLabel")
@@ -2705,12 +2927,136 @@ class MainWindow(QMainWindow):
         form.addRow("", note)
 
         layout.addWidget(group)
+
+        tail_group = QGroupBox(
+            self.tr("review_tail_settings", "Audio tail review (requires Whisper)")
+        )
+        tail_form = QFormLayout(tail_group)
+        tail_form.setSpacing(10)
+        self.review_tail_enabled_checkbox = QCheckBox(
+            self.tr(
+                "review_tail_enable",
+                "Detect unexplained audio after the last valid word",
+            )
+        )
+        self.review_tail_enabled_checkbox.setChecked(False)
+        self.review_tail_enabled_checkbox.toggled.connect(
+            self._on_review_tail_enabled_toggled
+        )
+        tail_form.addRow("", self.review_tail_enabled_checkbox)
+
+        self.review_tail_autocut_checkbox = QCheckBox(
+            self.tr(
+                "review_tail_autocut",
+                "Automatically trim excessive tails and re-review with Whisper",
+            )
+        )
+        self.review_tail_autocut_checkbox.setChecked(False)
+        self.review_tail_autocut_checkbox.toggled.connect(
+            lambda _checked: self._save_settings()
+        )
+        tail_form.addRow("", self.review_tail_autocut_checkbox)
+
+        self.review_tail_safety_spin = QDoubleSpinBox()
+        self.review_tail_safety_spin.setRange(0.0, 2.0)
+        self.review_tail_safety_spin.setDecimals(2)
+        self.review_tail_safety_spin.setSingleStep(0.05)
+        self.review_tail_safety_spin.setSuffix(" s")
+        self.review_tail_safety_spin.setValue(0.40)
+        self.review_tail_safety_spin.valueChanged.connect(
+            lambda _value: self._save_settings()
+        )
+        tail_form.addRow(
+            self.tr("review_tail_safety", "Whisper safety margin"),
+            self.review_tail_safety_spin,
+        )
+
+        self.review_tail_warning_spin = QDoubleSpinBox()
+        self.review_tail_warning_spin.setRange(0.05, 10.0)
+        self.review_tail_warning_spin.setDecimals(2)
+        self.review_tail_warning_spin.setSingleStep(0.05)
+        self.review_tail_warning_spin.setSuffix(" s")
+        self.review_tail_warning_spin.setValue(0.50)
+        self.review_tail_warning_spin.valueChanged.connect(
+            self._on_review_tail_threshold_changed
+        )
+        tail_form.addRow(
+            self.tr("review_tail_warning", "Possible-artifact threshold"),
+            self.review_tail_warning_spin,
+        )
+
+        self.review_tail_failure_spin = QDoubleSpinBox()
+        self.review_tail_failure_spin.setRange(0.10, 20.0)
+        self.review_tail_failure_spin.setDecimals(2)
+        self.review_tail_failure_spin.setSingleStep(0.10)
+        self.review_tail_failure_spin.setSuffix(" s")
+        self.review_tail_failure_spin.setValue(1.00)
+        self.review_tail_failure_spin.valueChanged.connect(
+            self._on_review_tail_threshold_changed
+        )
+        tail_form.addRow(
+            self.tr("review_tail_failure", "Retry-needed threshold"),
+            self.review_tail_failure_spin,
+        )
+        tail_help = QLabel(
+            self.tr(
+                "review_tail_help",
+                "Whisper timestamps are aligned with the source text so trailing "
+                "hallucinated syllables are ignored. The thresholds measure the "
+                "remaining tail after the safety margin. Tail risk is a transparent "
+                "severity estimate, not a model probability. Auto-cut removes only "
+                "the part beyond the possible-artifact threshold, then sends the "
+                "trimmed candidate back to Whisper and keeps it only if it reviews "
+                "better. Generation Review also provides exact waveform and quick "
+                "tail-cut tools.",
+            )
+        )
+        tail_help.setObjectName("helperLabel")
+        tail_help.setWordWrap(True)
+        tail_form.addRow("", tail_help)
+        layout.addWidget(tail_group)
         layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(widget)
         return scroll
+
+    def _on_review_enabled_toggled(self, _checked: bool) -> None:
+        self._update_review_tail_controls_state()
+        self._save_settings()
+
+    def _on_review_tail_enabled_toggled(self, _checked: bool) -> None:
+        if not _checked and hasattr(self, "review_tail_autocut_checkbox"):
+            self.review_tail_autocut_checkbox.setChecked(False)
+        self._update_review_tail_controls_state()
+        self._save_settings()
+        if not self._restoring_settings and hasattr(self, "review_table"):
+            self._refresh_review_page()
+
+    def _on_review_tail_threshold_changed(self, _value: float) -> None:
+        warning = self.review_tail_warning_spin.value()
+        if self.review_tail_failure_spin.value() <= warning:
+            previous = self.review_tail_failure_spin.blockSignals(True)
+            self.review_tail_failure_spin.setValue(min(20.0, warning + 0.05))
+            self.review_tail_failure_spin.blockSignals(previous)
+        self._save_settings()
+        if not self._restoring_settings and hasattr(self, "review_table"):
+            self._refresh_review_page()
+
+    def _update_review_tail_controls_state(self) -> None:
+        if not hasattr(self, "review_tail_enabled_checkbox"):
+            return
+        review_enabled = self.review_enabled_checkbox.isChecked()
+        self.review_tail_enabled_checkbox.setEnabled(review_enabled)
+        controls_enabled = review_enabled and self.review_tail_enabled_checkbox.isChecked()
+        self.review_tail_autocut_checkbox.setEnabled(controls_enabled)
+        for widget in (
+            self.review_tail_safety_spin,
+            self.review_tail_warning_spin,
+            self.review_tail_failure_spin,
+        ):
+            widget.setEnabled(controls_enabled)
 
     def _build_local_server_settings(self) -> QWidget:
         widget = QWidget()
@@ -6021,6 +6367,7 @@ class MainWindow(QMainWindow):
         self._refresh_custom_engine_panel()
         self._refresh_generation_voice_combo()
         self._update_header_engine_label()
+        self._mark_normalization_preview_stale()
         if hasattr(self, "page_stack") and self.page_stack.currentIndex() == 5:
             self._refresh_voices_page()
 
@@ -7035,6 +7382,8 @@ class MainWindow(QMainWindow):
     def _set_editor_highlighting_enabled(self, enabled: bool) -> None:
         if hasattr(self, "markup_highlighter"):
             self.markup_highlighter.set_enabled(enabled)
+        if hasattr(self, "normalized_markup_highlighter"):
+            self.normalized_markup_highlighter.set_enabled(enabled)
 
     def _set_markup_corrector_enabled(self, enabled: bool) -> None:
         if hasattr(self, "markup_highlighter"):
@@ -7808,6 +8157,7 @@ class MainWindow(QMainWindow):
         if not isinstance(row, dict):
             return
         self._select_voice_page_row_data(row, refresh=False)
+        self._mark_normalization_preview_stale()
         if hasattr(self, "page_stack") and self.page_stack.currentIndex() == 5:
             self._refresh_voices_page()
 
@@ -9144,6 +9494,8 @@ class MainWindow(QMainWindow):
             self._restore_settings_widgets()
         finally:
             self._restoring_settings = previous
+        self._update_text_normalization_editor_state()
+        self._mark_normalization_preview_stale()
 
     def _restore_settings_widgets(self) -> None:
         self._ensure_default_music_selection()
@@ -9298,8 +9650,27 @@ class MainWindow(QMainWindow):
             float(review.get("approve_threshold", 92.0))
         )
         self.review_max_retries_spin.setValue(int(review.get("max_retries", 0)))
+        self.review_tail_enabled_checkbox.setChecked(
+            bool(review.get("tail_analysis_enabled", False))
+        )
+        self.review_tail_autocut_checkbox.setChecked(
+            bool(review.get("tail_autocut_enabled", False))
+        )
+        self.review_tail_safety_spin.setValue(
+            float(review.get("tail_safety_margin_seconds", 0.40))
+        )
+        self.review_tail_warning_spin.setValue(
+            float(review.get("tail_warning_threshold_seconds", 0.50))
+        )
+        self.review_tail_failure_spin.setValue(
+            float(review.get("tail_failure_threshold_seconds", 1.00))
+        )
+        self._update_review_tail_controls_state()
         self._refresh_whisper_status()
         self._restore_local_server_settings()
+        self.text_normalization_panel.set_configuration(
+            self.settings.get("text_normalization", {})
+        )
 
         elevenlabs = api_tts.get("elevenlabs", {})
         self.elevenlabs_api_key_edit.setText(str(elevenlabs.get("api_key", "")))
@@ -9613,6 +9984,7 @@ class MainWindow(QMainWindow):
         try:
             text = ProjectManager.import_document(Path(path_text))
             self.text_editor.setPlainText(text)
+            self._show_original_text_tab()
             self.log_view.append_event(f"Imported: {path_text}")
         except DocumentImportError as exc:
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
@@ -10233,6 +10605,7 @@ class MainWindow(QMainWindow):
         self._loading_project = True
         self.text_editor.setPlainText(audiobook.source_text)
         self._loading_project = False
+        self._show_original_text_tab()
         self.project_dirty = False
         if audiobook.clean_mp3_path and Path(audiobook.clean_mp3_path).is_file():
             self._set_audio_mix_preview_context(Path(audiobook.clean_mp3_path))
@@ -10252,6 +10625,7 @@ class MainWindow(QMainWindow):
         self._loading_project = True
         self.text_editor.setPlainText(audiobook.source_text)
         self._loading_project = False
+        self._show_original_text_tab()
         self.project_dirty = False
         if audiobook.clean_mp3_path and Path(audiobook.clean_mp3_path).is_file():
             self._set_audio_mix_preview_context(Path(audiobook.clean_mp3_path))
@@ -11114,7 +11488,12 @@ class MainWindow(QMainWindow):
         if voice_config is None:
             return
         engine_id = str(voice_config.get("engine", "piper"))
-
+        normalization_language_hint = str(
+            voice_config.get("language")
+            or voice_config.get("lang")
+            or voice_config.get("locale")
+            or ""
+        )
         output_dir = self.output_picker.path()
         if not output_dir.is_absolute():
             output_dir = resolve_app_path(output_dir)
@@ -11128,6 +11507,9 @@ class MainWindow(QMainWindow):
             return
 
         self._save_settings()
+        self._refresh_normalized_preview(
+            language_hint=normalization_language_hint
+        )
         metadata = self.settings.get("metadata", {})
         title = (
             str(metadata.get("title", "Audiobook"))
@@ -11581,6 +11963,15 @@ class MainWindow(QMainWindow):
             outputs = [Path(clean_path)] if clean_path else []
             outputs.append(Path(path))
             self.audiobook_store.complete_audiobook(audiobook.id, outputs)
+            subtitle_result = export_audiobook_subtitles(
+                self.audiobook_store,
+                audiobook.id,
+                outputs,
+            )
+            if subtitle_result.files:
+                self.log_view.append_event(
+                    f"Created {len(subtitle_result.files)} subtitle file(s)."
+                )
         if not bool(self.settings.get("auto_delete_segment_wavs_after_mix", False)):
             return
         if audiobook is None:
@@ -11703,6 +12094,7 @@ class MainWindow(QMainWindow):
                 segment.chapter_title,
                 state,
                 score,
+                self._segment_tail_label(segment),
                 self._short_table_text(segment.source_text),
                 self._short_table_text(segment.transcript_text),
             ]
@@ -11710,7 +12102,7 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, segment.id)
                 item.setToolTip(value)
-                if column in {0, 3}:
+                if column in {0, 3, 4}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._apply_review_item_style(item, state)
                 self.review_table.setItem(row_index, column, item)
@@ -11728,7 +12120,7 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, path=segment.wav_path: self._play_review_audio(path)
             )
             action_layout.addWidget(play_button)
-            self.review_table.setCellWidget(row_index, 6, action_widget)
+            self.review_table.setCellWidget(row_index, 7, action_widget)
         self.review_table.blockSignals(False)
         if selected_row >= 0:
             self.review_table.selectRow(selected_row)
@@ -11750,6 +12142,11 @@ class MainWindow(QMainWindow):
     def _segment_review_state(self, segment: StoredSegment) -> str:
         if segment.status in {"failed", "edited", "rendering"}:
             return segment.status
+        if not self._tail_review_enabled():
+            metrics = parse_review_metrics(segment.review_metrics_json)
+            transcript_status = str(metrics.get("transcript_status", ""))
+            if transcript_status in {"approved", "review", "retry_needed"}:
+                return transcript_status
         return segment.verification_status or segment.status
 
     def _review_filter_matches(self, segment: StoredSegment) -> bool:
@@ -11763,8 +12160,8 @@ class MainWindow(QMainWindow):
             return state in {"retry_needed", "review", "failed", "edited"}
         return state == filter_value
 
-    @staticmethod
-    def _review_pending_count(segments: list[StoredSegment]) -> int:
+    def _review_pending_count(self, segments: list[StoredSegment]) -> int:
+        tail_enabled = self._tail_review_enabled()
         return sum(
             1
             for segment in segments
@@ -11773,20 +12170,73 @@ class MainWindow(QMainWindow):
             and (
                 segment.similarity_score is None
                 or segment.verification_status in {"", "not_verified"}
+                or not self._comparison_normalization_current(segment)
+                or not tail_analysis_is_current(
+                    segment.review_metrics_json,
+                    enabled=tail_enabled,
+                    safety_margin_seconds=self.review_tail_safety_spin.value(),
+                    warning_threshold_seconds=self.review_tail_warning_spin.value(),
+                    failure_threshold_seconds=self.review_tail_failure_spin.value(),
+                )
             )
+        )
+
+    def _comparison_normalization_current(self, segment: StoredSegment) -> bool:
+        config = self._text_normalization_configuration()
+        selected = str(config.get("language", "auto"))
+        review_language = str(self.review_language_combo.currentData() or "auto")
+        language_hint = (
+            review_language if review_language != "auto" else segment.language
+        )
+        resolved = (
+            TextNormalizer.resolve_language(selected, language_hint)
+            if bool(config.get("enabled", False))
+            else None
+        )
+        return comparison_normalization_is_current(
+            segment.review_metrics_json,
+            enabled=resolved is not None,
+            language=resolved or "",
+            rules=config.get("rules"),
+        )
+
+    def _tail_review_enabled(self) -> bool:
+        return (
+            hasattr(self, "review_tail_enabled_checkbox")
+            and self.review_enabled_checkbox.isChecked()
+            and self.review_tail_enabled_checkbox.isChecked()
+        )
+
+    @staticmethod
+    def _segment_tail_analysis(segment: StoredSegment) -> dict[str, object]:
+        metrics = parse_review_metrics(segment.review_metrics_json)
+        tail = metrics.get("tail_analysis")
+        return tail if isinstance(tail, dict) else {}
+
+    def _segment_tail_label(self, segment: StoredSegment) -> str:
+        tail = self._segment_tail_analysis(segment)
+        if not bool(tail.get("enabled", False)):
+            return self.tr("review_tail_not_checked", "Not checked")
+        excess = tail.get("excess_tail_seconds")
+        if excess is None:
+            return self.tr("review_tail_unavailable", "Unavailable")
+        return self.tr(
+            "review_tail_value",
+            "{seconds:.2f} s / {risk:.0f}%",
+            seconds=float(excess),
+            risk=float(tail.get("risk_percent", 100.0)),
         )
 
     @staticmethod
     def _review_dirty_count(segments: list[StoredSegment]) -> int:
         return sum(1 for segment in segments if segment.needs_rebuild)
 
-    @staticmethod
-    def _review_failed_count(segments: list[StoredSegment]) -> int:
+    def _review_failed_count(self, segments: list[StoredSegment]) -> int:
         return sum(
             1
             for segment in segments
             if segment.status in {"failed", "edited"}
-            or segment.verification_status in {"retry_needed", "review"}
+            or self._segment_review_state(segment) in {"retry_needed", "review"}
         )
 
     def _apply_review_item_style(self, item: QTableWidgetItem, state: str) -> None:
@@ -11822,22 +12272,45 @@ class MainWindow(QMainWindow):
             if segment.similarity_score is None
             else f"{segment.similarity_score:.1f}%"
         )
+        tail = self._segment_tail_analysis(segment)
+        tail_summary = self._segment_tail_label(segment)
+        if bool(tail.get("enabled", False)) and tail.get("raw_tail_seconds") is not None:
+            tail_summary += self.tr(
+                "review_tail_detail",
+                " (raw {raw:.2f} s, margin {margin:.2f} s, {status})",
+                raw=float(tail.get("raw_tail_seconds", 0.0)),
+                margin=float(tail.get("safety_margin_seconds", 0.0)),
+                status=str(tail.get("status", "unavailable")),
+            )
         self.review_detail_label.setText(
             self.tr(
-                "review_selected_segment",
-                "Segment {index} | Status: {status} | Similarity: {score}",
+                "review_selected_segment_with_tail",
+                "Segment {index} | Status: {status} | Similarity: {score} | Tail: {tail}",
                 index=segment.sequence_index,
                 status=state,
                 score=score,
+                tail=tail_summary,
             )
         )
         self.review_source_detail.setPlainText(segment.source_text)
         self.review_transcript_detail.setPlainText(segment.transcript_text)
         has_audio = Path(segment.wav_path).is_file()
-        busy = self.segment_regeneration_thread is not None
+        tail_tools_visible = self._tail_review_enabled()
+        tail_cut_point = full_tail_cut_seconds(tail) if tail_tools_visible else None
+        busy = (
+            self.segment_regeneration_thread is not None
+            or self.audio_tail_cut_thread is not None
+            or self.verification_thread is not None
+        )
         self.review_save_text_button.setEnabled(not busy)
         self.review_play_current_button.setEnabled(has_audio)
         self.review_regenerate_button.setEnabled(not busy)
+        self.review_waveform_cut_button.setVisible(tail_tools_visible)
+        self.review_waveform_cut_button.setEnabled(has_audio and not busy)
+        self.review_cut_audio_tail_button.setVisible(tail_tools_visible)
+        self.review_cut_audio_tail_button.setEnabled(
+            has_audio and tail_cut_point is not None and not busy
+        )
 
     def _clear_review_detail(self) -> None:
         if not hasattr(self, "review_source_detail"):
@@ -11853,6 +12326,11 @@ class MainWindow(QMainWindow):
         self.review_save_text_button.setEnabled(False)
         self.review_play_current_button.setEnabled(False)
         self.review_regenerate_button.setEnabled(False)
+        tail_tools_visible = self._tail_review_enabled()
+        self.review_waveform_cut_button.setVisible(tail_tools_visible)
+        self.review_waveform_cut_button.setEnabled(False)
+        self.review_cut_audio_tail_button.setVisible(tail_tools_visible)
+        self.review_cut_audio_tail_button.setEnabled(False)
 
     def _selected_review_segment(self) -> StoredSegment | None:
         selected_items = self.review_table.selectedItems()
@@ -11893,6 +12371,212 @@ class MainWindow(QMainWindow):
         segment = self._selected_review_segment()
         if segment is not None:
             self._play_review_audio(segment.wav_path)
+
+    def _open_selected_tail_waveform(self) -> None:
+        if not self._tail_review_enabled() or self.audio_tail_cut_thread is not None:
+            return
+        segment = self._selected_review_segment()
+        if segment is None:
+            return
+        wav_path = Path(segment.wav_path)
+        if not wav_path.is_file():
+            return
+        try:
+            duration = self._wav_duration_seconds(wav_path)
+            tail = self._segment_tail_analysis(segment)
+            initial_cut = full_tail_cut_seconds(tail)
+            if initial_cut is None:
+                initial_cut = max(
+                    0.02,
+                    duration - self.review_tail_warning_spin.value(),
+                )
+            dialog = AudioTailCutDialog(
+                wav_path,
+                self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+                initial_cut,
+                self.tr,
+                self,
+            )
+        except Exception as exc:
+            self._show_error(
+                self.tr("review_tail_waveform_title", "Waveform tail editor"),
+                self.tr(
+                    "review_tail_waveform_failed",
+                    "Could not load the segment waveform: {message}",
+                    message=str(exc),
+                ),
+            )
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.cut_seconds is not None:
+            self._confirm_and_start_tail_cut(segment, dialog.cut_seconds)
+
+    def _quick_cut_selected_audio_tail(self) -> None:
+        if not self._tail_review_enabled() or self.audio_tail_cut_thread is not None:
+            return
+        segment = self._selected_review_segment()
+        if segment is None:
+            return
+        cut_seconds = full_tail_cut_seconds(self._segment_tail_analysis(segment))
+        if cut_seconds is None:
+            self._show_error(
+                self.tr("review_cut_audio_tail", "Cut Audio Tail"),
+                self.tr(
+                    "review_tail_cut_unavailable",
+                    "Whisper did not provide a reliable last-word timestamp for "
+                    "this segment. Use Waveform & Cut to choose the point manually.",
+                ),
+            )
+            return
+        self._confirm_and_start_tail_cut(segment, cut_seconds)
+
+    def _confirm_and_start_tail_cut(
+        self,
+        segment: StoredSegment,
+        cut_seconds: float,
+    ) -> None:
+        wav_path = Path(segment.wav_path)
+        if not wav_path.is_file():
+            return
+        try:
+            duration = self._wav_duration_seconds(wav_path)
+        except (OSError, wave.Error) as exc:
+            self._show_error(
+                self.tr("review_cut_audio_tail", "Cut Audio Tail"),
+                str(exc),
+            )
+            return
+        removed_seconds = max(0.0, duration - cut_seconds)
+        if not 0.01 < cut_seconds < duration - 0.01:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("review_tail_cut_confirm_title", "Cut audio tail?"),
+            self.tr(
+                "review_tail_cut_confirm",
+                "Segment {index} will end at {position:.2f} s, removing "
+                "{removed:.2f} s. The trimmed WAV will replace this segment and "
+                "Whisper will review it again. Continue?",
+                index=segment.sequence_index,
+                position=cut_seconds,
+                removed=removed_seconds,
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._start_review_tail_cut(segment, cut_seconds)
+
+    def _start_review_tail_cut(
+        self,
+        segment: StoredSegment,
+        cut_seconds: float,
+    ) -> None:
+        if (
+            self.audio_tail_cut_thread is not None
+            or self.segment_regeneration_thread is not None
+            or self.verification_thread is not None
+        ):
+            return
+        output_wav = self._review_tail_cut_wav_path(segment)
+        self.review_player.stop()
+        self.review_player.setSource(QUrl())
+        self.review_tail_cut_reverify_pending = False
+        self.review_progress_bar.setVisible(True)
+        self.review_progress_bar.setRange(0, 0)
+        self.review_status_label.setText(
+            self.tr(
+                "review_tail_cutting",
+                "Cutting the audio tail for segment {index}...",
+                index=segment.sequence_index,
+            )
+        )
+        thread = QThread(self)
+        worker = AudioTailCutWorker(
+            AudiobookStore(),
+            segment.id,
+            output_wav,
+            cut_seconds,
+            self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.log.connect(self.log_view.append_event)
+        worker.finished.connect(self._on_review_tail_cut_finished)
+        worker.failed.connect(self._on_review_tail_cut_failed)
+        worker.cancelled.connect(self._on_review_tail_cut_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_audio_tail_cut_worker)
+        self.audio_tail_cut_worker = worker
+        self.audio_tail_cut_thread = thread
+        self._refresh_review_page()
+        thread.start()
+
+    def _on_review_tail_cut_finished(
+        self,
+        segment_id: int,
+        output_path: str,
+        cut_seconds: float,
+        removed_seconds: float,
+    ) -> None:
+        self.review_progress_bar.setVisible(False)
+        self.selected_review_segment_id = segment_id
+        self.review_tail_cut_reverify_pending = True
+        self.log_view.append_event(
+            f"Audio tail cut at {cut_seconds:.2f}s; removed {removed_seconds:.2f}s "
+            f"and saved {output_path}. Whisper review will run again."
+        )
+        self.review_status_label.setText(
+            self.tr(
+                "review_tail_cut_complete",
+                "Audio tail removed. Starting Whisper review...",
+            )
+        )
+
+    def _on_review_tail_cut_failed(self, message: str) -> None:
+        self.review_progress_bar.setVisible(False)
+        self.review_tail_cut_reverify_pending = False
+        self.log_view.append_event(message)
+        self._show_error(
+            self.tr("review_cut_audio_tail", "Cut Audio Tail"),
+            message,
+        )
+
+    def _on_review_tail_cut_cancelled(self) -> None:
+        self.review_progress_bar.setVisible(False)
+        self.review_tail_cut_reverify_pending = False
+        self.log_view.append_event("Audio tail cut cancelled.")
+
+    def _clear_audio_tail_cut_worker(self) -> None:
+        self.audio_tail_cut_worker = None
+        self.audio_tail_cut_thread = None
+        self._refresh_review_page()
+        if self.review_tail_cut_reverify_pending:
+            self.review_tail_cut_reverify_pending = False
+            QTimer.singleShot(
+                0,
+                lambda: self._start_verification_for_latest(show_review=True),
+            )
+
+    @staticmethod
+    def _review_tail_cut_wav_path(segment: StoredSegment) -> Path:
+        current = Path(segment.wav_path)
+        directory = (
+            current.parent
+            if current.parent.name == "candidates"
+            else current.parent / "candidates"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        milliseconds = int(time.time() * 1000) % 1000
+        return directory / (
+            f"segment_{segment.sequence_index:04d}_tailcut_"
+            f"{stamp}_{milliseconds:03d}.wav"
+        )
 
     def _regenerate_selected_review_segment(self) -> None:
         segment = self._selected_review_segment()
@@ -12546,9 +13230,8 @@ class MainWindow(QMainWindow):
         fallback_voice_config: dict[str, object] = {}
         if max_retries > 0:
             current_config = self._current_voice_config()
-            if current_config is None:
-                return
-            fallback_voice_config = dict(current_config)
+            if current_config is not None:
+                fallback_voice_config = dict(current_config)
         if show_review:
             self._show_review_page()
         self.review_progress_bar.setVisible(True)
@@ -12558,6 +13241,7 @@ class MainWindow(QMainWindow):
         piper_path = resolve_app_path(
             self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
         )
+        normalization = self._text_normalization_configuration()
         worker = SegmentVerificationWorker(
             AudiobookStore(),
             audiobook.id,
@@ -12571,6 +13255,22 @@ class MainWindow(QMainWindow):
             piper_path,
             fallback_voice_config,
             True,
+            tail_analysis_enabled=self._tail_review_enabled(),
+            tail_safety_margin_seconds=self.review_tail_safety_spin.value(),
+            tail_warning_threshold_seconds=self.review_tail_warning_spin.value(),
+            tail_failure_threshold_seconds=self.review_tail_failure_spin.value(),
+            tail_autocut_enabled=self.review_tail_autocut_checkbox.isChecked(),
+            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            comparison_normalization_enabled=bool(
+                normalization.get("enabled", False)
+            ),
+            comparison_normalization_language=str(
+                normalization.get("language", "auto")
+            ),
+            comparison_normalization_db_path=(
+                self.text_normalization_panel.store.db_path
+            ),
+            comparison_normalization_rules=normalization.get("rules"),
         )
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -12723,6 +13423,11 @@ class MainWindow(QMainWindow):
             self.review_beam_spin,
             self.review_threshold_spin,
             self.review_max_retries_spin,
+            self.review_tail_enabled_checkbox,
+            self.review_tail_autocut_checkbox,
+            self.review_tail_safety_spin,
+            self.review_tail_warning_spin,
+            self.review_tail_failure_spin,
             self.whisper_install_button,
             self.whisper_remove_button,
             self.whisper_load_button,
@@ -12785,6 +13490,8 @@ class MainWindow(QMainWindow):
             self.podcast_ducking_checkbox,
             self.ducking_strength_combo,
             self.open_folder_checkbox,
+            self.normalize_preview_button,
+            self.text_normalization_panel,
             self.markup_toolbar,
         ):
             widget.setEnabled(not running)
@@ -12796,6 +13503,7 @@ class MainWindow(QMainWindow):
             self._refresh_qwen_status()
             self._refresh_omnivoice_status()
             self._refresh_wav_cache_stats()
+            self._update_review_tail_controls_state()
 
     def _save_settings(self) -> None:
         if self._restoring_settings:
@@ -12847,6 +13555,9 @@ class MainWindow(QMainWindow):
                     "omnivoice": self.omnivoice_chunk_size_spin.value(),
                 },
                 "normalize_audio": self.normalize_checkbox.isChecked(),
+                "text_normalization": (
+                    self.text_normalization_panel.configuration()
+                ),
                 "auto_delete_segment_wavs_after_mix": (
                     self.auto_delete_segment_wavs_checkbox.isChecked()
                 ),
@@ -12968,6 +13679,21 @@ class MainWindow(QMainWindow):
                     "approve_threshold": self.review_threshold_spin.value(),
                     "max_retries": self.review_max_retries_spin.value(),
                     "preload_model": self.whisper_model_loaded,
+                    "tail_analysis_enabled": (
+                        self.review_tail_enabled_checkbox.isChecked()
+                    ),
+                    "tail_autocut_enabled": (
+                        self.review_tail_autocut_checkbox.isChecked()
+                    ),
+                    "tail_safety_margin_seconds": (
+                        self.review_tail_safety_spin.value()
+                    ),
+                    "tail_warning_threshold_seconds": (
+                        self.review_tail_warning_spin.value()
+                    ),
+                    "tail_failure_threshold_seconds": (
+                        self.review_tail_failure_spin.value()
+                    ),
                 },
                 "local_server": self._local_server_settings_from_ui(),
                 "voice_gallery": {
@@ -13045,6 +13771,8 @@ class MainWindow(QMainWindow):
             self.settings_manager.save(self.settings)
         except OSError as exc:
             self.log_view.append_event(f"Could not save config.json: {exc}")
+        self._update_text_normalization_editor_state()
+        self._mark_normalization_preview_stale()
 
     @staticmethod
     def _resolved_audio_path(path: Path | None) -> Path | None:
@@ -13212,6 +13940,11 @@ class MainWindow(QMainWindow):
             if self.segment_regeneration_thread is not None:
                 self.segment_regeneration_thread.quit()
                 self.segment_regeneration_thread.wait(3000)
+        if self.audio_tail_cut_worker is not None:
+            self.audio_tail_cut_worker.request_cancel()
+            if self.audio_tail_cut_thread is not None:
+                self.audio_tail_cut_thread.quit()
+                self.audio_tail_cut_thread.wait(3000)
         if self.audiobook_rebuild_worker is not None:
             self.audiobook_rebuild_worker.request_cancel()
             if self.audiobook_rebuild_thread is not None:

@@ -7,3 +7,4 @@ uvicorn[standard]>=0.35,<1
 mcp[cli]>=1.28,<2
 PyInstaller>=6.0,<7
 packaging>=24
+num2words>=0.5.14,<0.6

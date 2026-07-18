@@ -5,13 +5,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.audio_pipeline import GenerationCancelled
 from app.core.settings_manager import SettingsManager
 from app.server.http_app import _job_response, create_http_app
 from app.server.engine_host_client import EngineHostClient
 from app.server.job_manager import LocalServerJobManager, ServerJob, wait_for_job
 from app.server.ltv_service import LocalText2VoiceService
+from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
 
 
 class FakeGenerationService:
@@ -130,6 +133,24 @@ def test_engine_host_client_waits_until_shutdown_completes(tmp_path):
     )
 
 
+def test_repeated_cancel_requests_are_sent_to_engine_host_only_once():
+    client = MagicMock()
+    client.submit_job.return_value = {"job_id": "job-123"}
+    client.get_job.side_effect = [
+        {"status": "running"},
+        {"status": "cancelled"},
+    ]
+    worker = EngineHostGenerationWorker(client, {"text": "Hello"})
+
+    worker.request_cancel()
+    worker.request_cancel()
+    worker.request_cancel()
+    with patch("app.workers.engine_host_generation_worker.time.sleep"):
+        worker.run()
+
+    client.cancel_job.assert_called_once_with("job-123")
+
+
 def test_job_manager_runs_generation_job(tmp_path):
     manager = LocalServerJobManager(
         service=FakeGenerationService(),
@@ -210,6 +231,64 @@ def test_service_rejects_unsafe_requested_chunk_size(tmp_path):
 
     assert service._chunk_size("omnivoice", {"chunk_size": 1}) == 2500
     assert service._chunk_size("omnivoice", {"chunk_size": 120}) == 120
+
+
+def test_cancelled_cached_engine_is_not_reused_by_next_generation(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["tts_engine"] = "piper"
+    settings.settings["output_dir"] = str(tmp_path / "output")
+    settings.save()
+    service = LocalText2VoiceService(settings, keep_engines_alive=True)
+    cancelled_engine = MagicMock()
+    replacement_engine = MagicMock()
+    cancelled_pipeline = MagicMock()
+    cancelled_pipeline.generate.side_effect = GenerationCancelled(
+        "Generation cancelled."
+    )
+    completed_pipeline = MagicMock()
+    completed_pipeline.generate.return_value = [tmp_path / "output" / "second.mp3"]
+    completed_pipeline._active_audiobook = None
+
+    with (
+        patch(
+            "app.server.ltv_service.create_tts_engine",
+            side_effect=[cancelled_engine, replacement_engine],
+        ) as create_engine,
+        patch(
+            "app.server.ltv_service.AudioPipeline",
+            side_effect=[cancelled_pipeline, completed_pipeline],
+        ),
+    ):
+        with pytest.raises(GenerationCancelled):
+            service.generate_audio({"text": "First generation"})
+
+        result = service.generate_audio({"text": "Second generation"})
+
+    assert create_engine.call_count == 2
+    cancelled_engine.close.assert_called_once_with()
+    completed_pipeline.generate.assert_called_once()
+    assert service._engine_cache["piper"] is replacement_engine
+    assert result["clean_mp3"].endswith("second.mp3")
+
+
+def test_late_cancelled_engine_is_replaced_before_reuse(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    service = LocalText2VoiceService(settings, keep_engines_alive=True)
+    cancelled_engine = MagicMock()
+    cancelled_engine.cancellation_requested.return_value = True
+    replacement_engine = MagicMock()
+    service._engine_cache["piper"] = cancelled_engine
+
+    with patch(
+        "app.server.ltv_service.create_tts_engine",
+        return_value=replacement_engine,
+    ) as create_engine:
+        selected = service._get_tts_engine("piper", lambda _message: None)
+
+    create_engine.assert_called_once()
+    cancelled_engine.close.assert_called_once_with()
+    assert selected is replacement_engine
+    assert service._engine_cache["piper"] is replacement_engine
 
 
 def test_external_play_forces_whisper_review_and_postproduction_mix(tmp_path):

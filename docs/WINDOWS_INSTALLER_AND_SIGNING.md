@@ -85,6 +85,33 @@ This keeps the base installer from accidentally bundling locally installed optio
 
 The base installer still includes the application, Piper runtime, FFmpeg, bundled music, voices present in the portable dist, licenses, docs, and the embedded Python runtime itself.
 
+## Uninstall behavior
+
+LocalText2Voice stores downloaded TTS models, Faster Whisper model caches, and
+voice-gallery files under:
+
+```text
+%LOCALAPPDATA%\LocalText2Voice\
+```
+
+Python packages required by optional engines are isolated under the bundled
+runtime in the installation directory:
+
+```text
+<installation>\runtimes\python311\engine-deps\
+```
+
+When the Windows uninstaller detects those downloads, it asks whether they
+should also be removed. **Yes** is the default because these files can occupy
+many gigabytes. Accepting removes `models/`, user-data `runtimes/`,
+`voice-gallery/`, installed `engine-deps/`, and Piper voices downloaded after
+installation.
+
+The cleanup deliberately preserves audiobook projects, generated WAV/MP3
+files, settings, music, and logs. Server coordination files and downloaded
+update caches are always removed. Silent uninstallations preserve downloaded AI
+data because they cannot ask the user for confirmation.
+
 ## Rebuild steps
 
 From the repository root:

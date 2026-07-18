@@ -7,6 +7,8 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.core.settings_manager import DEFAULT_SETTINGS
 from app.tts.engine_registry import create_tts_engine, engine_ids
@@ -71,6 +73,92 @@ class OmniVoiceManagerTests(unittest.TestCase):
                 manager.runtime_command(),
                 [sys.executable, str(manager.cli_path)],
             )
+
+    def test_dependency_install_resolves_pinned_torch_and_omnivoice_together(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            commands: list[list[str]] = []
+
+            class FakePythonRuntime:
+                runtime_dir = root / "runtime"
+                python_exe = Path(sys.executable)
+
+                def is_installed(self) -> bool:
+                    return True
+
+                def run_python(self, args, _cancel_token):
+                    commands.append(list(args))
+                    return ""
+
+                def cancel(self) -> None:
+                    pass
+
+            manager = OmniVoiceManager(
+                install_dir=root / "models",
+                python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
+            )
+            messages: list[str] = []
+            with (
+                patch(
+                    "app.tts.omnivoice_manager.detect_gpus",
+                    return_value=SimpleNamespace(has_nvidia_gpu=False),
+                ),
+                patch(
+                    "app.tts.omnivoice_manager.format_gpu_detection",
+                    return_value="System GPU: no compatible GPU detected.",
+                ),
+                patch.object(
+                    manager,
+                    "_validate_runtime",
+                    return_value={"cuda_available": False},
+                ),
+            ):
+                manager._install_runtime_dependencies(
+                    lambda _current, _total, message: messages.append(message),
+                    None,
+                )
+
+            self.assertEqual(len(commands), 1)
+            pip_command = commands[0]
+            self.assertIn(f"torch=={manager.TORCH_VERSION}", pip_command)
+            self.assertIn(f"torchaudio=={manager.TORCH_VERSION}", pip_command)
+            self.assertIn(manager.OMNIVOICE_PACKAGE, pip_command)
+            self.assertIn(manager.CPU_TORCH_INDEX_URL, pip_command)
+            self.assertFalse(
+                any("Finalizing OmniVoice PyTorch backend" in item for item in messages)
+            )
+
+    def test_remove_path_retries_windows_directory_not_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            target = Path(temporary_name) / "dependencies"
+            target.mkdir()
+            (target / "package.txt").write_text("data", encoding="utf-8")
+            real_rmtree = __import__("shutil").rmtree
+            calls = 0
+
+            def flaky_rmtree(path, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    error = OSError("The directory is not empty")
+                    error.winerror = 145  # type: ignore[attr-defined]
+                    raise error
+                return real_rmtree(path, **kwargs)
+
+            with (
+                patch(
+                    "app.tts.omnivoice_manager.shutil.rmtree",
+                    side_effect=flaky_rmtree,
+                ),
+                patch("app.tts.omnivoice_manager.time.sleep") as sleep,
+            ):
+                OmniVoiceManager._remove_path(target)
+
+            self.assertFalse(target.exists())
+            self.assertEqual(calls, 2)
+            sleep.assert_called_once()
 
     def test_worker_uses_omnivoice_generate_and_writes_pcm_wav(self) -> None:
         self.assertIn("OmniVoice.from_pretrained", OMNIVOICE_PYTHON_CLI)

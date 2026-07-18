@@ -17,7 +17,7 @@ from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
 from .text_processor import TextChunk
 
 
-CURRENT_DB_SCHEMA_VERSION = 2
+CURRENT_DB_SCHEMA_VERSION = 4
 PROJECT_MANIFEST_NAME = "project.localtext2voice.json"
 LEGACY_PROJECT_MANIFEST_NAME = "project.json"
 
@@ -52,6 +52,7 @@ class StoredSegment:
     verification_status: str
     transcript_text: str
     word_timestamps_json: str = "[]"
+    review_metrics_json: str = "{}"
     voice: str = ""
     language: str = ""
     paragraph_index: int = 0
@@ -297,7 +298,7 @@ class AudiobookStore:
                        source_text, normalized_source_text, markup_state_json,
                        voice, language, status, wav_path, duration_ms,
                        attempt_count, transcript_text, normalized_transcript_text,
-                       word_timestamps_json,
+                       word_timestamps_json, review_metrics_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
                        error_message, needs_rebuild
@@ -325,12 +326,12 @@ class AudiobookStore:
                         normalized_source_text, markup_state_json, voice,
                         language, status, wav_path, duration_ms, attempt_count,
                         transcript_text, normalized_transcript_text,
-                        word_timestamps_json,
+                        word_timestamps_json, review_metrics_json,
                         similarity_score, wer, cer, verification_status,
                         synthesis_ms, transcription_ms, engine_config_json,
                         error_message, needs_rebuild, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         clone.id,
@@ -356,6 +357,7 @@ class AudiobookStore:
                         row["transcript_text"],
                         row["normalized_transcript_text"],
                         row["word_timestamps_json"],
+                        row["review_metrics_json"],
                         row["similarity_score"],
                         row["wer"],
                         row["cer"],
@@ -531,12 +533,12 @@ class AudiobookStore:
                             normalized_source_text, markup_state_json, voice,
                             language, status, wav_path, duration_ms, attempt_count,
                             transcript_text, normalized_transcript_text,
-                            word_timestamps_json,
+                            word_timestamps_json, review_metrics_json,
                             similarity_score, wer, cer, verification_status,
                             synthesis_ms, transcription_ms, engine_config_json,
                             error_message, needs_rebuild, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             audiobook_id,
@@ -571,6 +573,10 @@ class AudiobookStore:
                             str(segment.get("normalized_transcript_text") or ""),
                             json.dumps(
                                 self._json_to_list(segment.get("word_timestamps", [])),
+                                ensure_ascii=False,
+                            ),
+                            json.dumps(
+                                self._json_to_dict(segment.get("review_metrics", {})),
                                 ensure_ascii=False,
                             ),
                             self._manifest_float(segment.get("similarity_score")),
@@ -931,7 +937,7 @@ class AudiobookStore:
                 SET status = ?, wav_path = ?, duration_ms = ?,
                     synthesis_ms = ?, attempt_count = attempt_count + 1,
                     transcript_text = '', normalized_transcript_text = '',
-                    word_timestamps_json = '[]',
+                    word_timestamps_json = '[]', review_metrics_json = '{}',
                     similarity_score = NULL, wer = NULL, cer = NULL,
                     verification_status = 'not_verified',
                     error_message = '', needs_rebuild = 1, updated_at = ?
@@ -977,6 +983,7 @@ class AudiobookStore:
                 SET source_text = ?, normalized_source_text = ?,
                     status = ?, transcript_text = '',
                     normalized_transcript_text = '', word_timestamps_json = '[]',
+                    review_metrics_json = '{}',
                     similarity_score = NULL,
                     wer = NULL, cer = NULL,
                     verification_status = 'not_verified',
@@ -1039,7 +1046,7 @@ class AudiobookStore:
                        markup_pause_after_ms, resolved_pause_before_ms,
                        resolved_pause_after_ms, source_text, wav_path, status,
                        similarity_score, verification_status, transcript_text,
-                       word_timestamps_json,
+                       word_timestamps_json, review_metrics_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
                        attempt_count, error_message, needs_rebuild
@@ -1086,6 +1093,22 @@ class AudiobookStore:
                 """,
                 (self._now(), audiobook_id),
             )
+            connection.execute(
+                "DELETE FROM audiobook_outputs WHERE audiobook_id = ?",
+                (audiobook_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO audiobook_outputs (
+                    audiobook_id, sequence_index, file_path
+                )
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (audiobook_id, index, str(output_path))
+                    for index, output_path in enumerate(output_paths)
+                ],
+            )
         audiobook = self.get_audiobook(audiobook_id)
         if audiobook is not None:
             self._write_project_manifest(audiobook)
@@ -1103,6 +1126,19 @@ class AudiobookStore:
         if row is None:
             return "", ""
         return str(row["clean_mp3_path"] or ""), str(row["mix_mp3_path"] or "")
+
+    def list_audiobook_output_paths(self, audiobook_id: int) -> list[Path]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT file_path
+                FROM audiobook_outputs
+                WHERE audiobook_id = ?
+                ORDER BY sequence_index
+                """,
+                (audiobook_id,),
+            ).fetchall()
+        return [Path(str(row["file_path"])) for row in rows if row["file_path"]]
 
     def fail_audiobook(self, audiobook_id: int, status: str = "error") -> None:
         with self._connect() as connection:
@@ -1135,7 +1171,7 @@ class AudiobookStore:
                        markup_pause_after_ms, resolved_pause_before_ms,
                        resolved_pause_after_ms, source_text, wav_path, status,
                        similarity_score, verification_status, transcript_text,
-                       word_timestamps_json,
+                       word_timestamps_json, review_metrics_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
                        attempt_count, error_message, needs_rebuild
@@ -1265,13 +1301,14 @@ class AudiobookStore:
         verification_status: str,
         transcription_ms: int,
         word_timestamps_json: str = "[]",
+        review_metrics_json: str = "{}",
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE audiobook_segments
                 SET transcript_text = ?, normalized_transcript_text = ?,
-                    word_timestamps_json = ?,
+                    word_timestamps_json = ?, review_metrics_json = ?,
                     similarity_score = ?, wer = ?, cer = ?,
                     verification_status = ?, transcription_ms = ?,
                     updated_at = ?
@@ -1281,6 +1318,7 @@ class AudiobookStore:
                     transcript_text,
                     normalize_for_similarity(transcript_text),
                     word_timestamps_json,
+                    review_metrics_json,
                     similarity_score,
                     wer,
                     cer,
@@ -1399,6 +1437,7 @@ class AudiobookStore:
                     transcript_text TEXT DEFAULT '',
                     normalized_transcript_text TEXT DEFAULT '',
                     word_timestamps_json TEXT DEFAULT '[]',
+                    review_metrics_json TEXT DEFAULT '{}',
                     similarity_score REAL,
                     wer REAL,
                     cer REAL,
@@ -1410,6 +1449,17 @@ class AudiobookStore:
                     needs_rebuild INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audiobook_outputs (
+                    audiobook_id INTEGER NOT NULL REFERENCES audiobooks(id)
+                        ON DELETE CASCADE,
+                    sequence_index INTEGER NOT NULL,
+                    file_path TEXT NOT NULL,
+                    PRIMARY KEY (audiobook_id, sequence_index)
                 )
                 """
             )
@@ -1501,6 +1551,7 @@ class AudiobookStore:
             "resolved_pause_after_ms": "INTEGER",
             "needs_rebuild": "INTEGER DEFAULT 0",
             "word_timestamps_json": "TEXT DEFAULT '[]'",
+            "review_metrics_json": "TEXT DEFAULT '{}'",
         }
         for name, definition in columns.items():
             if name not in existing:
@@ -1552,6 +1603,7 @@ class AudiobookStore:
             verification_status=str(row["verification_status"] or "not_verified"),
             transcript_text=str(row["transcript_text"] or ""),
             word_timestamps_json=str(row["word_timestamps_json"] or "[]"),
+            review_metrics_json=str(row["review_metrics_json"] or "{}"),
             voice=str(row["voice"] or ""),
             language=str(row["language"] or ""),
             paragraph_index=int(row["paragraph_index"] or 0),
@@ -1673,7 +1725,7 @@ class AudiobookStore:
                        source_text, normalized_source_text, markup_state_json,
                        voice, language, status, wav_path, duration_ms,
                        attempt_count, transcript_text, normalized_transcript_text,
-                       word_timestamps_json,
+                       word_timestamps_json, review_metrics_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
                        error_message, needs_rebuild
@@ -1729,6 +1781,9 @@ class AudiobookStore:
                     ),
                     "word_timestamps": self._json_to_list(
                         row["word_timestamps_json"]
+                    ),
+                    "review_metrics": self._json_to_dict(
+                        row["review_metrics_json"]
                     ),
                     "similarity_score": row["similarity_score"],
                     "wer": row["wer"],

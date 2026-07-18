@@ -61,3 +61,66 @@ def test_save_preserves_existing_settings_reference(tmp_path):
 
     assert manager.settings is held_reference
     assert held_reference["chunk_size"] == DEFAULT_SETTINGS["chunk_size"]
+
+
+def test_audio_tail_review_defaults_off_and_sanitizes_threshold_order(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    assert manager.settings["review"]["tail_analysis_enabled"] is False
+    assert manager.settings["review"]["tail_autocut_enabled"] is False
+
+    manager.settings["review"].update(
+        {
+            "tail_analysis_enabled": True,
+            "tail_autocut_enabled": True,
+            "tail_safety_margin_seconds": -1,
+            "tail_warning_threshold_seconds": 2.0,
+            "tail_failure_threshold_seconds": 1.0,
+        }
+    )
+    manager.save()
+
+    review = manager.settings["review"]
+    assert review["tail_analysis_enabled"] is True
+    assert review["tail_autocut_enabled"] is True
+    assert review["tail_safety_margin_seconds"] == 0.4
+    assert review["tail_failure_threshold_seconds"] > review[
+        "tail_warning_threshold_seconds"
+    ]
+
+    review["tail_analysis_enabled"] = False
+    manager.save()
+    assert manager.settings["review"]["tail_autocut_enabled"] is False
+
+
+def test_text_normalization_accepts_builtin_and_custom_language_codes(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    manager.settings["text_normalization"] = {
+        "enabled": True,
+        "language": "pt_BR",
+    }
+
+    manager.save()
+
+    normalization = manager.settings["text_normalization"]
+    assert normalization["enabled"] is True
+    assert normalization["language"] == "pt-br"
+    assert normalization["rules"] == {
+        "enabled": True,
+        "numbers": True,
+        "ordinals": True,
+        "dates": True,
+        "currencies": True,
+        "percentages": True,
+        "measurements": True,
+        "roman_numerals": True,
+    }
+
+    normalization["rules"] = {"enabled": False, "dates": False}
+    manager.save()
+    assert manager.settings["text_normalization"]["rules"]["enabled"] is False
+    assert manager.settings["text_normalization"]["rules"]["dates"] is False
+    assert manager.settings["text_normalization"]["rules"]["numbers"] is True
+
+    manager.settings["text_normalization"]["language"] = "not a valid code!"
+    manager.save()
+    assert manager.settings["text_normalization"]["language"] == "auto"

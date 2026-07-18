@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from app.core.text_normalization import (
+    DEFAULT_NORMALIZATION_RULES,
+    normalization_rule_settings,
+)
 from app.utils.paths import application_root
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 12
+CURRENT_SETTINGS_SCHEMA_VERSION = 16
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -40,6 +45,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "editor_syntax_highlighting": True,
     "show_markup_toolbar": True,
     "markup_corrector_enabled": True,
+    "text_normalization": {
+        "enabled": False,
+        "language": "auto",
+        "rules": dict(DEFAULT_NORMALIZATION_RULES),
+    },
     "pause_between_blocks_ms": 350,
     "pause_between_chapters_ms": 900,
     "paragraph_pause_min_ms": 450,
@@ -130,6 +140,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "approve_threshold": 92.0,
         "max_retries": 0,
         "preload_model": False,
+        "tail_analysis_enabled": False,
+        "tail_autocut_enabled": False,
+        "tail_safety_margin_seconds": 0.40,
+        "tail_warning_threshold_seconds": 0.50,
+        "tail_failure_threshold_seconds": 1.00,
     },
     "local_server": {
         "enabled": False,
@@ -319,11 +334,70 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         "voice_gallery",
         "updates",
         "installer_setup",
+        "text_normalization",
     ):
         if not isinstance(settings.get(section), dict):
             settings[section] = deepcopy(DEFAULT_SETTINGS[section])
 
+    normalization = settings["text_normalization"]
+    normalization["enabled"] = bool(normalization.get("enabled", False))
+    language = str(normalization.get("language", "auto")).strip().casefold().replace("_", "-")
+    normalization["language"] = (
+        language
+        if language == "auto"
+        or re.fullmatch(r"[a-z]{2,8}(?:-[a-z0-9]{1,8})*", language)
+        else "auto"
+    )
+    normalization["rules"] = normalization_rule_settings(
+        normalization.get("rules")
+    )
+
+    review = settings["review"]
+    review["tail_analysis_enabled"] = bool(
+        review.get("tail_analysis_enabled", False)
+    )
+    review["tail_autocut_enabled"] = bool(
+        review.get("tail_autocut_enabled", False)
+        and review["tail_analysis_enabled"]
+    )
+    safety = _bounded_float(
+        review.get("tail_safety_margin_seconds"),
+        0.0,
+        2.0,
+        0.40,
+    )
+    warning = _bounded_float(
+        review.get("tail_warning_threshold_seconds"),
+        0.05,
+        10.0,
+        0.50,
+    )
+    failure = _bounded_float(
+        review.get("tail_failure_threshold_seconds"),
+        warning + 0.05,
+        20.0,
+        max(1.00, warning + 0.05),
+    )
+    review["tail_safety_margin_seconds"] = safety
+    review["tail_warning_threshold_seconds"] = warning
+    review["tail_failure_threshold_seconds"] = failure
+
     _sanitize_chunk_sizes(settings)
+
+
+def _bounded_float(
+    value: object,
+    minimum: float,
+    maximum: float,
+    fallback: float,
+) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    if parsed != parsed or not minimum <= parsed <= maximum:
+        return fallback
+    return parsed
 
 
 def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:

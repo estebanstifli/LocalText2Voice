@@ -30,6 +30,15 @@ LocalText2Voice is a desktop app for creating long-form spoken audio with AI tex
 
 The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
 
+## What's New In 1.2.0
+
+- Automatic **SRT** and karaoke-style **ASS** subtitles generated from Faster Whisper word timestamps.
+- Optional multilingual text normalization with editable SQLite dictionaries and rules for numbers, dates, currencies, percentages, measurements, ordinals, and Roman numerals.
+- Audio-tail quality analysis that detects unexplained speech or artifacts after the final source-aligned word.
+- Conservative automatic tail cleanup that creates a candidate, verifies it again with Whisper, and keeps it only when review quality improves.
+- More reproducible OmniVoice installation with pinned, single-pass PyTorch dependency resolution and resilient Windows cleanup.
+- Safer Windows uninstall flow that can remove downloaded AI engines and models while preserving projects, exports, settings, music, and logs.
+
 > **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts MP3 usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
 
 ## Why It Matters
@@ -59,14 +68,16 @@ LocalText2Voice is no longer just "text to speech". It is becoming a complete lo
 
 ```mermaid
 flowchart TD
-    A["1. Input text<br>Paste text or import TXT / MD / DOCX"] --> B["2. Smart text processing<br>Paragraphs, chapters, safe chunks"]
-    B --> C["3. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
-    C --> D["4. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, or API"]
-    D --> E["5. Clean WAV/MP3 narration<br>Non-destructive audio output"]
-    E --> F["6. Optional Whisper review<br>Transcript, similarity score, retry workflow"]
-    F --> G["7. Manual fixes if needed<br>Edit, regenerate, approve, rebuild"]
-    G --> H["8. Audio Mix<br>Background music, volume, fades, ducking, normalization"]
-    H --> I["9. Export<br>podcast1.mp3, podcast2.mp3, review rebuilds, remix files"]
+    A["1. Input text<br>Paste text or import TXT / MD / DOCX"] --> B["2. Optional normalization<br>Dictionaries and structured-value rules"]
+    B --> C["3. Smart text processing<br>Paragraphs, chapters, safe chunks"]
+    C --> D["4. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
+    D --> E["5. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, or API"]
+    E --> F["6. Clean WAV/MP3 narration<br>Non-destructive audio output"]
+    F --> G["7. Optional Whisper review<br>Transcript, similarity, tail analysis, retries"]
+    G --> H["8. Manual or automatic fixes<br>Edit, regenerate, trim, approve, rebuild"]
+    H --> I["9. Timed subtitles<br>SRT and karaoke-style ASS"]
+    I --> J["10. Audio Mix<br>Music, volume, fades, ducking, normalization"]
+    J --> K["11. Export<br>Clean MP3, podcast mix, subtitles, project data"]
 ```
 
 ## Main Features
@@ -88,7 +99,7 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Azure Speech | Cloud API | Enterprise voices and Azure regions | Optional API key |
 | Custom HTTP TTS | Local or remote HTTP | Connect private servers such as local TTS APIs | URL, headers, body template, and response format are configurable |
 
-The base app stays lightweight. Heavy models and Python dependencies are installed on demand into the user's local app data folder.
+The base app stays lightweight. Heavy models and isolated Python dependencies are installed on demand into local application storage.
 
 ### Voice Library
 
@@ -148,20 +159,38 @@ Technical addon roadmap: [docs/ARCHITECTURE_ADDONS.md](docs/ARCHITECTURE_ADDONS.
 
 Voice gallery architecture: [docs/VOICE_GALLERY.md](docs/VOICE_GALLERY.md)
 
+### Text Normalization
+
+Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, and Spanish. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
+
 ### Whisper Review And Quality Control
 
 Optional Faster Whisper review can validate generated segments:
 
 - Transcribes each generated WAV segment.
 - Compares transcript against the original text.
+- When text normalization is enabled, normalizes both comparison inputs in memory while preserving Whisper's raw transcript and word timestamps for review and subtitles.
 - Calculates similarity, WER, and CER.
 - Marks segments as approved, needs review, or needs retry.
+- Optionally measures unexplained audio after the last source-aligned Whisper word, with configurable safety, warning, and retry thresholds.
 - Supports automatic retry loops.
-- Keeps the best generated candidate when multiple retries are attempted.
+- Keeps the best combined transcript/tail candidate when multiple retries are attempted.
+- Can conservatively trim excessive tails, re-run Whisper, and accept the trimmed candidate only when it reviews better.
 - Allows manual segment editing, regeneration, preview, approve/discard, and rebuild.
 - Stores word-level timestamps from Whisper for future subtitles, video sync, music cues, and sound effect synchronization.
 
 This makes LocalText2Voice useful not only for quick TTS, but also for quality-controlled audiobook production.
+
+### Subtitles
+
+When Faster Whisper word timestamps are available, LocalText2Voice creates subtitle sidecars next to each finished MP3:
+
+- Standard `.srt` subtitles grouped into readable cues.
+- Karaoke-style `.ass` subtitles with word-level timing.
+- Correct offsets for podcast mixes whose narration starts after a music intro.
+- Chapter-aware subtitle files when exporting one MP3 per chapter.
+
+Subtitle export is refreshed after verification, segment regeneration, tail correction, and audiobook rebuilds.
 
 ### Audio Mix
 
@@ -197,10 +226,10 @@ LocalText2Voice stores project data in SQLite and a portable project manifest:
 - Segment WAV paths.
 - Voice/language/config per segment.
 - Review transcript and similarity metrics.
-- Word-level Whisper timestamps as JSON.
+- Word-level Whisper timestamps and review/tail metrics as JSON.
 - Rebuild state for edited or regenerated segments.
 
-This prepares the project for future features such as subtitles, video generation, sound effects, timeline editing, and advanced postproduction.
+This prepares the project for future features such as video generation, richer sound-effect timelines, visual scenes, and advanced postproduction.
 
 ## What Is Free?
 

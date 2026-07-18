@@ -212,6 +212,10 @@ class AudiobookStoreTests(unittest.TestCase):
                     "probability": 0.98,
                 }
             ]
+            review_metrics = {
+                "transcript_status": "approved",
+                "tail_analysis": {"enabled": True, "status": "safe"},
+            }
             store.update_segment_verification(
                 segment.id,
                 "Original text.",
@@ -221,6 +225,7 @@ class AudiobookStoreTests(unittest.TestCase):
                 "approved",
                 120,
                 json.dumps(words),
+                json.dumps(review_metrics),
             )
 
             saved = store.save_audiobook_project(
@@ -247,6 +252,10 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertEqual(manifest["title"], "Updated")
             self.assertEqual(len(manifest["segments"]), 1)
             self.assertEqual(manifest["segments"][0]["word_timestamps"], words)
+            self.assertEqual(
+                manifest["segments"][0]["review_metrics"],
+                review_metrics,
+            )
 
             clone = store.clone_audiobook(
                 saved.id,
@@ -265,6 +274,10 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertTrue(Path(cloned_segments[0].wav_path).is_file())
             self.assertEqual(json.loads(cloned_segments[0].word_timestamps_json), words)
             self.assertEqual(
+                json.loads(cloned_segments[0].review_metrics_json),
+                review_metrics,
+            )
+            self.assertEqual(
                 Path(cloned_segments[0].wav_path).read_bytes(),
                 b"fake wav",
             )
@@ -280,6 +293,10 @@ class AudiobookStoreTests(unittest.TestCase):
             self.assertEqual(imported_segments[0].source_text, "Original text.")
             self.assertTrue(Path(imported_segments[0].wav_path).is_file())
             self.assertEqual(json.loads(imported_segments[0].word_timestamps_json), words)
+            self.assertEqual(
+                json.loads(imported_segments[0].review_metrics_json),
+                review_metrics,
+            )
 
 
 if __name__ == "__main__":

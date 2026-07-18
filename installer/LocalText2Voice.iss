@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.2"
+  #define MyAppVersion "1.2.0"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -8,6 +8,9 @@
 #define MyAppUpdatesURL "https://github.com/estebanstifli/LocalText2Voice/releases/latest"
 #ifndef SourceDir
   #define SourceDir "..\dist\LocalText2Voice"
+#endif
+#ifndef UserDataDir
+  #define UserDataDir "{localappdata}\LocalText2Voice"
 #endif
 #define OutputDir "..\.util_instalador_y_firmas\output"
 
@@ -57,6 +60,7 @@ english.CoreComponent=LocalText2Voice portable application
 english.GpuComponent=Download OmniVoice and Faster Whisper on first launch
 english.DesktopIcon=Create a desktop shortcut
 english.LaunchProgram=Launch LocalText2Voice
+english.RemoveDownloadedAIDataPrompt=LocalText2Voice found downloaded AI engines, models, runtime dependencies, or voice gallery files. Remove them too? This can free several GB. Audiobook projects, exported audio, and settings will be kept.
 
 spanish.CpuLightType=Equipo CPU ligero - solo Piper
 spanish.GpuPowerType=GPU potente - preparar OmniVoice y Faster Whisper
@@ -64,6 +68,14 @@ spanish.CoreComponent=Aplicación portable LocalText2Voice
 spanish.GpuComponent=Descargar OmniVoice y Faster Whisper en el primer arranque
 spanish.DesktopIcon=Crear acceso directo en el escritorio
 spanish.LaunchProgram=Abrir LocalText2Voice
+spanish.RemoveDownloadedAIDataPrompt=LocalText2Voice ha encontrado motores de IA, modelos, dependencias o archivos de voces descargados. ¿Quieres eliminarlos también? Esto puede liberar varios GB. Los proyectos, audios exportados y ajustes se conservarán.
+
+french.RemoveDownloadedAIDataPrompt=LocalText2Voice a détecté des moteurs d'IA, des modèles, des dépendances d'exécution ou des fichiers de galerie vocale téléchargés. Voulez-vous également les supprimer ? Cela peut libérer plusieurs Go. Les projets de livres audio, les fichiers audio exportés et les paramètres seront conservés.
+german.RemoveDownloadedAIDataPrompt=LocalText2Voice hat heruntergeladene KI-Engines, Modelle, Laufzeitabhängigkeiten oder Sprachgalerie-Dateien gefunden. Sollen diese ebenfalls entfernt werden? Dadurch können mehrere GB freigegeben werden. Hörbuchprojekte, exportierte Audiodateien und Einstellungen bleiben erhalten.
+italian.RemoveDownloadedAIDataPrompt=LocalText2Voice ha rilevato motori IA, modelli, dipendenze di runtime o file della galleria vocale scaricati. Vuoi rimuoverli? Puoi liberare diversi GB. I progetti di audiolibri, gli audio esportati e le impostazioni verranno conservati.
+portuguese.RemoveDownloadedAIDataPrompt=O LocalText2Voice encontrou motores de IA, modelos, dependências de runtime ou ficheiros da galeria de vozes transferidos. Deseja removê-los também? Isto pode libertar vários GB. Os projetos de audiolivros, os áudios exportados e as definições serão mantidos.
+japanese.RemoveDownloadedAIDataPrompt=ダウンロード済みの AI エンジン、モデル、ランタイム依存関係、または音声ギャラリーのファイルが見つかりました。これらも削除しますか？数 GB の空き容量を確保できる場合があります。オーディオブックのプロジェクト、書き出した音声、設定は保持されます。
+arabic.RemoveDownloadedAIDataPrompt=عثر LocalText2Voice على محركات ذكاء اصطناعي أو نماذج أو تبعيات تشغيل أو ملفات معرض أصوات تم تنزيلها. هل تريد حذفها أيضًا؟ قد يؤدي ذلك إلى توفير عدة غيغابايت. سيتم الاحتفاظ بمشروعات الكتب الصوتية والملفات الصوتية المصدرة والإعدادات.
 
 [Types]
 Name: "cpu"; Description: "{cm:CpuLightType}"
@@ -87,6 +99,87 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\LocalText2Voice.exe"; Tasks
 Filename: "{app}\LocalText2Voice.exe"; Description: "{cm:LaunchProgram}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  RemoveDownloadedAIData: Boolean;
+
+function UserDataRoot(): String;
+begin
+  Result := ExpandConstant('{#UserDataDir}');
+end;
+
+function DownloadedAIDataExists(): Boolean;
+var
+  Root: String;
+begin
+  Root := UserDataRoot();
+  Result :=
+    DirExists(Root + '\models') or
+    DirExists(Root + '\runtimes') or
+    DirExists(Root + '\voice-gallery') or
+    DirExists(ExpandConstant('{app}\runtimes\python311\engine-deps'));
+end;
+
+procedure RemoveDataTree(const Path: String);
+begin
+  if not DirExists(Path) then
+    Exit;
+
+  Log('Removing LocalText2Voice data directory: ' + Path);
+  if not DelTree(Path, True, True, True) then
+    Log('Could not completely remove LocalText2Voice data directory: ' + Path);
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  RemoveDownloadedAIData := False;
+  if DownloadedAIDataExists() then
+  begin
+    if UninstallSilent() then
+      Log('Silent uninstall: downloaded AI data will be preserved.')
+    else
+      RemoveDownloadedAIData :=
+        MsgBox(
+          ExpandConstant('{cm:RemoveDownloadedAIDataPrompt}'),
+          mbConfirmation,
+          MB_YESNO or MB_DEFBUTTON1
+        ) = IDYES;
+  end;
+  Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Root: String;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+
+  Root := UserDataRoot();
+
+  { These contain only temporary coordination and downloaded update files. }
+  RemoveDataTree(Root + '\server');
+  RemoveDataTree(Root + '\updates');
+
+  if RemoveDownloadedAIData then
+  begin
+    RemoveDataTree(Root + '\models');
+    RemoveDataTree(Root + '\runtimes');
+    RemoveDataTree(Root + '\voice-gallery');
+
+    { Optional Python engine packages are written beside the bundled runtime. }
+    RemoveDataTree(
+      ExpandConstant('{app}\runtimes\python311\engine-deps')
+    );
+
+    { Inno removes bundled Piper voices; this removes voices added later. }
+    RemoveDataTree(ExpandConstant('{app}\voices'));
+  end;
+
+  { Remove only empty roots. Projects, exports, settings, music, and logs remain. }
+  RemoveDir(Root);
+  RemoveDir(ExpandConstant('{app}'));
+end;
+
 function SelectedUiLanguageCode(): String;
 var
   Lang: String;
@@ -139,7 +232,7 @@ begin
 
   Result :=
     '{' + #13#10 +
-    '  "settings_schema_version": 11,' + #13#10 +
+    '  "settings_schema_version": 16,' + #13#10 +
     '  "ui_language": "' + UiLang + '",' + #13#10 +
     '  "output_dir": "output",' + #13#10 +
     '  "tts_engine": "' + TtsEngine + '",' + #13#10 +

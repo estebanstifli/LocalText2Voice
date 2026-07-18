@@ -8,11 +8,12 @@ import tomllib
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredAudioEvent
 from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
+from app.core.text_normalization import TextNormalizationStore
 from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
 from app.ui.main_window import MainWindow
 
@@ -177,17 +179,49 @@ class MainWindowUITests(unittest.TestCase):
         window._show_review_page()
         self.assertEqual(window.page_stack.currentIndex(), 3)
         self.assertTrue(hasattr(window, "review_table"))
-        self.assertEqual(window.review_table.columnCount(), 7)
+        self.assertEqual(window.review_table.columnCount(), 8)
         self.assertTrue(hasattr(window, "review_filter_combo"))
         self.assertGreaterEqual(window.review_filter_combo.count(), 7)
         self.assertTrue(hasattr(window, "review_rebuild_button"))
         self.assertTrue(hasattr(window, "review_source_detail"))
         self.assertTrue(hasattr(window, "review_transcript_detail"))
+        self.assertTrue(hasattr(window, "review_tail_enabled_checkbox"))
+        self.assertFalse(window.review_tail_enabled_checkbox.isChecked())
         self.assertFalse(window.review_verify_button.icon().isNull())
 
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
-        self.assertEqual(window.settings_tabs.count(), 5)
+        self.assertEqual(window.settings_tabs.count(), 6)
+        self.assertTrue(hasattr(window, "text_normalization_panel"))
+        self.assertGreaterEqual(
+            window.text_normalization_panel.entries_table.rowCount(),
+            50,
+        )
+        self.assertGreaterEqual(window.text_normalization_panel.language_combo.count(), 11)
+        self.assertGreaterEqual(
+            window.text_normalization_panel.editor_language_combo.count(), 10
+        )
+        self.assertEqual(
+            window.text_normalization_panel.editor_language_combo.currentData(),
+            "en",
+        )
+        self.assertTrue(
+            hasattr(window.text_normalization_panel, "create_dictionary_button")
+        )
+        self.assertTrue(hasattr(window.text_normalization_panel, "import_button"))
+        self.assertTrue(hasattr(window.text_normalization_panel, "export_button"))
+        self.assertTrue(
+            window.text_normalization_panel.rules_enabled_checkbox.isChecked()
+        )
+        self.assertEqual(
+            sum(
+                window.text_normalization_panel.configuration()["rules"].values()
+            ),
+            8,
+        )
+        self.assertTrue(
+            hasattr(window.text_normalization_panel, "rules_details_button")
+        )
         self.assertTrue(hasattr(window, "music_library_picker"))
         self.assertTrue(hasattr(window, "sfx_library_picker"))
         self.assertGreaterEqual(window.tts_engine_combo.count(), 9)
@@ -293,6 +327,108 @@ class MainWindowUITests(unittest.TestCase):
         self.assertFalse(reset_file["review"]["enabled"])
         self.assertEqual(window.text_editor.toPlainText(), "Texto que no debe borrarse.")
         self.assertTrue(hasattr(window, "reset_settings_button"))
+
+    def test_verify_pending_button_starts_without_an_ffmpeg_path_widget(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.review_max_retries_spin.setValue(1)
+        window.review_verify_button.setEnabled(True)
+
+        with (
+            patch.object(
+                window,
+                "_current_audiobook",
+                return_value=SimpleNamespace(id=123),
+            ),
+            patch.object(window, "_show_review_page"),
+            patch.object(window, "_current_voice_config", return_value=None),
+            patch.object(
+                window.faster_whisper_manager,
+                "is_installed",
+                return_value=True,
+            ),
+            patch("app.ui.main_window.AudiobookStore"),
+            patch.object(QThread, "start", autospec=True) as start_thread,
+        ):
+            window.review_verify_button.click()
+
+        start_thread.assert_called_once()
+        self.assertIsNotNone(window.verification_worker)
+        self.assertEqual(
+            window.verification_worker.ffmpeg_path,
+            window.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+        )
+        worker = window.verification_worker
+        thread = window.verification_thread
+        window.verification_worker = None
+        window.verification_thread = None
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+
+    def test_normalized_editor_preview_keeps_original_read_only_and_refreshable(
+        self,
+    ) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        manager = SettingsManager(root / "config.json")
+        values = deepcopy(manager.settings)
+        values["text_normalization"] = {"enabled": True, "language": "en"}
+        manager.save(values)
+        normalization_store = TextNormalizationStore(
+            root / "text_normalization.sqlite3"
+        )
+
+        with (
+            patch(
+                "app.ui.main_window.SettingsManager",
+                return_value=SettingsManager(root / "config.json"),
+            ),
+            patch(
+                "app.ui.text_normalization_settings.TextNormalizationStore",
+                return_value=normalization_store,
+            ),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        source = "Dr. Smith paid $2 for 3 GB. {{pause 250}}"
+        window.text_editor.setPlainText(source)
+        self.assertEqual(window.editor_tabs.count(), 2)
+        self.assertTrue(window.editor_tabs.isTabVisible(1))
+        self.assertTrue(window.normalized_text_editor.isReadOnly())
+
+        window.editor_tabs.setCurrentIndex(1)
+
+        self.assertEqual(window.text_editor.toPlainText(), source)
+        self.assertEqual(
+            window.normalized_text_editor.toPlainText(),
+            "Doctor Smith paid two dollars for three gigabytes. {{pause 250}}",
+        )
+        self.assertFalse(window.normalization_preview_stale)
+
+        window.text_editor.setPlainText("The 21st chapter uses AI.")
+        self.assertTrue(window.normalization_preview_stale)
+        window.normalize_preview_button.click()
+        self.assertEqual(
+            window.normalized_text_editor.toPlainText(),
+            "The twenty-first chapter uses A I.",
+        )
+
+        window.text_normalization_panel.enabled_checkbox.setChecked(False)
+        self.assertFalse(window.editor_tabs.isTabVisible(1))
+        self.assertEqual(window.editor_tabs.currentIndex(), 0)
+
+        window.text_normalization_panel.enabled_checkbox.setChecked(True)
+        self.assertTrue(window.editor_tabs.isTabVisible(1))
+
+        # Returning to Generate repairs any stale Qt tab visibility state.
+        window.editor_tabs.setTabVisible(1, False)
+        self.assertFalse(window.editor_tabs.isTabVisible(1))
+        window._show_generation()
+        self.assertTrue(window.editor_tabs.isTabVisible(1))
 
     def test_chatterbox_installed_state_is_shown(self) -> None:
         window = MainWindow()

@@ -13,7 +13,11 @@ from app.core.audio_event_timeline import (
     resolved_audio_clips,
     speech_intervals_for_audiobook,
 )
-from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
+from app.core.audio_pipeline import (
+    AudioGenerationOptions,
+    AudioPipeline,
+    GenerationCancelled,
+)
 from app.core.audiobook_store import AudiobookStore, PROJECT_MANIFEST_NAME
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.ltv_markup import LTVMarkupParser
@@ -24,6 +28,7 @@ from app.core.settings_manager import (
     SettingsManager,
     sanitize_chunk_size,
 )
+from app.core.subtitle_export import export_audiobook_subtitles
 from app.tts.base import BaseTTSEngine
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
@@ -361,7 +366,15 @@ class LocalText2VoiceService:
         )
         if on_pipeline is not None:
             on_pipeline(pipeline)
-        outputs = pipeline.generate(text, options)
+        try:
+            outputs = pipeline.generate(text, options)
+        except GenerationCancelled:
+            # Cancellation is intentionally sticky inside the TTS engines so an
+            # in-flight synthesis cannot resume after its subprocess or HTTP
+            # connection has been stopped.  A persistent host must therefore not
+            # hand that same instance to the next job.
+            self._discard_cancelled_engine(engine_id, engine, log)
+            raise
         active_audiobook = getattr(pipeline, "_active_audiobook", None)
         audiobook_id = getattr(active_audiobook, "id", None)
         review_summary: dict[str, Any] | None = None
@@ -456,6 +469,7 @@ class LocalText2VoiceService:
         on_operation: PipelineCallback | None,
     ) -> tuple[dict[str, Any], Path | None]:
         review = self._settings_dict("review")
+        normalization = self._settings_dict("text_normalization")
         verifier: FasterWhisperVerifier | None = None
         if self.keep_engines_alive:
             if self._whisper_verifier is None:
@@ -485,6 +499,25 @@ class LocalText2VoiceService:
             voice_config,
             True,
             shared_tts_engines,
+            tail_analysis_enabled=bool(review.get("tail_analysis_enabled", False)),
+            tail_safety_margin_seconds=float(
+                review.get("tail_safety_margin_seconds", 0.40)
+            ),
+            tail_warning_threshold_seconds=float(
+                review.get("tail_warning_threshold_seconds", 0.50)
+            ),
+            tail_failure_threshold_seconds=float(
+                review.get("tail_failure_threshold_seconds", 1.00)
+            ),
+            tail_autocut_enabled=bool(review.get("tail_autocut_enabled", False)),
+            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            comparison_normalization_enabled=bool(
+                normalization.get("enabled", False)
+            ),
+            comparison_normalization_language=str(
+                normalization.get("language", "auto")
+            ),
+            comparison_normalization_rules=normalization.get("rules"),
         )
         errors: list[str] = []
         cancelled: list[bool] = []
@@ -633,6 +666,13 @@ class LocalText2VoiceService:
             ),
         )
         store.complete_audiobook(audiobook_id, [clean_path, mix_path])
+        subtitle_result = export_audiobook_subtitles(
+            store,
+            audiobook_id,
+            [clean_path, mix_path],
+        )
+        if subtitle_result.files:
+            log(f"Created {len(subtitle_result.files)} subtitle file(s).")
         log(f"Reviewed podcast mix created: {mix_path}")
         return mix_path
 
@@ -655,6 +695,17 @@ class LocalText2VoiceService:
             engine = create_tts_engine(engine_id, piper_path)
             engine.set_log_callback(log_callback)
             return engine
+        cancelled_engine: BaseTTSEngine | None = None
+        with self._engine_lock:
+            engine = self._engine_cache.get(engine_id)
+            if engine is not None and engine.cancellation_requested():
+                cancelled_engine = self._engine_cache.pop(engine_id)
+        if cancelled_engine is not None:
+            self._close_cancelled_engine(
+                engine_id,
+                cancelled_engine,
+                log_callback,
+            )
         with self._engine_lock:
             engine = self._engine_cache.get(engine_id)
             if engine is None:
@@ -665,6 +716,35 @@ class LocalText2VoiceService:
                 log_callback(f"Engine host reusing {engine_id} engine from memory.")
             engine.set_log_callback(log_callback)
             return engine
+
+    def _discard_cancelled_engine(
+        self,
+        engine_id: str,
+        engine: BaseTTSEngine,
+        log_callback: LogCallback,
+    ) -> None:
+        if not self.keep_engines_alive:
+            return
+        with self._engine_lock:
+            if self._engine_cache.get(engine_id) is not engine:
+                return
+            self._engine_cache.pop(engine_id, None)
+        self._close_cancelled_engine(engine_id, engine, log_callback)
+
+    @staticmethod
+    def _close_cancelled_engine(
+        engine_id: str,
+        engine: BaseTTSEngine,
+        log_callback: LogCallback,
+    ) -> None:
+        try:
+            engine.close()
+        except Exception as exc:
+            log_callback(f"Cancelled {engine_id} engine cleanup warning: {exc}")
+        log_callback(
+            f"Engine host discarded cancelled {engine_id} engine; "
+            "the next generation will start with a clean instance."
+        )
 
     def _generation_options(
         self,
@@ -685,6 +765,9 @@ class LocalText2VoiceService:
             for key, value in request.items()
             if key not in {"text"}
         }
+        normalization = self.settings.get("text_normalization", {})
+        if not isinstance(normalization, dict):
+            normalization = {}
         return AudioGenerationOptions(
             output_dir=output_dir,
             voice_config=voice_config,
@@ -720,6 +803,21 @@ class LocalText2VoiceService:
             ducking_strength=str(self.settings.get("ducking_strength", "low")),
             mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
             metadata=metadata,
+            text_normalization_enabled=bool(
+                normalization.get("enabled", False)
+            ),
+            text_normalization_language=str(
+                normalization.get("language", "auto")
+            ),
+            text_normalization_language_hint=str(
+                request.get("language")
+                or voice_config.get("language")
+                or voice_config.get("lang")
+                or ""
+            ),
+            text_normalization_rules=dict(normalization.get("rules", {}))
+            if isinstance(normalization.get("rules"), dict)
+            else {},
             project_audiobook_id=self._project_audiobook_id(request),
             project_settings=project_settings,
         )
