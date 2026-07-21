@@ -114,13 +114,13 @@ class KokoroManager:
         self._external_cancel_token: threading.Event | None = None
 
     def is_installed(self) -> bool:
-        manifest = self.install_manifest()
-        if manifest.get("state") != "installed":
-            return False
-        if manifest.get("version") != self.VERSION:
-            return False
+        return self.has_model_files()
+
+    def has_model_files(self) -> bool:
+        """Detect complete assets on disk even if the manifest is stale/missing."""
+
         return all(
-            (self.install_dir / asset.filename).is_file()
+            self._asset_is_valid(asset, self.install_dir / asset.filename)
             for asset in self.ASSETS
         )
 

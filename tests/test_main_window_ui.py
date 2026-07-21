@@ -44,7 +44,8 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.page_stack.count(), 6)
         window._select_tts_engine("piper")
         self.assertEqual(window.page_stack.currentIndex(), 0)
-        self.assertEqual(window.ui_language_combo.count(), 10)
+        self.assertEqual(window.ui_language_combo.count(), 11)
+        self.assertEqual(window.ui_language_combo.maxVisibleItems(), 11)
         self.assertTrue(hasattr(window, "import_button"))
         self.assertFalse(hasattr(window, "refresh_voices_button"))
         self.assertFalse(window.import_button.icon().isNull())
@@ -180,6 +181,16 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.page_stack.currentIndex(), 3)
         self.assertTrue(hasattr(window, "review_table"))
         self.assertEqual(window.review_table.columnCount(), 8)
+        self.assertEqual(window.review_visible_row_count, 15)
+        expected_review_height = (
+            window.review_table.horizontalHeader().sizeHint().height()
+            + window.review_table.verticalHeader().defaultSectionSize() * 15
+            + window.review_table.frameWidth() * 2
+            + 1
+        )
+        self.assertEqual(window.review_table.minimumHeight(), expected_review_height)
+        self.assertEqual(window.review_table.maximumHeight(), expected_review_height)
+        self.assertFalse(hasattr(window, "review_totals_label"))
         self.assertTrue(hasattr(window, "review_filter_combo"))
         self.assertGreaterEqual(window.review_filter_combo.count(), 7)
         self.assertTrue(hasattr(window, "review_rebuild_button"))
@@ -328,6 +339,35 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.text_editor.toPlainText(), "Texto que no debe borrarse.")
         self.assertTrue(hasattr(window, "reset_settings_button"))
 
+    def test_switching_to_russian_keeps_russian_selected(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.json"
+
+        with patch(
+            "app.ui.main_window.SettingsManager",
+            return_value=SettingsManager(config_path),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        russian_index = window.ui_language_combo.findData("ru")
+        self.assertGreaterEqual(russian_index, 0)
+        window.ui_language_combo.blockSignals(True)
+        window.ui_language_combo.setCurrentIndex(russian_index)
+        window.ui_language_combo.blockSignals(False)
+
+        window._change_ui_language()
+
+        self.assertEqual(window.translator.language, "ru")
+        self.assertEqual(window.ui_language_combo.currentData(), "ru")
+        self.assertEqual(window.ui_language_combo.currentText(), "Русский")
+        self.assertEqual(window.settings_button.text(), "Настройки")
+        self.assertEqual(
+            SettingsManager(config_path).settings["ui_language"],
+            "ru",
+        )
+
     def test_verify_pending_button_starts_without_an_ffmpeg_path_widget(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
@@ -418,17 +458,25 @@ class MainWindowUITests(unittest.TestCase):
         )
 
         window.text_normalization_panel.enabled_checkbox.setChecked(False)
-        self.assertFalse(window.editor_tabs.isTabVisible(1))
+        self.assertEqual(window.editor_tabs.count(), 1)
+        self.assertEqual(window.editor_tabs.indexOf(window.normalized_text_page), -1)
         self.assertEqual(window.editor_tabs.currentIndex(), 0)
 
         window.text_normalization_panel.enabled_checkbox.setChecked(True)
-        self.assertTrue(window.editor_tabs.isTabVisible(1))
+        self.assertEqual(window.editor_tabs.count(), 2)
+        self.assertGreaterEqual(
+            window.editor_tabs.indexOf(window.normalized_text_page),
+            0,
+        )
 
         # Returning to Generate repairs any stale Qt tab visibility state.
-        window.editor_tabs.setTabVisible(1, False)
-        self.assertFalse(window.editor_tabs.isTabVisible(1))
+        normalized_index = window.editor_tabs.indexOf(window.normalized_text_page)
+        window.editor_tabs.setTabVisible(normalized_index, False)
+        self.assertFalse(window.editor_tabs.isTabVisible(normalized_index))
         window._show_generation()
-        self.assertTrue(window.editor_tabs.isTabVisible(1))
+        repaired_index = window.editor_tabs.indexOf(window.normalized_text_page)
+        self.assertGreaterEqual(repaired_index, 0)
+        self.assertTrue(window.editor_tabs.isTabVisible(repaired_index))
 
     def test_chatterbox_installed_state_is_shown(self) -> None:
         window = MainWindow()
@@ -453,6 +501,30 @@ class MainWindowUITests(unittest.TestCase):
         self.assertNotIn("Not installed", window.chatterbox_status_label.text())
         self.assertNotIn("No instalado", window.chatterbox_status_label.text())
         self.assertTrue(window.chatterbox_remove_button.isEnabled())
+
+    def test_detected_model_is_shown_separately_from_missing_runtime(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        class ModelOnlyManager:
+            cache_dir = Path("C:/temp/qwen-cache")
+            install_dir = Path("C:/temp/qwen")
+
+            def has_model_files(self) -> bool:
+                return True
+
+            def is_installed(self) -> bool:
+                return False
+
+            def has_runtime(self) -> bool:
+                return False
+
+        window.qwen_manager = ModelOnlyManager()
+        window._refresh_qwen_status()
+
+        self.assertIn("Model detected", window.qwen_status_label.text())
+        self.assertEqual(window.qwen_install_button.text(), "Repair / Update")
+        self.assertTrue(window.qwen_install_button.isEnabled())
 
     def test_tts_engine_install_uses_confirmation_and_progress_modal(self) -> None:
         window = MainWindow()

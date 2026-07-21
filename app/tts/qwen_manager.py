@@ -12,6 +12,7 @@ from typing import Any, Callable
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
 from app.utils.paths import app_data_root
 
+from .model_cache import huggingface_model_is_cached
 from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
 
 
@@ -430,6 +431,12 @@ class QwenManager:
     TORCH_VERSION = "2.6.0"
     GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
     MODEL_REPO = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    MODEL_REQUIRED_FILES = {
+        "config.json": 1_000,
+        "model.safetensors": 100 * 1024 * 1024,
+        "speech_tokenizer/config.json": 1_000,
+        "speech_tokenizer/model.safetensors": 100 * 1024 * 1024,
+    }
 
     MODELS: tuple[QwenModel, ...] = (
         QwenModel(
@@ -490,12 +497,14 @@ class QwenManager:
         self._lock = threading.Lock()
 
     def is_installed(self) -> bool:
-        manifest = self.install_manifest()
-        return (
-            manifest.get("state") == "installed"
-            and manifest.get("version") == self.VERSION
-            and self.cache_dir.exists()
-            and self.has_runtime()
+        return self.has_model_files() and self.has_runtime()
+
+    def has_model_files(self, model_id: str | None = None) -> bool:
+        model_repo = self.model_repo(model_id or self.MODELS[0].model_id)
+        return huggingface_model_is_cached(
+            self.cache_dir,
+            model_repo,
+            self.MODEL_REQUIRED_FILES,
         )
 
     def has_runtime(self) -> bool:

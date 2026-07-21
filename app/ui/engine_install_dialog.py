@@ -60,6 +60,8 @@ class EngineInstallDialog(QDialog):
         volume: str,
         tr: Translate,
         parent: QWidget | None = None,
+        *,
+        existing_model_detected: bool = False,
     ) -> None:
         super().__init__(parent)
         self.engine_name = engine_name
@@ -67,15 +69,24 @@ class EngineInstallDialog(QDialog):
         self.available_free_gb = available_free_gb
         self.volume = volume
         self.tr = tr
+        self.existing_model_detected = existing_model_detected
         self._installation_started = False
         self._installation_active = False
         self._installation_completed = False
 
         self.setWindowTitle(
-            self.tr(
-                "engine_install_title",
-                "Install {engine}",
-                engine=self.engine_name,
+            (
+                self.tr(
+                    "engine_repair_title",
+                    "Repair / Update {engine}",
+                    engine=self.engine_name,
+                )
+                if self.existing_model_detected
+                else self.tr(
+                    "engine_install_title",
+                    "Install {engine}",
+                    engine=self.engine_name,
+                )
             )
         )
         self.setModal(True)
@@ -87,10 +98,18 @@ class EngineInstallDialog(QDialog):
         layout.setSpacing(14)
 
         title = QLabel(
-            self.tr(
-                "engine_install_heading",
-                "Prepare {engine}",
-                engine=self.engine_name,
+            (
+                self.tr(
+                    "engine_repair_heading",
+                    "Reuse and repair {engine}",
+                    engine=self.engine_name,
+                )
+                if self.existing_model_detected
+                else self.tr(
+                    "engine_install_heading",
+                    "Prepare {engine}",
+                    engine=self.engine_name,
+                )
             )
         )
         title.setObjectName("engineInstallHeading")
@@ -98,11 +117,20 @@ class EngineInstallDialog(QDialog):
         layout.addWidget(title)
 
         intro = QLabel(
-            self.tr(
-                "engine_install_intro",
-                "This engine downloads its own isolated Python dependencies and AI "
-                "model. The application may appear busy while large files are being "
-                "downloaded and prepared.",
+            (
+                self.tr(
+                    "engine_repair_intro",
+                    "Existing model files were detected. They will be reused, and "
+                    "only missing or updated runtime/model files will be downloaded. "
+                    "You can also run this again later to repair or update the engine.",
+                )
+                if self.existing_model_detected
+                else self.tr(
+                    "engine_install_intro",
+                    "This engine downloads its own isolated Python dependencies and AI "
+                    "model. The application may appear busy while large files are being "
+                    "downloaded and prepared.",
+                )
             )
         )
         intro.setWordWrap(True)
@@ -199,7 +227,11 @@ class EngineInstallDialog(QDialog):
             self.tr("engine_install_later", "Another time")
         )
         self.install_button = QPushButton(
-            self.tr("engine_install_now", "Install now")
+            (
+                self.tr("engine_repair_now", "Repair / Update now")
+                if self.existing_model_detected
+                else self.tr("engine_install_now", "Install now")
+            )
         )
         self.install_button.setObjectName("engineInstallNowButton")
         self.install_button.setDefault(True)

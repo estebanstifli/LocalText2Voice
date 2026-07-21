@@ -255,6 +255,49 @@ class AudiobookStore:
         self._write_project_manifest(audiobook)
         return audiobook
 
+    def update_audiobook_source(
+        self,
+        audiobook_id: int,
+        source_text: str,
+        expected_sha256: str | None = None,
+    ) -> StoredAudiobook:
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT source_text FROM audiobooks WHERE id = ?",
+                (audiobook_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Audiobook project not found: {audiobook_id}")
+            current_text = str(row["source_text"] or "")
+            current_hash = self._hash_text(current_text)
+            expected = str(expected_sha256 or "").strip().casefold()
+            if expected and expected != current_hash.casefold():
+                raise ValueError(
+                    "Source changed since it was read. "
+                    f"Expected SHA-256 {expected}, current SHA-256 {current_hash}."
+                )
+            connection.execute(
+                """
+                UPDATE audiobooks
+                SET source_text = ?, source_hash = ?, status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    source_text,
+                    self._hash_text(source_text),
+                    "draft",
+                    now,
+                    audiobook_id,
+                ),
+            )
+        audiobook = self.get_audiobook(audiobook_id)
+        if audiobook is None:
+            raise ValueError(f"Audiobook project not found: {audiobook_id}")
+        self._write_project_manifest(audiobook)
+        return audiobook
+
     def clone_audiobook(
         self,
         source_id: int,

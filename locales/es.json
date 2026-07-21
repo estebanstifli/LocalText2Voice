@@ -853,5 +853,13 @@
   "normalization_rules_disable_all": "Desactivar todas",
   "normalization_rules_details_off": "Detalle de reglas (todas desactivadas)",
   "normalization_rules_details_count": "Detalle de reglas ({enabled}/{total})",
+  "model_detected_runtime_missing": "Modelo detectado · hay que reparar el entorno",
+  "runtime_detected_model_missing": "Entorno detectado · falta descargar el modelo",
+  "reinstall_update": "Reinstalar / Actualizar",
+  "repair_update": "Reparar / Actualizar",
+  "engine_repair_title": "Reparar / Actualizar {engine}",
+  "engine_repair_heading": "Reutilizar y reparar {engine}",
+  "engine_repair_intro": "Se han detectado los archivos del modelo. Se reutilizarán y solo se descargarán los archivos que falten o estén actualizados del entorno o del modelo. También puedes volver a ejecutar esta acción más adelante para reparar o actualizar el motor.",
+  "engine_repair_now": "Reparar / Actualizar ahora",
   "json_files_filter": "Archivos JSON (*.json);;Todos los archivos (*.*)"
 }

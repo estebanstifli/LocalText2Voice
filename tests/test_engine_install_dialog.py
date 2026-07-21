@@ -83,6 +83,23 @@ class EngineInstallDialogTests(unittest.TestCase):
         self.assertEqual(dialog.install_button.text(), "Close")
         self.assertTrue(dialog.install_button.isEnabled())
 
+    def test_detected_model_uses_repair_copy_and_keeps_action_available(self) -> None:
+        dialog = EngineInstallDialog(
+            "OmniVoice",
+            EngineInstallRequirement(30, "30-60+ min"),
+            50.0,
+            "C:\\",
+            translate,
+            existing_model_detected=True,
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        label_texts = [label.text() for label in dialog.findChildren(QLabel)]
+        self.assertIn("Repair / Update OmniVoice", dialog.windowTitle())
+        self.assertEqual(dialog.install_button.text(), "Repair / Update now")
+        self.assertTrue(any("will be reused" in text for text in label_texts))
+        self.assertTrue(dialog.install_button.isEnabled())
+
     def test_install_is_blocked_when_recommended_space_is_unavailable(self) -> None:
         dialog = self._dialog(free_gb=12.0)
 

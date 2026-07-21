@@ -1146,7 +1146,10 @@ class TextNormalizer:
     @staticmethod
     def _language_token(value: str) -> str | None:
         token = str(value).strip().casefold().replace("_", "-")
-        if not token:
+        # Engine language selectors commonly use ``auto`` as a sentinel.  It is
+        # not a real language code and must never reach the dictionary store,
+        # where it is deliberately reserved for automatic selection.
+        if token in {"", "auto"}:
             return None
         if token in _LANGUAGE_ALIASES:
             return _LANGUAGE_ALIASES[token]

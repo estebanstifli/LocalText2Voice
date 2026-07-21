@@ -178,6 +178,7 @@ if /I "%PRESERVE_LOCAL_CONFIG%"=="1" (
     echo Skipping config.json restore for a clean distributable build.
 )
 copy /Y "README.md" "%DIST_DIR%\README.md" >nul
+copy /Y "CHANGELOG.md" "%DIST_DIR%\CHANGELOG.md" >nul
 copy /Y "engine_host.py" "%DIST_DIR%\engine_host.py" >nul
 copy /Y "mcp_stdio_bridge.py" "%DIST_DIR%\mcp_stdio_bridge.py" >nul
 copy /Y "LICENSE" "%DIST_DIR%\LICENSE" >nul

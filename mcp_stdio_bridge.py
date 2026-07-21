@@ -21,6 +21,11 @@ Tools exposed here:
 - generate_audio -> alias of create_audiobook
 - get_job -> GET /jobs/{job_id}
 - get_jobs -> GET /jobs
+- read_job_source -> GET /jobs/{job_id}/source
+- write_job_source -> PUT /jobs/{job_id}/source
+- search_job_source -> POST /jobs/{job_id}/source/search
+- edit_job_source -> POST /jobs/{job_id}/source/edit
+- replace_job_source_text -> POST /jobs/{job_id}/source/replace
 - cancel_job -> POST /jobs/{job_id}/cancel
 
 The MCP protocol uses stdout, so do not add print() debug statements here.
@@ -445,6 +450,144 @@ def get_jobs(status: str | None = None, limit: int = 25) -> list[dict[str, Any]]
                 query={"status": status, "limit": limit},
             )
         ]
+    )
+
+
+@mcp.tool(
+    description=(
+        "Read an editable job source with character-based pagination. Use "
+        "page/page_count for large sources; read_all is limited to 200000 chars."
+    )
+)
+def read_job_source(
+    job_id: str,
+    page: int = 1,
+    page_size_chars: int = 12000,
+    page_count: int = 1,
+    read_all: bool = False,
+) -> dict[str, Any]:
+    return _safe(
+        lambda: _request_json(
+            "GET",
+            f"/jobs/{urllib.parse.quote(job_id)}/source",
+            query={
+                "page": page,
+                "page_size_chars": page_size_chars,
+                "page_count": page_count,
+                "read_all": str(read_all).lower(),
+            },
+        )
+    )
+
+
+@mcp.tool(
+    description=(
+        "Replace the complete editable source for a job. Pass source_sha256 from "
+        "read_job_source as expected_sha256 to prevent lost updates."
+    )
+)
+def write_job_source(
+    job_id: str,
+    text: str,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    return _safe(
+        lambda: _request_json(
+            "PUT",
+            f"/jobs/{urllib.parse.quote(job_id)}/source",
+            {"text": text, "expected_sha256": expected_sha256},
+        )
+    )
+
+
+@mcp.tool(
+    description=(
+        "Search a job source using plain text or a regular expression. Returns "
+        "stable character offsets, line numbers, snippets, and paged results."
+    )
+)
+def search_job_source(
+    job_id: str,
+    query: str,
+    regex: bool = False,
+    case_sensitive: bool = False,
+    result_offset: int = 0,
+    max_results: int = 25,
+) -> dict[str, Any]:
+    return _safe(
+        lambda: _request_json(
+            "POST",
+            f"/jobs/{urllib.parse.quote(job_id)}/source/search",
+            {
+                "query": query,
+                "regex": regex,
+                "case_sensitive": case_sensitive,
+                "result_offset": result_offset,
+                "max_results": max_results,
+            },
+        )
+    )
+
+
+@mcp.tool(
+    description=(
+        "Insert, replace, or delete source text using Unicode character offsets. "
+        "Use expected_sha256 from a prior read or search for concurrency safety."
+    )
+)
+def edit_job_source(
+    job_id: str,
+    operation: str,
+    start_offset: int,
+    end_offset: int | None = None,
+    text: str = "",
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    return _safe(
+        lambda: _request_json(
+            "POST",
+            f"/jobs/{urllib.parse.quote(job_id)}/source/edit",
+            {
+                "operation": operation,
+                "start_offset": start_offset,
+                "end_offset": end_offset,
+                "text": text,
+                "expected_sha256": expected_sha256,
+            },
+        )
+    )
+
+
+@mcp.tool(
+    description=(
+        "Find and replace one occurrence or all occurrences in a job source. "
+        "Supports literal text and regular expressions."
+    )
+)
+def replace_job_source_text(
+    job_id: str,
+    search: str,
+    replacement: str,
+    replace_all: bool = False,
+    occurrence: int = 1,
+    regex: bool = False,
+    case_sensitive: bool = True,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    return _safe(
+        lambda: _request_json(
+            "POST",
+            f"/jobs/{urllib.parse.quote(job_id)}/source/replace",
+            {
+                "search": search,
+                "replacement": replacement,
+                "replace_all": replace_all,
+                "occurrence": occurrence,
+                "regex": regex,
+                "case_sensitive": case_sensitive,
+                "expected_sha256": expected_sha256,
+            },
+        )
     )
 
 

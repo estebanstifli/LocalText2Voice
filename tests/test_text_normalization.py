@@ -7,6 +7,10 @@ from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
 from app.core.text_normalization import TextNormalizationStore, TextNormalizer
 
 
+def test_auto_language_hint_is_not_treated_as_dictionary_code() -> None:
+    assert TextNormalizer.resolve_language("auto", "auto") is None
+
+
 class _NoopEngine:
     def cancel_current(self) -> None:
         return

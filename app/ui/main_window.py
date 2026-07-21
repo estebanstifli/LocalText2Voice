@@ -1180,7 +1180,9 @@ class MainWindow(QMainWindow):
         self.ui_language_combo.setToolTip(
             self.tr("interface_language", "Interface language")
         )
-        for locale in Translator.available_languages():
+        available_locales = Translator.available_languages()
+        self.ui_language_combo.setMaxVisibleItems(len(available_locales))
+        for locale in available_locales:
             self.ui_language_combo.addItem(
                 ui_icon("language"),
                 locale.name,
@@ -1317,8 +1319,8 @@ class MainWindow(QMainWindow):
             bool(self.settings.get("show_markup_toolbar", True))
         )
         self.editor_tabs = QTabWidget()
-        original_page = QWidget()
-        original_layout = QVBoxLayout(original_page)
+        self.original_text_page = QWidget()
+        original_layout = QVBoxLayout(self.original_text_page)
         original_layout.setContentsMargins(0, 0, 0, 0)
         original_layout.setSpacing(8)
         original_layout.addWidget(self.markup_toolbar)
@@ -1342,12 +1344,12 @@ class MainWindow(QMainWindow):
         self.text_editor.cursorPositionChanged.connect(self._update_markup_editor_assist)
         original_layout.addWidget(self.text_editor, 1)
         self.editor_tabs.addTab(
-            original_page,
+            self.original_text_page,
             self.tr("original_text_tab", "Original"),
         )
 
-        normalized_page = QWidget()
-        normalized_layout = QVBoxLayout(normalized_page)
+        self.normalized_text_page = QWidget()
+        normalized_layout = QVBoxLayout(self.normalized_text_page)
         normalized_layout.setContentsMargins(0, 0, 0, 0)
         normalized_layout.setSpacing(8)
         normalized_header = QHBoxLayout()
@@ -1383,9 +1385,13 @@ class MainWindow(QMainWindow):
         )
         self.normalized_markup_highlighter.set_corrector_enabled(False)
         normalized_layout.addWidget(self.normalized_text_editor, 1)
+        self.normalized_text_tab_label = self.tr(
+            "normalized_text_tab",
+            "Normalized",
+        )
         self.editor_tabs.addTab(
-            normalized_page,
-            self.tr("normalized_text_tab", "Normalized"),
+            self.normalized_text_page,
+            self.normalized_text_tab_label,
         )
         self.normalization_preview_stale = True
         self.editor_tabs.currentChanged.connect(self._on_editor_tab_changed)
@@ -1442,14 +1448,34 @@ class MainWindow(QMainWindow):
         self._update_text_normalization_editor_state()
 
     def _update_text_normalization_editor_state(self) -> None:
-        if not hasattr(self, "editor_tabs"):
+        if not hasattr(self, "editor_tabs") or not hasattr(
+            self,
+            "normalized_text_page",
+        ):
             return
         enabled = bool(
             self._text_normalization_configuration().get("enabled", False)
         )
-        self.editor_tabs.setTabVisible(1, enabled)
-        if not enabled and self.editor_tabs.currentIndex() == 1:
-            self.editor_tabs.setCurrentIndex(0)
+        normalized_index = self.editor_tabs.indexOf(self.normalized_text_page)
+        if enabled:
+            # Removing and reinserting also repairs a tab left hidden by a Qt
+            # visibility state from an earlier interface/project refresh.
+            if normalized_index >= 0 and not self.editor_tabs.isTabVisible(
+                normalized_index
+            ):
+                self.editor_tabs.removeTab(normalized_index)
+                normalized_index = -1
+            if normalized_index < 0:
+                self.editor_tabs.insertTab(
+                    1,
+                    self.normalized_text_page,
+                    self.normalized_text_tab_label,
+                )
+            return
+        if normalized_index >= 0:
+            if self.editor_tabs.currentWidget() is self.normalized_text_page:
+                self.editor_tabs.setCurrentWidget(self.original_text_page)
+            self.editor_tabs.removeTab(normalized_index)
 
     def _mark_normalization_preview_stale(self) -> None:
         if not hasattr(self, "normalized_text_editor"):
@@ -1463,12 +1489,15 @@ class MainWindow(QMainWindow):
         )
 
     def _on_editor_tab_changed(self, index: int) -> None:
-        if index == 1 and self.normalization_preview_stale:
+        if (
+            self.editor_tabs.widget(index) is self.normalized_text_page
+            and self.normalization_preview_stale
+        ):
             self._refresh_normalized_preview()
 
     def _show_original_text_tab(self) -> None:
         if hasattr(self, "editor_tabs"):
-            self.editor_tabs.setCurrentIndex(0)
+            self.editor_tabs.setCurrentWidget(self.original_text_page)
 
     def _normalization_language_hint(self) -> str:
         if hasattr(self, "generation_voice_combo"):
@@ -2844,6 +2873,7 @@ class MainWindow(QMainWindow):
             ("German", "de"),
             ("Italian", "it"),
             ("Portuguese", "pt"),
+            ("Russian", "ru"),
         ):
             self.review_language_combo.addItem(label, value)
         self.review_language_combo.currentIndexChanged.connect(lambda _index: self._save_settings())
@@ -3876,13 +3906,14 @@ class MainWindow(QMainWindow):
     def _refresh_kokoro_python_status(self) -> None:
         if not hasattr(self, "kokoro_python_status_label"):
             return
+        model_detected = self._manager_model_detected(self.kokoro_python_manager)
         installed = self.kokoro_python_manager.is_installed()
         runtime_ready = self.kokoro_python_manager.has_runtime()
         operation_running = self.kokoro_python_thread is not None
-        status_text = (
-            self.tr("installed", "Installed")
-            if installed
-            else self.tr("not_installed", "Not installed")
+        status_text = self._local_engine_install_status(
+            installed,
+            model_detected,
+            runtime_ready,
         )
         if installed:
             manifest = self.kokoro_python_manager.runtime_dependency_manifest()
@@ -3906,9 +3937,14 @@ class MainWindow(QMainWindow):
                 path=str(self.kokoro_python_manager.install_dir),
             )
         )
-        self.kokoro_python_install_button.setEnabled(
-            not installed and not operation_running
+        self.kokoro_python_install_button.setText(
+            self._local_engine_install_action(
+                installed,
+                model_detected,
+                runtime_ready,
+            )
         )
+        self.kokoro_python_install_button.setEnabled(not operation_running)
         self.kokoro_python_remove_button.setEnabled(
             self.kokoro_python_manager.install_dir.exists() and not operation_running
         )
@@ -4355,17 +4391,15 @@ class MainWindow(QMainWindow):
     def _refresh_chatterbox_status(self) -> None:
         if not hasattr(self, "chatterbox_status_label"):
             return
-        model_cache_installed = self.chatterbox_manager.is_installed()
+        model_detected = self._manager_model_detected(self.chatterbox_manager)
         runtime_ready = self.chatterbox_manager.has_runtime()
         runtime_current = self.chatterbox_manager.runtime_is_current()
-        ready = model_cache_installed
+        ready = self.chatterbox_manager.is_installed()
         operation_running = self.chatterbox_thread is not None
-        status_text = (
-            self.tr("installed", "Installed")
-            if ready
-            else self.tr("update_available", "Update available")
-            if runtime_ready
-            else self.tr("not_installed", "Not installed")
+        status_text = self._local_engine_install_status(
+            ready,
+            model_detected,
+            runtime_ready,
         )
         runtime_status = (
             self.tr("installed", "Installed")
@@ -4396,9 +4430,16 @@ class MainWindow(QMainWindow):
                 path=str(self.chatterbox_manager.runtime_path),
             )
         )
+        self.chatterbox_install_button.setText(
+            self._local_engine_install_action(
+                ready,
+                model_detected,
+                runtime_ready,
+            )
+        )
         self.chatterbox_install_button.setEnabled(not operation_running)
         self.chatterbox_remove_button.setEnabled(
-            (runtime_ready or model_cache_installed) and not operation_running
+            (runtime_ready or model_detected) and not operation_running
         )
         self.chatterbox_test_button.setEnabled(
             ready
@@ -4893,13 +4934,14 @@ class MainWindow(QMainWindow):
     def _refresh_qwen_status(self) -> None:
         if not hasattr(self, "qwen_status_label"):
             return
+        model_detected = self._manager_model_detected(self.qwen_manager)
         installed = self.qwen_manager.is_installed()
         runtime_ready = self.qwen_manager.has_runtime()
         operation_running = self.qwen_thread is not None
-        status_text = (
-            self.tr("installed", "Installed")
-            if installed
-            else self.tr("not_installed", "Not installed")
+        status_text = self._local_engine_install_status(
+            installed,
+            model_detected,
+            runtime_ready,
         )
         runtime_status = (
             self.tr("installed", "Installed")
@@ -4921,6 +4963,13 @@ class MainWindow(QMainWindow):
                 "qwen_runtime_status",
                 "Runtime: {status}",
                 status=runtime_status,
+            )
+        )
+        self.qwen_install_button.setText(
+            self._local_engine_install_action(
+                installed,
+                model_detected,
+                runtime_ready,
             )
         )
         self.qwen_install_button.setEnabled(not operation_running)
@@ -5450,13 +5499,14 @@ class MainWindow(QMainWindow):
     def _refresh_omnivoice_status(self) -> None:
         if not hasattr(self, "omnivoice_status_label"):
             return
+        model_detected = self._manager_model_detected(self.omnivoice_manager)
         installed = self.omnivoice_manager.is_installed()
         runtime_ready = self.omnivoice_manager.has_runtime()
         operation_running = self.omnivoice_thread is not None
-        status_text = (
-            self.tr("installed", "Installed")
-            if installed
-            else self.tr("not_installed", "Not installed")
+        status_text = self._local_engine_install_status(
+            installed,
+            model_detected,
+            runtime_ready,
         )
         runtime_status = (
             self.tr("installed", "Installed")
@@ -5482,6 +5532,13 @@ class MainWindow(QMainWindow):
                 "omnivoice_runtime_status",
                 "Runtime: {status}",
                 status=runtime_status,
+            )
+        )
+        self.omnivoice_install_button.setText(
+            self._local_engine_install_action(
+                installed,
+                model_detected,
+                runtime_ready,
             )
         )
         self.omnivoice_install_button.setEnabled(not operation_running)
@@ -6505,6 +6562,57 @@ class MainWindow(QMainWindow):
         }
         return labels.get(engine_id, engine_id)
 
+    @staticmethod
+    def _manager_model_detected(manager: object) -> bool:
+        detector = getattr(manager, "has_model_files", None)
+        if callable(detector):
+            return bool(detector())
+        ready_detector = getattr(manager, "is_installed", None)
+        return bool(ready_detector()) if callable(ready_detector) else False
+
+    def _local_engine_install_status(
+        self,
+        ready: bool,
+        model_detected: bool,
+        runtime_ready: bool,
+    ) -> str:
+        if ready:
+            return self.tr("installed", "Installed")
+        if model_detected:
+            return self.tr(
+                "model_detected_runtime_missing",
+                "Model detected · runtime repair needed",
+            )
+        if runtime_ready:
+            return self.tr(
+                "runtime_detected_model_missing",
+                "Runtime detected · model download needed",
+            )
+        return self.tr("not_installed", "Not installed")
+
+    def _local_engine_install_action(
+        self,
+        ready: bool,
+        model_detected: bool,
+        runtime_ready: bool,
+    ) -> str:
+        if ready:
+            return self.tr("reinstall_update", "Reinstall / Update")
+        if model_detected or runtime_ready:
+            return self.tr("repair_update", "Repair / Update")
+        return self.tr("install", "Install")
+
+    def _tts_engine_model_detected(self, engine_id: str) -> bool:
+        manager = {
+            "kokoro": self.kokoro_python_manager,
+            "chatterbox": self.chatterbox_manager,
+            "qwen": self.qwen_manager,
+            "omnivoice": self.omnivoice_manager,
+        }.get(engine_id)
+        if manager is None:
+            return False
+        return self._manager_model_detected(manager)
+
     def _engine_table_rows(self) -> list[dict[str, str]]:
         current_engine = str(self.tts_engine_combo.currentData() or "piper")
         piper_path_edit = getattr(self, "piper_path_edit", None)
@@ -6517,11 +6625,22 @@ class MainWindow(QMainWindow):
             piper_path_value or "engines/piper/piper.exe"
         ).exists()
         piper_installed = piper_runtime_ready and bool(self.voices)
+        kokoro_model_detected = self._manager_model_detected(
+            self.kokoro_python_manager
+        )
+        kokoro_runtime_ready = self.kokoro_python_manager.has_runtime()
         kokoro_installed = self.kokoro_python_manager.is_installed()
+        chatterbox_model_detected = self._manager_model_detected(
+            self.chatterbox_manager
+        )
         chatterbox_runtime_ready = self.chatterbox_manager.has_runtime()
         chatterbox_ready = self.chatterbox_manager.is_installed()
+        qwen_model_detected = self._manager_model_detected(self.qwen_manager)
         qwen_runtime_ready = self.qwen_manager.has_runtime()
         qwen_ready = self.qwen_manager.is_installed()
+        omnivoice_model_detected = self._manager_model_detected(
+            self.omnivoice_manager
+        )
         omnivoice_runtime_ready = self.omnivoice_manager.has_runtime()
         omnivoice_ready = self.omnivoice_manager.is_installed()
 
@@ -6529,7 +6648,6 @@ class MainWindow(QMainWindow):
         remote_type = self.tr("engine_type_remote", "Remote")
         installed = self.tr("installed", "Installed")
         not_installed = self.tr("not_installed", "Not installed")
-        update_available = self.tr("update_available", "Update available")
 
         rows = [
             {
@@ -6548,7 +6666,11 @@ class MainWindow(QMainWindow):
                 "speed": self.tr("engine_speed_medium", "Medium"),
                 "quality": self.tr("engine_quality_better", "Better"),
                 "gpu": self.tr("automatic", "Automatic"),
-                "installed": installed if kokoro_installed else not_installed,
+                "installed": self._local_engine_install_status(
+                    kokoro_installed,
+                    kokoro_model_detected,
+                    kokoro_runtime_ready,
+                ),
             },
             {
                 "engine_id": "chatterbox",
@@ -6557,12 +6679,10 @@ class MainWindow(QMainWindow):
                 "speed": self.tr("engine_speed_slow", "Slow"),
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": self.tr("recommended", "Recommended"),
-                "installed": (
-                    installed
-                    if chatterbox_ready
-                    else update_available
-                    if chatterbox_runtime_ready
-                    else not_installed
+                "installed": self._local_engine_install_status(
+                    chatterbox_ready,
+                    chatterbox_model_detected,
+                    chatterbox_runtime_ready,
                 ),
             },
             {
@@ -6572,12 +6692,10 @@ class MainWindow(QMainWindow):
                 "speed": self.tr("engine_speed_slow", "Slow"),
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": self.tr("recommended", "Recommended"),
-                "installed": (
-                    installed
-                    if qwen_ready
-                    else update_available
-                    if qwen_runtime_ready
-                    else not_installed
+                "installed": self._local_engine_install_status(
+                    qwen_ready,
+                    qwen_model_detected,
+                    qwen_runtime_ready,
                 ),
             },
             {
@@ -6587,12 +6705,10 @@ class MainWindow(QMainWindow):
                 "speed": self.tr("engine_speed_medium", "Medium"),
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": self.tr("recommended", "Recommended"),
-                "installed": (
-                    installed
-                    if omnivoice_ready
-                    else update_available
-                    if omnivoice_runtime_ready
-                    else not_installed
+                "installed": self._local_engine_install_status(
+                    omnivoice_ready,
+                    omnivoice_model_detected,
+                    omnivoice_runtime_ready,
                 ),
             },
             {
@@ -6711,8 +6827,25 @@ class MainWindow(QMainWindow):
             manage_button.clicked.connect(self._open_voice_manager)
             layout.addWidget(manage_button)
         elif engine_id == "kokoro":
+            model_detected = self._manager_model_detected(
+                self.kokoro_python_manager
+            )
+            runtime_ready = self.kokoro_python_manager.has_runtime()
             installed = self.kokoro_python_manager.is_installed()
             if installed:
+                reinstall_button = QPushButton(
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
+                    )
+                )
+                reinstall_button.setIcon(ui_icon("apply"))
+                reinstall_button.clicked.connect(
+                    lambda _checked=False: self._select_and_install_engine("kokoro")
+                )
+                reinstall_button.setEnabled(self.kokoro_python_thread is None)
+                layout.addWidget(reinstall_button)
                 remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
                 remove_button.setIcon(ui_icon("delete"))
                 remove_button.clicked.connect(self._remove_kokoro_python)
@@ -6725,7 +6858,13 @@ class MainWindow(QMainWindow):
                 self._configure_preload_button(load_button, "kokoro", True)
                 layout.addWidget(load_button)
             else:
-                install_button = QPushButton(self.tr("install", "Install"))
+                install_button = QPushButton(
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
+                    )
+                )
                 install_button.setIcon(ui_icon("apply"))
                 install_button.clicked.connect(
                     lambda _checked=False: self._select_and_install_engine("kokoro")
@@ -6733,9 +6872,25 @@ class MainWindow(QMainWindow):
                 install_button.setEnabled(self.kokoro_python_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "chatterbox":
+            model_detected = self._manager_model_detected(self.chatterbox_manager)
             runtime_ready = self.chatterbox_manager.has_runtime()
             installed = self.chatterbox_manager.is_installed()
             if installed:
+                reinstall_button = QPushButton(
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
+                    )
+                )
+                reinstall_button.setIcon(ui_icon("apply"))
+                reinstall_button.clicked.connect(
+                    lambda _checked=False: self._select_and_install_engine(
+                        "chatterbox"
+                    )
+                )
+                reinstall_button.setEnabled(self.chatterbox_thread is None)
+                layout.addWidget(reinstall_button)
                 remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
                 remove_button.setIcon(ui_icon("delete"))
                 remove_button.clicked.connect(self._remove_chatterbox)
@@ -6751,9 +6906,10 @@ class MainWindow(QMainWindow):
                 layout.addWidget(load_button)
             else:
                 install_button = QPushButton(
-                    self.tr(
-                        "update" if runtime_ready else "install",
-                        "Update" if runtime_ready else "Install",
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
                     )
                 )
                 install_button.setIcon(ui_icon("apply"))
@@ -6763,9 +6919,23 @@ class MainWindow(QMainWindow):
                 install_button.setEnabled(self.chatterbox_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "qwen":
+            model_detected = self._manager_model_detected(self.qwen_manager)
             runtime_ready = self.qwen_manager.has_runtime()
             installed = self.qwen_manager.is_installed()
             if installed:
+                reinstall_button = QPushButton(
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
+                    )
+                )
+                reinstall_button.setIcon(ui_icon("apply"))
+                reinstall_button.clicked.connect(
+                    lambda _checked=False: self._select_and_install_engine("qwen")
+                )
+                reinstall_button.setEnabled(self.qwen_thread is None)
+                layout.addWidget(reinstall_button)
                 remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
                 remove_button.setIcon(ui_icon("delete"))
                 remove_button.clicked.connect(self._remove_qwen)
@@ -6779,9 +6949,10 @@ class MainWindow(QMainWindow):
                 layout.addWidget(load_button)
             else:
                 install_button = QPushButton(
-                    self.tr(
-                        "update" if runtime_ready else "install",
-                        "Update" if runtime_ready else "Install",
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
                     )
                 )
                 install_button.setIcon(ui_icon("apply"))
@@ -6791,9 +6962,25 @@ class MainWindow(QMainWindow):
                 install_button.setEnabled(self.qwen_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "omnivoice":
+            model_detected = self._manager_model_detected(self.omnivoice_manager)
             runtime_ready = self.omnivoice_manager.has_runtime()
             installed = self.omnivoice_manager.is_installed()
             if installed:
+                reinstall_button = QPushButton(
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
+                    )
+                )
+                reinstall_button.setIcon(ui_icon("apply"))
+                reinstall_button.clicked.connect(
+                    lambda _checked=False: self._select_and_install_engine(
+                        "omnivoice"
+                    )
+                )
+                reinstall_button.setEnabled(self.omnivoice_thread is None)
+                layout.addWidget(reinstall_button)
                 remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
                 remove_button.setIcon(ui_icon("delete"))
                 remove_button.clicked.connect(self._remove_omnivoice)
@@ -6809,9 +6996,10 @@ class MainWindow(QMainWindow):
                 layout.addWidget(load_button)
             else:
                 install_button = QPushButton(
-                    self.tr(
-                        "update" if runtime_ready else "install",
-                        "Update" if runtime_ready else "Install",
+                    self._local_engine_install_action(
+                        installed,
+                        model_detected,
+                        runtime_ready,
                     )
                 )
                 install_button.setIcon(ui_icon("apply"))
@@ -6889,6 +7077,7 @@ class MainWindow(QMainWindow):
             volume,
             self.tr,
             self,
+            existing_model_detected=self._tts_engine_model_detected(engine_id),
         )
         self.engine_install_dialogs[engine_id] = dialog
         dialog.install_requested.connect(
@@ -8043,6 +8232,23 @@ class MainWindow(QMainWindow):
             }
             """
         )
+        if hasattr(self, "review_table"):
+            self._set_review_table_visible_rows(15)
+
+    def _set_review_table_visible_rows(self, row_count: int) -> None:
+        visible_rows = max(1, int(row_count))
+        vertical_header = self.review_table.verticalHeader()
+        row_height = max(28, vertical_header.defaultSectionSize())
+        vertical_header.setDefaultSectionSize(row_height)
+        header_height = self.review_table.horizontalHeader().sizeHint().height()
+        table_height = (
+            header_height
+            + visible_rows * row_height
+            + self.review_table.frameWidth() * 2
+            + 1
+        )
+        self.review_visible_row_count = visible_rows
+        self.review_table.setFixedHeight(table_height)
 
     def _load_voices(self) -> None:
         self.voices = VoiceManager(application_root() / "voices").discover()
@@ -11488,12 +11694,15 @@ class MainWindow(QMainWindow):
         if voice_config is None:
             return
         engine_id = str(voice_config.get("engine", "piper"))
-        normalization_language_hint = str(
+        configured_language_hint = str(
             voice_config.get("language")
             or voice_config.get("lang")
             or voice_config.get("locale")
             or ""
         )
+        normalization_language_hint = configured_language_hint
+        if configured_language_hint.strip().casefold() in {"", "auto", "default"}:
+            normalization_language_hint = self._normalization_language_hint()
         output_dir = self.output_picker.path()
         if not output_dir.is_absolute():
             output_dir = resolve_app_path(output_dir)
@@ -11526,6 +11735,7 @@ class MainWindow(QMainWindow):
             "language": str(
                 voice_config.get("language") or voice_config.get("lang") or ""
             ),
+            "normalization_language_hint": normalization_language_hint,
             "speed": float(voice_config.get("speed", self.speed_spin.value())),
             "output_dir": str(output_dir),
             "split_mode": str(self.split_combo.currentData()),
@@ -13053,16 +13263,19 @@ class MainWindow(QMainWindow):
     def _refresh_whisper_status(self) -> None:
         if not hasattr(self, "whisper_status_label"):
             return
+        model_detected = self._manager_model_detected(
+            self.faster_whisper_manager
+        )
         installed = self.faster_whisper_manager.is_installed()
         runtime_ready = self.faster_whisper_manager.has_runtime()
         loaded = self.whisper_model_loaded
         status = (
             self.tr("loaded_in_memory", "Loaded in memory")
             if loaded
-            else (
-                self.tr("installed", "Installed")
-                if installed
-                else self.tr("not_installed", "Not installed")
+            else self._local_engine_install_status(
+                installed,
+                model_detected,
+                runtime_ready,
             )
         )
         self.whisper_status_label.setText(
@@ -13076,6 +13289,13 @@ class MainWindow(QMainWindow):
                     else self.tr("not_installed", "Not installed")
                 ),
                 path=str(self.faster_whisper_manager.cache_dir),
+            )
+        )
+        self.whisper_install_button.setText(
+            self._local_engine_install_action(
+                installed,
+                model_detected,
+                runtime_ready,
             )
         )
         self.whisper_install_button.setEnabled(self.whisper_thread is None)
