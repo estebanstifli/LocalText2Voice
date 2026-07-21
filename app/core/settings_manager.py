@@ -16,7 +16,19 @@ CURRENT_SETTINGS_SCHEMA_VERSION = 16
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
-SUPPORTED_UI_LANGUAGES = {"ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "zh"}
+SUPPORTED_UI_LANGUAGES = {
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "it",
+    "ja",
+    "pt",
+    "ru",
+    "zh",
+}
 SUPPORTED_SPLIT_MODES = {"safe_chunks", "chapters"}
 SUPPORTED_EXPORT_MODES = {"single", "chapters"}
 

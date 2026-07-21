@@ -63,6 +63,16 @@ def test_save_preserves_existing_settings_reference(tmp_path):
     assert held_reference["chunk_size"] == DEFAULT_SETTINGS["chunk_size"]
 
 
+def test_russian_ui_language_is_preserved(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    manager.settings["ui_language"] = "ru"
+
+    manager.save()
+
+    assert manager.settings["ui_language"] == "ru"
+    assert SettingsManager(manager.path).settings["ui_language"] == "ru"
+
+
 def test_audio_tail_review_defaults_off_and_sanitizes_threshold_order(tmp_path):
     manager = SettingsManager(tmp_path / "config.json")
     assert manager.settings["review"]["tail_analysis_enabled"] is False

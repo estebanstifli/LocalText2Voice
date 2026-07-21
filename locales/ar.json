@@ -853,5 +853,13 @@
   "normalization_rules_disable_all": "Disable all",
   "normalization_rules_details_off": "Rule details (all off)",
   "normalization_rules_details_count": "Rule details ({enabled}/{total})",
+  "model_detected_runtime_missing": "Model detected · runtime repair needed",
+  "runtime_detected_model_missing": "Runtime detected · model download needed",
+  "reinstall_update": "Reinstall / Update",
+  "repair_update": "Repair / Update",
+  "engine_repair_title": "Repair / Update {engine}",
+  "engine_repair_heading": "Reuse and repair {engine}",
+  "engine_repair_intro": "Existing model files were detected. They will be reused, and only missing or updated runtime/model files will be downloaded. You can also run this again later to repair or update the engine.",
+  "engine_repair_now": "Repair / Update now",
   "json_files_filter": "JSON files (*.json);;All files (*.*)"
 }

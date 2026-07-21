@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.0"
+  #define MyAppVersion "1.2.1"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -52,6 +52,7 @@ Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
 Name: "portuguese"; MessagesFile: "compiler:Languages\Portuguese.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "arabic"; MessagesFile: "compiler:Languages\Arabic.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [CustomMessages]
 english.CpuLightType=CPU light - Piper only
@@ -76,6 +77,14 @@ italian.RemoveDownloadedAIDataPrompt=LocalText2Voice ha rilevato motori IA, mode
 portuguese.RemoveDownloadedAIDataPrompt=O LocalText2Voice encontrou motores de IA, modelos, dependências de runtime ou ficheiros da galeria de vozes transferidos. Deseja removê-los também? Isto pode libertar vários GB. Os projetos de audiolivros, os áudios exportados e as definições serão mantidos.
 japanese.RemoveDownloadedAIDataPrompt=ダウンロード済みの AI エンジン、モデル、ランタイム依存関係、または音声ギャラリーのファイルが見つかりました。これらも削除しますか？数 GB の空き容量を確保できる場合があります。オーディオブックのプロジェクト、書き出した音声、設定は保持されます。
 arabic.RemoveDownloadedAIDataPrompt=عثر LocalText2Voice على محركات ذكاء اصطناعي أو نماذج أو تبعيات تشغيل أو ملفات معرض أصوات تم تنزيلها. هل تريد حذفها أيضًا؟ قد يؤدي ذلك إلى توفير عدة غيغابايت. سيتم الاحتفاظ بمشروعات الكتب الصوتية والملفات الصوتية المصدرة والإعدادات.
+
+russian.CpuLightType=Лёгкая установка для ЦП — только Piper
+russian.GpuPowerType=Мощный ГП — подготовить OmniVoice и Faster Whisper
+russian.CoreComponent=Портативное приложение LocalText2Voice
+russian.GpuComponent=Загрузить OmniVoice и Faster Whisper при первом запуске
+russian.DesktopIcon=Создать ярлык на рабочем столе
+russian.LaunchProgram=Запустить LocalText2Voice
+russian.RemoveDownloadedAIDataPrompt=LocalText2Voice обнаружил загруженные движки ИИ, модели, зависимости среды выполнения или файлы галереи голосов. Удалить их? Это может освободить несколько ГБ. Проекты аудиокниг, экспортированные аудиофайлы и настройки будут сохранены.
 
 [Types]
 Name: "cpu"; Description: "{cm:CpuLightType}"
@@ -199,6 +208,8 @@ begin
     Result := 'ja'
   else if Lang = 'arabic' then
     Result := 'ar'
+  else if Lang = 'russian' then
+    Result := 'ru'
   else
     Result := 'en';
 end;

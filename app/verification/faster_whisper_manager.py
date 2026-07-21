@@ -15,6 +15,7 @@ from app.tts.python_runtime_manager import (
     PythonRuntimeError,
     PythonRuntimeManager,
 )
+from app.tts.model_cache import huggingface_model_is_cached
 from app.utils.paths import app_data_root
 
 
@@ -214,6 +215,11 @@ class FasterWhisperManager:
     PACKAGE = "faster-whisper==1.2.1"
     MODEL_NAME = "small"
     MODEL_REPO = "Systran/faster-whisper-small"
+    MODEL_REQUIRED_FILES = {
+        "config.json": 1_000,
+        "model.bin": 100 * 1024 * 1024,
+        "tokenizer.json": 100 * 1024,
+    }
 
     def __init__(
         self,
@@ -228,12 +234,13 @@ class FasterWhisperManager:
         self._lock = threading.Lock()
 
     def is_installed(self) -> bool:
-        manifest = self._read_json(self.manifest_path)
-        return (
-            manifest.get("state") == "installed"
-            and manifest.get("version") == self.VERSION
-            and self.has_runtime()
-            and self.cli_path.is_file()
+        return self.has_model_files() and self.has_runtime() and self.cli_path.is_file()
+
+    def has_model_files(self) -> bool:
+        return huggingface_model_is_cached(
+            self.cache_dir,
+            self.MODEL_REPO,
+            self.MODEL_REQUIRED_FILES,
         )
 
     def has_runtime(self) -> bool:
@@ -523,6 +530,7 @@ class FasterWhisperVerifier:
         self._stderr_lines: list[str] = []
         self._request_index = 0
         self._worker_config: tuple[str, str] | None = None
+        self._cuda_fallback_reason = ""
         self._lock = threading.RLock()
         self._cancel_requested = threading.Event()
         self.log_callback: Callable[[str], None] = lambda message: None
@@ -531,7 +539,17 @@ class FasterWhisperVerifier:
         self.log_callback = callback
 
     def preload(self, device: str = "cpu", compute_type: str = "int8") -> None:
-        self._ensure_worker(device, compute_type)
+        effective_device, effective_compute_type = self._effective_config(
+            device,
+            compute_type,
+        )
+        try:
+            self._ensure_worker(effective_device, effective_compute_type)
+        except FasterWhisperError as exc:
+            if not self._should_fallback_to_cpu(effective_device, exc):
+                raise
+            self._activate_cpu_fallback(exc)
+            self._ensure_worker("cpu", "int8")
 
     def transcribe(
         self,
@@ -543,6 +561,38 @@ class FasterWhisperVerifier:
     ) -> dict[str, Any]:
         if not self.manager.is_installed():
             raise FasterWhisperError("Faster Whisper small is not installed.")
+        effective_device, effective_compute_type = self._effective_config(
+            device,
+            compute_type,
+        )
+        try:
+            return self._transcribe_once(
+                audio_path,
+                language,
+                beam_size,
+                effective_device,
+                effective_compute_type,
+            )
+        except FasterWhisperError as exc:
+            if not self._should_fallback_to_cpu(effective_device, exc):
+                raise
+            self._activate_cpu_fallback(exc)
+            return self._transcribe_once(
+                audio_path,
+                language,
+                beam_size,
+                "cpu",
+                "int8",
+            )
+
+    def _transcribe_once(
+        self,
+        audio_path: Path,
+        language: str,
+        beam_size: int,
+        device: str,
+        compute_type: str,
+    ) -> dict[str, Any]:
         process = self._ensure_worker(device, compute_type)
         request_id = self._next_request_id()
         self._send_request(
@@ -557,6 +607,53 @@ class FasterWhisperVerifier:
             },
         )
         return self._wait_for_response(process, request_id)
+
+    def _effective_config(
+        self,
+        device: str,
+        compute_type: str,
+    ) -> tuple[str, str]:
+        if self._cuda_fallback_reason and device in {"auto", "cuda"}:
+            return "cpu", "int8"
+        return device, compute_type
+
+    def _activate_cpu_fallback(self, exc: FasterWhisperError) -> None:
+        self._cuda_fallback_reason = str(exc)
+        self.log_callback(
+            "Faster Whisper CUDA libraries are unavailable; "
+            "falling back to CPU (int8)."
+        )
+        self.close(force=True)
+
+    @classmethod
+    def _should_fallback_to_cpu(
+        cls,
+        device: str,
+        exc: FasterWhisperError,
+    ) -> bool:
+        if device not in {"auto", "cuda"}:
+            return False
+        message = str(exc).casefold()
+        library_markers = (
+            "cublas",
+            "cudnn",
+            "cudart",
+            "cuda runtime",
+        )
+        load_markers = (
+            "not found",
+            "cannot load",
+            "cannot be loaded",
+            "could not load",
+            "could not be loaded",
+            "could not locate",
+            "failed to load",
+            "missing",
+            "unable to load",
+        )
+        return any(marker in message for marker in library_markers) and any(
+            marker in message for marker in load_markers
+        )
 
     def cancel_current(self) -> None:
         self._cancel_requested.set()

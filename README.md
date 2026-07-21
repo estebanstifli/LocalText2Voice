@@ -30,14 +30,16 @@ LocalText2Voice is a desktop app for creating long-form spoken audio with AI tex
 
 The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
 
-## What's New In 1.2.0
+## What's New In 1.2.1
 
-- Automatic **SRT** and karaoke-style **ASS** subtitles generated from Faster Whisper word timestamps.
-- Optional multilingual text normalization with editable SQLite dictionaries and rules for numbers, dates, currencies, percentages, measurements, ordinals, and Roman numerals.
-- Audio-tail quality analysis that detects unexplained speech or artifacts after the final source-aligned word.
-- Conservative automatic tail cleanup that creates a candidate, verifies it again with Whisper, and keeps it only when review quality improves.
-- More reproducible OmniVoice installation with pinned, single-pass PyTorch dependency resolution and resilient Windows cleanup.
-- Safer Windows uninstall flow that can remove downloaded AI engines and models while preserving projects, exports, settings, music, and logs.
+- Full **Russian UI**, bringing the desktop interface to eleven languages.
+- Five new MCP and HTTP tools let AI agents read, search, write, insert, delete, and replace text in completed audiobook projects.
+- Project-source edits use pagination and SHA-256 concurrency checks, and keep SQLite, `source.txt`, and the project manifest synchronized.
+- Faster Whisper now recovers safely when CUDA runtime libraries are unavailable by falling back to CPU `int8` instead of aborting review.
+- Downloaded Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and Faster Whisper assets are detected from their physical files even when an install manifest is missing or stale.
+- Engine management can repair or update incomplete installations while reusing existing model downloads.
+
+See the complete release history in the [changelog](CHANGELOG.md).
 
 > **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts MP3 usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
 
@@ -370,6 +372,11 @@ It exposes:
 - `generate_audio`
 - `get_jobs`
 - `get_job`
+- `read_job_source`
+- `write_job_source`
+- `search_job_source`
+- `edit_job_source`
+- `replace_job_source_text`
 - `cancel_job`
 - `preload_engine`
 - `unload_engine`
@@ -415,6 +422,17 @@ Start with `server_info`, `list_engines`, `list_voices`, and
 `list_background_music`. Then test `create_audiobook` with a short text and
 poll `get_job` until it completes.
 
+Completed jobs expose an editable LocalText2Voice project. Use
+`read_job_source` to read `source.txt` in character-based pages, or set
+`read_all=true` for sources up to 200,000 characters. Large books should be
+processed with `page`, `page_size_chars`, and `page_count`; search results also
+paginate with `result_offset`. Mutating tools accept `expected_sha256` from a
+prior read/search so concurrent clients cannot silently overwrite each other.
+Source edits keep SQLite, `source.txt`, and the project manifest synchronized.
+Existing MP3 files are retained, and the tool
+response reports `render_required=true` when the edited source needs a new
+render.
+
 ### Optional HTTP/MCP server
 
 The desktop app can also expose a local FastAPI/MCP server from
@@ -428,9 +446,11 @@ Useful endpoints:
 - Voices: `GET /voices`
 - Music: `GET /background-music`
 - Jobs: `POST /jobs`, `GET /jobs/{job_id}`, `POST /jobs/{job_id}/cancel`
+- Job source: `GET/PUT /jobs/{job_id}/source`
+- Source operations: `POST /jobs/{job_id}/source/search`, `/edit`, `/replace`
 
-The MCP tools include `create_audiobook`, `generate_audio`, `list_voices`,
-`list_background_music`, `get_jobs`, `get_job`, and `cancel_job`.
+The MCP tools include generation, job status, and paginated project-source
+reading, searching, insertion, deletion, replacement, and full-document writes.
 Generated jobs return paths and local URLs for the clean narration MP3 and the podcast mix MP3 when available.
 Use the generated access token as a Bearer token for clients that support headers.
 
@@ -532,6 +552,7 @@ Current languages:
 - Japanese
 - Arabic
 - Hindi
+- Russian
 
 ## GitHub SEO Keywords
 

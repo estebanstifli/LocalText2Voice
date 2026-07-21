@@ -29,13 +29,13 @@ class TranslationTests(unittest.TestCase):
                     }
                     self.assertEqual(expected, actual, key)
 
-    def test_ten_languages_are_discovered(self) -> None:
+    def test_eleven_languages_are_discovered(self) -> None:
         languages = Translator.available_languages()
         self.assertEqual(
             {language.code for language in languages},
-            {"ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "zh"},
+            {"ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "ru", "zh"},
         )
-        self.assertEqual(len(languages), 10)
+        self.assertEqual(len(languages), 11)
 
     def test_spanish_translation_formats_values(self) -> None:
         translator = Translator("es")
@@ -45,6 +45,11 @@ class TranslationTests(unittest.TestCase):
             "3",
             translator.text("generation_complete", count=3),
         )
+
+    def test_russian_translation_is_available(self) -> None:
+        translator = Translator("ru")
+        self.assertEqual(translator.text("language_name"), "Русский")
+        self.assertEqual(translator.text("generate_audio"), "Создать аудио")
 
     def test_arabic_uses_right_to_left_layout(self) -> None:
         translator = Translator("ar")

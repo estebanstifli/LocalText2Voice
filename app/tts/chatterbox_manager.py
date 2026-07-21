@@ -12,6 +12,7 @@ from typing import Any, Callable
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
 from app.utils.paths import app_data_root
 
+from .model_cache import huggingface_model_is_cached
 from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
 
 
@@ -318,6 +319,36 @@ class ChatterboxManager:
     SUPPORT_PACKAGES = ("setuptools==80.9.0",)
     TORCH_VERSION = "2.6.0"
     GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+    MODEL_REPOSITORIES: dict[str, tuple[str, dict[str, int]]] = {
+        "multilingual_v3": (
+            "ResembleAI/chatterbox",
+            {
+                "ve.pt": 1 * 1024 * 1024,
+                "t3_mtl23ls_v2.safetensors": 100 * 1024 * 1024,
+                "s3gen.pt": 100 * 1024 * 1024,
+                "grapheme_mtl_merged_expanded_v1.json": 10 * 1024,
+                "conds.pt": 10 * 1024,
+            },
+        ),
+        "english": (
+            "ResembleAI/chatterbox",
+            {
+                "ve.safetensors": 1 * 1024 * 1024,
+                "t3_cfg.safetensors": 100 * 1024 * 1024,
+                "s3gen.safetensors": 100 * 1024 * 1024,
+                "tokenizer.json": 10 * 1024,
+                "conds.pt": 10 * 1024,
+            },
+        ),
+        "turbo": (
+            "ResembleAI/chatterbox-turbo",
+            {
+                "ve.safetensors": 1 * 1024 * 1024,
+                "t3_turbo_v1.safetensors": 100 * 1024 * 1024,
+                "s3gen_meanflow.safetensors": 100 * 1024 * 1024,
+            },
+        ),
+    }
 
     MODELS: tuple[ChatterboxModel, ...] = (
         ChatterboxModel("multilingual_v3", "Chatterbox Multilingual V3", False, True),
@@ -371,12 +402,23 @@ class ChatterboxManager:
         self._lock = threading.Lock()
 
     def is_installed(self) -> bool:
-        manifest = self.install_manifest()
-        return (
-            manifest.get("state") == "installed"
-            and manifest.get("version") == self.VERSION
-            and self.cache_dir.exists()
-            and self.has_runtime()
+        return self.has_model_files() and self.has_runtime()
+
+    def has_model_files(self, model_id: str | None = None) -> bool:
+        """Discover complete supported model snapshots directly from the cache."""
+
+        model_ids = (
+            (model_id,)
+            if model_id in self.MODEL_REPOSITORIES
+            else tuple(self.MODEL_REPOSITORIES)
+        )
+        return any(
+            huggingface_model_is_cached(
+                self.cache_dir,
+                self.MODEL_REPOSITORIES[candidate][0],
+                self.MODEL_REPOSITORIES[candidate][1],
+            )
+            for candidate in model_ids
         )
 
     def isInstalled(self) -> bool:

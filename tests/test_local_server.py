@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.audio_pipeline import GenerationCancelled
+from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
 from app.server.http_app import _job_response, create_http_app
 from app.server.engine_host_client import EngineHostClient
@@ -18,6 +19,9 @@ from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
 
 
 class FakeGenerationService:
+    def __init__(self, audiobook_id: int = 123) -> None:
+        self.audiobook_id = audiobook_id
+
     def server_info(self):
         return {"name": "LocalText2Voice", "engines": []}
 
@@ -39,7 +43,7 @@ class FakeGenerationService:
         if progress_callback is not None:
             progress_callback(1, 1, "done")
         return {
-            "audiobook_id": 123,
+            "audiobook_id": self.audiobook_id,
             "outputs": [str(Path("output") / "podcast1.mp3")],
             "clean_mp3": str(Path("output") / "podcast1.mp3"),
             "mix_mp3": "",
@@ -200,6 +204,64 @@ def test_completed_job_response_exposes_editable_project(tmp_path):
     assert payload["message"] == "Puedes editar este proyecto."
 
 
+def test_http_job_source_routes_read_search_and_edit_project(tmp_path):
+    settings = _settings(tmp_path)
+    store = AudiobookStore(tmp_path / "projects.sqlite3")
+    project = store.create_audiobook(
+        "Hola mundo. Hola otra vez.",
+        {"engine": "piper"},
+        tmp_path / "output",
+        "safe_chunks",
+        "single",
+        "Proyecto HTTP",
+        project_dir=tmp_path / "project",
+    )
+    manager = LocalServerJobManager(
+        service=FakeGenerationService(project.id),
+        db_path=tmp_path / "jobs.sqlite3",
+    )
+    submitted = manager.submit({"text": "placeholder", "title": project.title})
+    finished = wait_for_job(manager, submitted.job_id, timeout_seconds=5)
+    assert finished is not None
+    app = create_http_app(
+        settings,
+        job_manager=manager,
+        audiobook_store=store,
+    )
+    headers = {"Authorization": "Bearer secret-token"}
+
+    with TestClient(app) as client:
+        read_response = client.get(
+            f"/jobs/{finished.job_id}/source",
+            params={"page_size_chars": 256},
+            headers=headers,
+        )
+        assert read_response.status_code == 200
+        source = read_response.json()
+        search_response = client.post(
+            f"/jobs/{finished.job_id}/source/search",
+            json={"query": "Hola", "max_results": 10},
+            headers=headers,
+        )
+        assert search_response.status_code == 200
+        assert search_response.json()["returned_results"] == 2
+        edit_response = client.post(
+            f"/jobs/{finished.job_id}/source/edit",
+            json={
+                "operation": "replace",
+                "start_offset": 0,
+                "end_offset": 4,
+                "text": "Adios",
+                "expected_sha256": source["source_sha256"],
+            },
+            headers=headers,
+        )
+        assert edit_response.status_code == 200
+        assert edit_response.json()["render_required"] is True
+
+    assert store.get_audiobook(project.id).source_text.startswith("Adios mundo")
+
+
 def test_service_reloads_ui_settings_and_keeps_project_id(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["tts_engine"] = "piper"
@@ -221,6 +283,24 @@ def test_service_reloads_ui_settings_and_keeps_project_id(tmp_path):
     assert service.settings["speed"] == 1.35
     assert options.paragraph_pause_min_ms == 725
     assert options.project_audiobook_id == 42
+
+
+def test_generation_options_use_explicit_normalization_language_hint(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["text_normalization"]["enabled"] = True
+    settings.settings["text_normalization"]["language"] = "auto"
+    settings.save()
+    service = LocalText2VoiceService(settings)
+
+    options = service._generation_options(
+        {
+            "language": "auto",
+            "normalization_language_hint": "Spanish",
+        },
+        {"engine": "omnivoice", "language": "auto"},
+    )
+
+    assert options.text_normalization_language_hint == "Spanish"
 
 
 def test_service_rejects_unsafe_requested_chunk_size(tmp_path):

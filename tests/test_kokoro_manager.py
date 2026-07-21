@@ -88,6 +88,19 @@ class KokoroManagerTests(unittest.TestCase):
                 manager.install()
             self.assertEqual(manager.install_manifest()["state"], "cancelled")
 
+    def test_physical_assets_are_detected_without_an_install_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            manager = TinyKokoroManager(Path(temporary_name) / "kokoro")
+            manager.install_dir.mkdir(parents=True)
+            for asset in manager.ASSETS:
+                (manager.install_dir / asset.filename).write_bytes(
+                    b"x" * asset.expected_size
+                )
+
+            self.assertEqual(manager.install_manifest(), {})
+            self.assertTrue(manager.has_model_files())
+            self.assertTrue(manager.is_installed())
+
     def test_registry_creates_kokoro_engine(self) -> None:
         self.assertIsInstance(
             create_tts_engine("kokoro", Path("piper.exe")),

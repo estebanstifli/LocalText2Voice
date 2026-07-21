@@ -165,7 +165,7 @@ Version `1.1.0` is the first build containing the updater. Existing `1.0.0` inst
 
 1. Update `__version__` in `app/__init__.py`.
 2. Run `tools/build_windows_installer.ps1`.
-3. Create a matching Git tag, for example `v1.2.0`.
+3. Create a matching Git tag, for example `v1.2.1`.
 4. Create a normal GitHub Release for that tag (not a draft or prerelease).
 5. Add the release notes.
 6. Upload exactly:

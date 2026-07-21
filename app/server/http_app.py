@@ -8,8 +8,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 
+from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
 from app.server.job_manager import LocalServerJobManager, wait_for_job
+from app.server.job_source_editor import JobSourceEditor
 from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
 from app.utils.paths import application_root
 
@@ -24,10 +26,21 @@ def _read_text_resource(relative_path: str) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+async def _json_object(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="JSON object expected.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object expected.")
+    return payload
+
+
 def create_http_app(
     settings_manager: SettingsManager | None = None,
     job_manager: LocalServerJobManager | None = None,
     shutdown_callback: Callable[[], None] | None = None,
+    audiobook_store: AudiobookStore | None = None,
 ) -> FastAPI:
     settings_manager = settings_manager or SettingsManager()
     service = LocalText2VoiceService(settings_manager, keep_engines_alive=True)
@@ -38,6 +51,7 @@ def create_http_app(
         service,
         max_parallel_jobs=int(server_settings.get("max_parallel_jobs", 1) or 1),
     )
+    source_editor = JobSourceEditor(manager, audiobook_store)
     mcp = FastMCP(
         "LocalText2Voice",
         instructions=(
@@ -213,6 +227,113 @@ def create_http_app(
             for job in manager.list_jobs(status=status, limit=limit)
         ]
 
+    @mcp.tool(
+        description=(
+            "Read an editable job source with character-based pagination. Use "
+            "page/page_count for large sources; read_all is limited to 200000 chars."
+        )
+    )
+    def read_job_source(
+        job_id: str,
+        page: int = 1,
+        page_size_chars: int = 12000,
+        page_count: int = 1,
+        read_all: bool = False,
+    ) -> dict[str, Any]:
+        return source_editor.read(
+            job_id,
+            page=page,
+            page_size_chars=page_size_chars,
+            page_count=page_count,
+            read_all=read_all,
+        )
+
+    @mcp.tool(
+        description=(
+            "Replace the complete editable source for a job. Pass the SHA-256 "
+            "returned by read_job_source as expected_sha256 to prevent lost updates."
+        )
+    )
+    def write_job_source(
+        job_id: str,
+        text: str,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return source_editor.write(job_id, text, expected_sha256)
+
+    @mcp.tool(
+        description=(
+            "Search a job source using plain text or a regular expression. Returns "
+            "stable character offsets, line numbers, snippets, and paged results."
+        )
+    )
+    def search_job_source(
+        job_id: str,
+        query: str,
+        regex: bool = False,
+        case_sensitive: bool = False,
+        result_offset: int = 0,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        return source_editor.search(
+            job_id,
+            query,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            result_offset=result_offset,
+            max_results=max_results,
+        )
+
+    @mcp.tool(
+        description=(
+            "Insert, replace, or delete source text using Unicode character offsets. "
+            "Use expected_sha256 from a prior read or search for concurrency safety."
+        )
+    )
+    def edit_job_source(
+        job_id: str,
+        operation: str,
+        start_offset: int,
+        end_offset: int | None = None,
+        text: str = "",
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return source_editor.edit(
+            job_id,
+            operation,
+            start_offset,
+            end_offset=end_offset,
+            text=text,
+            expected_sha256=expected_sha256,
+        )
+
+    @mcp.tool(
+        description=(
+            "Find and replace one occurrence or all occurrences in a job source. "
+            "Supports literal text and regular expressions."
+        )
+    )
+    def replace_job_source_text(
+        job_id: str,
+        search: str,
+        replacement: str,
+        replace_all: bool = False,
+        occurrence: int = 1,
+        regex: bool = False,
+        case_sensitive: bool = True,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return source_editor.replace_text(
+            job_id,
+            search,
+            replacement,
+            replace_all=replace_all,
+            occurrence=occurrence,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            expected_sha256=expected_sha256,
+        )
+
     @mcp.tool(description="Cancel a queued or running generation job.")
     def cancel_job(job_id: str) -> dict[str, Any]:
         job = manager.cancel_job(job_id)
@@ -333,6 +454,90 @@ def create_http_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
         return _job_response(job, settings_manager, base_url=base_url)
+
+    @app.get("/jobs/{job_id}/source")
+    def read_job_source_http(
+        job_id: str,
+        page: int = 1,
+        page_size_chars: int = 12000,
+        page_count: int = 1,
+        read_all: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            return source_editor.read(
+                job_id,
+                page=page,
+                page_size_chars=page_size_chars,
+                page_count=page_count,
+                read_all=read_all,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put("/jobs/{job_id}/source")
+    async def write_job_source_http(job_id: str, request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        if "text" not in payload or not isinstance(payload["text"], str):
+            raise HTTPException(status_code=400, detail="text must be a string.")
+        try:
+            return source_editor.write(
+                job_id,
+                payload["text"],
+                payload.get("expected_sha256"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/jobs/{job_id}/source/search")
+    async def search_job_source_http(job_id: str, request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        try:
+            return source_editor.search(
+                job_id,
+                str(payload.get("query", "")),
+                regex=bool(payload.get("regex", False)),
+                case_sensitive=bool(payload.get("case_sensitive", False)),
+                result_offset=int(payload.get("result_offset", 0)),
+                max_results=int(payload.get("max_results", 25)),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/jobs/{job_id}/source/edit")
+    async def edit_job_source_http(job_id: str, request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        try:
+            return source_editor.edit(
+                job_id,
+                str(payload.get("operation", "")),
+                int(payload.get("start_offset", 0)),
+                end_offset=(
+                    None
+                    if payload.get("end_offset") is None
+                    else int(payload["end_offset"])
+                ),
+                text=str(payload.get("text", "")),
+                expected_sha256=payload.get("expected_sha256"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/jobs/{job_id}/source/replace")
+    async def replace_job_source_http(job_id: str, request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        try:
+            return source_editor.replace_text(
+                job_id,
+                str(payload.get("search", "")),
+                str(payload.get("replacement", "")),
+                replace_all=bool(payload.get("replace_all", False)),
+                occurrence=int(payload.get("occurrence", 1)),
+                regex=bool(payload.get("regex", False)),
+                case_sensitive=bool(payload.get("case_sensitive", True)),
+                expected_sha256=payload.get("expected_sha256"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel(job_id: str) -> dict[str, Any]:

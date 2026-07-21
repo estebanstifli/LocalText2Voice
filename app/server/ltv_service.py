@@ -810,7 +810,8 @@ class LocalText2VoiceService:
                 normalization.get("language", "auto")
             ),
             text_normalization_language_hint=str(
-                request.get("language")
+                request.get("normalization_language_hint")
+                or request.get("language")
                 or voice_config.get("language")
                 or voice_config.get("lang")
                 or ""

@@ -36,6 +36,11 @@ def test_stdio_bridge_exposes_expected_tools():
                     "generate_audio",
                     "get_job",
                     "get_jobs",
+                    "read_job_source",
+                    "write_job_source",
+                    "search_job_source",
+                    "edit_job_source",
+                    "replace_job_source_text",
                     "cancel_job",
                 }.issubset(names)
                 resources = await session.list_resources()
