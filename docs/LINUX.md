@@ -6,7 +6,8 @@ bundles everything; on Linux you run from source. Tested on Arch/CachyOS
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10+ with virtual-environment support. On Debian/Ubuntu install
+  `python3-venv`; on Arch this is included with `python`.
 - `ffmpeg` available in `PATH` (`sudo pacman -S ffmpeg` / `sudo apt install ffmpeg`).
   The bundled `ffmpeg/` folder is only needed on Windows; on Linux the app
   finds the system binary automatically (see `app/utils/ffmpeg_utils.py`).

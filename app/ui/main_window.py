@@ -134,6 +134,7 @@ from app.utils.paths import (
     application_root,
     large_assets_root,
     resolve_app_path,
+    resolve_executable,
     resource_root,
 )
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
@@ -6648,7 +6649,7 @@ class MainWindow(QMainWindow):
             if piper_path_edit is not None
             else str(self.settings.get("piper_path", "engines/piper/piper.exe"))
         )
-        piper_runtime_ready = resolve_app_path(
+        piper_runtime_ready = resolve_executable(
             piper_path_value or "engines/piper/piper.exe"
         ).exists()
         piper_installed = piper_runtime_ready and bool(self.voices)
@@ -9446,7 +9447,7 @@ class MainWindow(QMainWindow):
         config["piper_path"] = str(self.piper_path_edit.text().strip())
         try:
             PiperTTSEngine(
-                resolve_app_path(
+                resolve_executable(
                     self.piper_path_edit.text().strip()
                     or "engines/piper/piper.exe"
                 )
@@ -13130,7 +13131,7 @@ class MainWindow(QMainWindow):
             else None
         )
         self.segment_regeneration_uses_preloaded_engine = preloaded_engine is not None
-        piper_path = resolve_app_path(
+        piper_path = resolve_executable(
             self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
         )
         candidate_wav = self._review_candidate_wav_path(segment)
@@ -13778,7 +13779,7 @@ class MainWindow(QMainWindow):
         self.review_progress_bar.setRange(0, 100)
         self.review_progress_bar.setValue(0)
         verifier = self.preloaded_whisper_verifier
-        piper_path = resolve_app_path(
+        piper_path = resolve_executable(
             self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
         )
         normalization = self._text_normalization_configuration()

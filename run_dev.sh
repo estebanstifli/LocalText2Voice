@@ -8,7 +8,11 @@ VENV=.venv
 
 if [ ! -x "$VENV/bin/python" ]; then
     echo "[lt2v] creating virtual environment..."
-    $PY -m venv "$VENV"
+    if ! $PY -m venv "$VENV"; then
+        echo "[lt2v] could not create the virtual environment." >&2
+        echo "[lt2v] Debian/Ubuntu: sudo apt install python3-venv" >&2
+        exit 1
+    fi
     "$VENV/bin/pip" install --upgrade pip
     "$VENV/bin/pip" install -r requirements.txt
 fi

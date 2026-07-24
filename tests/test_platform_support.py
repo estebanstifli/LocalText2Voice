@@ -1,8 +1,11 @@
 """Tests for Linux/cross-platform support helpers."""
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
+
+import pytest
 
 from app.core.audio_pipeline import _move_file
 from app.utils.ffmpeg_utils import find_ffmpeg
@@ -56,3 +59,19 @@ class TestMoveFile:
         _move_file(src, dst)
         assert dst.read_bytes() == b"audio"
         assert not src.exists()
+
+    def test_non_exdev_error_is_not_hidden(self, tmp_path: Path, monkeypatch) -> None:
+        src = tmp_path / "a.mp3"
+        dst = tmp_path / "b.mp3"
+        src.write_bytes(b"audio")
+
+        def _raise_permission_error(s, d):
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(os, "replace", _raise_permission_error)
+        with pytest.raises(OSError) as caught:
+            _move_file(src, dst)
+
+        assert caught.value.errno == errno.EACCES
+        assert src.read_bytes() == b"audio"
+        assert not dst.exists()

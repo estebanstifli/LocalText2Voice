@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import errno
 import json
 import os
 import re
@@ -15,21 +16,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
-from app.core.audio_mix import ducking_filter
-
-
-def _move_file(src: Path, dst: Path) -> None:
-    """Move a file even across filesystems.
-
-    Path.replace()/os.replace() raise EXDEV ("Invalid cross-device link")
-    when the temp dir lives on another mount (e.g. tmpfs /tmp on Linux).
-    """
-    try:
-        os.replace(src, dst)
-    except OSError:
-        shutil.move(str(src), str(dst))
 from app.core.audiobook_store import AudiobookStore, StoredAudiobook
+from app.core.audio_mix import ducking_filter
+from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.utils.ffmpeg_utils import (
     FFmpegCancelled,
     FFmpegError,
@@ -41,6 +30,17 @@ from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
 from .text_processor import TextChunk, TextProcessor
 from .text_normalization import TextNormalizer
+
+
+def _move_file(src: Path, dst: Path) -> None:
+    """Move a file even across filesystems."""
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.move(str(src), str(dst))
+
 
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[[str], None]
