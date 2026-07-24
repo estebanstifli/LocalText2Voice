@@ -184,3 +184,25 @@ def ensure_assets_marker(root: Path | None = None) -> Path:
     )
     temporary.replace(marker)
     return marker
+
+
+def resolve_executable(value: str | Path) -> Path:
+    """Resolve a configured executable path across platforms.
+
+    Windows configs usually point at "*.exe". On Linux/macOS the same
+    bundled folder holds an extension-less binary, and a system-wide
+    installation may be available through PATH.
+    """
+    import shutil
+
+    configured = resolve_app_path(value)
+    if configured.is_file():
+        return configured
+    if configured.suffix.lower() == ".exe":
+        sibling = configured.with_suffix("")
+        if sibling.is_file():
+            return sibling
+        path_match = shutil.which(sibling.name)
+        if path_match:
+            return Path(path_match)
+    return configured

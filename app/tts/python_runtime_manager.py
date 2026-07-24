@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -61,7 +62,18 @@ class PythonRuntimeManager:
     ) -> None:
         self.runtime_dir = (runtime_dir or self._default_runtime_dir()).resolve()
         self.python_dir = self.runtime_dir / "python"
-        self.python_exe = self.python_dir / "python.exe"
+        self._is_windows = sys.platform.startswith("win")
+        # Windows: скачиваемый embeddable-пакет (python.exe в корне).
+        # Linux/macOS: venv от системного интерпретатора (bin/python).
+        if self._is_windows:
+            self.python_exe = self.python_dir / "python.exe"
+            self.runtime_version = self.RUNTIME_VERSION
+            self.python_version = self.PYTHON_VERSION
+        else:
+            self.python_exe = self.python_dir / "bin" / "python"
+            vi = sys.version_info
+            self.python_version = f"{vi.major}.{vi.minor}.{vi.micro}"
+            self.runtime_version = f"python-{self.python_version}-venv-{sys.platform}-v1"
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
         self._process: subprocess.Popen[bytes] | None = None
@@ -71,7 +83,7 @@ class PythonRuntimeManager:
         manifest = self.install_manifest()
         return (
             manifest.get("state") == "installed"
-            and manifest.get("runtime_version") == self.RUNTIME_VERSION
+            and manifest.get("runtime_version") == self.runtime_version
             and self.python_exe.is_file()
             and self.pip_module_path.is_dir()
         )
@@ -90,8 +102,10 @@ class PythonRuntimeManager:
         progress = progress_callback or (lambda current, total, message: None)
         self._cancel_requested.clear()
         if self.is_installed():
-            progress(100, 100, "Embedded Python runtime already installed.")
+            progress(100, 100, "Python runtime already installed.")
             return self.runtime_dir
+        if not self._is_windows:
+            return self._install_venv(progress, cancel_token)
         downloads_dir = self.runtime_dir / ".downloads"
         staging_dir = self.runtime_dir / ".staging"
         python_zip = downloads_dir / "python-embed.zip"
@@ -183,6 +197,57 @@ class PythonRuntimeManager:
             self._remove_path(downloads_dir)
             self._remove_path(staging_dir)
 
+    def _install_venv(
+        self,
+        progress: PythonRuntimeProgress,
+        cancel_token: threading.Event | None,
+    ) -> Path:
+        """Linux/macOS: приватный рантайм = venv от системного Python.
+
+        Windows-сборка качает embeddable-пакет с python.org; на остальных
+        платформах системный интерпретатор уже есть, нужен только venv.
+        """
+        staging_python_dir = self.runtime_dir / ".staging" / "python"
+        self._remove_path(staging_python_dir.parent)
+        staging_python_dir.parent.mkdir(parents=True, exist_ok=True)
+        self._write_manifest("installing")
+        try:
+            progress(20, 100, f"Creating virtual environment (Python {self.python_version})...")
+            self._run_process(
+                [sys.executable, "-m", "venv", str(staging_python_dir)],
+                cancel_token,
+                cwd=staging_python_dir.parent,
+            )
+            staging_exe = staging_python_dir / "bin" / "python"
+            progress(60, 100, "Installing Python engine core packages...")
+            self._run_process(
+                [
+                    str(staging_exe),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-warn-script-location",
+                    *self.CORE_PACKAGES,
+                ],
+                cancel_token,
+                cwd=staging_python_dir,
+            )
+            progress(85, 100, "Finalizing Python runtime...")
+            self._remove_path(self.python_dir)
+            self.runtime_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staging_python_dir), str(self.python_dir))
+            self._write_manifest("installed")
+            progress(100, 100, "Python runtime installed.")
+            return self.runtime_dir
+        except PythonRuntimeCancelled:
+            self._write_manifest("cancelled")
+            raise
+        except Exception:
+            self._write_manifest("failed")
+            raise
+        finally:
+            self._remove_path(staging_python_dir.parent)
+
     def uninstall(self) -> None:
         self.cancel()
         self._remove_path(self.runtime_dir)
@@ -233,7 +298,12 @@ class PythonRuntimeManager:
 
     @property
     def pip_module_path(self) -> Path:
-        return self.python_dir / "Lib" / "site-packages" / "pip"
+        if self._is_windows:
+            return self.python_dir / "Lib" / "site-packages" / "pip"
+        matches = sorted(self.python_dir.glob("lib/python*/site-packages/pip"))
+        if matches:
+            return matches[0]
+        return self.python_dir / "lib" / "site-packages" / "pip"
 
     def _download_file(
         self,
@@ -389,12 +459,12 @@ class PythonRuntimeManager:
     def _write_manifest(self, state: str) -> None:
         manifest = {
             "runtime": "python",
-            "runtime_version": self.RUNTIME_VERSION,
+            "runtime_version": self.runtime_version,
             "state": state,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "python_version": self.PYTHON_VERSION,
-            "python_url": self.PYTHON_ZIP_URL,
-            "get_pip_url": self.GET_PIP_URL,
+            "python_version": self.python_version,
+            "python_url": self.PYTHON_ZIP_URL if self._is_windows else f"venv:{sys.executable}",
+            "get_pip_url": self.GET_PIP_URL if self._is_windows else "stdlib-venv",
             "core_packages": list(self.CORE_PACKAGES),
             "python_path": str(self.python_exe),
         }
