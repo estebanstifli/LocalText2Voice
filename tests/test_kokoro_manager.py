@@ -108,6 +108,8 @@ class KokoroManagerTests(unittest.TestCase):
         )
 
     def test_preview_text_matches_voice_language(self) -> None:
+        voice = KokoroManager.VOICES[0]
+        self.assertEqual(voice.lang, voice.language)
         self.assertEqual(
             kokoro_preview_text_for_language("es"),
             "La luna esta preciosa esta noche. Esta es una prueba breve de voz.",

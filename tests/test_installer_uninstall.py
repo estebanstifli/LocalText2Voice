@@ -21,6 +21,9 @@ def test_uninstaller_offers_optional_ai_data_cleanup() -> None:
         "DirExists(ExpandConstant('{app}\\runtimes\\python311\\engine-deps'))"
         in script
     )
+    assert "function AssetsRoot(): String;" in script
+    assert "assets-location.txt" in script
+    assert ".localtext2voice-assets.json" in script
 
 
 def test_uninstaller_cleanup_preserves_projects_and_exports() -> None:
@@ -40,4 +43,7 @@ def test_uninstaller_cleanup_preserves_projects_and_exports() -> None:
 def test_installer_writes_current_settings_schema() -> None:
     script = INSTALLER_SCRIPT.read_text(encoding="utf-8")
 
-    assert "'  \"settings_schema_version\": 16,'" in script
+    assert "'  \"settings_schema_version\": 17,'" in script
+    assert "CreateInputDirPage(" in script
+    assert "'  \"storage\": {'" in script
+    assert "'    \"base_dir\": \"' + AssetsBaseDir + '\"'" in script

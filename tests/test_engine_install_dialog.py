@@ -16,6 +16,7 @@ from app.ui.engine_install_dialog import (
     EngineInstallRequirement,
     available_disk_space_gb,
 )
+from app.tts.install_logging import install_detail
 
 
 def translate(key: str, default: str | None = None, **values: object) -> str:
@@ -35,6 +36,7 @@ class EngineInstallDialogTests(unittest.TestCase):
             free_gb,
             "C:\\",
             translate,
+            install_path=Path("C:/models/omnivoice"),
         )
         self.addCleanup(dialog.deleteLater)
         return dialog
@@ -50,6 +52,11 @@ class EngineInstallDialogTests(unittest.TestCase):
         self.assertEqual(dialog.install_button.text(), "Install now")
         self.assertEqual(dialog.later_button.text(), "Another time")
         self.assertIn("do not close", dialog.close_warning_label.text().lower())
+        self.assertIn(
+            str(Path("C:/models/omnivoice").resolve()),
+            dialog.install_path_label.text(),
+        )
+        self.assertIn("Free space on C:\\", dialog.details_view.toPlainText())
 
     def test_install_stays_modal_and_reports_live_progress(self) -> None:
         dialog = self._dialog()
@@ -68,6 +75,18 @@ class EngineInstallDialogTests(unittest.TestCase):
         dialog.update_progress(42, 100, "Downloading model...")
         self.assertEqual(dialog.progress_bar.value(), 42)
         self.assertEqual(dialog.progress_label.text(), "Downloading model...")
+        self.assertIn("[ 42%] Downloading model...", dialog.details_view.toPlainText())
+
+        dialog.update_progress(
+            42,
+            100,
+            install_detail("[pip/stdout] Downloading torch (2.1 GB)"),
+        )
+        self.assertEqual(dialog.progress_label.text(), "Downloading model...")
+        self.assertIn(
+            "[pip/stdout] Downloading torch (2.1 GB)",
+            dialog.details_view.toPlainText(),
+        )
 
         close_event = QCloseEvent()
         dialog.closeEvent(close_event)

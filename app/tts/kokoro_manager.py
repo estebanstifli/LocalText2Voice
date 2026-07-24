@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.paths import app_data_root
+from app.utils.paths import models_root
 
 
 class KokoroError(RuntimeError):
@@ -22,6 +22,16 @@ class KokoroDownloadCancelled(KokoroError):
 
 
 KokoroProgress = Callable[[int, int, str], None]
+
+
+def _format_bytes(size: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(max(0, size))
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024
+    return f"{size} B"
 
 
 @dataclass(frozen=True)
@@ -38,6 +48,12 @@ class KokoroVoice:
     voice_id: str
     display_name: str
     language: str
+
+    @property
+    def lang(self) -> str:
+        """Compatibility alias for clients that used the old field name."""
+
+        return self.language
 
 
 class KokoroManager:
@@ -108,7 +124,7 @@ class KokoroManager:
         install_dir: Path | None = None,
         timeout_seconds: int = 30,
     ) -> None:
-        self.install_dir = install_dir or app_data_root() / "models" / "kokoro"
+        self.install_dir = install_dir or models_root() / "kokoro"
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
         self._external_cancel_token: threading.Event | None = None
@@ -165,7 +181,8 @@ class KokoroManager:
                     progress(
                         completed,
                         total_size,
-                        f"Using existing {asset.name}.",
+                        f"OK (already present): {asset.filename} "
+                        f"({_format_bytes(target.stat().st_size)}) — {asset.name}",
                     )
                 else:
                     temporary = downloads_dir / f"{asset.filename}.tmp"
@@ -177,6 +194,12 @@ class KokoroManager:
                         progress,
                     )
                     temporary.replace(target)
+                    progress(
+                        completed,
+                        total_size,
+                        f"OK: {asset.filename} "
+                        f"({_format_bytes(target.stat().st_size)}) — {asset.name}",
+                    )
                 files.append(
                     {
                         "name": asset.name,
@@ -291,7 +314,8 @@ class KokoroManager:
                 progress(
                     completed_before,
                     total_size,
-                    f"{asset.name} download failed, retry {attempt}/3...",
+                    f"FAILED: {asset.filename} — {exc}. "
+                    f"Retry {attempt}/3...",
                 )
                 time.sleep(min(2, attempt))
         raise KokoroError(f"Could not download {asset.name}: {last_error}")
@@ -319,9 +343,14 @@ class KokoroManager:
         progress(
             completed_before,
             total_size,
-            f"Downloading {asset.name} (attempt {attempt}/3)...",
+            f"Downloading {asset.filename} "
+            f"({_format_bytes(asset.expected_size)}) — {asset.name} "
+            f"(attempt {attempt}/3)...",
         )
         with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            response_size = int(
+                response.headers.get("Content-Length", "0") or asset.expected_size
+            )
             with temporary.open("wb") as output:
                 while True:
                     self._check_cancelled()
@@ -333,7 +362,9 @@ class KokoroManager:
                     progress(
                         completed_before + min(downloaded, asset.expected_size),
                         total_size,
-                        f"Downloading {asset.name}...",
+                        f"Downloading {asset.filename}: "
+                        f"{_format_bytes(downloaded)} / "
+                        f"{_format_bytes(response_size)}",
                     )
         if downloaded < asset.minimum_size:
             raise KokoroError(

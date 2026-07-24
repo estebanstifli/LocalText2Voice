@@ -260,7 +260,7 @@ class LocalText2VoiceService:
                 {
                     "id": voice.voice_id,
                     "name": voice.display_name,
-                    "language": voice.lang,
+                    "language": voice.language,
                     "type": "Kokoro voice",
                     "installed": self.kokoro_manager.is_installed(),
                 }
@@ -850,7 +850,7 @@ class LocalText2VoiceService:
                     {
                         "id": voice.voice_id,
                         "name": voice.display_name,
-                        "language": voice.lang,
+                        "language": voice.language,
                     }
                     for voice in self.kokoro_manager.list_voices()
                 ],

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from app.tts.kokoro_python_engine import KokoroPythonTTSEngine
+from app.tts.kokoro_python_manager import KOKORO_PYTHON_CLI
 
 
 class FakeKokoroPythonManager:
@@ -18,6 +19,7 @@ class FakeKokoroPythonManager:
         self.cpu_model_path = Path("model.onnx")
         self.gpu_model_path = Path("model-gpu.onnx")
         self.voices_path = Path("voices.bin")
+        self.dependency_dir = Path("deps")
 
     def is_installed(self) -> bool:
         return True
@@ -32,6 +34,16 @@ class FakeKokoroPythonManager:
 
 
 class KokoroPythonEngineTests(unittest.TestCase):
+    def test_worker_configures_isolated_dependency_directory(self) -> None:
+        self.assertIn(
+            'parser.add_argument("--deps-dir", required=True)',
+            KOKORO_PYTHON_CLI,
+        )
+        self.assertIn(
+            "sys.path.insert(0, str(deps_path))",
+            KOKORO_PYTHON_CLI,
+        )
+
     def test_worker_is_reused_for_multiple_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
@@ -50,6 +62,7 @@ class KokoroPythonEngineTests(unittest.TestCase):
                     parser.add_argument("--cpu-model", required=True)
                     parser.add_argument("--gpu-model", required=True)
                     parser.add_argument("--voices", required=True)
+                    parser.add_argument("--deps-dir", required=True)
                     parser.add_argument("--provider", required=True)
                     parser.parse_args()
 

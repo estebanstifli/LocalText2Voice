@@ -10,9 +10,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
-from app.utils.paths import app_data_root
+from app.utils.paths import engine_dependencies_root, models_root
 
-from .model_cache import huggingface_model_is_cached
+from .install_logging import (
+    ProcessOutputCallback,
+    communicate_with_live_output,
+    detailed_pip_args,
+    progress_output_callback,
+    report_process_command,
+    run_python_with_live_output,
+)
+from .model_cache import (
+    format_file_size,
+    huggingface_cached_files,
+    huggingface_model_is_cached,
+)
 from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
 
 
@@ -486,11 +498,17 @@ class QwenManager:
         self,
         install_dir: Path | None = None,
         python_runtime: PythonRuntimeManager | None = None,
+        dependencies_root: Path | None = None,
         timeout_seconds: int = 60,
     ) -> None:
-        self.install_dir = install_dir or app_data_root() / "models" / "qwen"
+        self.install_dir = install_dir or models_root() / "qwen"
         self.cache_dir = self.install_dir / "hf-cache"
         self.python_runtime = python_runtime or PythonRuntimeManager()
+        self.dependencies_root = dependencies_root or (
+            self.python_runtime.runtime_dir / "engine-deps"
+            if python_runtime is not None
+            else engine_dependencies_root()
+        )
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
         self._process: subprocess.Popen[bytes] | None = None
@@ -565,6 +583,9 @@ class QwenManager:
                 self._run_runtime(
                     ["--warmup", "--model-repo", model_repo, "--device", device],
                     cancel_token,
+                    output_callback=progress_output_callback(
+                        progress, 80, "Qwen model"
+                    ),
                 )
             except QwenError as exc:
                 if device == "cpu":
@@ -579,9 +600,18 @@ class QwenManager:
                 self._run_runtime(
                     ["--warmup", "--model-repo", model_repo, "--device", "cpu"],
                     cancel_token,
+                    output_callback=progress_output_callback(
+                        progress, 88, "Qwen model"
+                    ),
                 )
             if warmup_device != device:
                 device = warmup_device
+            for filename, size in huggingface_cached_files(self.cache_dir, model_repo):
+                progress(
+                    98,
+                    100,
+                    f"OK: {filename} ({format_file_size(size)})",
+                )
             self._write_manifest("installed", model, device)
             progress(100, 100, "Qwen TTS is ready.")
             return self.install_dir
@@ -670,11 +700,11 @@ class QwenManager:
 
     @property
     def runtime_manifest_path(self) -> Path:
-        return self.python_runtime.runtime_dir / "engine-deps" / self.RUNTIME_INSTALL_FILENAME
+        return self.dependencies_root / self.RUNTIME_INSTALL_FILENAME
 
     @property
     def dependency_dir(self) -> Path:
-        return self.python_runtime.runtime_dir / "engine-deps" / "qwen" / "site-packages"
+        return self.dependencies_root / "qwen" / "site-packages"
 
     @property
     def cli_path(self) -> Path:
@@ -732,6 +762,8 @@ class QwenManager:
                         *torch_requirements,
                     ],
                     cancel_token,
+                    progress,
+                    38,
                 )
                 requirements.extend(
                     [
@@ -760,6 +792,8 @@ class QwenManager:
                     *torch_requirements,
                 ],
                 cancel_token,
+                progress,
+                40,
             )
             requirements.extend(torch_requirements)
 
@@ -775,6 +809,8 @@ class QwenManager:
                 self.QWEN_PACKAGE,
             ],
             cancel_token,
+            progress,
+            55,
         )
         self._run_pip(
             [
@@ -786,6 +822,8 @@ class QwenManager:
                 *self.SUPPORT_REQUIREMENTS[1:],
             ],
             cancel_token,
+            progress,
+            55,
         )
         requirements.append(self.QWEN_PACKAGE)
         requirements.extend(self.SUPPORT_REQUIREMENTS[1:])
@@ -818,6 +856,8 @@ class QwenManager:
                     *torch_requirements,
                 ],
                 cancel_token,
+                progress,
+                67,
             )
         else:
             self._run_pip(
@@ -831,6 +871,8 @@ class QwenManager:
                     *torch_requirements,
                 ],
                 cancel_token,
+                progress,
+                67,
             )
 
         progress(72, 100, "Validating Qwen TTS runtime...")
@@ -851,8 +893,23 @@ class QwenManager:
         self,
         args: list[str],
         cancel_token: threading.Event | None,
+        progress: QwenProgress | None = None,
+        current: int = 0,
     ) -> str:
-        return self.python_runtime.run_python(["-m", "pip", *args], cancel_token)
+        args = detailed_pip_args(args)
+        output_callback = (
+            progress_output_callback(progress, current, "pip")
+            if progress is not None
+            else None
+        )
+        if progress is not None:
+            report_process_command(progress, current, "pip", ["pip", *args])
+        return run_python_with_live_output(
+            self.python_runtime,
+            ["-m", "pip", *args],
+            cancel_token,
+            output_callback,
+        )
 
     def _validate_runtime(
         self,
@@ -898,6 +955,7 @@ class QwenManager:
         self,
         args: list[str],
         cancel_token: threading.Event | None = None,
+        output_callback: ProcessOutputCallback | None = None,
     ) -> str:
         if not self.python_runtime.is_installed():
             raise QwenError("Embedded Python runtime is not installed.")
@@ -925,16 +983,12 @@ class QwenManager:
             raise QwenError(f"Could not start Qwen TTS: {exc}") from exc
         with self._lock:
             self._process = process
-        stdout = b""
-        stderr = b""
         try:
-            while True:
-                self._check_cancelled(cancel_token)
-                try:
-                    stdout, stderr = process.communicate(timeout=0.25)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            stdout, stderr = communicate_with_live_output(
+                process,
+                lambda: self._check_cancelled(cancel_token),
+                output_callback,
+            )
         finally:
             with self._lock:
                 if self._process is process:

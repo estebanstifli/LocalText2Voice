@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from app.utils.paths import app_data_root, application_root
+from app.utils.paths import application_root, resolve_large_asset_path, voice_gallery_root
 from app.utils.ffmpeg_utils import FFmpegError, FFmpegRunner, find_ffmpeg
 
 
@@ -87,7 +87,7 @@ class VoiceGalleryManager:
         local_catalog_path: str | Path = "",
         timeout_seconds: int = 30,
     ) -> None:
-        self.files_root = files_root or app_data_root() / "voice-gallery"
+        self.files_root = files_root or voice_gallery_root()
         self.db_path = db_path or self.files_root / self.DB_FILENAME
         self.catalog_url = catalog_url
         self.local_catalog_path = Path(local_catalog_path) if local_catalog_path else None
@@ -788,9 +788,9 @@ class VoiceGalleryManager:
             voice_type=str(row["voice_type"]),
             install_type=str(row["install_type"]),
             preview_url=str(row["preview_url"]),
-            preview_path=str(row["preview_path"]),
+            preview_path=self._relocated_gallery_path(str(row["preview_path"])),
             ref_audio_url=str(row["ref_audio_url"]),
-            ref_audio_path=str(row["ref_audio_path"]),
+            ref_audio_path=self._relocated_gallery_path(str(row["ref_audio_path"])),
             ref_text=str(row["ref_text"]),
             engine_voice_id=str(row["engine_voice_id"]),
             speaker_id=str(row["speaker_id"]),
@@ -801,9 +801,14 @@ class VoiceGalleryManager:
             voice_style=str(row["voice_style"]),
             tags=tuple(json.loads(row["tags_json"] or "[]")),
             metadata=json.loads(row["metadata_json"] or "{}"),
-            installed_path=str(row["installed_path"]),
+            installed_path=self._relocated_gallery_path(str(row["installed_path"])),
             installed_at=str(row["installed_at"]),
         )
+
+    def _relocated_gallery_path(self, value: str) -> str:
+        if not value:
+            return ""
+        return str(resolve_large_asset_path(value))
 
     @staticmethod
     def _ensure_object(payload: object) -> dict[str, Any]:

@@ -33,6 +33,22 @@ The installer installs LocalText2Voice per-user into:
 
 It does not require administrator privileges.
 
+The next installer page selects the base folder for large downloadable AI
+assets. LocalText2Voice creates a managed `data` child below it. For example:
+
+```text
+D:\LocalText2Voice\data\
+|-- models\
+|-- engine-deps\
+|-- voice-gallery\
+`-- downloads\
+```
+
+The default base is the application installation folder. The same location can
+later be changed from **Settings > General > AI model storage**. The app copies
+and verifies the new tree before changing `config.json`, then removes only the
+known source directories.
+
 It currently offers two installation profiles:
 
 - CPU light: installs the bundled portable distribution and defaults to Piper.
@@ -87,25 +103,27 @@ The base installer still includes the application, Piper runtime, FFmpeg, bundle
 
 ## Uninstall behavior
 
-LocalText2Voice stores downloaded TTS models, Faster Whisper model caches, and
-voice-gallery files under:
+Fresh installations store downloaded TTS models, Faster Whisper caches,
+voice-gallery files, and isolated optional-engine Python dependencies under the
+managed location selected by the user:
+
+```text
+<selected base>\data\
+```
+
+Configurations created before storage selection was introduced remain
+compatible with the historical locations:
 
 ```text
 %LOCALAPPDATA%\LocalText2Voice\
-```
-
-Python packages required by optional engines are isolated under the bundled
-runtime in the installation directory:
-
-```text
 <installation>\runtimes\python311\engine-deps\
 ```
 
 When the Windows uninstaller detects those downloads, it asks whether they
 should also be removed. **Yes** is the default because these files can occupy
-many gigabytes. Accepting removes `models/`, user-data `runtimes/`,
-`voice-gallery/`, installed `engine-deps/`, and Piper voices downloaded after
-installation.
+many gigabytes. A `.localtext2voice-assets.json` ownership marker is required
+before the uninstaller removes a user-selected `data` tree; arbitrary selected
+folders are never recursively deleted.
 
 The cleanup deliberately preserves audiobook projects, generated WAV/MP3
 files, settings, music, and logs. Server coordination files and downloaded

@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.core.audio_pipeline import AudioGenerationOptions
+from app.core.asset_storage import AssetStorageManager, AssetTransferResult
 from app.core.audio_mix import AudioMixSettings
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
@@ -110,6 +111,7 @@ from app.tts.chatterbox_voice_manager import (
 )
 from app.tts.kokoro_preview import kokoro_preview_text_for_language
 from app.tts.kokoro_python_manager import KokoroPythonManager
+from app.tts.install_logging import install_detail_text, is_install_detail
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
 from app.tts.piper_engine import PiperTTSEngine
@@ -130,6 +132,7 @@ from app.utils.i18n import Translator
 from app.utils.paths import (
     app_data_root,
     application_root,
+    large_assets_root,
     resolve_app_path,
     resource_root,
 )
@@ -139,6 +142,7 @@ from app.workers.chatterbox_worker import (
     ChatterboxInstallWorker,
     ChatterboxPreviewWorker,
 )
+from app.workers.asset_storage_worker import AssetStorageMoveWorker
 from app.workers.chatterbox_voice_worker import ChatterboxVoiceWorker
 from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
 from app.workers.engine_host_memory_worker import EngineHostMemoryWorker
@@ -764,6 +768,9 @@ class MainWindow(QMainWindow):
         self.update_check_worker: UpdateCheckWorker | None = None
         self.update_check_thread: QThread | None = None
         self.update_download_worker: UpdateDownloadWorker | None = None
+        self.asset_storage_worker: AssetStorageMoveWorker | None = None
+        self.asset_storage_thread: QThread | None = None
+        self.asset_storage_progress_dialog: QProgressDialog | None = None
         self.update_download_thread: QThread | None = None
         self.update_progress_dialog: QProgressDialog | None = None
         self.engine_install_dialogs: dict[str, EngineInstallDialog] = {}
@@ -4015,6 +4022,10 @@ class MainWindow(QMainWindow):
         total: int,
         message: str,
     ) -> None:
+        if is_install_detail(message):
+            self._update_tts_engine_install_dialog("kokoro", current, total, message)
+            self.log_view.append_event(install_detail_text(message))
+            return
         percentage = int((current / total) * 100) if total else 0
         self.kokoro_python_progress_bar.setValue(max(0, min(100, percentage)))
         self.kokoro_python_status_label.setText(message)
@@ -4518,6 +4529,12 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _on_chatterbox_progress(self, current: int, total: int, message: str) -> None:
+        if is_install_detail(message):
+            self._update_tts_engine_install_dialog(
+                "chatterbox", current, total, message
+            )
+            self.log_view.append_event(install_detail_text(message))
+            return
         if total:
             self.chatterbox_progress_bar.setRange(0, 100)
             percentage = int((current / total) * 100)
@@ -5048,6 +5065,10 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _on_qwen_progress(self, current: int, total: int, message: str) -> None:
+        if is_install_detail(message):
+            self._update_tts_engine_install_dialog("qwen", current, total, message)
+            self.log_view.append_event(install_detail_text(message))
+            return
         if total:
             self.qwen_progress_bar.setRange(0, 100)
             percentage = int((current / total) * 100)
@@ -5660,6 +5681,12 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _on_omnivoice_progress(self, current: int, total: int, message: str) -> None:
+        if is_install_detail(message):
+            self._update_tts_engine_install_dialog(
+                "omnivoice", current, total, message
+            )
+            self.log_view.append_event(install_detail_text(message))
+            return
         if total:
             self.omnivoice_progress_bar.setRange(0, 100)
             percentage = int((current / total) * 100)
@@ -7069,7 +7096,16 @@ class MainWindow(QMainWindow):
         if self._tts_engine_install_thread(engine_id) is not None:
             return
 
-        free_gb, volume = available_disk_space_gb(app_data_root())
+        manager = {
+            "kokoro": self.kokoro_python_manager,
+            "chatterbox": self.chatterbox_manager,
+            "qwen": self.qwen_manager,
+            "omnivoice": self.omnivoice_manager,
+        }.get(engine_id)
+        install_path = Path(
+            getattr(manager, "install_dir", app_data_root())
+        ).expanduser().resolve()
+        free_gb, volume = available_disk_space_gb(install_path)
         dialog = EngineInstallDialog(
             self._tts_engine_label(engine_id),
             requirement,
@@ -7077,6 +7113,7 @@ class MainWindow(QMainWindow):
             volume,
             self.tr,
             self,
+            install_path=install_path,
             existing_model_detected=self._tts_engine_model_detected(engine_id),
         )
         self.engine_install_dialogs[engine_id] = dialog
@@ -7535,6 +7572,45 @@ class MainWindow(QMainWindow):
         cache_layout.addWidget(self.wav_cache_stats_label)
         cache_layout.addLayout(cleanup_buttons)
 
+        storage_group = QGroupBox(
+            self.tr("ai_asset_storage", "AI model storage")
+        )
+        storage_layout = QVBoxLayout(storage_group)
+        storage_layout.setSpacing(8)
+        storage_help = QLabel(
+            self.tr(
+                "ai_asset_storage_help",
+                "Downloaded models, engine dependencies, voice files, and caches are kept here. "
+                "Choose a folder on another drive to keep large AI assets off the system drive.",
+            )
+        )
+        storage_help.setObjectName("helperLabel")
+        storage_help.setWordWrap(True)
+        self.ai_asset_location_edit = QLineEdit()
+        self.ai_asset_location_edit.setReadOnly(True)
+        self.ai_asset_location_edit.setText(str(large_assets_root()))
+        storage_buttons = QHBoxLayout()
+        self.change_ai_asset_location_button = QPushButton(
+            self.tr("change_location", "Change location")
+        )
+        self.change_ai_asset_location_button.setIcon(ui_icon("folder"))
+        self.change_ai_asset_location_button.clicked.connect(
+            self._change_ai_asset_location
+        )
+        self.open_ai_asset_location_button = QPushButton(
+            self.tr("open_folder", "Open folder")
+        )
+        self.open_ai_asset_location_button.setIcon(ui_icon("folder"))
+        self.open_ai_asset_location_button.clicked.connect(
+            self._open_ai_asset_location
+        )
+        storage_buttons.addWidget(self.change_ai_asset_location_button)
+        storage_buttons.addWidget(self.open_ai_asset_location_button)
+        storage_buttons.addStretch(1)
+        storage_layout.addWidget(storage_help)
+        storage_layout.addWidget(self.ai_asset_location_edit)
+        storage_layout.addLayout(storage_buttons)
+
         reset_group = QGroupBox(
             self.tr("reset_settings_group", "Reset settings")
         )
@@ -7559,7 +7635,8 @@ class MainWindow(QMainWindow):
         grid.addWidget(narration_group, 0, 0)
         grid.addWidget(editor_group, 0, 1)
         grid.addWidget(cache_group, 1, 0, 1, 2)
-        grid.addWidget(reset_group, 2, 0, 1, 2)
+        grid.addWidget(storage_group, 2, 0, 1, 2)
+        grid.addWidget(reset_group, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -7573,6 +7650,246 @@ class MainWindow(QMainWindow):
             self.markup_highlighter.set_enabled(enabled)
         if hasattr(self, "normalized_markup_highlighter"):
             self.normalized_markup_highlighter.set_enabled(enabled)
+
+    def _change_ai_asset_location(self) -> None:
+        if self.asset_storage_thread is not None:
+            return
+        if self.worker_thread is not None or self._tts_engine_install_in_progress():
+            QMessageBox.warning(
+                self,
+                self.tr("storage_busy_title", "AI assets are busy"),
+                self.tr(
+                    "storage_busy_message",
+                    "Wait for generation or engine installation to finish before changing the storage location.",
+                ),
+            )
+            return
+        current_root = large_assets_root().resolve()
+        initial_base = current_root.parent
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            self.tr("select_storage_folder", "Select LocalText2Voice storage folder"),
+            str(initial_base),
+        )
+        if not selected:
+            return
+        selected_base = Path(selected).expanduser().resolve()
+        destination = AssetStorageManager.assets_root_for(selected_base)
+        if destination == current_root:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("move_ai_assets_title", "Move AI assets"),
+            self.tr(
+                "move_ai_assets_message",
+                "LocalText2Voice will copy installed models, engine dependencies, voices, and download caches to:\n\n"
+                "{destination}\n\nThe shared engine host will stop and loaded AI models will be released first. "
+                "The old copies are removed only after the new location is verified. Continue?",
+                destination=str(destination),
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._unload_faster_whisper()
+        self._unload_preloaded_tts_engine(log_message=False)
+        if not self.engine_host_client.shutdown():
+            self._show_error(
+                self.tr("storage_move_failed", "Storage move failed"),
+                self.tr(
+                    "storage_host_stop_failed",
+                    "The shared engine host could not be stopped. Close MCP clients and try again.",
+                ),
+            )
+            return
+        self.host_loaded_tts_engine_ids.clear()
+        self.loaded_tts_engine_id = None
+
+        manager = AssetStorageManager()
+        thread = QThread(self)
+        worker = AssetStorageMoveWorker(manager, selected_base)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_ai_asset_move_progress)
+        worker.finished.connect(self._on_ai_asset_move_finished)
+        worker.failed.connect(self._on_ai_asset_move_failed)
+        worker.cancelled.connect(self._on_ai_asset_move_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_ai_asset_move_worker)
+
+        dialog = QProgressDialog(
+            self.tr("preparing_storage_move", "Preparing AI asset move..."),
+            self.tr("cancel", "Cancel"),
+            0,
+            100,
+            self,
+        )
+        dialog.setWindowTitle(self.tr("move_ai_assets_title", "Move AI assets"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.canceled.connect(worker.request_cancel)
+        self.asset_storage_manager = manager
+        self.asset_storage_worker = worker
+        self.asset_storage_thread = thread
+        self.asset_storage_progress_dialog = dialog
+        dialog.show()
+        thread.start()
+
+    def _on_ai_asset_move_progress(
+        self,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        dialog = self.asset_storage_progress_dialog
+        if dialog is None:
+            return
+        percent = int((current / total) * 100) if total else 0
+        dialog.setValue(max(0, min(100, percent)))
+        dialog.setLabelText(message)
+
+    def _on_ai_asset_move_finished(self, result: object) -> None:
+        if not isinstance(result, AssetTransferResult):
+            self._on_ai_asset_move_failed("The storage worker returned an invalid result.")
+            return
+        committed = False
+        settings_before_move = deepcopy(self.settings)
+        try:
+            storage = self.settings.setdefault("storage", {})
+            if not isinstance(storage, dict):
+                storage = {}
+                self.settings["storage"] = storage
+            previous_roots = storage.get("previous_roots", [])
+            if not isinstance(previous_roots, list):
+                previous_roots = []
+            previous_roots.append(str(result.previous_assets_root))
+            storage["previous_roots"] = list(dict.fromkeys(previous_roots))[-8:]
+            storage["base_dir"] = str(result.base_dir)
+            self._relocate_selected_asset_paths(
+                result.previous_assets_root,
+                result.assets_root,
+            )
+            self.settings_manager.save(self.settings)
+            committed = True
+            self._reload_asset_managers()
+            AssetStorageManager.cleanup_sources(result)
+        except Exception as exc:
+            if not committed:
+                self.settings.clear()
+                self.settings.update(settings_before_move)
+                marker = result.assets_root / ".localtext2voice-assets.json"
+                if marker.is_file():
+                    shutil.rmtree(result.assets_root, ignore_errors=True)
+            self._on_ai_asset_move_failed(str(exc))
+            return
+        if self.asset_storage_progress_dialog is not None:
+            self.asset_storage_progress_dialog.setValue(100)
+            self.asset_storage_progress_dialog.close()
+        self.ai_asset_location_edit.setText(str(result.assets_root))
+        self.log_view.append_event(
+            self.tr(
+                "ai_assets_moved",
+                "AI assets now use: {path}",
+                path=str(result.assets_root),
+            )
+        )
+        QMessageBox.information(
+            self,
+            self.tr("move_ai_assets_title", "Move AI assets"),
+            self.tr(
+                "ai_assets_move_complete",
+                "The AI asset location was changed successfully. Future engine and voice downloads will use the new folder.",
+            ),
+        )
+
+    def _on_ai_asset_move_failed(self, message: str) -> None:
+        if self.asset_storage_progress_dialog is not None:
+            self.asset_storage_progress_dialog.close()
+        self.log_view.append_event(f"AI asset storage failed: {message}")
+        self._show_error(
+            self.tr("storage_move_failed", "Storage move failed"),
+            message,
+        )
+
+    def _on_ai_asset_move_cancelled(self) -> None:
+        if self.asset_storage_progress_dialog is not None:
+            self.asset_storage_progress_dialog.close()
+        self.log_view.append_event(
+            self.tr("storage_move_cancelled", "AI asset move cancelled.")
+        )
+
+    def _clear_ai_asset_move_worker(self) -> None:
+        self.asset_storage_worker = None
+        self.asset_storage_thread = None
+        self.asset_storage_progress_dialog = None
+
+    def _reload_asset_managers(self) -> None:
+        self.kokoro_python_manager = KokoroPythonManager()
+        self.chatterbox_manager = ChatterboxManager()
+        self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
+        self.qwen_manager = QwenManager()
+        self.omnivoice_manager = OmniVoiceManager()
+        self.faster_whisper_manager = FasterWhisperManager()
+        gallery_settings = self.settings.get("voice_gallery", {})
+        self.voice_gallery_manager = VoiceGalleryManager(
+            catalog_url=str(
+                gallery_settings.get("catalog_url") or DEFAULT_GALLERY_CATALOG_URL
+            ),
+            local_catalog_path=str(gallery_settings.get("local_catalog_path", "")),
+        )
+        self.voice_gallery_manager.ensure_seed_loaded()
+        self._refresh_all_engine_status()
+        self._refresh_whisper_status()
+        self._refresh_voices_page()
+
+    def _relocate_selected_asset_paths(
+        self,
+        previous_root: Path,
+        assets_root: Path,
+    ) -> None:
+        for section_name, field_name in (
+            ("chatterbox", "reference_audio_path"),
+            ("omnivoice", "reference_audio_path"),
+            ("voice_gallery", "local_catalog_path"),
+        ):
+            section = self.settings.get(section_name)
+            if not isinstance(section, dict):
+                continue
+            value = str(section.get(field_name, "") or "").strip()
+            if not value:
+                continue
+            try:
+                relative = Path(value).expanduser().resolve().relative_to(
+                    previous_root.resolve()
+                )
+            except (OSError, ValueError):
+                continue
+            relocated = str(assets_root / relative)
+            section[field_name] = relocated
+            if section_name == "chatterbox":
+                self.chatterbox_reference_picker.set_path(relocated)
+            elif section_name == "omnivoice":
+                self.omnivoice_reference_picker.set_path(relocated)
+
+    def _open_ai_asset_location(self) -> None:
+        root = large_assets_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._show_error(
+                self.tr("open_folder", "Open folder"),
+                str(exc),
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root.resolve())))
 
     def _set_markup_corrector_enabled(self, enabled: bool) -> None:
         if hasattr(self, "markup_highlighter"):
@@ -9991,6 +10308,7 @@ class MainWindow(QMainWindow):
         self.normalize_checkbox.setChecked(
             bool(self.settings.get("normalize_audio", False))
         )
+        self.ai_asset_location_edit.setText(str(large_assets_root()))
         self.auto_delete_segment_wavs_checkbox.setChecked(
             bool(self.settings.get("auto_delete_segment_wavs_after_mix", False))
         )
@@ -10128,7 +10446,9 @@ class MainWindow(QMainWindow):
 
         text = self.text_editor.toPlainText()
         page_index = self.page_stack.currentIndex()
-        self.settings_manager.save(deepcopy(DEFAULT_SETTINGS))
+        defaults = deepcopy(DEFAULT_SETTINGS)
+        defaults["storage"] = deepcopy(self.settings.get("storage", {}))
+        self.settings_manager.save(defaults)
         self.settings = self.settings_manager.settings
         self.translator.set_language(str(self.settings["ui_language"]))
         self._rebuild_interface(text, page_index)
@@ -13692,6 +14012,8 @@ class MainWindow(QMainWindow):
             self.cleanup_current_wavs_button,
             self.cleanup_all_wavs_button,
             self.cleanup_temp_audio_button,
+            self.change_ai_asset_location_button,
+            self.open_ai_asset_location_button,
             self.editor_highlighting_checkbox,
             self.markup_toolbar_checkbox,
             self.markup_corrector_checkbox,
@@ -14086,6 +14408,17 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.asset_storage_thread is not None:
+            QMessageBox.warning(
+                self,
+                self.tr("move_ai_assets_title", "Move AI assets"),
+                self.tr(
+                    "storage_move_close_message",
+                    "AI assets are being moved. Cancel the move and wait for it to stop before closing LocalText2Voice.",
+                ),
+            )
+            event.ignore()
+            return
         if self._tts_engine_install_in_progress():
             QMessageBox.warning(
                 self,

@@ -10,9 +10,14 @@ from app.core.text_normalization import (
     DEFAULT_NORMALIZATION_RULES,
     normalization_rule_settings,
 )
-from app.utils.paths import application_root
+from app.utils.paths import (
+    application_root,
+    ensure_assets_marker,
+    large_assets_root,
+    write_assets_location_file,
+)
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 16
+CURRENT_SETTINGS_SCHEMA_VERSION = 17
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -37,6 +42,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
     "current_project_id": None,
+    "storage": {
+        # New portable runs use <application>/data. Schema migration writes an
+        # empty value for older configurations so their AppData models remain.
+        "base_dir": ".",
+        "previous_roots": [],
+    },
     "output_dir": "output",
     "voice_id": "",
     "language": "",
@@ -276,6 +287,14 @@ def _migrate_settings(
         if result.get("ducking_strength") == "medium":
             result["ducking_strength"] = "low"
 
+    if version < 17:
+        # Keep existing downloaded models visible until the user explicitly
+        # moves them from Settings > General.
+        result["storage"] = {
+            "base_dir": "",
+            "previous_roots": [],
+        }
+
     invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
     _sanitize_core_settings(result)
     if (
@@ -347,6 +366,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         "updates",
         "installer_setup",
         "text_normalization",
+        "storage",
     ):
         if not isinstance(settings.get(section), dict):
             settings[section] = deepcopy(DEFAULT_SETTINGS[section])
@@ -395,6 +415,20 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     review["tail_failure_threshold_seconds"] = failure
 
     _sanitize_chunk_sizes(settings)
+
+    storage = settings["storage"]
+    base_dir = storage.get("base_dir", "")
+    storage["base_dir"] = str(base_dir).strip() if base_dir is not None else ""
+    previous_roots = storage.get("previous_roots", [])
+    if not isinstance(previous_roots, list):
+        previous_roots = []
+    storage["previous_roots"] = list(
+        dict.fromkeys(
+            str(path).strip()
+            for path in previous_roots
+            if str(path).strip()
+        )
+    )[-8:]
 
 
 def _bounded_float(
@@ -468,6 +502,13 @@ class SettingsManager:
             encoding="utf-8",
         )
         temporary_path.replace(self.path)
+        if self.path.resolve() == (application_root() / "config.json").resolve():
+            write_assets_location_file(large_assets_root())
+            try:
+                ensure_assets_marker(large_assets_root())
+            except OSError:
+                # A clear write error is reported when an install/download starts.
+                pass
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.settings.get(key, default)

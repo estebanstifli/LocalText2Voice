@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.utils.paths import app_data_root, application_root
+from app.tts.install_logging import (
+    ProcessOutputCallback,
+    communicate_with_live_output,
+    detailed_pip_args,
+    progress_output_callback,
+    report_process_command,
+)
+from app.tts.model_cache import format_file_size
 
 
 class PythonRuntimeError(RuntimeError):
@@ -123,24 +131,40 @@ class PythonRuntimeManager:
             )
 
             progress(55, 100, "Installing pip...")
+            report_process_command(
+                progress,
+                55,
+                "pip bootstrap",
+                [str(staging_python_dir / "python.exe"), str(get_pip)],
+            )
             self._run_process(
                 [str(staging_python_dir / "python.exe"), str(get_pip)],
                 cancel_token,
                 cwd=staging_python_dir,
+                output_callback=progress_output_callback(
+                    progress, 55, "pip bootstrap"
+                ),
             )
 
             progress(75, 100, "Installing Python engine core packages...")
+            core_pip_args = detailed_pip_args(
+                [
+                    "install",
+                    "--no-warn-script-location",
+                    *self.CORE_PACKAGES,
+                ]
+            )
+            report_process_command(progress, 75, "pip", ["pip", *core_pip_args])
             self._run_process(
                 [
                     str(staging_python_dir / "python.exe"),
                     "-m",
                     "pip",
-                    "install",
-                    "--no-warn-script-location",
-                    *self.CORE_PACKAGES,
+                    *core_pip_args,
                 ],
                 cancel_token,
                 cwd=staging_python_dir,
+                output_callback=progress_output_callback(progress, 75, "pip"),
             )
 
             self._remove_path(self.python_dir)
@@ -182,6 +206,7 @@ class PythonRuntimeManager:
         args: list[str],
         cancel_token: threading.Event | None = None,
         cwd: Path | None = None,
+        output_callback: ProcessOutputCallback | None = None,
     ) -> str:
         if not self.is_installed():
             raise PythonRuntimeError(
@@ -192,6 +217,7 @@ class PythonRuntimeManager:
             [str(self.python_exe), *args],
             cancel_token,
             cwd=cwd or self.python_dir,
+            output_callback=output_callback,
         )
 
     def is_bundled(self) -> bool:
@@ -271,7 +297,12 @@ class PythonRuntimeManager:
                     raise PythonRuntimeError(
                         f"Download is unexpectedly small ({total} bytes): {url}"
                     )
-                progress(progress_start, 100, message)
+                size_text = format_file_size(total) if total else "unknown size"
+                progress(
+                    progress_start,
+                    100,
+                    f"{message} {target.name} ({size_text})",
+                )
                 with temporary.open("wb") as output:
                     while True:
                         self._check_cancelled(cancel_token)
@@ -284,7 +315,13 @@ class PythonRuntimeManager:
                             percent = progress_start + int(
                                 (downloaded / total) * (progress_end - progress_start)
                             )
-                            progress(min(progress_end, percent), 100, message)
+                            progress(
+                                min(progress_end, percent),
+                                100,
+                                f"Downloading {target.name}: "
+                                f"{format_file_size(downloaded)} / "
+                                f"{format_file_size(total)}",
+                            )
         except urllib.error.HTTPError as exc:
             raise PythonRuntimeError(
                 f"Download failed with HTTP {exc.code}: {url}"
@@ -296,12 +333,18 @@ class PythonRuntimeManager:
                 f"Download is too small ({downloaded} bytes): {url}"
             )
         temporary.replace(target)
+        progress(
+            progress_end,
+            100,
+            f"OK: {target.name} ({format_file_size(downloaded)})",
+        )
 
     def _run_process(
         self,
         command: list[str],
         cancel_token: threading.Event | None,
         cwd: Path,
+        output_callback: ProcessOutputCallback | None = None,
     ) -> str:
         self._check_cancelled(cancel_token)
         env = dict(os.environ)
@@ -323,16 +366,12 @@ class PythonRuntimeManager:
             raise PythonRuntimeError(f"Could not start embedded Python: {exc}") from exc
         with self._lock:
             self._process = process
-        stdout = b""
-        stderr = b""
         try:
-            while True:
-                self._check_cancelled(cancel_token)
-                try:
-                    stdout, stderr = process.communicate(timeout=0.25)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            stdout, stderr = communicate_with_live_output(
+                process,
+                lambda: self._check_cancelled(cancel_token),
+                output_callback,
+            )
         finally:
             with self._lock:
                 if self._process is process:

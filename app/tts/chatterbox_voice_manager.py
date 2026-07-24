@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from app.utils.paths import app_data_root
+from app.utils.paths import models_root
 
 
 class ChatterboxVoiceError(RuntimeError):
@@ -91,7 +91,7 @@ class ChatterboxReferenceVoiceManager:
     )
 
     def __init__(self, voices_dir: Path | None = None, timeout_seconds: int = 30) -> None:
-        self.voices_dir = voices_dir or app_data_root() / "models" / "chatterbox" / "voices"
+        self.voices_dir = voices_dir or models_root() / "chatterbox" / "voices"
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
 

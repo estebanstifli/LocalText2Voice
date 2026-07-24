@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.utils.paths import resolve_large_asset_path
+
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from .omnivoice_manager import OmniVoiceManager
 
@@ -39,7 +41,7 @@ class OmniVoiceTTSEngine(BaseTTSEngine):
         if mode not in {"auto", "design", "clone"}:
             raise TTSEngineError(f"Unsupported OmniVoice mode: {mode}")
         if mode == "clone":
-            reference_audio = Path(
+            reference_audio = resolve_large_asset_path(
                 str(voice_config.get("reference_audio_path", "") or "")
             )
             if not reference_audio.is_file():

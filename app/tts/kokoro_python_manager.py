@@ -8,8 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
-from app.utils.paths import app_data_root
+from app.utils.paths import engine_dependencies_root, models_root
 
+from .install_logging import (
+    detailed_pip_args,
+    progress_output_callback,
+    report_process_command,
+    run_python_with_live_output,
+)
 from .kokoro_manager import KokoroManager, KokoroProgress
 from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
 
@@ -43,6 +49,31 @@ def emit_fatal(message: str) -> None:
 
 def emit_info(message: str) -> None:
     emit({"type": "info", "message": message})
+
+
+def configure_environment(deps_dir: str) -> None:
+    deps_path = Path(deps_dir)
+    if str(deps_path) not in sys.path:
+        sys.path.insert(0, str(deps_path))
+
+    candidates = [deps_path]
+    for nvidia_dir in (deps_path / "nvidia").glob("*"):
+        candidates.extend((nvidia_dir / "bin", nvidia_dir / "lib"))
+
+    path_parts = []
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        path_parts.append(str(candidate))
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(str(candidate))
+            except OSError:
+                pass
+    if path_parts:
+        os.environ["PATH"] = os.pathsep.join(
+            [*path_parts, os.environ.get("PATH", "")]
+        )
 
 
 def configure_backend(rt, requested_provider: str) -> str:
@@ -130,6 +161,7 @@ def main() -> int:
     parser.add_argument("--cpu-model")
     parser.add_argument("--gpu-model")
     parser.add_argument("--voices", required=True)
+    parser.add_argument("--deps-dir", required=True)
     parser.add_argument(
         "--provider",
         choices=("auto", "cpu", "cuda", "directml"),
@@ -137,6 +169,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    configure_environment(args.deps_dir)
     try:
         import_started = time.perf_counter()
         import soundfile as sf
@@ -302,11 +335,17 @@ class KokoroPythonManager(KokoroManager):
         self,
         install_dir: Path | None = None,
         python_runtime: PythonRuntimeManager | None = None,
+        dependencies_root: Path | None = None,
         timeout_seconds: int = 60,
     ) -> None:
         self.python_runtime = python_runtime or PythonRuntimeManager()
+        self.dependencies_root = dependencies_root or (
+            self.python_runtime.runtime_dir / "engine-deps"
+            if python_runtime is not None
+            else engine_dependencies_root()
+        )
         super().__init__(
-            install_dir=install_dir or app_data_root() / "models" / "kokoro",
+            install_dir=install_dir or models_root() / "kokoro",
             timeout_seconds=timeout_seconds,
         )
 
@@ -388,7 +427,21 @@ class KokoroPythonManager(KokoroManager):
     def runtime_environment(self) -> dict[str, str]:
         env = dict(os.environ)
         env["PYTHONUTF8"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(self.dependency_dir), env.get("PYTHONPATH", "")]
+        )
+        runtime_paths = [self.dependency_dir]
+        for nvidia_dir in (self.dependency_dir / "nvidia").glob("*"):
+            runtime_paths.extend((nvidia_dir / "bin", nvidia_dir / "lib"))
+        env["PATH"] = os.pathsep.join(
+            [str(path) for path in runtime_paths if path.exists()]
+            + [env.get("PATH", "")]
+        )
         return env
+
+    @property
+    def dependency_dir(self) -> Path:
+        return self.dependencies_root / "kokoro" / "site-packages"
 
     @property
     def dependency_manifest_path(self) -> Path:
@@ -396,11 +449,7 @@ class KokoroPythonManager(KokoroManager):
 
     @property
     def runtime_dependency_manifest_path(self) -> Path:
-        return (
-            self.python_runtime.runtime_dir
-            / "engine-deps"
-            / self.DEPENDENCY_INSTALL_FILENAME
-        )
+        return self.dependencies_root / self.DEPENDENCY_INSTALL_FILENAME
 
     @property
     def cli_path(self) -> Path:
@@ -433,6 +482,8 @@ class KokoroPythonManager(KokoroManager):
         gpu_detection = detect_gpus()
         gpu_summary = format_gpu_detection(gpu_detection)
         progress(32, 100, gpu_summary.splitlines()[0])
+        self._remove_path(self.dependency_dir)
+        self.dependency_dir.mkdir(parents=True, exist_ok=True)
 
         backend = "CPUExecutionProvider"
         providers: list[str] = []
@@ -440,6 +491,8 @@ class KokoroPythonManager(KokoroManager):
         self._install_requirements(
             requirements,
             cancel_token,
+            progress,
+            34,
         )
 
         if gpu_detection.has_nvidia_gpu:
@@ -453,6 +506,8 @@ class KokoroPythonManager(KokoroManager):
                 self._install_requirements(
                     self.GPU_REQUIREMENTS,
                     cancel_token,
+                    progress,
+                    40,
                 )
                 requirements = [
                     requirement
@@ -470,6 +525,8 @@ class KokoroPythonManager(KokoroManager):
                 self._install_requirements(
                     self.CPU_FALLBACK_REQUIREMENTS,
                     cancel_token,
+                    progress,
+                    43,
                 )
                 requirements.extend(self.CPU_FALLBACK_REQUIREMENTS)
         else:
@@ -485,7 +542,12 @@ class KokoroPythonManager(KokoroManager):
                 "Kokoro runtime validation failed; reinstalling CPU backend: "
                 f"{exc}",
             )
-            self._install_requirements(self.CPU_FALLBACK_REQUIREMENTS, cancel_token)
+            self._install_requirements(
+                self.CPU_FALLBACK_REQUIREMENTS,
+                cancel_token,
+                progress,
+                46,
+            )
             requirements.extend(self.CPU_FALLBACK_REQUIREMENTS)
             providers = self._validate_runtime_providers(cancel_token)
         if "CUDAExecutionProvider" in providers:
@@ -506,17 +568,34 @@ class KokoroPythonManager(KokoroManager):
         self,
         requirements: tuple[str, ...] | list[str],
         cancel_token: threading.Event | None,
+        progress: KokoroProgress | None = None,
+        current: int = 0,
     ) -> None:
-        self.python_runtime.run_python(
+        pip_args = detailed_pip_args(
+            [
+                "install",
+                "--upgrade",
+                "--target",
+                str(self.dependency_dir),
+                "--no-warn-script-location",
+                *requirements,
+            ]
+        )
+        if progress is not None:
+            report_process_command(progress, current, "pip", ["pip", *pip_args])
+        run_python_with_live_output(
+            self.python_runtime,
             [
                 "-m",
                 "pip",
-                "install",
-                "--upgrade",
-                "--no-warn-script-location",
-                *requirements,
+                *pip_args,
             ],
             cancel_token,
+            (
+                progress_output_callback(progress, current, "pip")
+                if progress is not None
+                else None
+            ),
         )
 
     def _uninstall_packages(
@@ -524,16 +603,13 @@ class KokoroPythonManager(KokoroManager):
         packages: tuple[str, ...],
         cancel_token: threading.Event | None,
     ) -> None:
-        self.python_runtime.run_python(
-            [
-                "-m",
-                "pip",
-                "uninstall",
-                "-y",
-                *packages,
-            ],
-            cancel_token,
-        )
+        self._check_cancelled()
+        for package in packages:
+            normalized = package.casefold().replace("-", "_")
+            for child in self.dependency_dir.iterdir():
+                child_name = child.name.casefold().replace("-", "_")
+                if child_name == normalized or child_name.startswith(normalized + "_"):
+                    self._remove_path(child)
 
     def _validate_runtime_providers(
         self,
@@ -543,7 +619,14 @@ class KokoroPythonManager(KokoroManager):
             [
                 "-c",
                 (
-                    "import json, kokoro_onnx, soundfile, onnxruntime as ort; "
+                    "import json, os, sys; from pathlib import Path; "
+                    f"deps=Path({str(self.dependency_dir)!r}); "
+                    "sys.path.insert(0, str(deps)); "
+                    "paths=[deps]; nvidia=deps/'nvidia'; "
+                    "paths += [child/'bin' for child in nvidia.glob('*')]; "
+                    "paths += [child/'lib' for child in nvidia.glob('*')]; "
+                    "os.environ['PATH']=os.pathsep.join([str(p) for p in paths if p.exists()]+[os.environ.get('PATH','')]); "
+                    "import kokoro_onnx, soundfile, onnxruntime as ort; "
                     "getattr(ort, 'preload_dlls', lambda **kwargs: None)"
                     "(directory=''); "
                     "print(json.dumps({'providers': ort.get_available_providers()}))"

@@ -128,6 +128,8 @@ class KokoroPythonTTSEngine(BaseTTSEngine):
             gpu_model_path,
             "--voices",
             voices_path,
+            "--deps-dir",
+            str(self.manager.dependency_dir),
             "--provider",
             provider,
         ]
