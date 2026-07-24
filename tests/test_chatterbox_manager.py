@@ -127,6 +127,8 @@ class ChatterboxManagerTests(unittest.TestCase):
     def test_worker_writes_pcm_wav_for_pipeline_compatibility(self) -> None:
         self.assertIn('encoding="PCM_S"', CHATTERBOX_PYTHON_CLI)
         self.assertIn("bits_per_sample=16", CHATTERBOX_PYTHON_CLI)
+        self.assertIn('parser.add_argument("--deps-dir", required=True)', CHATTERBOX_PYTHON_CLI)
+        self.assertIn("sys.path.insert(0, str(deps_path))", CHATTERBOX_PYTHON_CLI)
 
     def test_legacy_cuda_setting_is_migrated_to_auto(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -159,6 +161,7 @@ class ChatterboxManagerTests(unittest.TestCase):
                     parser.add_argument("--model")
                     parser.add_argument("--device")
                     parser.add_argument("--cache-dir")
+                    parser.add_argument("--deps-dir")
                     args = parser.parse_args()
                     device = args.device
                     if device == "cuda":
@@ -226,6 +229,7 @@ class ChatterboxManagerTests(unittest.TestCase):
                     parser.add_argument("--model", required=True)
                     parser.add_argument("--device", required=True)
                     parser.add_argument("--cache-dir", required=True)
+                    parser.add_argument("--deps-dir", required=True)
                     parser.parse_args()
 
                     count = Path(os.environ["FAKE_CHATTERBOX_COUNT"])

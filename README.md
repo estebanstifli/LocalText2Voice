@@ -6,13 +6,14 @@
 
 <p align="center">
   <strong>Free, open-source AI voice and audio production for long-form text.</strong><br>
-  Turn books, lessons, articles, notes, and courses into MP3 audiobooks and podcast-style audio on Windows.
+  Turn books, lessons, articles, notes, and courses into MP3 audiobooks and podcast-style audio on Windows and Linux.
 </p>
 
 <p align="center">
   <a href="https://github.com/estebanstifli/LocalText2Voice/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/estebanstifli/LocalText2Voice?display_name=tag&sort=semver"></a>
   <a href="https://github.com/estebanstifli/LocalText2Voice/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/estebanstifli/LocalText2Voice"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows">
+  <img alt="Linux from source" src="https://img.shields.io/badge/Linux-from%20source-FCC624?logo=linux&logoColor=black">
   <img alt="Python and PySide6" src="https://img.shields.io/badge/Python%20%2B%20PySide6-desktop-3776AB?logo=python&logoColor=white">
   <img alt="Local AI" src="https://img.shields.io/badge/AI-local%20models%20%2B%20cloud%20APIs-5C2D91">
   <img alt="Offline capable" src="https://img.shields.io/badge/offline-capable-16A34A">
@@ -30,14 +31,14 @@ LocalText2Voice is a desktop app for creating long-form spoken audio with AI tex
 
 The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
 
-## What's New In 1.2.1
+## What's New In 1.3.0
 
-- Full **Russian UI**, bringing the desktop interface to eleven languages.
-- Five new MCP and HTTP tools let AI agents read, search, write, insert, delete, and replace text in completed audiobook projects.
-- Project-source edits use pagination and SHA-256 concurrency checks, and keep SQLite, `source.txt`, and the project manifest synchronized.
-- Faster Whisper now recovers safely when CUDA runtime libraries are unavailable by falling back to CPU `int8` instead of aborting review.
-- Downloaded Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and Faster Whisper assets are detected from their physical files even when an install manifest is missing or stale.
-- Engine management can repair or update incomplete installations while reusing existing model downloads.
+- Run LocalText2Voice from source on **Linux**, including Wayland detection, extensionless Piper/FFmpeg executable discovery, and Linux virtual-environment support.
+- Choose where large AI models, engine dependencies, downloaded voices, and caches are stored during Windows installation or later from Settings.
+- Move managed AI assets safely between drives without moving projects or generated audio.
+- See detailed live package-download and installation logs for optional local engines.
+- Export generated audio safely when temporary and output directories are on different Linux filesystems.
+- Preserve existing Windows behavior, upgrade compatibility, and guarded uninstall cleanup for user-selected model storage.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 
@@ -258,21 +259,58 @@ You choose the engine. The app does not force subscriptions.
 1. Open the [latest release](https://github.com/estebanstifli/LocalText2Voice/releases/latest).
 2. Download `LocalText2Voice-Setup.exe`.
 3. Run the installer.
-4. Choose the setup profile:
+4. Choose the application folder and the storage location for large AI assets. By default, an installation in `D:\LocalText2Voice` stores them under `D:\LocalText2Voice\data`.
+5. Choose the setup profile:
    - **CPU light**: fast offline Piper workflow.
    - **Powerful GPU**: prepares OmniVoice and Faster Whisper on first launch.
-5. Open **Settings > TTS Engines** and choose or install an engine.
-6. For Piper, open **Voices** or **Manage voices** and download a voice.
-7. Paste or import text.
-8. Click **Generate Audio**.
-9. Review segments if Whisper review is enabled.
-10. Open **Audio Mix** to create the podcast version.
+6. Open **Settings > TTS Engines** and choose or install an engine.
+7. For Piper, open **Voices** or **Manage voices** and download a voice.
+8. Paste or import text.
+9. Click **Generate Audio**.
+10. Review segments if Whisper review is enabled.
+11. Open **Audio Mix** to create the podcast version.
 
-The Windows installer is the recommended distribution artifact. LocalText2Voice still uses a folder-style app internally, so models, voices, FFmpeg, Python runtime assets, and optional engine dependencies remain easy to update and download on demand.
+The Windows installer is the recommended distribution artifact. Downloadable models, isolated engine dependencies, voice-gallery files, and caches share one managed `data` tree. Its location can be moved later from **Settings > General > AI model storage**, including between drives, without moving projects or exported audio.
 
 Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 
 Unsigned build note: early public builds may be unsigned until the open source code-signing process is ready. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
+
+## Quick Start On Linux
+
+Linux currently runs from source. Install Python, virtual-environment support,
+Git, and FFmpeg first.
+
+Debian or Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv ffmpeg git
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S python ffmpeg git
+```
+
+Then clone and start LocalText2Voice:
+
+```bash
+git clone https://github.com/estebanstifli/LocalText2Voice.git
+cd LocalText2Voice
+chmod +x run_dev.sh
+./run_dev.sh
+```
+
+The launcher creates `.venv`, installs the Python requirements, selects Wayland
+when available, and starts the desktop application. For Piper, place the Linux
+`piper` executable in `engines/piper/` or make it available through `PATH`;
+Linux executables do not use the `.exe` suffix. FFmpeg is discovered through
+`PATH`. Optional Python TTS engines can then be installed from the application.
+
+See the complete [Linux guide](docs/LINUX.md) for manual startup, desktop
+integration, tests, and platform notes.
 
 ## Technical Highlights For AI Engineering
 
@@ -602,7 +640,8 @@ course-generator
 - [x] Windows installer with CPU/GPU setup profiles.
 - [x] Automatic update system with SHA-256 verification.
 - [ ] Signed Windows installer.
-- [ ] macOS/Linux packaging experiments.
+- [x] Linux source workflow.
+- [ ] Native macOS/Linux packaging.
 - [ ] Optional LLM-assisted course/script generation.
 
 ## Tests
@@ -625,6 +664,16 @@ Please do not commit:
 - Copyrighted music or voice assets without permission.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes.
+
+## Acknowledgements
+
+Special thanks to [Roman Kudryavsky (`devpilgrin`)](https://github.com/devpilgrin)
+for contributing, testing, and documenting the Linux version of
+LocalText2Voice.
+
+I would also like to give a special thank you to
+[**Евгений Щелаков**](https://www.linkedin.com/in/schelakov/) for creating
+[such a detailed video about the project](https://www.youtube.com/watch?v=mOhEeRcX5k0).
 
 ## License
 

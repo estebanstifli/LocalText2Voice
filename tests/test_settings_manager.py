@@ -52,6 +52,31 @@ def test_malformed_json_uses_complete_defaults(tmp_path):
     assert settings == DEFAULT_SETTINGS
 
 
+def test_large_asset_storage_defaults_to_application_folder(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+
+    assert manager.settings["storage"] == {"base_dir": ".", "previous_roots": []}
+
+    manager.settings["storage"]["base_dir"] = "D:/LocalText2Voice"
+    manager.save()
+
+    assert SettingsManager(manager.path).settings["storage"]["base_dir"] == (
+        "D:/LocalText2Voice"
+    )
+
+
+def test_schema_16_config_keeps_legacy_asset_location(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"settings_schema_version": 16, "ui_language": "en"}),
+        encoding="utf-8",
+    )
+
+    storage = SettingsManager(path).settings["storage"]
+
+    assert storage == {"base_dir": "", "previous_roots": []}
+
+
 def test_save_preserves_existing_settings_reference(tmp_path):
     manager = SettingsManager(tmp_path / "config.json")
     held_reference = manager.settings

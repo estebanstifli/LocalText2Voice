@@ -5,6 +5,40 @@ All notable changes to LocalText2Voice are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-24
+
+### Added
+
+- Added a supported Linux-from-source workflow with a Bash launcher, Wayland
+  detection, setup documentation, and platform-focused tests.
+- Added configurable storage for models, isolated engine dependencies,
+  voice-gallery data, and download caches.
+- Added safe in-app migration of managed AI assets between drives.
+- Added a Windows installer page for selecting the large-model storage
+  location during a fresh installation.
+- Added detailed live output for optional-engine package installation and
+  downloads.
+
+### Changed
+
+- Piper and FFmpeg executable discovery now accepts extensionless Linux/macOS
+  binaries and system `PATH` installations.
+- Non-Windows optional-engine runtimes now use a virtual environment created
+  from the system Python installation.
+- Model storage uses a marked `data` tree, while older configurations retain
+  their historical locations until explicitly migrated.
+- Windows uninstall cleanup recognizes the selected model location and only
+  removes it when the LocalText2Voice ownership marker is present.
+
+### Fixed
+
+- Generated audio can now move from a temporary filesystem to a different
+  output filesystem without failing with `EXDEV`.
+- Piper status, preview, regeneration, verification, and server generation now
+  resolve the executable consistently across platforms.
+- Non-`EXDEV` file errors are no longer hidden by the cross-filesystem fallback.
+- Linux runtime tests now use the platform-specific runtime version and layout.
+
 ## [1.2.1] - 2026-07-21
 
 ### Added
@@ -60,5 +94,6 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
+[1.3.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/estebanstifli/LocalText2Voice/releases/tag/v1.2.0

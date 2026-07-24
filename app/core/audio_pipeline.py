@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import difflib
+import errno
 import json
+import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -13,9 +16,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
-from app.core.audio_mix import ducking_filter
 from app.core.audiobook_store import AudiobookStore, StoredAudiobook
+from app.core.audio_mix import ducking_filter
+from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.utils.ffmpeg_utils import (
     FFmpegCancelled,
     FFmpegError,
@@ -27,6 +30,17 @@ from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
 from .text_processor import TextChunk, TextProcessor
 from .text_normalization import TextNormalizer
+
+
+def _move_file(src: Path, dst: Path) -> None:
+    """Move a file even across filesystems."""
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.move(str(src), str(dst))
+
 
 ProgressCallback = Callable[[int, int, str], None]
 LogCallback = Callable[[str], None]
@@ -768,7 +782,7 @@ class AudioPipeline:
         ]
         started = time.perf_counter()
         runner.run(arguments)
-        processed.replace(output_wav)
+        _move_file(processed, output_wav)
         self.log_callback(
             "LTV Markup postprocess applied in "
             f"{self._format_duration(time.perf_counter() - started)} "
@@ -1918,7 +1932,7 @@ class AudioPipeline:
             f"({self._format_file_size(temporary_mp3)})."
         )
         final_path = options.output_dir / filename
-        temporary_mp3.replace(final_path)
+        _move_file(temporary_mp3, final_path)
         self.log_callback(f"Saved: {final_path}")
         return NarrationArtifact(
             wav_path=joined_wav,
@@ -2031,7 +2045,7 @@ class AudioPipeline:
                 f"({self._format_file_size(temporary_mp3)})."
             )
             final_path = options.output_dir / filename
-            temporary_mp3.replace(final_path)
+            _move_file(temporary_mp3, final_path)
             outputs.append(
                 NarrationArtifact(
                     wav_path=joined_wav,
@@ -2291,7 +2305,7 @@ class AudioPipeline:
         )
 
         final_path = options.output_dir / artifact.podcast_filename
-        temporary_output.replace(final_path)
+        _move_file(temporary_output, final_path)
         self.log_callback(f"Saved: {final_path}")
         self.log_callback(
             f"Podcast mix completed in "

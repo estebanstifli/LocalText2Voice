@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.tts.python_runtime_manager import PythonRuntimeManager
 
@@ -32,12 +33,37 @@ class PythonRuntimeManagerTests(unittest.TestCase):
                 json.dumps(
                     {
                         "state": "installed",
-                        "runtime_version": manager.RUNTIME_VERSION,
+                        "runtime_version": manager.runtime_version,
                     }
                 ),
                 encoding="utf-8",
             )
 
+            self.assertTrue(manager.is_installed())
+
+    def test_non_windows_install_uses_venv_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("app.tts.python_runtime_manager.sys.platform", "linux"):
+                manager = PythonRuntimeManager(Path(temporary))
+
+            def simulate_process(command, _cancel_token, cwd, **_kwargs) -> str:
+                if command[1:3] == ["-m", "venv"]:
+                    staging = Path(command[3])
+                    (staging / "bin").mkdir(parents=True)
+                    (staging / "bin" / "python").write_text("", encoding="utf-8")
+                    (
+                        staging
+                        / "lib"
+                        / "python3.12"
+                        / "site-packages"
+                        / "pip"
+                    ).mkdir(parents=True)
+                return ""
+
+            with patch.object(manager, "_run_process", side_effect=simulate_process):
+                manager.install()
+
+            self.assertEqual(manager.python_exe, manager.python_dir / "bin" / "python")
             self.assertTrue(manager.is_installed())
 
 

@@ -11,11 +11,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
+
+from app.tts.install_logging import install_detail_text, is_install_detail
 
 
 Translate = Callable[..., str]
@@ -61,6 +64,7 @@ class EngineInstallDialog(QDialog):
         tr: Translate,
         parent: QWidget | None = None,
         *,
+        install_path: Path | None = None,
         existing_model_detected: bool = False,
     ) -> None:
         super().__init__(parent)
@@ -68,6 +72,9 @@ class EngineInstallDialog(QDialog):
         self.requirement = requirement
         self.available_free_gb = available_free_gb
         self.volume = volume
+        self.install_path = (
+            install_path.expanduser().resolve() if install_path is not None else None
+        )
         self.tr = tr
         self.existing_model_detected = existing_model_detected
         self._installation_started = False
@@ -90,7 +97,8 @@ class EngineInstallDialog(QDialog):
             )
         )
         self.setModal(True)
-        self.setMinimumWidth(560)
+        self.setMinimumSize(760, 620)
+        self.resize(820, 680)
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
 
         layout = QVBoxLayout(self)
@@ -135,6 +143,25 @@ class EngineInstallDialog(QDialog):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+
+        if self.install_path is not None:
+            self.install_path_label = QLabel(
+                self.tr(
+                    "engine_install_destination",
+                    "Model download directory:\n{path}",
+                    path=str(self.install_path),
+                )
+            )
+            self.install_path_label.setObjectName("engineInstallDestination")
+            self.install_path_label.setWordWrap(True)
+            self.install_path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.install_path_label.setStyleSheet(
+                "background: #f4f6f8; border: 1px solid #d0d5dd; "
+                "border-radius: 6px; padding: 10px; font-family: monospace;"
+            )
+            layout.addWidget(self.install_path_label)
 
         required = QLabel(
             self.tr(
@@ -206,6 +233,39 @@ class EngineInstallDialog(QDialog):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
+        details_label = QLabel(
+            self.tr("engine_install_details", "Installation details")
+        )
+        details_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(details_label)
+
+        self.details_view = QPlainTextEdit()
+        self.details_view.setObjectName("engineInstallDetails")
+        self.details_view.setReadOnly(True)
+        self.details_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.details_view.setMinimumHeight(180)
+        self.details_view.document().setMaximumBlockCount(10000)
+        self._last_detail = ""
+        initial_details: list[str] = []
+        if self.install_path is not None:
+            initial_details.append(
+                self.tr(
+                    "engine_install_log_destination",
+                    "Destination: {path}",
+                    path=str(self.install_path),
+                )
+            )
+        initial_details.append(
+            self.tr(
+                "engine_install_log_space",
+                "Free space on {volume}: {free:.1f} GB",
+                volume=self.volume,
+                free=self.available_free_gb,
+            )
+        )
+        self.details_view.setPlainText("\n".join(initial_details))
+        layout.addWidget(self.details_view, 1)
+
         self.close_warning_label = QLabel(
             self.tr(
                 "engine_install_do_not_close",
@@ -270,6 +330,7 @@ class EngineInstallDialog(QDialog):
                 engine=self.engine_name,
             )
         )
+        self._append_detail(self.progress_label.text())
         self.install_requested.emit()
 
     def _on_later_clicked(self) -> None:
@@ -285,6 +346,9 @@ class EngineInstallDialog(QDialog):
     def update_progress(self, current: int, total: int, message: str) -> None:
         if not self._installation_active:
             return
+        if is_install_detail(message):
+            self._append_detail(install_detail_text(message))
+            return
         if total > 0:
             percentage = max(0, min(100, int((current / total) * 100)))
             self.progress_bar.setRange(0, 100)
@@ -293,6 +357,8 @@ class EngineInstallDialog(QDialog):
             self.progress_bar.setRange(0, 0)
         if message:
             self.progress_label.setText(message)
+            prefix = f"[{self.progress_bar.value():3d}%] " if total > 0 else ""
+            self._append_detail(f"{prefix}{message}")
 
     def finish(self, success: bool, message: str) -> None:
         self._installation_active = False
@@ -301,6 +367,12 @@ class EngineInstallDialog(QDialog):
         if success:
             self.progress_bar.setValue(100)
         self.progress_label.setText(message)
+        result = (
+            self.tr("engine_install_log_success", "COMPLETED")
+            if success
+            else self.tr("engine_install_log_failed", "STOPPED / FAILED")
+        )
+        self._append_detail(f"{result}: {message}")
         self.close_warning_label.setText(
             self.tr(
                 "engine_install_finished_safe",
@@ -311,6 +383,14 @@ class EngineInstallDialog(QDialog):
         self.install_button.setText(self.tr("close", "Close"))
         self.install_button.setEnabled(True)
         self.install_button.setDefault(True)
+
+    def _append_detail(self, message: str) -> None:
+        value = str(message).strip()
+        if not value or value == self._last_detail:
+            return
+        self._last_detail = value
+        self.details_view.appendPlainText(value)
+        self.details_view.ensureCursorVisible()
 
     def reject(self) -> None:
         if self._installation_active:

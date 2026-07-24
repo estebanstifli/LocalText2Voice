@@ -41,7 +41,7 @@ from app.tts.voice_gallery_manager import (
     VoiceGalleryManager,
 )
 from app.tts.voice_manager import VoiceInfo, VoiceManager
-from app.utils.paths import application_root, resolve_app_path
+from app.utils.paths import application_root, resolve_app_path, resolve_executable
 from app.verification.faster_whisper_manager import (
     FasterWhisperManager,
     FasterWhisperVerifier,
@@ -260,7 +260,7 @@ class LocalText2VoiceService:
                 {
                     "id": voice.voice_id,
                     "name": voice.display_name,
-                    "language": voice.lang,
+                    "language": voice.language,
                     "type": "Kokoro voice",
                     "installed": self.kokoro_manager.is_installed(),
                 }
@@ -493,7 +493,7 @@ class LocalText2VoiceService:
             int(review.get("beam_size", 1)),
             float(review.get("approve_threshold", 92.0)),
             int(review.get("max_retries", 0)),
-            resolve_app_path(
+            resolve_executable(
                 self.settings.get("piper_path", "engines/piper/piper.exe")
             ),
             voice_config,
@@ -690,7 +690,7 @@ class LocalText2VoiceService:
         engine_id: str,
         log_callback: LogCallback,
     ) -> BaseTTSEngine:
-        piper_path = resolve_app_path(self.settings.get("piper_path", "engines/piper/piper.exe"))
+        piper_path = resolve_executable(self.settings.get("piper_path", "engines/piper/piper.exe"))
         if not self.keep_engines_alive:
             engine = create_tts_engine(engine_id, piper_path)
             engine.set_log_callback(log_callback)
@@ -850,7 +850,7 @@ class LocalText2VoiceService:
                     {
                         "id": voice.voice_id,
                         "name": voice.display_name,
-                        "language": voice.lang,
+                        "language": voice.language,
                     }
                     for voice in self.kokoro_manager.list_voices()
                 ],
@@ -1123,7 +1123,7 @@ class LocalText2VoiceService:
 
     def _engine_installed(self, engine_id: str) -> bool | None:
         if engine_id == "piper":
-            return resolve_app_path(self.settings.get("piper_path", "engines/piper/piper.exe")).is_file()
+            return resolve_executable(self.settings.get("piper_path", "engines/piper/piper.exe")).is_file()
         if engine_id == "kokoro":
             return self.kokoro_manager.is_installed()
         if engine_id == "chatterbox":

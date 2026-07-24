@@ -1,5 +1,9 @@
 {
-  "settings_schema_version": 16,
+  "settings_schema_version": 17,
+  "storage": {
+    "base_dir": ".",
+    "previous_roots": []
+  },
   "ui_language": "en",
   "output_dir": "output",
   "voice_id": "",

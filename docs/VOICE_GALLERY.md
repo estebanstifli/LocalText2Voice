@@ -19,20 +19,24 @@ Repository:
 Catalog cache:
 
 ```text
-%LOCALAPPDATA%/LocalText2Voice/voice-gallery/voice-gallery.sqlite3
+<AI asset storage>/voice-gallery/voice-gallery.sqlite3
 ```
 
 Installed gallery voices:
 
 ```text
-%LOCALAPPDATA%/LocalText2Voice/voice-gallery/installed/<engine>/<voice_id>/
+<AI asset storage>/voice-gallery/installed/<engine>/<voice_id>/
 ```
 
 Imported local voices:
 
 ```text
-%LOCALAPPDATA%/LocalText2Voice/voice-gallery/imported/<engine>/
+<AI asset storage>/voice-gallery/imported/<engine>/
 ```
+
+New Windows installations use `<selected base>/data` as the AI asset storage
+root. Older configurations keep `%LOCALAPPDATA%/LocalText2Voice` until the user
+moves the assets from **Settings > General**.
 
 ## Catalog Format
 

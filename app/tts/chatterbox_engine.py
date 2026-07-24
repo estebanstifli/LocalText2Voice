@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.utils.paths import resolve_large_asset_path
+
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from .chatterbox_manager import ChatterboxManager
 
@@ -36,6 +38,8 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             )
         model = str(voice_config.get("model", "multilingual_v3"))
         reference = str(voice_config.get("reference_audio_path", "")).strip()
+        if reference:
+            reference = str(resolve_large_asset_path(reference))
         if model == "turbo" and not reference:
             raise TTSEngineError(
                 "Chatterbox Turbo requires a 5-20 second reference audio file."
@@ -126,6 +130,8 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             device,
             "--cache-dir",
             cache_dir,
+            "--deps-dir",
+            str(self.manager.dependency_dir),
         ]
         self.log_callback("Starting Chatterbox persistent worker.")
         try:

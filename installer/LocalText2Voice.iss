@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.1"
+  #define MyAppVersion "1.3.0"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -62,6 +62,12 @@ english.GpuComponent=Download OmniVoice and Faster Whisper on first launch
 english.DesktopIcon=Create a desktop shortcut
 english.LaunchProgram=Launch LocalText2Voice
 english.RemoveDownloadedAIDataPrompt=LocalText2Voice found downloaded AI engines, models, runtime dependencies, or voice gallery files. Remove them too? This can free several GB. Audiobook projects, exported audio, and settings will be kept.
+english.AssetsPageTitle=AI model storage
+english.AssetsPageDescription=Choose where large downloadable AI files will be stored.
+english.AssetsPageLabel=LocalText2Voice will create a data folder inside this location. Models, engine dependencies, voices, and caches can require many GB. Choose another drive if desired.
+spanish.AssetsPageTitle=Almacenamiento de modelos de IA
+spanish.AssetsPageDescription=Elige donde se guardaran los archivos grandes de IA.
+spanish.AssetsPageLabel=LocalText2Voice creara una carpeta data dentro de esta ubicacion. Los modelos, dependencias, voces y caches pueden ocupar muchos GB. Puedes elegir otra unidad.
 
 spanish.CpuLightType=Equipo CPU ligero - solo Piper
 spanish.GpuPowerType=GPU potente - preparar OmniVoice y Faster Whisper
@@ -110,22 +116,51 @@ Filename: "{app}\LocalText2Voice.exe"; Description: "{cm:LaunchProgram}"; Flags:
 [Code]
 var
   RemoveDownloadedAIData: Boolean;
+  AssetsDirPage: TInputDirWizardPage;
+  AssetsDirLastDefault: String;
 
 function UserDataRoot(): String;
 begin
   Result := ExpandConstant('{#UserDataDir}');
 end;
 
+function SelectedAssetsBaseDir(): String;
+begin
+  if Assigned(AssetsDirPage) and (Trim(AssetsDirPage.Values[0]) <> '') then
+    Result := RemoveBackslashUnlessRoot(ExpandConstant(AssetsDirPage.Values[0]))
+  else
+    Result := ExpandConstant('{app}');
+end;
+
+function AssetsRoot(): String;
+var
+  LocatorPath: String;
+  StoredRoot: AnsiString;
+begin
+  LocatorPath := ExpandConstant('{app}\assets-location.txt');
+  if LoadStringFromFile(LocatorPath, StoredRoot) and
+     (Trim(String(StoredRoot)) <> '') then
+    Result := RemoveBackslashUnlessRoot(Trim(String(StoredRoot)))
+  else
+    Result := UserDataRoot();
+end;
+
 function DownloadedAIDataExists(): Boolean;
 var
   Root: String;
+  ManagedRoot: String;
 begin
   Root := UserDataRoot();
+  ManagedRoot := AssetsRoot();
   Result :=
     DirExists(Root + '\models') or
     DirExists(Root + '\runtimes') or
     DirExists(Root + '\voice-gallery') or
-    DirExists(ExpandConstant('{app}\runtimes\python311\engine-deps'));
+    DirExists(ExpandConstant('{app}\runtimes\python311\engine-deps')) or
+    DirExists(ManagedRoot + '\models') or
+    DirExists(ManagedRoot + '\engine-deps') or
+    DirExists(ManagedRoot + '\voice-gallery') or
+    DirExists(ManagedRoot + '\downloads');
 end;
 
 procedure RemoveDataTree(const Path: String);
@@ -159,11 +194,13 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Root: String;
+  ManagedRoot: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
 
   Root := UserDataRoot();
+  ManagedRoot := AssetsRoot();
 
   { These contain only temporary coordination and downloaded update files. }
   RemoveDataTree(Root + '\server');
@@ -182,7 +219,13 @@ begin
 
     { Inno removes bundled Piper voices; this removes voices added later. }
     RemoveDataTree(ExpandConstant('{app}\voices'));
+
+    { A marker prevents deletion of an arbitrary user-selected directory. }
+    if FileExists(ManagedRoot + '\.localtext2voice-assets.json') then
+      RemoveDataTree(ManagedRoot);
   end;
+
+  DeleteFile(ExpandConstant('{app}\assets-location.txt'));
 
   { Remove only empty roots. Projects, exports, settings, music, and logs remain. }
   RemoveDir(Root);
@@ -222,6 +265,7 @@ var
   PendingInstalls: String;
   Completed: String;
   ReviewEnabled: String;
+  AssetsBaseDir: String;
 begin
   UiLang := SelectedUiLanguageCode();
   if WizardIsComponentSelected('gpu') then
@@ -240,11 +284,16 @@ begin
     Completed := 'true';
     ReviewEnabled := 'false';
   end;
+  AssetsBaseDir := SelectedAssetsBaseDir();
+  StringChangeEx(AssetsBaseDir, '\', '/', True);
 
   Result :=
     '{' + #13#10 +
-    '  "settings_schema_version": 16,' + #13#10 +
+    '  "settings_schema_version": 17,' + #13#10 +
     '  "ui_language": "' + UiLang + '",' + #13#10 +
+    '  "storage": {' + #13#10 +
+    '    "base_dir": "' + AssetsBaseDir + '"' + #13#10 +
+    '  },' + #13#10 +
     '  "output_dir": "output",' + #13#10 +
     '  "tts_engine": "' + TtsEngine + '",' + #13#10 +
     '  "review": {' + #13#10 +
@@ -263,11 +312,55 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ConfigPath: String;
+  ManagedRoot: String;
 begin
   if CurStep = ssPostInstall then
   begin
     ConfigPath := ExpandConstant('{app}\config.json');
     if not FileExists(ConfigPath) then
+    begin
       SaveStringToFile(ConfigPath, InitialConfigJson(), False);
+      ManagedRoot := AddBackslash(SelectedAssetsBaseDir()) + 'data';
+      ForceDirectories(ManagedRoot);
+      SaveStringToFile(
+        ManagedRoot + '\.localtext2voice-assets.json',
+        '{"application":"LocalText2Voice","managed_assets":true,"schema_version":1}',
+        False
+      );
+      SaveStringToFile(
+        ExpandConstant('{app}\assets-location.txt'),
+        ManagedRoot,
+        False
+      );
+    end;
   end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+var
+  NewDefault: String;
+begin
+  if Assigned(AssetsDirPage) and (CurPageID = AssetsDirPage.ID) then
+  begin
+    NewDefault := WizardDirValue();
+    if (Trim(AssetsDirPage.Values[0]) = '') or
+       (AssetsDirPage.Values[0] = AssetsDirLastDefault) then
+      AssetsDirPage.Values[0] := NewDefault;
+    AssetsDirLastDefault := NewDefault;
+  end;
+end;
+
+procedure InitializeWizard();
+begin
+  AssetsDirPage := CreateInputDirPage(
+    wpSelectDir,
+    ExpandConstant('{cm:AssetsPageTitle}'),
+    ExpandConstant('{cm:AssetsPageDescription}'),
+    ExpandConstant('{cm:AssetsPageLabel}'),
+    False,
+    ''
+  );
+  AssetsDirPage.Add('');
+  AssetsDirPage.Values[0] := WizardDirValue();
+  AssetsDirLastDefault := AssetsDirPage.Values[0];
 end;

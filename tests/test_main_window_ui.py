@@ -260,13 +260,19 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "chatterbox_detect_gpu_button"))
         self.assertFalse(window.chatterbox_detect_gpu_button.icon().isNull())
         self.assertTrue(hasattr(window, "chatterbox_load_button"))
-        self.assertFalse(window.chatterbox_load_button.isEnabled())
+        self.assertEqual(
+            window.chatterbox_load_button.isEnabled(),
+            window.chatterbox_manager.is_installed(),
+        )
         self.assertEqual(window.qwen_device_combo.currentData(), "auto")
         self.assertTrue(hasattr(window, "qwen_hardware_label"))
         self.assertTrue(hasattr(window, "qwen_detect_gpu_button"))
         self.assertFalse(window.qwen_detect_gpu_button.icon().isNull())
         self.assertTrue(hasattr(window, "qwen_load_button"))
-        self.assertFalse(window.qwen_load_button.isEnabled())
+        self.assertEqual(
+            window.qwen_load_button.isEnabled(),
+            window.qwen_manager.is_installed(),
+        )
         self.assertTrue(hasattr(window, "review_enabled_checkbox"))
         self.assertTrue(hasattr(window, "whisper_install_button"))
         self.assertEqual(window.review_model_combo.currentData(), "small")

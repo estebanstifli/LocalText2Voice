@@ -16,7 +16,7 @@ from app.tts.python_runtime_manager import (
     PythonRuntimeManager,
 )
 from app.tts.model_cache import huggingface_model_is_cached
-from app.utils.paths import app_data_root
+from app.utils.paths import engine_dependencies_root, models_root
 
 
 class FasterWhisperError(RuntimeError):
@@ -225,10 +225,16 @@ class FasterWhisperManager:
         self,
         install_dir: Path | None = None,
         python_runtime: PythonRuntimeManager | None = None,
+        dependencies_root: Path | None = None,
     ) -> None:
-        self.install_dir = install_dir or app_data_root() / "models" / "faster-whisper"
+        self.install_dir = install_dir or models_root() / "faster-whisper"
         self.cache_dir = self.install_dir / "hf-cache"
         self.python_runtime = python_runtime or PythonRuntimeManager()
+        self.dependencies_root = dependencies_root or (
+            self.python_runtime.runtime_dir / "engine-deps"
+            if python_runtime is not None
+            else engine_dependencies_root()
+        )
         self._cancel_requested = threading.Event()
         self._process: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
@@ -316,20 +322,11 @@ class FasterWhisperManager:
 
     @property
     def runtime_manifest_path(self) -> Path:
-        return (
-            self.python_runtime.runtime_dir
-            / "engine-deps"
-            / self.RUNTIME_INSTALL_FILENAME
-        )
+        return self.dependencies_root / self.RUNTIME_INSTALL_FILENAME
 
     @property
     def dependency_dir(self) -> Path:
-        return (
-            self.python_runtime.runtime_dir
-            / "engine-deps"
-            / "faster-whisper"
-            / "site-packages"
-        )
+        return self.dependencies_root / "faster-whisper" / "site-packages"
 
     @property
     def cli_path(self) -> Path:

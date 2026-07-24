@@ -10,9 +10,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.utils.gpu_detection import detect_gpus, format_gpu_detection
-from app.utils.paths import app_data_root
+from app.utils.paths import engine_dependencies_root, models_root
 
-from .model_cache import huggingface_model_is_cached
+from .install_logging import (
+    ProcessOutputCallback,
+    communicate_with_live_output,
+    detailed_pip_args,
+    progress_output_callback,
+    report_process_command,
+    run_python_with_live_output,
+)
+from .model_cache import (
+    format_file_size,
+    huggingface_cached_files,
+    huggingface_model_is_cached,
+)
 from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
 
 
@@ -72,7 +84,34 @@ def emit_fatal(message: str) -> None:
     emit({"type": "fatal", "message": message})
 
 
-def configure_cache(cache_dir: str) -> None:
+def configure_environment(cache_dir: str, deps_dir: str) -> None:
+    deps_path = Path(deps_dir)
+    if str(deps_path) not in sys.path:
+        sys.path.insert(0, str(deps_path))
+
+    candidates = [
+        deps_path,
+        deps_path / "torch" / "lib",
+        deps_path / "torchaudio" / "lib",
+    ]
+    for nvidia_dir in (deps_path / "nvidia").glob("*"):
+        candidates.extend((nvidia_dir / "bin", nvidia_dir / "lib"))
+
+    path_parts = []
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        path_parts.append(str(candidate))
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(str(candidate))
+            except OSError:
+                pass
+    if path_parts:
+        os.environ["PATH"] = os.pathsep.join(
+            [*path_parts, os.environ.get("PATH", "")]
+        )
+
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(cache_path)
@@ -187,12 +226,13 @@ def main() -> int:
     parser.add_argument("--model", choices=("multilingual_v3", "english", "turbo"), default="multilingual_v3")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu", "mps"), default="auto")
     parser.add_argument("--cache-dir", required=True)
+    parser.add_argument("--deps-dir", required=True)
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--warmup", action="store_true")
     parser.add_argument("--cuda-info", action="store_true")
     args = parser.parse_args()
 
-    configure_cache(args.cache_dir)
+    configure_environment(args.cache_dir, args.deps_dir)
     try:
         import_started = time.perf_counter()
         import torch
@@ -390,11 +430,13 @@ class ChatterboxManager:
         timeout_seconds: int = 60,
         **_legacy_kwargs: Any,
     ) -> None:
-        self.install_dir = install_dir or app_data_root() / "models" / "chatterbox"
+        self.install_dir = install_dir or models_root() / "chatterbox"
         self.cache_dir = self.install_dir / "hf-cache"
         self.python_runtime = python_runtime or PythonRuntimeManager()
         self.runtime_dir = runtime_dir or (
             self.python_runtime.runtime_dir / "engine-deps"
+            if python_runtime is not None
+            else engine_dependencies_root()
         )
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
@@ -463,6 +505,9 @@ class ChatterboxManager:
                 self._run_runtime(
                     ["--warmup", "--model", model, "--device", device],
                     cancel_token,
+                    output_callback=progress_output_callback(
+                        progress, 80, "Chatterbox model"
+                    ),
                 )
             except ChatterboxError as exc:
                 if device == "cuda" and self._is_cuda_unavailable_error(str(exc)):
@@ -475,9 +520,19 @@ class ChatterboxManager:
                     self._run_runtime(
                         ["--warmup", "--model", model, "--device", resolved_device],
                         cancel_token,
+                        output_callback=progress_output_callback(
+                            progress, 85, "Chatterbox model"
+                        ),
                     )
                 else:
                     raise
+            model_repo = self.MODEL_REPOSITORIES[model][0]
+            for filename, size in huggingface_cached_files(self.cache_dir, model_repo):
+                progress(
+                    98,
+                    100,
+                    f"OK: {filename} ({format_file_size(size)})",
+                )
             self._write_manifest("installed", model, resolved_device)
             progress(100, 100, "Chatterbox is ready.")
             return self.install_dir
@@ -495,6 +550,7 @@ class ChatterboxManager:
     def uninstall_runtime(self) -> None:
         self.cancel()
         self._remove_path(self.runtime_manifest_path)
+        self._remove_path(self.dependency_dir)
 
     def list_models(self) -> list[ChatterboxModel]:
         return list(self.MODELS)
@@ -562,10 +618,28 @@ class ChatterboxManager:
     def runtime_environment(self) -> dict[str, str]:
         env = dict(os.environ)
         env["PYTHONUTF8"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(self.dependency_dir), env.get("PYTHONPATH", "")]
+        )
         env["HF_HOME"] = str(self.cache_dir)
         env["HUGGINGFACE_HUB_CACHE"] = str(self.cache_dir / "hub")
         env["TRANSFORMERS_CACHE"] = str(self.cache_dir / "transformers")
+        runtime_paths = [
+            self.dependency_dir,
+            self.dependency_dir / "torch" / "lib",
+            self.dependency_dir / "torchaudio" / "lib",
+        ]
+        for nvidia_dir in (self.dependency_dir / "nvidia").glob("*"):
+            runtime_paths.extend((nvidia_dir / "bin", nvidia_dir / "lib"))
+        env["PATH"] = os.pathsep.join(
+            [str(path) for path in runtime_paths if path.exists()]
+            + [env.get("PATH", "")]
+        )
         return env
+
+    @property
+    def dependency_dir(self) -> Path:
+        return self.runtime_dir / "chatterbox" / "site-packages"
 
     def _install_runtime_dependencies(
         self,
@@ -588,6 +662,8 @@ class ChatterboxManager:
         gpu_detection = detect_gpus()
         gpu_summary = format_gpu_detection(gpu_detection)
         progress(30, 100, gpu_summary.splitlines()[0])
+        self._remove_path(self.dependency_dir)
+        self.dependency_dir.mkdir(parents=True, exist_ok=True)
 
         requirements: list[str] = list(self.SUPPORT_PACKAGES)
         backend = "cpu"
@@ -601,6 +677,8 @@ class ChatterboxManager:
                 *self.SUPPORT_PACKAGES,
             ],
             cancel_token,
+            progress,
+            35,
         )
 
         progress(50, 100, "Installing Chatterbox Python package...")
@@ -612,6 +690,8 @@ class ChatterboxManager:
                 self.CHATTERBOX_PACKAGE,
             ],
             cancel_token,
+            progress,
+            50,
         )
         requirements.append(self.CHATTERBOX_PACKAGE)
 
@@ -631,6 +711,8 @@ class ChatterboxManager:
                         f"torchaudio=={self.TORCH_VERSION}",
                     ],
                     cancel_token,
+                    progress,
+                    62,
                 )
                 requirements.extend(
                     [
@@ -665,8 +747,27 @@ class ChatterboxManager:
         self,
         args: list[str],
         cancel_token: threading.Event | None,
+        progress: ChatterboxProgress | None = None,
+        current: int = 0,
     ) -> str:
-        return self.python_runtime.run_python(["-m", "pip", *args], cancel_token)
+        targeted_args = list(args)
+        if targeted_args and targeted_args[0] == "install" and "--target" not in targeted_args:
+            targeted_args[1:1] = ["--target", str(self.dependency_dir)]
+        targeted_args = detailed_pip_args(targeted_args)
+        if progress is not None:
+            report_process_command(
+                progress, current, "pip", ["pip", *targeted_args]
+            )
+        return run_python_with_live_output(
+            self.python_runtime,
+            ["-m", "pip", *targeted_args],
+            cancel_token,
+            (
+                progress_output_callback(progress, current, "pip")
+                if progress is not None
+                else None
+            ),
+        )
 
     def _validate_runtime(
         self,
@@ -676,7 +777,15 @@ class ChatterboxManager:
             [
                 "-c",
                 (
-                    "import json, torch, torchaudio, chatterbox; "
+                    "import json, os, sys; from pathlib import Path; "
+                    f"deps=Path({str(self.dependency_dir)!r}); "
+                    "sys.path.insert(0, str(deps)); "
+                    "dlls=[deps, deps/'torch'/'lib', deps/'torchaudio'/'lib']; "
+                    "nvidia=deps/'nvidia'; "
+                    "dlls += [child/'bin' for child in nvidia.glob('*')]; "
+                    "dlls += [child/'lib' for child in nvidia.glob('*')]; "
+                    "os.environ['PATH']=os.pathsep.join([str(p) for p in dlls if p.exists()]+[os.environ.get('PATH','')]); "
+                    "import torch, torchaudio, chatterbox; "
                     "from perth.perth_net.perth_net_implicit.perth_watermarker "
                     "import PerthImplicitWatermarker; "
                     "print(json.dumps({"
@@ -704,6 +813,7 @@ class ChatterboxManager:
         self,
         args: list[str],
         cancel_token: threading.Event | None = None,
+        output_callback: ProcessOutputCallback | None = None,
     ) -> str:
         if not self.python_runtime.is_installed():
             raise ChatterboxError("Embedded Python runtime is not installed.")
@@ -712,6 +822,8 @@ class ChatterboxManager:
             *args,
             "--cache-dir",
             str(self.cache_dir),
+            "--deps-dir",
+            str(self.dependency_dir),
         ]
         try:
             process = subprocess.Popen(
@@ -729,16 +841,12 @@ class ChatterboxManager:
             raise ChatterboxError(f"Could not start Chatterbox: {exc}") from exc
         with self._lock:
             self._process = process
-        stdout = b""
-        stderr = b""
         try:
-            while True:
-                self._check_cancelled(cancel_token)
-                try:
-                    stdout, stderr = process.communicate(timeout=0.25)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            stdout, stderr = communicate_with_live_output(
+                process,
+                lambda: self._check_cancelled(cancel_token),
+                output_callback,
+            )
         finally:
             with self._lock:
                 if self._process is process:
