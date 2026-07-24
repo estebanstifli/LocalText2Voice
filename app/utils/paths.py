@@ -42,3 +42,25 @@ def app_data_root() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "LocalText2Voice"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "LocalText2Voice"
+
+
+def resolve_executable(value: str | Path) -> Path:
+    """Resolve a configured executable path across platforms.
+
+    Windows configs usually point at "*.exe". On Linux/macOS the same
+    bundled folder holds an extension-less binary, and a system-wide
+    installation may be available through PATH.
+    """
+    import shutil
+
+    configured = resolve_app_path(value)
+    if configured.is_file():
+        return configured
+    if configured.suffix.lower() == ".exe":
+        sibling = configured.with_suffix("")
+        if sibling.is_file():
+            return sibling
+        path_match = shutil.which(sibling.name)
+        if path_match:
+            return Path(path_match)
+    return configured

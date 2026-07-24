@@ -22,12 +22,19 @@ def find_ffmpeg(configured_path: str | Path) -> Path:
     if configured.is_file():
         return configured
 
+    # Windows configs usually say "ffmpeg/ffmpeg.exe"; on Linux/macOS the
+    # same bundled folder would hold an extension-less binary.
+    if configured.suffix.lower() == ".exe":
+        sibling = configured.with_suffix("")
+        if sibling.is_file():
+            return sibling
+
     path_match = shutil.which("ffmpeg")
     if path_match:
         return Path(path_match)
 
     raise FFmpegError(
-        "FFmpeg was not found. Place ffmpeg.exe in the ffmpeg folder, "
+        "FFmpeg was not found. Place ffmpeg in the ffmpeg folder, "
         "set ffmpeg_path in config.json, or add FFmpeg to PATH."
     )
 
