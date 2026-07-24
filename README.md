@@ -671,9 +671,10 @@ Special thanks to [Roman Kudryavsky (`devpilgrin`)](https://github.com/devpilgri
 for contributing, testing, and documenting the Linux version of
 LocalText2Voice.
 
-I would also like to give a special thank you to
-[**Евгений Щелаков**](https://www.linkedin.com/in/schelakov/) for creating
-[such a detailed video about the project](https://www.youtube.com/watch?v=mOhEeRcX5k0).
+Special thanks also to
+[Eugene Schelakov](https://www.youtube.com/@AyiTheDeer) for his help with the
+Russian localization of the LocalText2Voice user interface and for creating a
+detailed video about the project for the Russian-speaking community.
 
 ## License
 
