@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
@@ -132,6 +133,11 @@ class LogView(QTextEdit):
     @staticmethod
     def _line_color(line: str) -> str:
         normalized = line.casefold()
+        application = QApplication.instance()
+        dark = bool(
+            application is not None
+            and application.property("uiTheme") == "dark"
+        )
         error_markers = (
             " error",
             "failed",
@@ -156,7 +162,7 @@ class LogView(QTextEdit):
             "deprecated",
         )
         if any(marker in normalized for marker in error_markers):
-            return "#b91c1c"
+            return "#fca5a5" if dark else "#b91c1c"
         if any(marker in normalized for marker in warning_markers):
-            return "#92400e"
-        return "#111827"
+            return "#fdba74" if dark else "#92400e"
+        return "#e5edf8" if dark else "#111827"

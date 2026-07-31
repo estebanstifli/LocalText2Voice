@@ -14,6 +14,10 @@ ICON_NEUTRAL = "#374151"
 ICON_MUTED = "#6b7280"
 ICON_DANGER = "#dc2626"
 ICON_LIGHT = "#ffffff"
+ICON_ACTIVE_DARK = "#79a8ff"
+ICON_NEUTRAL_DARK = "#cbd5e1"
+ICON_MUTED_DARK = "#7f8da3"
+ICON_DANGER_DARK = "#f87171"
 
 
 _QTAWESOME_ICONS = {
@@ -53,6 +57,8 @@ _QTAWESOME_ICONS = {
     "review": "fa5s.check-circle",
     "save": "fa5s.download",
     "settings": "fa5s.cog",
+    "moon": "fa5s.moon",
+    "sun": "fa5s.sun",
     "server": "fa5s.network-wired",
     "stop": "fa5s.stop",
     "tail": "fa5s.forward",
@@ -94,6 +100,8 @@ _FALLBACK_ICONS = {
     "review": QStyle.StandardPixmap.SP_DialogApplyButton,
     "save": QStyle.StandardPixmap.SP_DialogSaveButton,
     "settings": QStyle.StandardPixmap.SP_FileDialogDetailedView,
+    "moon": QStyle.StandardPixmap.SP_TitleBarShadeButton,
+    "sun": QStyle.StandardPixmap.SP_TitleBarUnshadeButton,
     "server": QStyle.StandardPixmap.SP_ComputerIcon,
     "stop": QStyle.StandardPixmap.SP_MediaStop,
     "voice": QStyle.StandardPixmap.SP_MediaVolume,
@@ -120,11 +128,16 @@ def ui_icon(
 
 
 def _icon_color(name: str, *, active: bool, danger: bool) -> str:
+    application = QApplication.instance()
+    dark = bool(
+        application is not None
+        and application.property("uiTheme") == "dark"
+    )
     if danger or name in {"cancel", "close", "delete", "stop"}:
-        return ICON_DANGER
+        return ICON_DANGER_DARK if dark else ICON_DANGER
     if active:
-        return ICON_ACTIVE
-    return ICON_NEUTRAL
+        return ICON_ACTIVE_DARK if dark else ICON_ACTIVE
+    return ICON_NEUTRAL_DARK if dark else ICON_NEUTRAL
 
 
 def _fallback_icon(name: str) -> QIcon:

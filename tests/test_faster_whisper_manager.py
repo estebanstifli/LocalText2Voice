@@ -137,6 +137,44 @@ class FasterWhisperManagerTests(unittest.TestCase):
 
         ensure.assert_called_once_with("cpu", "int8")
 
+    def test_unsupported_cuda_compute_type_falls_back_to_cpu(self) -> None:
+        manager = Mock()
+        manager.is_installed.return_value = True
+        verifier = FasterWhisperVerifier(manager)
+        verifier.close = Mock()  # type: ignore[method-assign]
+        verifier.set_log_callback(Mock())
+        process = Mock()
+
+        with (
+            patch.object(
+                verifier,
+                "_ensure_worker",
+                side_effect=[
+                    FasterWhisperError(
+                        "Faster Whisper model load failed: Requested float16 "
+                        "compute type, but the target device or backend do not "
+                        "support efficient float16 computation."
+                    ),
+                    process,
+                ],
+            ) as ensure,
+        ):
+            verifier.preload(device="auto", compute_type="float16")
+
+        self.assertEqual(
+            ensure.call_args_list,
+            [call("auto", "float16"), call("cpu", "int8")],
+        )
+        verifier.close.assert_called_once_with(force=True)
+
+    def test_cpu_float16_is_normalized_to_int8(self) -> None:
+        verifier = FasterWhisperVerifier(Mock())
+
+        self.assertEqual(
+            verifier._effective_config("cpu", "float16"),
+            ("cpu", "int8"),
+        )
+
     def test_cpu_library_error_is_not_retried(self) -> None:
         manager = Mock()
         manager.is_installed.return_value = True

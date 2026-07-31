@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QThread, Qt
 from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -46,6 +47,14 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.page_stack.currentIndex(), 0)
         self.assertEqual(window.ui_language_combo.count(), 11)
         self.assertEqual(window.ui_language_combo.maxVisibleItems(), 11)
+        self.assertTrue(hasattr(window, "theme_button"))
+        self.assertFalse(window.theme_button.icon().isNull())
+        self.assertEqual(window.theme_button.objectName(), "themeToggleButton")
+        appearance_layout = window.theme_button.parentWidget().layout()
+        self.assertLess(
+            appearance_layout.indexOf(window.theme_button),
+            appearance_layout.indexOf(window.ui_language_combo),
+        )
         self.assertTrue(hasattr(window, "import_button"))
         self.assertFalse(hasattr(window, "refresh_voices_button"))
         self.assertFalse(window.import_button.icon().isNull())
@@ -265,6 +274,25 @@ class MainWindowUITests(unittest.TestCase):
             window.chatterbox_manager.is_installed(),
         )
         self.assertEqual(window.qwen_device_combo.currentData(), "auto")
+        custom_index = window.qwen_model_combo.findData("custom_voice_0_6b")
+        base_index = window.qwen_model_combo.findData("base_1_7b")
+        self.assertGreaterEqual(custom_index, 0)
+        self.assertGreaterEqual(base_index, 0)
+        self.assertIn(
+            "CustomVoice 0.6B",
+            window.qwen_model_combo.itemText(custom_index),
+        )
+        window.qwen_model_combo.setCurrentIndex(base_index)
+        self.assertTrue(window.qwen_speaker_combo.isHidden())
+        self.assertFalse(window.qwen_reference_picker.isHidden())
+        self.assertFalse(window.qwen_reference_text_edit.isHidden())
+        self.assertFalse(window.qwen_instruct_edit.isHidden())
+        self.assertIsNotNone(window.qwen_install_button.parentWidget())
+        self.assertIsNotNone(window.qwen_test_button.parentWidget())
+        window.qwen_model_combo.setCurrentIndex(custom_index)
+        self.assertFalse(window.qwen_speaker_combo.isHidden())
+        self.assertTrue(window.qwen_reference_picker.isHidden())
+        self.assertTrue(window.qwen_instruct_edit.isHidden())
         self.assertTrue(hasattr(window, "qwen_hardware_label"))
         self.assertTrue(hasattr(window, "qwen_detect_gpu_button"))
         self.assertFalse(window.qwen_detect_gpu_button.icon().isNull())
@@ -373,6 +401,68 @@ class MainWindowUITests(unittest.TestCase):
             SettingsManager(config_path).settings["ui_language"],
             "ru",
         )
+
+    def test_theme_toggle_is_accessible_persistent_and_preserves_page(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.json"
+
+        with patch(
+            "app.ui.main_window.SettingsManager",
+            return_value=SettingsManager(config_path),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        self.assertEqual(window.ui_theme, "light")
+        self.assertEqual(window.theme_button.property("themeIcon"), "sun")
+        self.assertEqual(
+            window.theme_button.toolTip(),
+            window.tr("switch_to_dark_theme", "Switch to dark theme"),
+        )
+        self.assertEqual(
+            window.theme_button.accessibleName(),
+            window.theme_button.toolTip(),
+        )
+        window.text_editor.setPlainText("Theme-safe text")
+        window._show_voices_page()
+
+        window.theme_button.click()
+
+        self.assertIsNotNone(window.theme_progress_dialog)
+        self.assertTrue(window.theme_progress_dialog.isVisible())
+        self.assertEqual(window.theme_progress_dialog.minimum(), 0)
+        self.assertEqual(window.theme_progress_dialog.maximum(), 0)
+        self.assertIn(
+            "dark theme",
+            window.theme_progress_dialog.labelText().casefold(),
+        )
+        deadline = time.monotonic() + 30
+        while window.ui_theme != "dark" and time.monotonic() < deadline:
+            QTest.qWait(50)
+
+        self.assertEqual(window.ui_theme, "dark")
+        self.assertIsNone(window.theme_progress_dialog)
+        self.assertEqual(window.theme_button.property("themeIcon"), "moon")
+        self.assertEqual(window.page_stack.currentIndex(), 5)
+        self.assertEqual(window.text_editor.toPlainText(), "Theme-safe text")
+        self.assertEqual(
+            window.theme_button.toolTip(),
+            window.tr("switch_to_light_theme", "Switch to light theme"),
+        )
+        self.assertIn("#0b1220", window.styleSheet())
+        self.assertEqual(SettingsManager(config_path).settings["ui_theme"], "dark")
+
+        window.theme_button.click()
+        deadline = time.monotonic() + 30
+        while window.ui_theme != "light" and time.monotonic() < deadline:
+            QTest.qWait(50)
+
+        self.assertEqual(window.ui_theme, "light")
+        self.assertIsNone(window.theme_progress_dialog)
+        self.assertEqual(window.theme_button.property("themeIcon"), "sun")
+        self.assertNotIn("#0b1220", window.styleSheet())
+        self.assertEqual(SettingsManager(config_path).settings["ui_theme"], "light")
 
     def test_verify_pending_button_starts_without_an_ffmpeg_path_widget(self) -> None:
         window = MainWindow()

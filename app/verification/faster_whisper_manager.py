@@ -610,6 +610,8 @@ class FasterWhisperVerifier:
         device: str,
         compute_type: str,
     ) -> tuple[str, str]:
+        if device == "cpu" and compute_type == "float16":
+            return "cpu", "int8"
         if self._cuda_fallback_reason and device in {"auto", "cuda"}:
             return "cpu", "int8"
         return device, compute_type
@@ -648,9 +650,21 @@ class FasterWhisperVerifier:
             "missing",
             "unable to load",
         )
-        return any(marker in message for marker in library_markers) and any(
+        missing_cuda_library = any(
+            marker in message for marker in library_markers
+        ) and any(
             marker in message for marker in load_markers
         )
+        unsupported_compute_type = (
+            "compute type" in message
+            and (
+                "do not support efficient" in message
+                or "does not support efficient" in message
+                or "not supported" in message
+                or "unsupported" in message
+            )
+        )
+        return missing_cuda_library or unsupported_compute_type
 
     def cancel_current(self) -> None:
         self._cancel_requested.set()

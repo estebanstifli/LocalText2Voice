@@ -3,7 +3,11 @@ from __future__ import annotations
 import subprocess
 import unittest
 
-from app.utils.gpu_detection import detect_gpus, format_gpu_detection
+from app.utils.gpu_detection import (
+    detect_gpus,
+    format_gpu_detection,
+    format_runtime_cuda_info,
+)
 
 
 class GPUDetectionTests(unittest.TestCase):
@@ -54,6 +58,25 @@ class GPUDetectionTests(unittest.TestCase):
         self.assertFalse(result.has_nvidia_gpu)
         self.assertIn("Intel UHD Graphics", summary)
         self.assertIn("no NVIDIA CUDA GPU", summary)
+
+    def test_runtime_cuda_info_includes_selected_profile_and_fallback(self) -> None:
+        summary = format_runtime_cuda_info(
+            {
+                "torch_version": "2.6.0+cpu",
+                "torch_cuda_version": None,
+                "cuda_available": False,
+                "device_count": 0,
+                "runtime_profile": "CPU / PyTorch 2.6",
+                "runtime_fallback_reason": "CUDA kernel validation failed",
+            },
+            engine_name="Qwen3 TTS",
+        )
+
+        self.assertIn("Runtime profile: CPU / PyTorch 2.6", summary)
+        self.assertIn(
+            "Runtime fallback: CUDA kernel validation failed",
+            summary,
+        )
 
 
 if __name__ == "__main__":

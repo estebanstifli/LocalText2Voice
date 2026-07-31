@@ -34,6 +34,7 @@ SUPPORTED_UI_LANGUAGES = {
     "ru",
     "zh",
 }
+SUPPORTED_UI_THEMES = {"light", "dark"}
 SUPPORTED_SPLIT_MODES = {"safe_chunks", "chapters"}
 SUPPORTED_EXPORT_MODES = {"single", "chapters"}
 
@@ -41,6 +42,7 @@ SUPPORTED_EXPORT_MODES = {"single", "chapters"}
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
+    "ui_theme": "light",
     "current_project_id": None,
     "storage": {
         # New portable runs use <application>/data. Schema migration writes an
@@ -138,6 +140,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "device": "auto",
         "dtype": "auto",
         "instruct": "",
+        "reference_audio_path": "",
+        "reference_text": "",
     },
     "omnivoice": {
         "model": "omnivoice",
@@ -338,6 +342,7 @@ def _sanitize_choice(
 
 def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     _sanitize_choice(settings, "ui_language", SUPPORTED_UI_LANGUAGES)
+    _sanitize_choice(settings, "ui_theme", SUPPORTED_UI_THEMES)
     _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
     _sanitize_choice(settings, "export_mode", SUPPORTED_EXPORT_MODES)
 

@@ -177,6 +177,7 @@ from mutagen import File as MutagenFile
 from .audio_mix_preview_panel import AudioMixPreviewContext, AudioMixPreviewPanel
 from .icons import ICON_LIGHT, ui_icon
 from .markup_highlighter import LTVMarkupHighlighter
+from .theme import DARK_THEME, DARK_THEME_STYLESHEET, normalize_theme, theme_palette
 from .voice_manager_dialog import VoiceManagerDialog
 from .widgets import FilePicker, LogView, PathPicker
 
@@ -671,6 +672,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
+        self.ui_theme = normalize_theme(self.settings.get("ui_theme", "light"))
+        application = QApplication.instance()
+        if application is not None:
+            application.setProperty("uiTheme", self.ui_theme)
         self._restoring_settings = False
         self.engine_host_client = EngineHostClient(self.settings_manager)
         self.local_server_controller = LocalServerController(self.settings_manager)
@@ -774,6 +779,7 @@ class MainWindow(QMainWindow):
         self.asset_storage_progress_dialog: QProgressDialog | None = None
         self.update_download_thread: QThread | None = None
         self.update_progress_dialog: QProgressDialog | None = None
+        self.theme_progress_dialog: QProgressDialog | None = None
         self.engine_install_dialogs: dict[str, EngineInstallDialog] = {}
         self._update_check_manual = False
         self.generation_started_at: float | None = None
@@ -1183,6 +1189,19 @@ class MainWindow(QMainWindow):
         page_title_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.page_icon_label)
         header_layout.addLayout(page_title_layout, 1)
+
+        appearance_controls = QWidget()
+        appearance_controls.setObjectName("appearanceControls")
+        appearance_controls.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        appearance_layout = QHBoxLayout(appearance_controls)
+        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        appearance_layout.setSpacing(8)
+        self.theme_button = QPushButton()
+        self.theme_button.setObjectName("themeToggleButton")
+        self.theme_button.setFixedSize(40, 40)
+        self.theme_button.setIconSize(QSize(18, 18))
+        self.theme_button.clicked.connect(self._toggle_ui_theme)
+        self._refresh_theme_button()
         self.ui_language_combo = QComboBox()
         self.ui_language_combo.setIconSize(QSize(18, 18))
         self.ui_language_combo.setToolTip(
@@ -1211,10 +1230,85 @@ class MainWindow(QMainWindow):
         self.header_open_output_button.setIconSize(QSize(18, 18))
         self.header_open_output_button.clicked.connect(self._open_last_output_folder)
         self.header_open_output_button.setVisible(False)
-        header_layout.addWidget(self.ui_language_combo)
+        appearance_layout.addWidget(self.theme_button)
+        appearance_layout.addWidget(self.ui_language_combo)
+        header_layout.addWidget(appearance_controls)
         header_layout.addWidget(self.settings_button)
         header_layout.addWidget(self.header_open_output_button)
         return header
+
+    def _refresh_theme_button(self) -> None:
+        dark = self.ui_theme == DARK_THEME
+        label = self.tr(
+            "switch_to_light_theme" if dark else "switch_to_dark_theme",
+            "Switch to light theme" if dark else "Switch to dark theme",
+        )
+        icon_name = "moon" if dark else "sun"
+        self.theme_button.setProperty("themeIcon", icon_name)
+        self.theme_button.setIcon(ui_icon(icon_name))
+        self.theme_button.setToolTip(label)
+        self.theme_button.setAccessibleName(label)
+
+    def _toggle_ui_theme(self, _checked: bool = False) -> None:
+        if self.theme_progress_dialog is not None:
+            return
+        text = self.text_editor.toPlainText()
+        page_index = self.page_stack.currentIndex()
+        self._save_settings()
+        target_theme = "light" if self.ui_theme == DARK_THEME else DARK_THEME
+        message = self.tr(
+            (
+                "changing_to_light_theme"
+                if target_theme == "light"
+                else "changing_to_dark_theme"
+            ),
+            (
+                "Changing to light theme..."
+                if target_theme == "light"
+                else "Changing to dark theme..."
+            ),
+        )
+        dialog = QProgressDialog(message, "", 0, 0, self)
+        dialog.setWindowTitle(self.tr("settings", "Settings"))
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumWidth(360)
+        self.theme_progress_dialog = dialog
+        dialog.show()
+        QApplication.processEvents()
+        QTimer.singleShot(
+            80,
+            lambda: self._apply_ui_theme_change(
+                dialog,
+                target_theme,
+                text,
+                page_index,
+            ),
+        )
+
+    def _apply_ui_theme_change(
+        self,
+        dialog: QProgressDialog,
+        target_theme: str,
+        text: str,
+        page_index: int,
+    ) -> None:
+        try:
+            self.ui_theme = target_theme
+            self.settings["ui_theme"] = self.ui_theme
+            self.settings_manager.save(self.settings)
+            application = QApplication.instance()
+            if application is not None:
+                application.setProperty("uiTheme", self.ui_theme)
+            self._rebuild_interface(text, page_index)
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            if self.theme_progress_dialog is dialog:
+                self.theme_progress_dialog = None
 
     def _apply_language_direction(self) -> None:
         direction = (
@@ -2802,14 +2896,6 @@ class MainWindow(QMainWindow):
 
         self.whisper_missing_frame = QFrame()
         self.whisper_missing_frame.setObjectName("whisperMissingFrame")
-        self.whisper_missing_frame.setStyleSheet(
-            "QFrame#whisperMissingFrame {"
-            " background: #fff7ed;"
-            " border: 1px solid #fb923c;"
-            " border-radius: 10px;"
-            "}"
-            "QLabel { color: #7c2d12; }"
-        )
         missing_layout = QHBoxLayout(self.whisper_missing_frame)
         missing_layout.setContentsMargins(14, 12, 14, 12)
         missing_layout.setSpacing(12)
@@ -4807,6 +4893,21 @@ class MainWindow(QMainWindow):
         self.qwen_speaker_combo = QComboBox()
         for voice in self.qwen_manager.list_voices():
             self.qwen_speaker_combo.addItem(voice.display_name, voice.voice_id)
+        self.qwen_reference_picker = FilePicker(
+            self.tr("browse", "Browse"),
+            self.tr(
+                "audio_files_filter",
+                "Audio files (*.wav *.mp3 *.flac *.m4a);;All files (*.*)",
+            ),
+        )
+        self.qwen_reference_text_edit = QTextEdit()
+        self.qwen_reference_text_edit.setFixedHeight(72)
+        self.qwen_reference_text_edit.setPlaceholderText(
+            self.tr(
+                "qwen_reference_text_placeholder",
+                "Exact transcript of the reference audio (required for best cloning).",
+            )
+        )
         self.qwen_device_combo = QComboBox()
         self.qwen_device_combo.addItem("Auto (recommended)", "auto")
         self.qwen_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
@@ -4820,18 +4921,30 @@ class MainWindow(QMainWindow):
         self.qwen_instruct_edit.setPlaceholderText(
             self.tr(
                 "qwen_instruct_placeholder",
-                "Optional style: calm narrator, warm course voice...",
+                "Optional style/emotion (experimental with Base 1.7B)...",
             )
         )
         form.addRow(self.tr("qwen_model", "Qwen3 model"), self.qwen_model_combo)
         form.addRow(self.tr("qwen_language", "Language"), self.qwen_language_combo)
-        form.addRow(self.tr("qwen_speaker", "Speaker"), self.qwen_speaker_combo)
+        self.qwen_speaker_label = QLabel(self.tr("qwen_speaker", "Speaker"))
+        form.addRow(self.qwen_speaker_label, self.qwen_speaker_combo)
+        self.qwen_reference_audio_label = QLabel(
+            self.tr("qwen_reference_audio", "Reference audio")
+        )
+        form.addRow(self.qwen_reference_audio_label, self.qwen_reference_picker)
+        self.qwen_reference_text_label = QLabel(
+            self.tr("qwen_reference_text", "Reference transcript")
+        )
+        form.addRow(
+            self.qwen_reference_text_label,
+            self.qwen_reference_text_edit,
+        )
         form.addRow(self.tr("qwen_device", "Compute device"), self.qwen_device_combo)
         form.addRow(self.tr("qwen_dtype", "Precision"), self.qwen_dtype_combo)
-        form.addRow(
-            self.tr("qwen_instruct", "Voice instruction"),
-            self.qwen_instruct_edit,
+        self.qwen_instruct_label = QLabel(
+            self.tr("qwen_instruct", "Voice instruction")
         )
+        form.addRow(self.qwen_instruct_label, self.qwen_instruct_edit)
 
         actions = QHBoxLayout()
         self.qwen_install_button = QPushButton(self.tr("install", "Install"))
@@ -4883,17 +4996,21 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self.qwen_preview_bar)
         self.qwen_preview_frame.setVisible(False)
 
+        self.qwen_model_help_label = QLabel()
+        self.qwen_model_help_label.setWordWrap(True)
+        self.qwen_model_help_label.setObjectName("helperLabel")
         helper = QLabel(
             self.tr(
                 "qwen_help",
-                "Advanced local neural TTS. The app downloads Qwen3 TTS on "
-                "demand into the local data folder and uses CUDA automatically "
-                "when the embedded runtime can see an NVIDIA GPU.",
+                "Choose CustomVoice 0.6B for fast preset voices or Base 1.7B "
+                "for high-fidelity cloning from your own reference recording.",
             )
         )
         helper.setWordWrap(True)
         helper.setObjectName("helperLabel")
         layout.addLayout(form)
+        layout.addLayout(actions)
+        layout.addWidget(self.qwen_model_help_label)
         layout.addWidget(self.qwen_progress_bar)
         layout.addWidget(self.qwen_preview_frame)
         layout.addWidget(helper)
@@ -4901,9 +5018,72 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.qwen_path_label)
         layout.addWidget(self.qwen_runtime_label)
         layout.addWidget(hardware_frame)
+        self.qwen_model_combo.currentIndexChanged.connect(
+            self._on_qwen_model_changed
+        )
+        self._refresh_qwen_model_fields()
         self._refresh_qwen_hardware_status()
         self._refresh_qwen_status()
         return panel
+
+    def _selected_qwen_model_id(self) -> str:
+        return str(
+            self.qwen_model_combo.currentData() or "custom_voice_0_6b"
+        )
+
+    def _qwen_model_kind(self, model_id: str | None = None) -> str:
+        selected = model_id or self._selected_qwen_model_id()
+        return self.qwen_manager.model_kind(selected)
+
+    def _qwen_model_files_detected(self, model_id: str) -> bool:
+        try:
+            return bool(self.qwen_manager.has_model_files(model_id))
+        except TypeError:
+            return bool(self.qwen_manager.has_model_files())
+
+    def _qwen_model_is_installed(self, model_id: str) -> bool:
+        try:
+            return bool(self.qwen_manager.is_installed(model_id))
+        except TypeError:
+            return bool(self.qwen_manager.is_installed())
+
+    def _on_qwen_model_changed(self, _index: int = -1) -> None:
+        self._refresh_qwen_model_fields()
+        self._refresh_qwen_status()
+
+    def _refresh_qwen_model_fields(self) -> None:
+        if not hasattr(self, "qwen_reference_picker"):
+            return
+        cloning = self._qwen_model_kind() == "voice_clone"
+        for widget in (self.qwen_speaker_label, self.qwen_speaker_combo):
+            widget.setVisible(not cloning)
+        for widget in (self.qwen_instruct_label, self.qwen_instruct_edit):
+            widget.setVisible(cloning)
+        for widget in (
+            self.qwen_reference_audio_label,
+            self.qwen_reference_picker,
+            self.qwen_reference_text_label,
+            self.qwen_reference_text_edit,
+        ):
+            widget.setVisible(cloning)
+        if cloning:
+            self.qwen_model_help_label.setText(
+                self.tr(
+                    "qwen_base_1_7b_help",
+                    "Base 1.7B uses full ICL cloning: provide a clean reference "
+                    "recording and its exact transcript. It preserves timbre and "
+                    "expression; style/emotion instructions are experimental and "
+                    "work through the accelerated CUDA backend.",
+                )
+            )
+        else:
+            self.qwen_model_help_label.setText(
+                self.tr(
+                    "qwen_customvoice_0_6b_help",
+                    "CustomVoice 0.6B is the fast preset-speaker model. Select "
+                    "one of the built-in voices; it does not clone reference audio.",
+                )
+            )
 
     def _refresh_qwen_hardware_status(self) -> None:
         if not hasattr(self, "qwen_hardware_label"):
@@ -4952,8 +5132,9 @@ class MainWindow(QMainWindow):
     def _refresh_qwen_status(self) -> None:
         if not hasattr(self, "qwen_status_label"):
             return
-        model_detected = self._manager_model_detected(self.qwen_manager)
-        installed = self.qwen_manager.is_installed()
+        model_id = self._selected_qwen_model_id()
+        model_detected = self._qwen_model_files_detected(model_id)
+        installed = self._qwen_model_is_installed(model_id)
         runtime_ready = self.qwen_manager.has_runtime()
         operation_running = self.qwen_thread is not None
         status_text = self._local_engine_install_status(
@@ -5045,7 +5226,7 @@ class MainWindow(QMainWindow):
         worker = QwenInstallWorker(
             QwenManager(),
             operation,
-            str(self.qwen_model_combo.currentData() or "custom_voice_0_6b"),
+            self._selected_qwen_model_id(),
             str(self.qwen_device_combo.currentData() or "auto"),
         )
         worker.moveToThread(thread)
@@ -5219,27 +5400,54 @@ class MainWindow(QMainWindow):
         self._refresh_qwen_status()
 
     def _qwen_voice_config_for_ui(self) -> dict[str, object] | None:
-        if not self.qwen_manager.is_installed():
+        model = self._selected_qwen_model_id()
+        if not self._qwen_model_is_installed(model):
             self._show_error(
                 self.tr("generation_failed", "Generation failed"),
                 self.tr(
                     "qwen_runtime_missing",
-                    "Qwen3 TTS is not installed yet. Open Settings > TTS Engines "
-                    "and click Install.",
+                    "The selected Qwen3 TTS model is not installed yet. Open "
+                    "Settings > TTS Engines and click Install.",
                 ),
             )
             return None
-        model = str(self.qwen_model_combo.currentData() or "custom_voice_0_6b")
+        generation_mode = self._qwen_model_kind(model)
+        reference_path = self.qwen_reference_picker.path()
+        reference_text = self.qwen_reference_text_edit.toPlainText().strip()
+        if generation_mode == "voice_clone":
+            if reference_path is None or not reference_path.is_file():
+                self._show_error(
+                    self.tr("generation_failed", "Generation failed"),
+                    self.tr(
+                        "qwen_reference_required",
+                        "Qwen3 TTS Base 1.7B voice cloning requires an existing "
+                        "reference audio file.",
+                    ),
+                )
+                return None
+            if not reference_text:
+                self._show_error(
+                    self.tr("generation_failed", "Generation failed"),
+                    self.tr(
+                        "qwen_reference_text_required",
+                        "Enter the exact transcript of the reference audio for "
+                        "high-quality Base 1.7B cloning.",
+                    ),
+                )
+                return None
         return {
             "engine": "qwen",
             "speed": self.speed_spin.value(),
             "model": model,
             "model_repo": self.qwen_manager.model_repo(model),
+            "generation_mode": generation_mode,
             "language": self.qwen_language_combo.currentData() or "Spanish",
             "speaker": self.qwen_speaker_combo.currentData() or "Serena",
             "device": self.qwen_device_combo.currentData() or "auto",
             "dtype": self.qwen_dtype_combo.currentData() or "auto",
             "instruct": self.qwen_instruct_edit.text().strip(),
+            "reference_audio_path": str(reference_path or ""),
+            "reference_text": reference_text,
             "cache_dir": str(self.qwen_manager.cache_dir),
         }
 
@@ -7858,6 +8066,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         for section_name, field_name in (
             ("chatterbox", "reference_audio_path"),
+            ("qwen", "reference_audio_path"),
             ("omnivoice", "reference_audio_path"),
             ("voice_gallery", "local_catalog_path"),
         ):
@@ -7877,6 +8086,8 @@ class MainWindow(QMainWindow):
             section[field_name] = relocated
             if section_name == "chatterbox":
                 self.chatterbox_reference_picker.set_path(relocated)
+            elif section_name == "qwen":
+                self.qwen_reference_picker.set_path(relocated)
             elif section_name == "omnivoice":
                 self.omnivoice_reference_picker.set_path(relocated)
 
@@ -8234,8 +8445,8 @@ class MainWindow(QMainWindow):
         return widget
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
+        self.setPalette(theme_palette(self.ui_theme))
+        style_sheet = """
             QMainWindow {
                 background: #f8fafc;
             }
@@ -8393,6 +8604,44 @@ class MainWindow(QMainWindow):
                 border: 1px solid #dfe4ec;
                 border-radius: 8px;
             }
+            QFrame#whisperMissingFrame {
+                background: #fff7ed;
+                border: 1px solid #fb923c;
+                border-radius: 10px;
+            }
+            QFrame#whisperMissingFrame QLabel {
+                color: #7c2d12;
+            }
+            QLabel#engineInstallDestination {
+                background: #f4f6f8;
+                border: 1px solid #d0d5dd;
+                border-radius: 6px;
+                padding: 10px;
+                font-family: monospace;
+            }
+            QLabel#engineInstallSpaceAvailable[spaceAvailable="true"] {
+                color: #18794e;
+                font-weight: 600;
+            }
+            QLabel#engineInstallSpaceAvailable[spaceAvailable="false"] {
+                color: #b42318;
+                font-weight: 700;
+            }
+            QLabel#engineInstallSpaceWarning {
+                background: #fff1f0;
+                border: 1px solid #fda29b;
+                border-radius: 6px;
+                color: #912018;
+                padding: 10px;
+            }
+            QLabel#engineInstallCloseWarning {
+                background: #fffaeb;
+                border: 1px solid #fedf89;
+                border-radius: 6px;
+                color: #7a2e0e;
+                padding: 10px;
+                font-weight: 600;
+            }
             QTextEdit, QPlainTextEdit, QLineEdit, QComboBox, QDoubleSpinBox {
                 background: #ffffff;
                 border: 1px solid #dbe2ec;
@@ -8466,6 +8715,9 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover {
                 background: #f6f8fb;
+            }
+            QPushButton#themeToggleButton {
+                padding: 8px;
             }
             QPushButton#inlineActionButton {
                 background: transparent;
@@ -8549,7 +8801,9 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
             }
             """
-        )
+        if self.ui_theme == DARK_THEME:
+            style_sheet += DARK_THEME_STYLESHEET
+        self.setStyleSheet(style_sheet)
         if hasattr(self, "review_table"):
             self._set_review_table_visible_rows(15)
 
@@ -10103,6 +10357,13 @@ class MainWindow(QMainWindow):
             qwen.get("dtype", "auto"),
         )
         self.qwen_instruct_edit.setText(str(qwen.get("instruct", "")))
+        self.qwen_reference_picker.set_path(
+            str(qwen.get("reference_audio_path", ""))
+        )
+        self.qwen_reference_text_edit.setPlainText(
+            str(qwen.get("reference_text", ""))
+        )
+        self._refresh_qwen_model_fields()
 
         omnivoice = self.settings.get("omnivoice", {})
         if not isinstance(omnivoice, dict):
@@ -10452,6 +10713,10 @@ class MainWindow(QMainWindow):
         self.settings_manager.save(defaults)
         self.settings = self.settings_manager.settings
         self.translator.set_language(str(self.settings["ui_language"]))
+        self.ui_theme = normalize_theme(self.settings.get("ui_theme", "light"))
+        application = QApplication.instance()
+        if application is not None:
+            application.setProperty("uiTheme", self.ui_theme)
         self._rebuild_interface(text, page_index)
         self.statusBar().showMessage(
             self.tr("reset_settings_done", "Default settings restored."),
@@ -12774,18 +13039,19 @@ class MainWindow(QMainWindow):
         state = state.casefold()
         background: QColor | None = None
         foreground: QColor | None = None
+        dark = self.ui_theme == DARK_THEME
         if state in {"retry_needed", "failed"}:
-            background = QColor("#fff1f2")
-            foreground = QColor("#b91c1c")
+            background = QColor("#3a171c" if dark else "#fff1f2")
+            foreground = QColor("#fca5a5" if dark else "#b91c1c")
         elif state == "review":
-            background = QColor("#fffbeb")
-            foreground = QColor("#92400e")
+            background = QColor("#342710" if dark else "#fffbeb")
+            foreground = QColor("#fde68a" if dark else "#92400e")
         elif state == "edited":
-            background = QColor("#eff6ff")
-            foreground = QColor("#1d4ed8")
+            background = QColor("#102442" if dark else "#eff6ff")
+            foreground = QColor("#93c5fd" if dark else "#1d4ed8")
         elif state == "approved":
-            background = QColor("#ecfdf5")
-            foreground = QColor("#047857")
+            background = QColor("#0e2b28" if dark else "#ecfdf5")
+            foreground = QColor("#6ee7b7" if dark else "#047857")
         if background is not None:
             item.setBackground(QBrush(background))
         if foreground is not None:
@@ -13907,6 +14173,7 @@ class MainWindow(QMainWindow):
             self.split_combo,
             self.export_combo,
             self.ui_language_combo,
+            self.theme_button,
             self.tts_engine_combo,
             self.tts_engine_table,
             self.piper_path_edit,
@@ -13933,6 +14200,8 @@ class MainWindow(QMainWindow):
             self.qwen_device_combo,
             self.qwen_dtype_combo,
             self.qwen_instruct_edit,
+            self.qwen_reference_picker,
+            self.qwen_reference_text_edit,
             self.qwen_install_button,
             self.qwen_remove_button,
             self.qwen_test_button,
@@ -14057,6 +14326,7 @@ class MainWindow(QMainWindow):
             {
                 "output_dir": str(output_dir),
                 "ui_language": self.ui_language_combo.currentData() or "en",
+                "ui_theme": self.ui_theme,
                 "tts_engine": self.tts_engine_combo.currentData() or "piper",
                 "piper_path": self.piper_path_edit.text().strip()
                 or "engines/piper/piper.exe",
@@ -14184,6 +14454,12 @@ class MainWindow(QMainWindow):
                     "device": self.qwen_device_combo.currentData() or "auto",
                     "dtype": self.qwen_dtype_combo.currentData() or "auto",
                     "instruct": self.qwen_instruct_edit.text().strip(),
+                    "reference_audio_path": str(
+                        self.qwen_reference_picker.path() or ""
+                    ),
+                    "reference_text": (
+                        self.qwen_reference_text_edit.toPlainText().strip()
+                    ),
                 },
                 "omnivoice": {
                     "model": (

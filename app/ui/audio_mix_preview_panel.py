@@ -7,7 +7,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPoint, QSize, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QTextCursor, QTextFormat
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QTextCursor,
+    QTextFormat,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -51,6 +59,10 @@ from .icons import ICON_DANGER, ui_icon
 
 WaveformSeries = tuple[WaveformEnvelope, QColor, float, float, bool]
 MIX_PREVIEW_DURATION_SECONDS = 60.0
+
+
+def _uses_dark_palette(widget: QWidget) -> bool:
+    return widget.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
 @dataclass(frozen=True)
@@ -352,17 +364,18 @@ class WaveformGraph(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.fillRect(rect, QColor("#ffffff"))
-        painter.setPen(QPen(QColor("#e5eaf3"), 1))
+        dark = _uses_dark_palette(self)
+        painter.fillRect(rect, QColor("#111b2e" if dark else "#ffffff"))
+        painter.setPen(QPen(QColor("#2a3951" if dark else "#e5eaf3"), 1))
         painter.drawRoundedRect(rect, 8, 8)
 
         title_rect = rect.adjusted(12, 8, -12, -rect.height() + 28)
-        painter.setPen(QColor("#12213f"))
+        painter.setPen(QColor("#f8fafc" if dark else "#12213f"))
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft, self.title)
 
         graph_rect = self._graph_rect()
         if graph_rect.width() < 16 or graph_rect.height() < 16:
-            painter.setPen(QColor("#6a7488"))
+            painter.setPen(QColor("#91a0b7" if dark else "#6a7488"))
             painter.drawText(
                 rect,
                 Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
@@ -379,7 +392,7 @@ class WaveformGraph(QWidget):
             if waveform_rect.width() >= 420
             else 2
         )
-        painter.setPen(QColor("#64748b"))
+        painter.setPen(QColor("#91a0b7" if dark else "#64748b"))
         for index in range(0, tick_count + 1):
             x = waveform_rect.left() + round(
                 waveform_rect.width() * index / tick_count
@@ -423,7 +436,7 @@ class WaveformGraph(QWidget):
         painter.restore()
 
         if not self.waveforms:
-            painter.setPen(QColor("#6a7488"))
+            painter.setPen(QColor("#91a0b7" if dark else "#6a7488"))
             painter.drawText(
                 graph_rect,
                 Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
@@ -688,10 +701,11 @@ class SegmentTimelineView(QPlainTextEdit):
 
     def _refresh_line_marks(self) -> None:
         selections: list[QTextEdit.ExtraSelection] = []
+        dark = _uses_dark_palette(self)
         for line, color in (
-            (self.selected_line, QColor("#dcfce7")),
-            (self.active_line, QColor("#bbf7d0")),
-            (self.hover_line, QColor("#e0f2fe")),
+            (self.selected_line, QColor("#164e3e" if dark else "#dcfce7")),
+            (self.active_line, QColor("#166534" if dark else "#bbf7d0")),
+            (self.hover_line, QColor("#164e63" if dark else "#e0f2fe")),
         ):
             if line < 0:
                 continue
@@ -1808,9 +1822,9 @@ class AudioMixPreviewPanel(QWidget):
             event_list.blockSignals(True)
             event_list.clear()
         track_colors = {
-            "music": QColor("#1d4ed8"),
-            "ambient": QColor("#047857"),
-            "sfx": QColor("#b45309"),
+            "music": QColor("#93c5fd" if _uses_dark_palette(self) else "#1d4ed8"),
+            "ambient": QColor("#6ee7b7" if _uses_dark_palette(self) else "#047857"),
+            "sfx": QColor("#fdba74" if _uses_dark_palette(self) else "#b45309"),
         }
         for event in play_events:
             label = Path(event.file_reference or event.file_path).name
@@ -1821,7 +1835,12 @@ class AudioMixPreviewPanel(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, event.event_uid)
             track = event.track or "sfx"
-            item.setForeground(track_colors.get(track, QColor("#7c3aed")))
+            item.setForeground(
+                track_colors.get(
+                    track,
+                    QColor("#c4b5fd" if _uses_dark_palette(self) else "#7c3aed"),
+                )
+            )
             if event.event_uid in self.dirty_event_uids:
                 item.setIcon(ui_icon("warning", danger=True))
                 item.setText(f"! {label}")
@@ -2852,7 +2871,12 @@ class AudioMixPreviewPanel(QWidget):
                         QTextFormat.Property.FullWidthSelection,
                         True,
                     )
-                selection.format.setBackground(QColor("#fef08a"))
+                dark = _uses_dark_palette(self.segment_text_view)
+                selection.format.setBackground(
+                    QColor("#854d0e" if dark else "#fef08a")
+                )
+                if dark:
+                    selection.format.setForeground(QColor("#fef3c7"))
                 selections.append(selection)
                 horizontal_scroll = self.segment_text_view.horizontalScrollBar()
                 horizontal_position = horizontal_scroll.value()

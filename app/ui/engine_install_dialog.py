@@ -157,10 +157,6 @@ class EngineInstallDialog(QDialog):
             self.install_path_label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )
-            self.install_path_label.setStyleSheet(
-                "background: #f4f6f8; border: 1px solid #d0d5dd; "
-                "border-radius: 6px; padding: 10px; font-family: monospace;"
-            )
             layout.addWidget(self.install_path_label)
 
         required = QLabel(
@@ -183,11 +179,7 @@ class EngineInstallDialog(QDialog):
             )
         )
         self.space_label.setObjectName("engineInstallSpaceAvailable")
-        self.space_label.setStyleSheet(
-            "color: #18794e; font-weight: 600;"
-            if enough_space
-            else "color: #b42318; font-weight: 700;"
-        )
+        self.space_label.setProperty("spaceAvailable", enough_space)
         layout.addWidget(self.space_label)
 
         duration = QLabel(
@@ -211,10 +203,6 @@ class EngineInstallDialog(QDialog):
             )
             self.space_warning_label.setObjectName("engineInstallSpaceWarning")
             self.space_warning_label.setWordWrap(True)
-            self.space_warning_label.setStyleSheet(
-                "background: #fff1f0; border: 1px solid #fda29b; "
-                "border-radius: 6px; color: #912018; padding: 10px;"
-            )
             layout.addWidget(self.space_warning_label)
 
         self.progress_label = QLabel(
@@ -275,10 +263,6 @@ class EngineInstallDialog(QDialog):
         )
         self.close_warning_label.setObjectName("engineInstallCloseWarning")
         self.close_warning_label.setWordWrap(True)
-        self.close_warning_label.setStyleSheet(
-            "background: #fffaeb; border: 1px solid #fedf89; "
-            "border-radius: 6px; color: #7a2e0e; padding: 10px; font-weight: 600;"
-        )
         layout.addWidget(self.close_warning_label)
 
         buttons = QHBoxLayout()

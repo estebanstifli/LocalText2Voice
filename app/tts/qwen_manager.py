@@ -3,13 +3,18 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import textwrap
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.gpu_detection import detect_gpus, format_gpu_detection
+from app.utils.gpu_detection import (
+    GPUDetectionResult,
+    detect_gpus,
+    format_gpu_detection,
+)
 from app.utils.paths import engine_dependencies_root, models_root
 
 from .install_logging import (
@@ -25,7 +30,12 @@ from .model_cache import (
     huggingface_cached_files,
     huggingface_model_is_cached,
 )
-from .python_runtime_manager import PythonRuntimeError, PythonRuntimeManager
+from .python_runtime_manager import (
+    PythonRuntimeCancelled,
+    PythonRuntimeError,
+    PythonRuntimeManager,
+)
+from .runtime_profiles import TorchRuntimeProfile, select_torch_runtime_profile
 
 
 class QwenError(RuntimeError):
@@ -58,6 +68,42 @@ class QwenVoice:
 class QwenLanguage:
     language_id: str
     display_name: str
+
+
+QWEN_CPU_PROFILE = TorchRuntimeProfile(
+    profile_id="cpu-torch260",
+    display_name="CPU / PyTorch 2.6",
+    backend="cpu",
+    torch_version="2.6.0",
+    torch_index_url="https://download.pytorch.org/whl/cpu",
+)
+QWEN_CUDA_LEGACY_PROFILE = TorchRuntimeProfile(
+    profile_id="cuda126-torch260",
+    display_name="CUDA 12.6 / PyTorch 2.6",
+    backend="cuda",
+    torch_version="2.6.0",
+    torch_index_url="https://download.pytorch.org/whl/cu126",
+    cuda_build="12.6",
+    priority=10,
+    maximum_compute_capability=(9, 99),
+)
+QWEN_CUDA_BLACKWELL_PROFILE = TorchRuntimeProfile(
+    profile_id="cuda130-torch2110-blackwell",
+    display_name="CUDA 13.0 / PyTorch 2.11 (Blackwell)",
+    backend="cuda",
+    torch_version="2.11.0",
+    torch_index_url="https://download.pytorch.org/whl/cu130",
+    cuda_build="13.0",
+    priority=100,
+    minimum_compute_capability=(10, 0),
+    maximum_compute_capability=(12, 99),
+    gpu_name_markers=("RTX 50", "Blackwell"),
+)
+QWEN_RUNTIME_PROFILES = (
+    QWEN_CPU_PROFILE,
+    QWEN_CUDA_LEGACY_PROFILE,
+    QWEN_CUDA_BLACKWELL_PROFILE,
+)
 
 
 QWEN_PYTHON_CLI = r'''
@@ -400,6 +446,9 @@ def main() -> int:
             language = str(request.get("language", "Spanish"))
             speaker = str(request.get("speaker", "Serena"))
             instruct = str(request.get("instruct", "")).strip() or None
+            generation_mode = str(
+                request.get("generation_mode", "custom_voice")
+            ).strip()
             generation_kwargs = {}
             for key in ("temperature", "top_k", "top_p", "repetition_penalty", "max_new_tokens"):
                 value = request.get(key)
@@ -407,13 +456,57 @@ def main() -> int:
                     generation_kwargs[key] = value
 
             synth_started = time.perf_counter()
-            wavs, sample_rate = model.generate_custom_voice(
-                text=text,
-                language=language,
-                speaker=speaker,
-                instruct=instruct,
-                **generation_kwargs,
-            )
+            if generation_mode == "voice_clone":
+                reference_audio = str(
+                    request.get("reference_audio_path", "")
+                ).strip()
+                reference_text = str(
+                    request.get("reference_text", "")
+                ).strip()
+                if not reference_audio:
+                    raise ValueError(
+                        "Qwen Base voice cloning requires reference audio."
+                    )
+                if not Path(reference_audio).is_file():
+                    raise ValueError(
+                        f"Qwen reference audio was not found: {reference_audio}"
+                    )
+                if not reference_text:
+                    raise ValueError(
+                        "Qwen Base ICL cloning requires an accurate reference transcript."
+                    )
+                clone_kwargs = {
+                    "text": text,
+                    "language": language,
+                    "ref_audio": reference_audio,
+                    "ref_text": reference_text,
+                    **generation_kwargs,
+                }
+                if backend_used.startswith("faster-qwen3-tts"):
+                    clone_kwargs["xvec_only"] = False
+                    if instruct:
+                        clone_kwargs["instruct"] = instruct
+                else:
+                    clone_kwargs["x_vector_only_mode"] = False
+                    if instruct:
+                        emit_info(
+                            "Base-model emotion/style instructions are experimental "
+                            "and only available through the accelerated CUDA backend; "
+                            "the CPU backend will clone the reference expression."
+                        )
+                wavs, sample_rate = model.generate_voice_clone(**clone_kwargs)
+            elif generation_mode == "custom_voice":
+                wavs, sample_rate = model.generate_custom_voice(
+                    text=text,
+                    language=language,
+                    speaker=speaker,
+                    instruct=instruct,
+                    **generation_kwargs,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported Qwen generation mode: {generation_mode}"
+                )
             emit_timing("synthesis", synth_started, request_id)
 
             write_started = time.perf_counter()
@@ -434,15 +527,28 @@ if __name__ == "__main__":
 
 class QwenManager:
     VERSION = "qwen3-tts-v1"
-    RUNTIME_VERSION = "qwen3-tts-fast-deps-v1"
+    RUNTIME_VERSION = "qwen3-tts-profiled-deps-v3"
+    LEGACY_RUNTIME_VERSIONS = ("qwen3-tts-fast-deps-v1",)
     INSTALL_FILENAME = "qwen-install.json"
     RUNTIME_INSTALL_FILENAME = "qwen-runtime-install.json"
+    PROFILE_INSTALL_FILENAME = "profile-install.json"
     CLI_FILENAME = "qwen_worker.py"
     QWEN_PACKAGE = "faster-qwen3-tts==0.3.0"
     UPSTREAM_QWEN_PACKAGE = "qwen-tts==0.1.1"
-    TORCH_VERSION = "2.6.0"
-    GPU_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+    RUNTIME_PROFILES = QWEN_RUNTIME_PROFILES
+    CPU_RUNTIME_PROFILE = QWEN_CPU_PROFILE
+    CUDA_RUNTIME_PROFILES = tuple(
+        sorted(
+            (
+                QWEN_CUDA_LEGACY_PROFILE,
+                QWEN_CUDA_BLACKWELL_PROFILE,
+            ),
+            key=lambda profile: profile.priority,
+            reverse=True,
+        )
+    )
     MODEL_REPO = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    BASE_1_7B_MODEL_REPO = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
     MODEL_REQUIRED_FILES = {
         "config.json": 1_000,
         "model.safetensors": 100 * 1024 * 1024,
@@ -453,9 +559,16 @@ class QwenManager:
     MODELS: tuple[QwenModel, ...] = (
         QwenModel(
             "custom_voice_0_6b",
-            "Qwen3 TTS 0.6B CustomVoice Fast",
+            "Qwen3 TTS CustomVoice 0.6B (Fast)",
             MODEL_REPO,
             "custom_voice",
+            True,
+        ),
+        QwenModel(
+            "base_1_7b",
+            "Qwen3 TTS Base 1.7B (Voice cloning)",
+            BASE_1_7B_MODEL_REPO,
+            "voice_clone",
             True,
         ),
     )
@@ -514,8 +627,8 @@ class QwenManager:
         self._process: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
 
-    def is_installed(self) -> bool:
-        return self.has_model_files() and self.has_runtime()
+    def is_installed(self, model_id: str | None = None) -> bool:
+        return self.has_model_files(model_id) and self.has_runtime()
 
     def has_model_files(self, model_id: str | None = None) -> bool:
         model_repo = self.model_repo(model_id or self.MODELS[0].model_id)
@@ -526,14 +639,41 @@ class QwenManager:
         )
 
     def has_runtime(self) -> bool:
+        return self.has_runtime_for_detection(detect_gpus())
+
+    def has_runtime_for_detection(
+        self,
+        gpu_detection: GPUDetectionResult,
+    ) -> bool:
         manifest = self.runtime_manifest()
+        requested_profile = self.select_runtime_profile(gpu_detection)
+        active_profile = self.runtime_profile_by_id(
+            str(manifest.get("profile_id", ""))
+        )
+        requested_profile_id = str(
+            manifest.get("requested_profile_id", manifest.get("profile_id", ""))
+        )
+        profile_is_compatible = (
+            active_profile is not None
+            and requested_profile_id == requested_profile.profile_id
+            and (
+                active_profile.profile_id == requested_profile.profile_id
+                or active_profile.backend == "cpu"
+            )
+        )
+        dependency_dir = (
+            self.profile_dependency_dir(active_profile)
+            if active_profile is not None
+            else self.legacy_dependency_dir
+        )
         return (
             self.python_runtime.is_installed()
             and manifest.get("state") == "installed"
             and manifest.get("runtime_version") == self.RUNTIME_VERSION
+            and profile_is_compatible
             and self.cli_path.is_file()
-            and (self.dependency_dir / "qwen_tts").is_dir()
-            and (self.dependency_dir / "faster_qwen3_tts").is_dir()
+            and (dependency_dir / "qwen_tts").is_dir()
+            and (dependency_dir / "faster_qwen3_tts").is_dir()
         )
 
     def runtime_is_current(self) -> bool:
@@ -545,6 +685,31 @@ class QwenManager:
     def runtime_manifest(self) -> dict[str, Any]:
         return self._read_manifest(self.runtime_manifest_path)
 
+    @classmethod
+    def runtime_profile_by_id(
+        cls,
+        profile_id: str,
+    ) -> TorchRuntimeProfile | None:
+        return next(
+            (
+                profile
+                for profile in cls.RUNTIME_PROFILES
+                if profile.profile_id == profile_id
+            ),
+            None,
+        )
+
+    @classmethod
+    def select_runtime_profile(
+        cls,
+        gpu_detection: GPUDetectionResult,
+    ) -> TorchRuntimeProfile:
+        return select_torch_runtime_profile(
+            gpu_detection,
+            cls.CPU_RUNTIME_PROFILE,
+            cls.CUDA_RUNTIME_PROFILES,
+        )
+
     def list_models(self) -> list[QwenModel]:
         return list(self.MODELS)
 
@@ -554,11 +719,17 @@ class QwenManager:
     def list_languages(self) -> list[QwenLanguage]:
         return list(self.LANGUAGES)
 
-    def model_repo(self, model_id: str) -> str:
+    def model_definition(self, model_id: str) -> QwenModel:
         for model in self.MODELS:
             if model.model_id == model_id:
-                return model.repo_id
-        return self.MODEL_REPO
+                return model
+        return self.MODELS[0]
+
+    def model_kind(self, model_id: str) -> str:
+        return self.model_definition(model_id).kind
+
+    def model_repo(self, model_id: str) -> str:
+        return self.model_definition(model_id).repo_id
 
     def install(
         self,
@@ -629,7 +800,7 @@ class QwenManager:
     def uninstall_runtime(self) -> None:
         self.cancel()
         self._remove_path(self.runtime_manifest_path)
-        self._remove_path(self.dependency_dir)
+        self._remove_path(self.qwen_dependencies_root)
 
     def synthesize(
         self,
@@ -692,7 +863,17 @@ class QwenManager:
             data = json.loads(lines[-1] if lines else "{}")
         except (QwenError, json.JSONDecodeError):
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        manifest = self.runtime_manifest()
+        profile = self.runtime_profile_by_id(str(manifest.get("profile_id", "")))
+        if profile is not None:
+            data["runtime_profile"] = profile.display_name
+            data["runtime_profile_id"] = profile.profile_id
+        fallback_reason = str(manifest.get("fallback_reason", "")).strip()
+        if fallback_reason:
+            data["runtime_fallback_reason"] = fallback_reason
+        return data
 
     @property
     def manifest_path(self) -> Path:
@@ -704,7 +885,25 @@ class QwenManager:
 
     @property
     def dependency_dir(self) -> Path:
-        return self.dependencies_root / "qwen" / "site-packages"
+        manifest = self.runtime_manifest()
+        profile = self.runtime_profile_by_id(str(manifest.get("profile_id", "")))
+        if profile is not None:
+            return self.profile_dependency_dir(profile)
+        return self.legacy_dependency_dir
+
+    @property
+    def qwen_dependencies_root(self) -> Path:
+        return self.dependencies_root / "qwen"
+
+    @property
+    def legacy_dependency_dir(self) -> Path:
+        return self.qwen_dependencies_root / "site-packages"
+
+    def profile_root(self, profile: TorchRuntimeProfile) -> Path:
+        return self.qwen_dependencies_root / "profiles" / profile.profile_id
+
+    def profile_dependency_dir(self, profile: TorchRuntimeProfile) -> Path:
+        return self.profile_root(profile) / "site-packages"
 
     @property
     def cli_path(self) -> Path:
@@ -728,166 +927,374 @@ class QwenManager:
                 ),
                 cancel_token,
             )
-        if self.has_runtime():
+        gpu_detection = detect_gpus()
+        requested_profile = self.select_runtime_profile(gpu_detection)
+        current_manifest = self.runtime_manifest()
+        runtime_is_usable = self.has_runtime_for_detection(gpu_detection)
+        fallback_is_active = bool(
+            str(current_manifest.get("fallback_reason", "")).strip()
+        )
+        if runtime_is_usable and not fallback_is_active:
             progress(75, 100, "Qwen TTS Python dependencies already installed.")
             return
+        if runtime_is_usable and fallback_is_active:
+            progress(
+                30,
+                100,
+                "Retrying the requested Qwen CUDA profile; the current CPU "
+                "fallback remains available.",
+            )
 
-        gpu_detection = detect_gpus()
         gpu_summary = format_gpu_detection(gpu_detection)
         progress(30, 100, gpu_summary.splitlines()[0])
-
-        self._remove_path(self.dependency_dir)
-        self.dependency_dir.mkdir(parents=True, exist_ok=True)
-        requirements: list[str] = []
-        backend = "cpu"
-
-        torch_requirements = [
-            f"torch=={self.TORCH_VERSION}",
-            f"torchaudio=={self.TORCH_VERSION}",
-        ]
-        if gpu_detection.has_nvidia_gpu:
-            progress(38, 100, "Installing Qwen PyTorch CUDA runtime...")
-            try:
-                self._run_pip(
-                    [
-                        "install",
-                        "--upgrade",
-                        "--target",
-                        str(self.dependency_dir),
-                        "--no-warn-script-location",
-                        "--index-url",
-                        self.GPU_TORCH_INDEX_URL,
-                        "--extra-index-url",
-                        "https://pypi.org/simple",
-                        *torch_requirements,
-                    ],
-                    cancel_token,
-                    progress,
-                    38,
-                )
-                requirements.extend(
-                    [
-                        f"torch=={self.TORCH_VERSION} ({self.GPU_TORCH_INDEX_URL})",
-                        f"torchaudio=={self.TORCH_VERSION} ({self.GPU_TORCH_INDEX_URL})",
-                    ]
-                )
-                backend = "cuda"
-            except PythonRuntimeError as exc:
-                progress(
-                    42,
-                    100,
-                    "Qwen CUDA PyTorch install failed; falling back to CPU: "
-                    f"{exc}",
-                )
-
-        if backend != "cuda":
-            progress(40, 100, "Installing Qwen PyTorch CPU runtime...")
-            self._run_pip(
-                [
-                    "install",
-                    "--upgrade",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    *torch_requirements,
-                ],
-                cancel_token,
-                progress,
-                40,
-            )
-            requirements.extend(torch_requirements)
-
-        progress(55, 100, "Installing Qwen TTS Python dependencies...")
-        self._run_pip(
-            [
-                "install",
-                "--upgrade",
-                "--target",
-                str(self.dependency_dir),
-                "--no-warn-script-location",
-                "--no-deps",
-                self.QWEN_PACKAGE,
-            ],
-            cancel_token,
+        progress(
+            34,
+            100,
+            f"Selected Qwen runtime profile: {requested_profile.display_name}.",
+        )
+        if self._activate_cached_profile(
+            requested_profile,
+            requested_profile,
+            gpu_summary,
             progress,
-            55,
-        )
-        self._run_pip(
-            [
-                "install",
-                "--upgrade",
-                "--target",
-                str(self.dependency_dir),
-                "--no-warn-script-location",
-                *self.SUPPORT_REQUIREMENTS[1:],
-            ],
             cancel_token,
+        ):
+            return
+        if self._migrate_legacy_runtime(
+            requested_profile,
+            gpu_summary,
             progress,
-            55,
-        )
-        requirements.append(self.QWEN_PACKAGE)
-        requirements.extend(self.SUPPORT_REQUIREMENTS[1:])
+            cancel_token,
+        ):
+            return
 
-        # Some support packages declare broad torch dependencies. With
-        # pip --target, resolver calls do not reliably treat the target folder
-        # as an installed environment, so a later support install can overwrite
-        # the CUDA PyTorch wheel. Put the selected torch backend back last.
-        progress(67, 100, "Finalizing Qwen PyTorch backend...")
-        self._remove_python_package_artifacts(
-            "torch",
-            "torchaudio",
-            "functorch",
-            "triton",
-            "nvidia",
-        )
-        if backend == "cuda":
-            self._run_pip(
-                [
-                    "install",
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    "--index-url",
-                    self.GPU_TORCH_INDEX_URL,
-                    "--extra-index-url",
-                    "https://pypi.org/simple",
-                    *torch_requirements,
-                ],
-                cancel_token,
+        active_profile = requested_profile
+        fallback_reason = ""
+        try:
+            requirements, runtime_info = self._install_profile_environment(
+                requested_profile,
                 progress,
-                67,
+                cancel_token,
             )
-        else:
-            self._run_pip(
-                [
-                    "install",
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--target",
-                    str(self.dependency_dir),
-                    "--no-warn-script-location",
-                    *torch_requirements,
-                ],
-                cancel_token,
+        except PythonRuntimeCancelled:
+            raise
+        except PythonRuntimeError as exc:
+            if requested_profile.backend != "cuda":
+                raise
+            self._check_cancelled(cancel_token)
+            fallback_reason = str(exc)
+            active_profile = self.CPU_RUNTIME_PROFILE
+            progress(
+                42,
+                100,
+                "Qwen CUDA runtime could not be installed or validated; "
+                "falling back to CPU: "
+                f"{fallback_reason}",
+            )
+            if self._activate_cached_profile(
+                active_profile,
+                requested_profile,
+                gpu_summary,
                 progress,
-                67,
+                cancel_token,
+                fallback_reason,
+            ):
+                return
+            requirements, runtime_info = self._install_profile_environment(
+                active_profile,
+                progress,
+                cancel_token,
             )
 
-        progress(72, 100, "Validating Qwen TTS runtime...")
-        runtime_info = self._validate_runtime(cancel_token)
-        if runtime_info.get("cuda_available"):
-            backend = "cuda"
-        elif backend == "cuda":
-            backend = "cpu"
         self._write_runtime_manifest(
             "installed",
             requirements,
-            backend,
+            active_profile,
+            requested_profile,
             gpu_summary,
             runtime_info,
+            fallback_reason,
         )
+
+    def _activate_cached_profile(
+        self,
+        active_profile: TorchRuntimeProfile,
+        requested_profile: TorchRuntimeProfile,
+        gpu_summary: str,
+        progress: QwenProgress,
+        cancel_token: threading.Event | None,
+        fallback_reason: str = "",
+    ) -> bool:
+        profile_root = self.profile_root(active_profile)
+        dependency_dir = self.profile_dependency_dir(active_profile)
+        profile_manifest = self._read_manifest(
+            profile_root / self.PROFILE_INSTALL_FILENAME
+        )
+        if not (
+            profile_manifest.get("state") == "installed"
+            and profile_manifest.get("runtime_version") == self.RUNTIME_VERSION
+            and profile_manifest.get("profile_id") == active_profile.profile_id
+            and (dependency_dir / "qwen_tts").is_dir()
+            and (dependency_dir / "faster_qwen3_tts").is_dir()
+        ):
+            return False
+        progress(
+            36,
+            100,
+            f"Validating cached Qwen profile: {active_profile.display_name}.",
+        )
+        try:
+            runtime_info = self._validate_runtime(cancel_token, dependency_dir)
+            self._validate_profile_runtime(active_profile, runtime_info)
+        except PythonRuntimeCancelled:
+            raise
+        except (PythonRuntimeError, OSError) as exc:
+            progress(
+                37,
+                100,
+                f"Cached Qwen profile is not reusable; reinstalling it: {exc}",
+            )
+            return False
+        requirements = profile_manifest.get("requirements")
+        normalized_requirements = (
+            [str(item) for item in requirements]
+            if isinstance(requirements, list)
+            else []
+        )
+        self._write_runtime_manifest(
+            "installed",
+            normalized_requirements,
+            active_profile,
+            requested_profile,
+            gpu_summary,
+            runtime_info,
+            fallback_reason,
+        )
+        progress(
+            75,
+            100,
+            f"Reused cached Qwen profile: {active_profile.display_name}.",
+        )
+        return True
+
+    def _migrate_legacy_runtime(
+        self,
+        requested_profile: TorchRuntimeProfile,
+        gpu_summary: str,
+        progress: QwenProgress,
+        cancel_token: threading.Event | None,
+    ) -> bool:
+        manifest = self.runtime_manifest()
+        if not (
+            requested_profile.profile_id
+            == QWEN_CUDA_LEGACY_PROFILE.profile_id
+            and manifest.get("state") == "installed"
+            and manifest.get("runtime_version") in self.LEGACY_RUNTIME_VERSIONS
+            and manifest.get("backend") == "cuda"
+            and (self.legacy_dependency_dir / "qwen_tts").is_dir()
+            and (self.legacy_dependency_dir / "faster_qwen3_tts").is_dir()
+        ):
+            return False
+
+        progress(35, 100, "Validating the existing Qwen CUDA 12.6 runtime...")
+        try:
+            runtime_info = self._validate_runtime(
+                cancel_token,
+                self.legacy_dependency_dir,
+            )
+            self._validate_profile_runtime(requested_profile, runtime_info)
+        except PythonRuntimeCancelled:
+            raise
+        except (PythonRuntimeError, OSError) as exc:
+            progress(
+                36,
+                100,
+                f"Existing Qwen runtime needs a clean profile install: {exc}",
+            )
+            return False
+
+        requirements = manifest.get("requirements")
+        normalized_requirements = (
+            [str(item) for item in requirements]
+            if isinstance(requirements, list)
+            else []
+        )
+        staging_root = (
+            self.qwen_dependencies_root
+            / ".staging"
+            / f"migrate-{requested_profile.profile_id}"
+        )
+        staging_dependency_dir = staging_root / "site-packages"
+        target_root = self.profile_root(requested_profile)
+        self._remove_path(staging_root)
+        staging_root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.legacy_dependency_dir.replace(staging_dependency_dir)
+            self._write_profile_manifest(
+                staging_root,
+                requested_profile,
+                normalized_requirements,
+                runtime_info,
+            )
+            self._activate_profile_directory(requested_profile, staging_root)
+            self._write_runtime_manifest(
+                "installed",
+                normalized_requirements,
+                requested_profile,
+                requested_profile,
+                gpu_summary,
+                runtime_info,
+            )
+        except Exception:
+            moved_dependency_dir = (
+                staging_dependency_dir
+                if staging_dependency_dir.exists()
+                else target_root / "site-packages"
+            )
+            if (
+                moved_dependency_dir.exists()
+                and not self.legacy_dependency_dir.exists()
+            ):
+                self.legacy_dependency_dir.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                moved_dependency_dir.replace(self.legacy_dependency_dir)
+            self._remove_path(staging_root)
+            if target_root.exists() and not (target_root / "site-packages").exists():
+                self._remove_path(target_root)
+            raise
+        progress(
+            75,
+            100,
+            "Migrated the existing Qwen CUDA 12.6 runtime without downloading it.",
+        )
+        return True
+
+    def _install_profile_environment(
+        self,
+        profile: TorchRuntimeProfile,
+        progress: QwenProgress,
+        cancel_token: threading.Event | None,
+    ) -> tuple[list[str], dict[str, Any]]:
+        staging_root = (
+            self.qwen_dependencies_root / ".staging" / profile.profile_id
+        )
+        staging_dependency_dir = staging_root / "site-packages"
+        self._remove_path(staging_root)
+        staging_dependency_dir.mkdir(parents=True, exist_ok=True)
+        torch_requirements = [
+            f"torch=={profile.torch_version}",
+            f"torchaudio=={profile.torch_version}",
+        ]
+        requirements = [
+            f"torch=={profile.torch_version} ({profile.torch_index_url})",
+            f"torchaudio=={profile.torch_version} ({profile.torch_index_url})",
+            self.QWEN_PACKAGE,
+            *self.SUPPORT_REQUIREMENTS[1:],
+        ]
+
+        try:
+            progress(
+                38,
+                100,
+                f"Installing Qwen {profile.display_name} runtime...",
+            )
+            self._run_pip(
+                [
+                    "install",
+                    "--upgrade",
+                    "--target",
+                    str(staging_dependency_dir),
+                    "--no-warn-script-location",
+                    "--index-url",
+                    profile.torch_index_url,
+                    "--extra-index-url",
+                    "https://pypi.org/simple",
+                    *torch_requirements,
+                    self.QWEN_PACKAGE,
+                    *self.SUPPORT_REQUIREMENTS[1:],
+                ],
+                cancel_token,
+                progress,
+                38,
+            )
+
+            progress(72, 100, "Validating Qwen TTS runtime profile...")
+            runtime_info = self._validate_runtime(
+                cancel_token,
+                staging_dependency_dir,
+            )
+            self._validate_profile_runtime(profile, runtime_info)
+            self._write_profile_manifest(
+                staging_root,
+                profile,
+                requirements,
+                runtime_info,
+            )
+            self._activate_profile_directory(profile, staging_root)
+            return requirements, runtime_info
+        except Exception:
+            self._remove_path(staging_root)
+            raise
+
+    @staticmethod
+    def _validate_profile_runtime(
+        profile: TorchRuntimeProfile,
+        runtime_info: dict[str, Any],
+    ) -> None:
+        installed_torch = str(runtime_info.get("torch_version", "")).split("+", 1)[0]
+        if installed_torch != profile.torch_version:
+            raise PythonRuntimeError(
+                "Qwen runtime installed an unexpected PyTorch version: "
+                f"expected {profile.torch_version}, got "
+                f"{runtime_info.get('torch_version') or 'unknown'}."
+            )
+        if profile.backend != "cuda":
+            return
+        if not runtime_info.get("cuda_available"):
+            raise PythonRuntimeError(
+                f"{profile.display_name} was installed, but CUDA is unavailable."
+            )
+        installed_cuda = str(runtime_info.get("torch_cuda_version") or "")
+        if profile.cuda_build and not installed_cuda.startswith(profile.cuda_build):
+            raise PythonRuntimeError(
+                "Qwen runtime installed an unexpected CUDA build: "
+                f"expected {profile.cuda_build}, got {installed_cuda or 'unknown'}."
+            )
+        if not runtime_info.get("cuda_kernel_test"):
+            errors = runtime_info.get("cuda_kernel_errors")
+            details = "; ".join(str(item) for item in errors) if errors else ""
+            suffix = f": {details}" if details else "."
+            raise PythonRuntimeError(
+                "PyTorch can detect the NVIDIA GPU, but its CUDA kernels cannot "
+                f"execute on it{suffix}"
+            )
+
+    def _activate_profile_directory(
+        self,
+        profile: TorchRuntimeProfile,
+        staging_root: Path,
+    ) -> None:
+        target_root = self.profile_root(profile)
+        backup_root = (
+            self.qwen_dependencies_root / ".backup" / profile.profile_id
+        )
+        target_root.parent.mkdir(parents=True, exist_ok=True)
+        backup_root.parent.mkdir(parents=True, exist_ok=True)
+        self._remove_path(backup_root)
+        if target_root.exists():
+            target_root.replace(backup_root)
+        try:
+            staging_root.replace(target_root)
+        except Exception:
+            if backup_root.exists() and not target_root.exists():
+                backup_root.replace(target_root)
+            raise
+        try:
+            self._remove_path(backup_root)
+        except OSError:
+            pass
 
     def _run_pip(
         self,
@@ -914,34 +1321,73 @@ class QwenManager:
     def _validate_runtime(
         self,
         cancel_token: threading.Event | None,
+        dependency_dir: Path | None = None,
     ) -> dict[str, Any]:
+        selected_dependency_dir = dependency_dir or self.dependency_dir
         code = (
-            "import json, os, sys; from pathlib import Path; "
-            f"deps=Path({str(self.dependency_dir)!r}); "
-            "sys.path.insert(0, str(deps)); "
-            "dlls=[deps, deps/'torch'/'lib', deps/'torchaudio'/'lib']; "
-            "nvidia=deps/'nvidia'; "
-            "dlls += [child/'bin' for child in nvidia.glob('*')]; "
-            "dlls += [child/'lib' for child in nvidia.glob('*')]; "
-            "paths=[]; "
-            "\nfor dll in dlls:\n"
-            "    if dll.exists():\n"
-            "        paths.append(str(dll))\n"
-            "        add_dir=getattr(os, 'add_dll_directory', None)\n"
-            "        if add_dir is not None:\n"
-            "            try:\n"
-            "                add_dir(str(dll))\n"
-            "            except OSError:\n"
-            "                pass\n"
-            "os.environ['PATH']=os.pathsep.join(paths+[os.environ.get('PATH','')]); "
-            "import torch, torchaudio, transformers, qwen_tts, faster_qwen3_tts, soundfile, onnxruntime, einops; "
-            "print(json.dumps({"
-            "'torch_version': torch.__version__, "
-            "'torch_cuda_version': torch.version.cuda, "
-            "'cuda_available': torch.cuda.is_available(), "
-            "'device_count': torch.cuda.device_count(), "
-            "'transformers_version': transformers.__version__"
-            "}))"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            f"deps = Path({str(selected_dependency_dir)!r})\n"
+            + textwrap.dedent(
+                """
+                sys.path.insert(0, str(deps))
+                dlls = [deps, deps / "torch" / "lib", deps / "torchaudio" / "lib"]
+                nvidia = deps / "nvidia"
+                dlls += [child / "bin" for child in nvidia.glob("*")]
+                dlls += [child / "lib" for child in nvidia.glob("*")]
+                paths = []
+                for dll in dlls:
+                    if not dll.exists():
+                        continue
+                    paths.append(str(dll))
+                    add_dir = getattr(os, "add_dll_directory", None)
+                    if add_dir is not None:
+                        try:
+                            add_dir(str(dll))
+                        except OSError:
+                            pass
+                os.environ["PATH"] = os.pathsep.join(
+                    paths + [os.environ.get("PATH", "")]
+                )
+
+                import torch
+                import torchaudio
+                import transformers
+                import qwen_tts
+                import faster_qwen3_tts
+                import soundfile
+                import onnxruntime
+                import einops
+
+                cuda_available = bool(torch.cuda.is_available())
+                cuda_kernel_tests = []
+                cuda_kernel_errors = []
+                if cuda_available:
+                    for index in range(torch.cuda.device_count()):
+                        try:
+                            probe = torch.ones(1, device=f"cuda:{index}")
+                            probe.add_(1)
+                            torch.cuda.synchronize(index)
+                            cuda_kernel_tests.append(True)
+                        except Exception as exc:
+                            cuda_kernel_tests.append(False)
+                            cuda_kernel_errors.append(f"cuda:{index}: {exc}")
+
+                print(json.dumps({
+                    "torch_version": torch.__version__,
+                    "torch_cuda_version": torch.version.cuda,
+                    "cuda_available": cuda_available,
+                    "device_count": torch.cuda.device_count(),
+                    "cuda_kernel_test": bool(
+                        cuda_available
+                        and cuda_kernel_tests
+                        and all(cuda_kernel_tests)
+                    ),
+                    "cuda_kernel_errors": cuda_kernel_errors,
+                    "transformers_version": transformers.__version__,
+                }))
+                """
+            )
         )
         output = self.python_runtime.run_python(["-c", code], cancel_token)
         lines = [line for line in output.splitlines() if line.strip()]
@@ -1040,9 +1486,11 @@ class QwenManager:
         self,
         state: str,
         requirements: list[str],
-        backend: str,
+        active_profile: TorchRuntimeProfile,
+        requested_profile: TorchRuntimeProfile,
         gpu_summary: str,
         runtime_info: dict[str, Any],
+        fallback_reason: str = "",
     ) -> None:
         manifest = {
             "engine": "qwen",
@@ -1050,13 +1498,40 @@ class QwenManager:
             "state": state,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "requirements": requirements,
-            "backend": backend,
+            "backend": active_profile.backend,
+            "profile_id": active_profile.profile_id,
+            "requested_profile_id": requested_profile.profile_id,
+            "profile": active_profile.manifest_data(),
+            "requested_profile": requested_profile.manifest_data(),
+            "fallback_reason": fallback_reason,
             "gpu_detection": gpu_summary,
             "runtime_info": runtime_info,
-            "dependency_dir": str(self.dependency_dir),
+            "dependency_dir": str(self.profile_dependency_dir(active_profile)),
             "python_runtime": str(self.python_runtime.python_exe),
         }
         self._write_json_atomic(self.runtime_manifest_path, manifest)
+
+    def _write_profile_manifest(
+        self,
+        profile_root: Path,
+        profile: TorchRuntimeProfile,
+        requirements: list[str],
+        runtime_info: dict[str, Any],
+    ) -> None:
+        manifest = {
+            "engine": "qwen",
+            "runtime_version": self.RUNTIME_VERSION,
+            "state": "installed",
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "profile_id": profile.profile_id,
+            "profile": profile.manifest_data(),
+            "requirements": requirements,
+            "runtime_info": runtime_info,
+        }
+        self._write_json_atomic(
+            profile_root / self.PROFILE_INSTALL_FILENAME,
+            manifest,
+        )
 
     def _check_cancelled(self, cancel_token: threading.Event | None = None) -> None:
         if self._cancel_requested.is_set() or (
@@ -1124,15 +1599,3 @@ class QwenManager:
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
-
-    def _remove_python_package_artifacts(self, *package_names: str) -> None:
-        normalized = {name.lower().replace("-", "_") for name in package_names}
-        for child in self.dependency_dir.iterdir():
-            child_name = child.name.lower().replace("-", "_")
-            stem = child_name.split(".dist_info", 1)[0].split(".egg_info", 1)[0]
-            if (
-                child_name in normalized
-                or stem in normalized
-                or any(child_name.startswith(f"{name}_") for name in normalized)
-            ):
-                self._remove_path(child)

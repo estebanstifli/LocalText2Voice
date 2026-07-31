@@ -94,7 +94,7 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Piper | Local/offline CPU | Fast, reliable narration on modest PCs | Default stable engine |
 | Kokoro | Local/offline CPU/CUDA | Better local quality with on-demand model install | Uses embedded Python runtime |
 | Chatterbox | Local GPU/CPU | Advanced voice cloning and expressive speech | CUDA recommended |
-| Qwen3 TTS | Local GPU/CPU | Multilingual preset speakers and expressive neural TTS | Faster path through `faster-qwen3-tts` |
+| Qwen3 TTS | Local GPU/CPU | Fast preset voices or high-fidelity voice cloning | CustomVoice 0.6B and Base 1.7B, with an accelerated CUDA path |
 | OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand, CUDA recommended |
 | OpenAI TTS | Cloud API | High-quality remote TTS | Optional API key |
 | ElevenLabs | Cloud API | Commercial voices and voice design workflows | Optional API key |
@@ -103,6 +103,15 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Custom HTTP TTS | Local or remote HTTP | Connect private servers such as local TTS APIs | URL, headers, body template, and response format are configurable |
 
 The base app stays lightweight. Heavy models and isolated Python dependencies are installed on demand into local application storage.
+
+Qwen3 TTS exposes two independently downloadable checkpoints in Settings:
+
+- **CustomVoice 0.6B** is the faster option with nine built-in speakers.
+- **Base 1.7B** performs full ICL voice cloning from a clean reference recording
+  and its exact transcript. It preserves the reference timbre and expression.
+  Natural-language style or emotion instructions on Base are experimental and
+  are only passed through the accelerated CUDA backend; CPU generation clones
+  the expression present in the reference audio.
 
 ### Voice Library
 

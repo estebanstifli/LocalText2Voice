@@ -5,6 +5,7 @@
     "previous_roots": []
   },
   "ui_language": "en",
+  "ui_theme": "light",
   "output_dir": "output",
   "voice_id": "",
   "language": "",
@@ -92,7 +93,9 @@
     "speaker": "Serena",
     "device": "auto",
     "dtype": "auto",
-    "instruct": ""
+    "instruct": "",
+    "reference_audio_path": "",
+    "reference_text": ""
   },
   "omnivoice": {
     "model": "omnivoice",

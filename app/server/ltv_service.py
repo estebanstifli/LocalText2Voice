@@ -268,6 +268,12 @@ class LocalText2VoiceService:
             ]
         if engine == "qwen":
             languages = [language.display_name for language in self.qwen_manager.list_languages()]
+            configured_model = str(
+                self._settings_dict("qwen").get(
+                    "model",
+                    "custom_voice_0_6b",
+                )
+            )
             return [
                 {
                     "id": voice.voice_id,
@@ -275,7 +281,7 @@ class LocalText2VoiceService:
                     "speaker": voice.voice_id,
                     "language": language,
                     "type": "Qwen speaker",
-                    "installed": self.qwen_manager.is_installed(),
+                    "installed": self.qwen_manager.is_installed(configured_model),
                 }
                 for voice in self.qwen_manager.list_voices()
                 for language in languages
@@ -885,6 +891,7 @@ class LocalText2VoiceService:
             }
         if engine_id == "qwen":
             qwen = self._settings_dict("qwen")
+            model = str(qwen.get("model", "custom_voice_0_6b"))
             speaker = str(qwen.get("speaker", "Serena"))
             language = str(qwen.get("language", "Spanish"))
             if voice_hint:
@@ -896,12 +903,21 @@ class LocalText2VoiceService:
             return {
                 "engine": "qwen",
                 "speed": speed,
-                "model": str(qwen.get("model", "custom_voice_0_6b")),
+                "model": model,
+                "generation_mode": self.qwen_manager.model_kind(model),
                 "language": language,
                 "speaker": speaker,
                 "device": str(qwen.get("device", "auto")),
                 "dtype": str(qwen.get("dtype", "auto")),
                 "instruct": str(request.get("instruct") or qwen.get("instruct", "")),
+                "reference_audio_path": str(
+                    request.get("reference_audio_path")
+                    or qwen.get("reference_audio_path", "")
+                ),
+                "reference_text": str(
+                    request.get("reference_text")
+                    or qwen.get("reference_text", "")
+                ),
             }
         if engine_id == "omnivoice":
             omnivoice = self._settings_dict("omnivoice")
@@ -1129,7 +1145,13 @@ class LocalText2VoiceService:
         if engine_id == "chatterbox":
             return self.chatterbox_manager.is_installed()
         if engine_id == "qwen":
-            return self.qwen_manager.is_installed()
+            model = str(
+                self._settings_dict("qwen").get(
+                    "model",
+                    "custom_voice_0_6b",
+                )
+            )
+            return self.qwen_manager.is_installed(model)
         if engine_id == "omnivoice":
             return self.omnivoice_manager.is_installed()
         if engine_id in {"openai", "elevenlabs", "gemini", "azure"}:

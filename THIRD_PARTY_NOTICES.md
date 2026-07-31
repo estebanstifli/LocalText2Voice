@@ -82,7 +82,8 @@ having permission to use any reference voice and generated audio.
 - Project: Qwen3 TTS by QwenLM / Alibaba Cloud
 - Upstream: https://github.com/QwenLM/Qwen3-TTS
 - Fast runtime wrapper: https://github.com/andimarafioti/faster-qwen3-tts
-- Model page: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+- CustomVoice 0.6B model page: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+- Base 1.7B model page: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 - Python packages: `qwen-tts`, `faster-qwen3-tts`
 
 Qwen3 TTS is integrated as an optional advanced local runtime. It is not

@@ -55,6 +55,60 @@ Current examples:
 - OmniVoice worker.
 - Faster Whisper verifier worker.
 
+### Hardware-Aware Runtime Profiles
+
+Optional engines must not share a mutable PyTorch dependency tree. Each engine
+owns its dependencies, while the lightweight Python interpreter may remain
+shared. Hardware compatibility is represented by immutable, pinned profiles
+from `app/tts/runtime_profiles.py`.
+
+Qwen is the reference implementation. It currently declares:
+
+- A CPU profile.
+- A CUDA 12.6 / PyTorch 2.6 profile for established NVIDIA generations.
+- A CUDA 13.0 / PyTorch 2.11 profile for Blackwell and RTX 50-series GPUs.
+
+Profile selection uses compute capability first and GPU-name markers only as a
+fallback. Higher-priority profiles are checked before broad legacy profiles.
+Adding support for a future GPU generation should therefore add a new tested
+profile; it should not replace a working profile used by older hardware.
+Profiles declare both minimum and maximum compute capabilities. An unknown
+future generation falls back to CPU instead of guessing that an older CUDA
+wheel is compatible.
+
+Runtime manifests must record both the requested and active profile. If CUDA
+installation or kernel validation fails, an engine may activate its CPU profile
+and retain the requested profile ID as the reason for the fallback. A runtime is
+current only when its requested profile matches the hardware detected now.
+
+Installations should follow this sequence:
+
+1. Install pinned packages into a profile-specific staging directory.
+2. Import the complete engine dependency set.
+3. Verify the exact PyTorch and CUDA builds.
+4. Execute a real CUDA operation on every visible GPU.
+5. Atomically activate the staged profile.
+6. Write the active runtime manifest last.
+
+Model caches must remain separate from runtime profiles so repairing
+dependencies does not redownload model weights. Other engines can adopt this
+profile mechanism independently without forcing a coordinated PyTorch upgrade.
+
+Developers can install and exercise the Qwen profiles with:
+
+```powershell
+.\.venv\Scripts\python.exe tools\validate_qwen_runtime_profiles.py --profile all
+```
+
+After the profiles and Qwen model cache exist, add `--skip-install
+--synthesize` to run imports, real CUDA kernels, model loading, CUDA graph
+capture, and WAV generation for each profile. The tool writes a JSON report
+under `build/runtime_profile_validation`. A Blackwell release candidate still
+requires this check on a real RTX 50-series Windows system; passing on an older
+GPU validates dependency compatibility but cannot certify `sm_120`.
+The external test procedure is documented in
+`docs/RTX50_WINDOWS_BETA.md`.
+
 ### Project Storage
 
 SQLite stores audiobook/project metadata and generated segments. Segment data

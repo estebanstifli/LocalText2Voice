@@ -135,6 +135,12 @@ def format_runtime_cuda_info(
         + ("available" if available else "not available to PyTorch"),
         f"PyTorch: {torch_version}, CUDA build: {torch_cuda}",
     ]
+    runtime_profile = str(info.get("runtime_profile") or "").strip()
+    if runtime_profile:
+        lines.append(f"Runtime profile: {runtime_profile}")
+    fallback_reason = str(info.get("runtime_fallback_reason") or "").strip()
+    if fallback_reason:
+        lines.append(f"Runtime fallback: {fallback_reason}")
     devices = info.get("devices")
     if isinstance(devices, list) and devices:
         for device in devices:

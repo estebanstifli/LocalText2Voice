@@ -29,14 +29,36 @@ class QwenTTSEngine(BaseTTSEngine):
         self.log_callback = callback
 
     def validate(self, voice_config: dict[str, Any]) -> None:
-        if not self.manager.is_installed():
+        model_id = str(voice_config.get("model", "custom_voice_0_6b"))
+        try:
+            installed = self.manager.is_installed(model_id)
+        except TypeError:
+            installed = self.manager.is_installed()
+        if not installed:
             raise TTSEngineError(
                 "Qwen3 TTS is selected, but its runtime dependencies or "
-                "model cache are not installed. Open Settings > TTS Engines "
-                "and click Install."
+                "selected model cache are not installed. Open Settings > TTS "
+                "Engines, select the model, and click Install."
             )
-        if not str(voice_config.get("speaker", "")).strip():
-            raise TTSEngineError("Qwen3 TTS requires a speaker.")
+        generation_mode = str(
+            voice_config.get("generation_mode")
+            or self._generation_mode(model_id)
+        )
+        if generation_mode == "voice_clone":
+            reference_audio = Path(
+                str(voice_config.get("reference_audio_path", "")).strip()
+            ).expanduser()
+            if not str(reference_audio) or not reference_audio.is_file():
+                raise TTSEngineError(
+                    "Qwen3 TTS Base 1.7B requires an existing reference audio file."
+                )
+            if not str(voice_config.get("reference_text", "")).strip():
+                raise TTSEngineError(
+                    "Qwen3 TTS Base 1.7B requires an accurate transcript of "
+                    "the reference audio for high-quality ICL voice cloning."
+                )
+        elif not str(voice_config.get("speaker", "")).strip():
+            raise TTSEngineError("Qwen3 TTS CustomVoice requires a speaker.")
         if not str(voice_config.get("language", "")).strip():
             raise TTSEngineError("Qwen3 TTS requires a language.")
         device = str(voice_config.get("device", "auto"))
@@ -61,9 +83,21 @@ class QwenTTSEngine(BaseTTSEngine):
             "id": request_id,
             "text": text,
             "output": str(output_wav),
+            "generation_mode": str(
+                voice_config.get("generation_mode")
+                or self._generation_mode(
+                    str(voice_config.get("model", "custom_voice_0_6b"))
+                )
+            ),
             "language": str(voice_config.get("language", "Spanish")),
             "speaker": str(voice_config.get("speaker", "Serena")),
             "instruct": str(voice_config.get("instruct", "")).strip(),
+            "reference_audio_path": str(
+                voice_config.get("reference_audio_path", "")
+            ).strip(),
+            "reference_text": str(
+                voice_config.get("reference_text", "")
+            ).strip(),
         }
         for key in (
             "temperature",
@@ -81,6 +115,12 @@ class QwenTTSEngine(BaseTTSEngine):
                 "Qwen3 TTS completed but did not create a valid WAV file."
             )
         return output_wav
+
+    def _generation_mode(self, model_id: str) -> str:
+        model_kind = getattr(self.manager, "model_kind", None)
+        if callable(model_kind):
+            return str(model_kind(model_id))
+        return "voice_clone" if model_id.startswith("base_") else "custom_voice"
 
     def preload(self, voice_config: dict[str, Any]) -> None:
         self.validate(voice_config)
