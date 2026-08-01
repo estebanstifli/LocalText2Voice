@@ -32,6 +32,7 @@ from app.core.subtitle_export import export_audiobook_subtitles
 from app.tts.base import BaseTTSEngine
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
+from app.tts.f5_russian_manager import F5RussianManager
 from app.tts.kokoro_python_manager import KokoroPythonManager
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
@@ -72,6 +73,7 @@ class LocalText2VoiceService:
         self.chatterbox_manager = ChatterboxManager()
         self.qwen_manager = QwenManager()
         self.omnivoice_manager = OmniVoiceManager()
+        self.f5_russian_manager = F5RussianManager()
         self.faster_whisper_manager = FasterWhisperManager()
         self._whisper_verifier: FasterWhisperVerifier | None = None
         gallery_settings = self._settings_dict("voice_gallery")
@@ -142,6 +144,15 @@ class LocalText2VoiceService:
             }
             for engine in TTS_ENGINES
         ]
+        for engine in engines:
+            if engine["id"] == "f5_russian":
+                engine.update(
+                    {
+                        "license": "CC BY-NC 4.0",
+                        "commercial_use": False,
+                        "attribution": "Misha24-10; F5-TTS authors / SWivid",
+                    }
+                )
         for engine in self._custom_tts_engines():
             key = f"custom:{engine.get('id', '')}"
             engines.append(
@@ -286,7 +297,7 @@ class LocalText2VoiceService:
                 for voice in self.qwen_manager.list_voices()
                 for language in languages
             ]
-        if engine in {"chatterbox", "omnivoice"}:
+        if engine in {"chatterbox", "omnivoice", "f5_russian"}:
             rows = []
             for voice in self.voice_gallery_manager.list_voices(engine):
                 installed = self.voice_gallery_manager.is_installed(voice)
@@ -947,6 +958,37 @@ class LocalText2VoiceService:
                 "duration": float(omnivoice.get("duration", 0.0)),
                 "voice": gallery_voice.name if gallery_voice else voice_hint,
             }
+        if engine_id == "f5_russian":
+            f5 = self._settings_dict("f5_russian")
+            gallery_voice = self._match_gallery_voice(
+                "f5_russian", voice_hint, language_hint or "ru"
+            )
+            reference_audio = str(
+                request.get("reference_audio_path")
+                or (gallery_voice.installed_path if gallery_voice else "")
+                or f5.get("reference_audio_path", "")
+            )
+            reference_text = str(
+                request.get("reference_text")
+                or (gallery_voice.ref_text if gallery_voice else "")
+                or f5.get("reference_text", "")
+            )
+            return {
+                "engine": "f5_russian",
+                "speed": speed,
+                "model": str(f5.get("model", "f5tts_v1_base_v2")),
+                "device": str(f5.get("device", "auto")),
+                "language": "ru",
+                "reference_audio_path": reference_audio,
+                "reference_text": reference_text,
+                "use_stress": bool(request.get("use_stress", f5.get("use_stress", True))),
+                "nfe_step": int(f5.get("nfe_step", 32)),
+                "engine_speed": float(f5.get("speed", 1.0)),
+                "remove_silence": bool(f5.get("remove_silence", True)),
+                "license": "CC BY-NC 4.0",
+                "commercial_use": False,
+                "voice": gallery_voice.name if gallery_voice else voice_hint,
+            }
         if engine_id in {"openai", "elevenlabs", "gemini", "azure"}:
             config = dict(self._settings_dict("api_tts").get(engine_id, {}))
             config["engine"] = engine_id
@@ -1154,6 +1196,8 @@ class LocalText2VoiceService:
             return self.qwen_manager.is_installed(model)
         if engine_id == "omnivoice":
             return self.omnivoice_manager.is_installed()
+        if engine_id == "f5_russian":
+            return self.f5_russian_manager.is_installed()
         if engine_id in {"openai", "elevenlabs", "gemini", "azure"}:
             return None
         return None

@@ -126,6 +126,24 @@ class EngineInstallDialogTests(unittest.TestCase):
         self.assertIn("not enough free space", dialog.space_warning_label.text().lower())
         self.assertIn("12.0 GB", dialog.space_label.text())
 
+    def test_noncommercial_engine_requires_license_acknowledgement(self) -> None:
+        dialog = EngineInstallDialog(
+            "F5-TTS Russian",
+            EngineInstallRequirement(15, "15-40 min"),
+            50.0,
+            "C:\\",
+            translate,
+            license_notice="Non-commercial use only.",
+            license_url="https://creativecommons.org/licenses/by-nc/4.0/",
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        self.assertIsNotNone(dialog.license_checkbox)
+        self.assertFalse(dialog.install_button.isEnabled())
+        assert dialog.license_checkbox is not None
+        dialog.license_checkbox.setChecked(True)
+        self.assertTrue(dialog.install_button.isEnabled())
+
     def test_available_disk_space_uses_nearest_existing_parent(self) -> None:
         gib = 1024**3
         with patch(

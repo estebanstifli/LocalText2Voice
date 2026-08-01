@@ -407,6 +407,15 @@ class AudioPipeline:
                 f"OmniVoice device: {voice_config.get('device', 'auto')}"
             )
             self.log_callback(f"OmniVoice dtype: {voice_config.get('dtype', 'auto')}")
+        elif engine == "f5_russian":
+            self.log_callback("Using TTS engine: F5-TTS Russian (non-commercial)")
+            self.log_callback(
+                f"F5-TTS Russian model: {voice_config.get('model', 'f5tts_v1_base_v2')}"
+            )
+            self.log_callback(
+                "Silero Stress: "
+                + ("enabled" if voice_config.get("use_stress", True) else "disabled")
+            )
         elif engine == "gemini":
             self.log_callback("Using TTS engine: Google Gemini TTS")
             self.log_callback(f"Gemini model: {voice_config.get('model', 'unknown')}")
@@ -879,6 +888,8 @@ class AudioPipeline:
             self._apply_qwen_voice(config, voice_value, voice_language)
         elif engine == "omnivoice":
             self._apply_omnivoice_voice(config, voice_value, voice_language)
+        elif engine == "f5_russian":
+            self._apply_f5_russian_voice(config, voice_value)
         elif engine == "piper":
             self._apply_piper_voice(config, voice_value, voice_language)
         elif engine.startswith("custom:"):
@@ -1330,6 +1341,56 @@ class AudioPipeline:
         if not match.exact:
             self._warn_fuzzy_voice_match("OmniVoice", voice_value, matched.name)
         self._log_markup_voice_once("OmniVoice", matched.name)
+
+    def _apply_f5_russian_voice(
+        self,
+        config: dict[str, Any],
+        voice_value: str,
+    ) -> None:
+        try:
+            from app.tts.voice_gallery_manager import GalleryVoice, VoiceGalleryManager
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                "voice:f5_russian:import",
+                f"LTV Markup warning: could not load F5 Russian gallery voices: {exc}",
+            )
+            return
+        manager = self._markup_voice_cache.get("f5_russian_gallery_manager")
+        voices = self._markup_voice_cache.get("f5_russian_gallery")
+        if voices is None or not isinstance(manager, VoiceGalleryManager):
+            manager = VoiceGalleryManager()
+            manager.ensure_seed_loaded()
+            voices = list(manager.list_voices("f5_russian"))
+            self._markup_voice_cache["f5_russian_gallery_manager"] = manager
+            self._markup_voice_cache["f5_russian_gallery"] = voices
+        match = self._match_named_item(
+            voice_value,
+            voices,
+            self._omnivoice_gallery_voice_names,
+        )
+        if match is None or not isinstance(match.item, GalleryVoice):
+            self._warn_unknown_voice("F5-TTS Russian", voice_value)
+            return
+        matched = match.item
+        try:
+            reference_path = manager.ensure_voice_audio(matched)
+        except Exception as exc:
+            self._log_markup_runtime_warning(
+                f"voice:f5_russian:download:{self._lookup_key(voice_value)}",
+                f"LTV Markup warning: could not prepare F5 Russian reference voice: {exc}",
+            )
+            return
+        if reference_path is None or not reference_path.is_file() or not matched.ref_text:
+            self._log_markup_runtime_warning(
+                f"voice:f5_russian:missing:{self._lookup_key(voice_value)}",
+                "LTV Markup warning: the F5 Russian voice needs reference audio and transcript.",
+            )
+            return
+        config["reference_audio_path"] = str(reference_path)
+        config["reference_text"] = matched.ref_text
+        if not match.exact:
+            self._warn_fuzzy_voice_match("F5-TTS Russian", voice_value, matched.name)
+        self._log_markup_voice_once("F5-TTS Russian", matched.name)
 
     @classmethod
     def _match_qwen_voice_language(

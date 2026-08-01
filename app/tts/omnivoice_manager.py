@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.gpu_detection import detect_gpus, format_gpu_detection
+from app.utils.gpu_detection import (
+    detect_gpus,
+    format_gpu_detection,
+    gpu_runtime_environment,
+)
 from app.utils.paths import engine_dependencies_root, models_root
 
 from .install_logging import (
@@ -602,7 +606,7 @@ class OmniVoiceManager:
         return [str(self.python_runtime.python_exe), str(self.cli_path)]
 
     def runtime_environment(self) -> dict[str, str]:
-        env = dict(os.environ)
+        env = gpu_runtime_environment()
         env["PYTHONUTF8"] = "1"
         env["PYTHONPATH"] = str(self.dependency_dir)
         env["HF_HOME"] = str(self.cache_dir)

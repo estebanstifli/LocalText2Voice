@@ -111,12 +111,25 @@ class LogView(QTextEdit):
 
     def append_event(self, message: str) -> None:
         for line in self._timestamp_message(message).splitlines() or [""]:
-            self.append(
-                f'<span style="color:{self._line_color(line)}">'
-                f"{escape(line)}</span>"
-            )
+            self._append_styled_line(line)
         scroll_bar = self.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
+
+    def refresh_theme(self) -> None:
+        """Recolor existing entries without discarding the current log."""
+
+        lines = self.toPlainText().splitlines()
+        self.clear()
+        for line in lines:
+            self._append_styled_line(line)
+        scroll_bar = self.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+
+    def _append_styled_line(self, line: str) -> None:
+        self.append(
+            f'<span style="color:{self._line_color(line)}">'
+            f"{escape(line)}</span>"
+        )
 
     @classmethod
     def _timestamp_message(cls, message: str) -> str:

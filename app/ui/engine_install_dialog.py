@@ -8,6 +8,7 @@ from typing import Callable
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -35,6 +36,7 @@ ENGINE_INSTALL_REQUIREMENTS: dict[str, EngineInstallRequirement] = {
     "chatterbox": EngineInstallRequirement(20, "15-40 min"),
     "qwen": EngineInstallRequirement(20, "20-45 min"),
     "omnivoice": EngineInstallRequirement(30, "30-60+ min"),
+    "f5_russian": EngineInstallRequirement(15, "15-40 min"),
 }
 
 
@@ -66,6 +68,8 @@ class EngineInstallDialog(QDialog):
         *,
         install_path: Path | None = None,
         existing_model_detected: bool = False,
+        license_notice: str = "",
+        license_url: str = "",
     ) -> None:
         super().__init__(parent)
         self.engine_name = engine_name
@@ -77,6 +81,8 @@ class EngineInstallDialog(QDialog):
         )
         self.tr = tr
         self.existing_model_detected = existing_model_detected
+        self.license_notice = license_notice.strip()
+        self.license_url = license_url.strip()
         self._installation_started = False
         self._installation_active = False
         self._installation_completed = False
@@ -205,6 +211,24 @@ class EngineInstallDialog(QDialog):
             self.space_warning_label.setWordWrap(True)
             layout.addWidget(self.space_warning_label)
 
+        self.license_checkbox: QCheckBox | None = None
+        if self.license_notice:
+            license_text = self.license_notice
+            if self.license_url:
+                license_text += f' <a href="{self.license_url}">CC BY-NC 4.0</a>'
+            license_label = QLabel(license_text)
+            license_label.setObjectName("engineInstallLicenseNotice")
+            license_label.setWordWrap(True)
+            license_label.setOpenExternalLinks(True)
+            layout.addWidget(license_label)
+            self.license_checkbox = QCheckBox(
+                self.tr(
+                    "engine_install_accept_noncommercial",
+                    "I understand that this model and its generated output are for non-commercial use only.",
+                )
+            )
+            layout.addWidget(self.license_checkbox)
+
         self.progress_label = QLabel(
             self.tr(
                 "engine_install_waiting",
@@ -279,7 +303,14 @@ class EngineInstallDialog(QDialog):
         )
         self.install_button.setObjectName("engineInstallNowButton")
         self.install_button.setDefault(True)
-        self.install_button.setEnabled(enough_space)
+        self._enough_space = enough_space
+        self.install_button.setEnabled(enough_space and self.license_checkbox is None)
+        if self.license_checkbox is not None:
+            self.license_checkbox.toggled.connect(
+                lambda checked: self.install_button.setEnabled(
+                    self._enough_space and checked and not self._installation_active
+                )
+            )
         self.later_button.clicked.connect(self._on_later_clicked)
         self.install_button.clicked.connect(self._on_install_clicked)
         buttons.addWidget(self.later_button)

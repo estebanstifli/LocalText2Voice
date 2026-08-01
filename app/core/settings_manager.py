@@ -17,7 +17,7 @@ from app.utils.paths import (
     write_assets_location_file,
 )
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 17
+CURRENT_SETTINGS_SCHEMA_VERSION = 18
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -43,6 +43,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
     "ui_theme": "light",
+    "gpu_device_index": "auto",
     "current_project_id": None,
     "storage": {
         # New portable runs use <application>/data. Schema migration writes an
@@ -66,6 +67,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "chatterbox": 0,
         "qwen": 0,
         "omnivoice": 0,
+        "f5_russian": 0,
     },
     "editor_syntax_highlighting": True,
     "show_markup_toolbar": True,
@@ -155,6 +157,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "num_step": 32,
         "speed": 1.0,
         "duration": 0.0,
+    },
+    "f5_russian": {
+        "model": "f5tts_v1_base_v2",
+        "device": "auto",
+        "reference_audio_path": "",
+        "reference_text": "",
+        "use_stress": True,
+        "nfe_step": 32,
+        "speed": 1.0,
+        "remove_silence": True,
     },
     "review": {
         "enabled": False,
@@ -346,6 +358,15 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
     _sanitize_choice(settings, "export_mode", SUPPORTED_EXPORT_MODES)
 
+    gpu_device = str(settings.get("gpu_device_index", "auto")).strip().casefold()
+    if gpu_device != "auto":
+        try:
+            gpu_index = int(gpu_device)
+        except (TypeError, ValueError):
+            gpu_index = -1
+        gpu_device = str(gpu_index) if gpu_index >= 0 else "auto"
+    settings["gpu_device_index"] = gpu_device
+
     engine = settings.get("tts_engine")
     if not isinstance(engine, str) or not engine.strip():
         settings["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
@@ -364,6 +385,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         "chatterbox",
         "qwen",
         "omnivoice",
+        "f5_russian",
         "review",
         "local_server",
         "api_tts",

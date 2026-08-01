@@ -12,12 +12,16 @@ from typing import Callable
 
 
 CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+AUTO_GPU_DEVICE = "auto"
+GPU_DEVICE_ENV_VAR = "LOCALT2VOICE_GPU_DEVICE"
+GPU_DEVICE_TOKEN_ENV_VAR = "LOCALT2VOICE_CUDA_DEVICE"
 
 
 @dataclass(frozen=True)
 class GPUInfo:
     name: str
     index: int | None = None
+    uuid: str = ""
     memory_total_mb: int | None = None
     driver_version: str = ""
     compute_capability: str = ""
@@ -43,6 +47,158 @@ class GPUDetectionResult:
     @property
     def has_nvidia_gpu(self) -> bool:
         return any(gpu.is_nvidia for gpu in self.gpus)
+
+
+def normalize_gpu_device(value: object) -> str:
+    """Return ``auto`` or a canonical non-negative NVIDIA device index."""
+
+    text = str(value if value is not None else AUTO_GPU_DEVICE).strip().casefold()
+    if text == AUTO_GPU_DEVICE:
+        return AUTO_GPU_DEVICE
+    try:
+        index = int(text)
+    except (TypeError, ValueError):
+        return AUTO_GPU_DEVICE
+    return str(index) if index >= 0 else AUTO_GPU_DEVICE
+
+
+def configure_gpu_device(
+    value: object,
+    detection: GPUDetectionResult | None = None,
+) -> str:
+    """Publish the application GPU preference for child runtime processes."""
+
+    selection = normalize_gpu_device(value)
+    os.environ[GPU_DEVICE_ENV_VAR] = selection
+    if selection == AUTO_GPU_DEVICE:
+        os.environ.pop(GPU_DEVICE_TOKEN_ENV_VAR, None)
+    else:
+        gpu = (
+            selected_nvidia_gpu(detection, selection)
+            if detection is not None
+            else None
+        )
+        os.environ[GPU_DEVICE_TOKEN_ENV_VAR] = (
+            gpu.uuid if gpu is not None and gpu.uuid else selection
+        )
+    return selection
+
+
+def configured_gpu_device() -> str:
+    return normalize_gpu_device(os.environ.get(GPU_DEVICE_ENV_VAR, AUTO_GPU_DEVICE))
+
+
+def gpu_runtime_environment(
+    environment: dict[str, str] | None = None,
+    selection: object | None = None,
+) -> dict[str, str]:
+    """Build a child environment in which the configured GPU is CUDA device 0."""
+
+    env = dict(os.environ if environment is None else environment)
+    selected = normalize_gpu_device(
+        env.get(GPU_DEVICE_ENV_VAR, AUTO_GPU_DEVICE)
+        if selection is None
+        else selection
+    )
+    env[GPU_DEVICE_ENV_VAR] = selected
+    if selected != AUTO_GPU_DEVICE:
+        target = selected
+        if selection is None:
+            target = env.get(GPU_DEVICE_TOKEN_ENV_VAR, selected).strip() or selected
+        env["CUDA_VISIBLE_DEVICES"] = target
+    return env
+
+
+def selectable_nvidia_gpus(result: GPUDetectionResult) -> list[GPUInfo]:
+    """Return CUDA GPUs whose physical indices are reliable for selection."""
+
+    if result.method != "nvidia-smi":
+        return []
+    return [
+        gpu
+        for gpu in result.gpus
+        if gpu.is_nvidia and gpu.index is not None and gpu.index >= 0
+    ]
+
+
+def selected_nvidia_gpu(
+    result: GPUDetectionResult,
+    selection: object | None = None,
+) -> GPUInfo | None:
+    nvidia_gpus = [gpu for gpu in result.gpus if gpu.is_nvidia]
+    if not nvidia_gpus:
+        return None
+
+    selected = normalize_gpu_device(
+        configured_gpu_device() if selection is None else selection
+    )
+    if selected == AUTO_GPU_DEVICE:
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible_devices is None:
+            return nvidia_gpus[0]
+        visible_device = visible_devices.split(",", 1)[0].strip()
+        visible_index = normalize_gpu_device(visible_device)
+        if visible_index != AUTO_GPU_DEVICE:
+            selected = visible_index
+        else:
+            return next(
+                (
+                    gpu
+                    for gpu in nvidia_gpus
+                    if gpu.uuid
+                    and gpu.uuid.casefold() == visible_device.casefold()
+                ),
+                None,
+            )
+    if selected != AUTO_GPU_DEVICE:
+        selected_index = int(selected)
+        match = next(
+            (gpu for gpu in nvidia_gpus if gpu.index == selected_index),
+            None,
+        )
+        if match is not None:
+            return match
+        if all(gpu.index is None for gpu in nvidia_gpus):
+            # Tests, external callers, and legacy metadata may describe a GPU
+            # without the physical nvidia-smi index needed for exact matching.
+            return nvidia_gpus[0]
+        return None
+    return nvidia_gpus[0]
+
+
+def gpu_detection_for_selected_device(
+    result: GPUDetectionResult,
+    selection: object | None = None,
+) -> GPUDetectionResult:
+    """Narrow detection metadata to the GPU that CUDA will actually use."""
+
+    gpu = selected_nvidia_gpu(result, selection)
+    if gpu is None:
+        selected = normalize_gpu_device(
+            configured_gpu_device() if selection is None else selection
+        )
+        visibility_restricts_gpu = (
+            selected != AUTO_GPU_DEVICE
+            or "CUDA_VISIBLE_DEVICES" in os.environ
+        )
+        if visibility_restricts_gpu and result.has_nvidia_gpu:
+            return GPUDetectionResult(
+                gpus=[candidate for candidate in result.gpus if not candidate.is_nvidia],
+                method=result.method,
+                nvidia_smi_path=result.nvidia_smi_path,
+                cuda_driver_version=result.cuda_driver_version,
+                error=f"Configured NVIDIA GPU {selected} was not detected.",
+                warnings=list(result.warnings),
+            )
+        return result
+    return GPUDetectionResult(
+        gpus=[gpu],
+        method=result.method,
+        nvidia_smi_path=result.nvidia_smi_path,
+        cuda_driver_version=result.cuda_driver_version,
+        error=result.error,
+        warnings=list(result.warnings),
+    )
 
 
 def detect_gpus(
@@ -183,7 +339,7 @@ def _query_nvidia_smi(path: str, runner: CommandRunner) -> list[GPUInfo]:
     completed = runner(
         [
             path,
-            "--query-gpu=index,name,memory.total,driver_version,compute_cap",
+            "--query-gpu=index,uuid,name,memory.total,driver_version,compute_cap",
             "--format=csv,noheader,nounits",
         ]
     )
@@ -191,17 +347,18 @@ def _query_nvidia_smi(path: str, runner: CommandRunner) -> list[GPUInfo]:
         raise RuntimeError(completed.stderr.strip() or "nvidia-smi returned an error")
     gpus: list[GPUInfo] = []
     for row in csv.reader(completed.stdout.splitlines()):
-        if len(row) < 5:
+        if len(row) < 6:
             continue
         index = _parse_int(row[0])
-        memory_total_mb = _parse_int(row[2])
+        memory_total_mb = _parse_int(row[3])
         gpus.append(
             GPUInfo(
                 index=index,
-                name=row[1].strip(),
+                uuid=row[1].strip(),
+                name=row[2].strip(),
                 memory_total_mb=memory_total_mb,
-                driver_version=row[3].strip(),
-                compute_capability=row[4].strip(),
+                driver_version=row[4].strip(),
+                compute_capability=row[5].strip(),
                 source="nvidia-smi",
                 is_nvidia=True,
             )

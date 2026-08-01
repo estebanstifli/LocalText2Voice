@@ -23,14 +23,17 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QWidget,
 )
 
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredAudioEvent
 from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
 from app.core.text_normalization import TextNormalizationStore
+from app.tts.voice_gallery_manager import GalleryVoice
 from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
 from app.ui.main_window import MainWindow
+from app.utils.gpu_detection import GPUDetectionResult, GPUInfo
 
 
 class MainWindowUITests(unittest.TestCase):
@@ -108,6 +111,11 @@ class MainWindowUITests(unittest.TestCase):
         self.assertIsNotNone(logo)
         self.assertIsNotNone(logo.pixmap())
         self.assertFalse(logo.pixmap().isNull())
+        self.assertIsNotNone(window.findChild(QWidget, "sidebarBrand"))
+        self.assertIn(
+            "QFrame#sidebar QLabel",
+            window.styleSheet(),
+        )
         self.assertFalse(window.time_label.isVisible())
         self.assertFalse(window.open_output_button.isVisible())
         self.assertTrue(hasattr(window, "audio_mix_preview_panel"))
@@ -206,7 +214,10 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "review_source_detail"))
         self.assertTrue(hasattr(window, "review_transcript_detail"))
         self.assertTrue(hasattr(window, "review_tail_enabled_checkbox"))
-        self.assertFalse(window.review_tail_enabled_checkbox.isChecked())
+        self.assertEqual(
+            window.review_tail_enabled_checkbox.isChecked(),
+            bool(window.settings.get("review", {}).get("tail_analysis_enabled", False)),
+        )
         self.assertFalse(window.review_verify_button.icon().isNull())
 
         window.settings_button.click()
@@ -223,7 +234,7 @@ class MainWindowUITests(unittest.TestCase):
         )
         self.assertEqual(
             window.text_normalization_panel.editor_language_combo.currentData(),
-            "en",
+            window.settings.get("text_normalization", {}).get("language", "en"),
         )
         self.assertTrue(
             hasattr(window.text_normalization_panel, "create_dictionary_button")
@@ -260,6 +271,177 @@ class MainWindowUITests(unittest.TestCase):
         self.assertGreaterEqual(window.tts_engine_combo.findData("chatterbox"), 0)
         self.assertGreaterEqual(window.tts_engine_combo.findData("kokoro"), 0)
         self.assertGreaterEqual(window.tts_engine_combo.findData("qwen"), 0)
+        self.assertGreaterEqual(window.tts_engine_combo.findData("f5_russian"), 0)
+        self.assertTrue(window.f5_russian_stress_checkbox.isChecked())
+        self.assertIn("F5-TTS Russian", window._tts_engine_label("f5_russian"))
+
+        # Rebuilding the engine table must keep a lower selected row in view.
+        # Extra rows reproduce installations with several custom engines.
+        engine_rows = window._engine_table_rows()
+        azure_row = next(
+            row for row in engine_rows if row["engine_id"] == "azure"
+        )
+        long_engine_rows = [
+            row for row in engine_rows if row["engine_id"] != "azure"
+        ]
+        for index in range(12):
+            long_engine_rows.append(
+                {
+                    **engine_rows[0],
+                    "engine_id": f"test_engine_{index}",
+                    "name": f"Test engine {index}",
+                    "selected": "",
+                }
+            )
+        long_engine_rows.append(azure_row)
+        window.settings_tabs.setCurrentIndex(1)
+        window.tts_engine_table.setFixedHeight(245)
+        window.show()
+        self.application.processEvents()
+        with patch.object(
+            window,
+            "_engine_table_rows",
+            return_value=long_engine_rows,
+        ):
+            window._select_tts_engine("azure")
+            self.application.processEvents()
+            selected_item = window.tts_engine_table.currentItem()
+            self.assertIsNotNone(selected_item)
+            self.assertEqual(
+                selected_item.data(Qt.ItemDataRole.UserRole),
+                "azure",
+            )
+            self.assertTrue(
+                window.tts_engine_table.visualItemRect(selected_item).intersects(
+                    window.tts_engine_table.viewport().rect()
+                ),
+                (
+                    window.tts_engine_table.visualItemRect(selected_item),
+                    window.tts_engine_table.viewport().rect(),
+                    window.tts_engine_table.verticalScrollBar().value(),
+                    window.tts_engine_table.verticalScrollBar().maximum(),
+                ),
+            )
+            selected_scroll_position = (
+                window.tts_engine_table.verticalScrollBar().value()
+            )
+            window._refresh_tts_engine_table()
+            self.assertEqual(
+                window.tts_engine_table.verticalScrollBar().value(),
+                min(
+                    selected_scroll_position,
+                    window.tts_engine_table.verticalScrollBar().maximum(),
+                ),
+            )
+        window._select_tts_engine("piper")
+        window.hide()
+
+        reference_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(reference_temp.cleanup)
+        russian_reference = Path(reference_temp.name) / "russian_man.wav"
+        russian_reference.write_bytes(b"RIFF")
+        russian_transcript = (
+            "Тихий ветер гуляет по улицам старого города. Скоро наступит вечер, "
+            "и в окнах зажгутся тёплые огни."
+        )
+        requested_voice_ids: list[str] = []
+        window.voice_gallery_manager = SimpleNamespace(
+            get_voice=lambda voice_id: (
+                requested_voice_ids.append(voice_id)
+                or SimpleNamespace(
+                    name="Russian Man",
+                    ref_text=russian_transcript,
+                )
+            ),
+            ensure_voice_audio=lambda _voice: russian_reference,
+        )
+        window.f5_russian_reference_picker.set_path(None)
+        window.f5_russian_reference_text_edit.clear()
+        self.assertTrue(
+            window._ensure_default_f5_russian_reference(allow_sync=False)
+        )
+        self.assertEqual(requested_voice_ids, ["omnivoice_ru_russian_man"])
+        self.assertEqual(
+            window.f5_russian_reference_picker.path(),
+            russian_reference,
+        )
+        self.assertEqual(
+            window.f5_russian_reference_text_edit.toPlainText(),
+            russian_transcript,
+        )
+        russian_man = GalleryVoice(
+            voice_id="omnivoice_ru_russian_man",
+            engine="omnivoice",
+            name="Russian Man",
+            language="ru",
+            language_name="Russian",
+            voice_type="Reference voice",
+            install_type="reference_audio",
+            ref_audio_path=str(russian_reference),
+            ref_text=russian_transcript,
+            installed_path=str(russian_reference),
+        )
+        russian_woman = GalleryVoice(
+            voice_id="omnivoice_ru_russian_woman",
+            engine="omnivoice",
+            name="Russian Woman",
+            language="ru",
+            language_name="Russian",
+            voice_type="Reference voice",
+            install_type="reference_audio",
+            ref_audio_url="https://example.invalid/russian_woman.wav",
+            ref_text=russian_transcript,
+        )
+        window.voice_gallery_manager = SimpleNamespace(
+            list_voices=lambda _engine: [russian_man, russian_woman],
+            preview_source=lambda voice: (
+                voice.installed_path or voice.ref_audio_path or voice.ref_audio_url
+            ),
+            is_installed=lambda voice: bool(voice.installed_path),
+        )
+        f5_voice_rows = window._voice_page_rows("f5_russian")
+        self.assertEqual(
+            {row["name"] for row in f5_voice_rows},
+            {"Russian Man", "Russian Woman"},
+        )
+        self.assertEqual(len(f5_voice_rows), 2)
+        self.assertTrue(
+            next(row for row in f5_voice_rows if row["name"] == "Russian Man")[
+                "selected"
+            ]
+        )
+        russian_woman_row = next(
+            row for row in f5_voice_rows if row["name"] == "Russian Woman"
+        )
+        with patch.object(window, "_start_voice_gallery_operation") as start_install:
+            window._select_voice_page_row_data(russian_woman_row)
+        start_install.assert_called_once_with("install", russian_woman)
+        self.assertEqual(
+            window.pending_f5_russian_gallery_voice_id,
+            russian_woman.voice_id,
+        )
+        completed_gallery = SimpleNamespace(
+            get_voice=lambda voice_id: (
+                russian_woman if voice_id == russian_woman.voice_id else None
+            )
+        )
+        with (
+            patch(
+                "app.ui.main_window.VoiceGalleryManager",
+                return_value=completed_gallery,
+            ),
+            patch.object(
+                window,
+                "_apply_f5_russian_gallery_reference",
+                return_value=True,
+            ) as apply_reference,
+            patch.object(window, "_save_settings") as save_settings,
+            patch.object(window, "_refresh_voices_page"),
+        ):
+            window._on_voice_gallery_finished("Installed Russian Woman.")
+        apply_reference.assert_called_once_with(russian_woman)
+        save_settings.assert_called_once_with()
+        self.assertIsNone(window.pending_f5_russian_gallery_voice_id)
         self.assertGreaterEqual(window.tts_engine_combo.findData("gemini"), 0)
         self.assertEqual(window.gemini_model_combo.currentData(), "gemini-3.1-flash-tts-preview")
         self.assertEqual(window.gemini_voice_combo.currentData(), "Kore")
@@ -424,7 +606,11 @@ class MainWindowUITests(unittest.TestCase):
             window.theme_button.accessibleName(),
             window.theme_button.toolTip(),
         )
+        central_widget = window.centralWidget()
+        settings_button = window.settings_button
+        light_settings_icon = settings_button.icon().pixmap(20, 20).toImage()
         window.text_editor.setPlainText("Theme-safe text")
+        window.log_view.append_event("Theme log survives")
         window._show_voices_page()
 
         window.theme_button.click()
@@ -443,9 +629,16 @@ class MainWindowUITests(unittest.TestCase):
 
         self.assertEqual(window.ui_theme, "dark")
         self.assertIsNone(window.theme_progress_dialog)
+        self.assertIs(window.centralWidget(), central_widget)
+        self.assertIs(window.settings_button, settings_button)
+        self.assertNotEqual(
+            settings_button.icon().pixmap(20, 20).toImage(),
+            light_settings_icon,
+        )
         self.assertEqual(window.theme_button.property("themeIcon"), "moon")
         self.assertEqual(window.page_stack.currentIndex(), 5)
         self.assertEqual(window.text_editor.toPlainText(), "Theme-safe text")
+        self.assertIn("Theme log survives", window.log_view.toPlainText())
         self.assertEqual(
             window.theme_button.toolTip(),
             window.tr("switch_to_light_theme", "Switch to light theme"),
@@ -461,8 +654,76 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.ui_theme, "light")
         self.assertIsNone(window.theme_progress_dialog)
         self.assertEqual(window.theme_button.property("themeIcon"), "sun")
+        self.assertEqual(
+            settings_button.icon().pixmap(20, 20).toImage(),
+            light_settings_icon,
+        )
         self.assertNotIn("#0b1220", window.styleSheet())
         self.assertEqual(SettingsManager(config_path).settings["ui_theme"], "light")
+
+    def test_multiple_nvidia_gpus_can_be_selected_from_general_settings(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.json"
+        detection = GPUDetectionResult(
+            gpus=[
+                GPUInfo(
+                    name="NVIDIA RTX 3070",
+                    index=0,
+                    memory_total_mb=8192,
+                    source="nvidia-smi",
+                ),
+                GPUInfo(
+                    name="NVIDIA RTX 5090",
+                    index=1,
+                    memory_total_mb=32768,
+                    source="nvidia-smi",
+                ),
+            ],
+            method="nvidia-smi",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "app.ui.main_window.SettingsManager",
+                return_value=SettingsManager(config_path),
+            ),
+            patch("app.ui.main_window.detect_gpus", return_value=detection),
+        ):
+            window = MainWindow()
+            self.addCleanup(window.deleteLater)
+
+            self.assertEqual(window.gpu_device_combo.count(), 3)
+            self.assertFalse(window.sidebar_change_gpu_button.isHidden())
+            window.sidebar_change_gpu_button.click()
+            self.assertEqual(window.page_stack.currentIndex(), 1)
+            self.assertEqual(window.settings_tabs.currentIndex(), 0)
+
+            with (
+                patch.object(
+                    window.engine_host_client,
+                    "health",
+                    return_value=False,
+                ),
+                patch.object(window, "_unload_faster_whisper"),
+                patch.object(window, "_unload_preloaded_tts_engine"),
+                patch.object(window, "_refresh_all_engine_status"),
+            ):
+                window.gpu_device_combo.setCurrentIndex(
+                    window.gpu_device_combo.findData("1")
+                )
+
+            self.assertEqual(window.gpu_device_selection, "1")
+            self.assertEqual(
+                SettingsManager(config_path).settings["gpu_device_index"],
+                "1",
+            )
+            self.assertEqual(
+                window.qwen_manager.runtime_environment()["CUDA_VISIBLE_DEVICES"],
+                "1",
+            )
+            self.assertIn("RTX 5090", window._sidebar_hardware_summary())
 
     def test_verify_pending_button_starts_without_an_ffmpeg_path_widget(self) -> None:
         window = MainWindow()

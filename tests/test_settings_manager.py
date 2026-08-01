@@ -98,6 +98,19 @@ def test_russian_ui_language_is_preserved(tmp_path):
     assert SettingsManager(manager.path).settings["ui_language"] == "ru"
 
 
+def test_gpu_device_index_is_persistent_and_sanitized(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    assert manager.settings["gpu_device_index"] == "auto"
+
+    manager.settings["gpu_device_index"] = 1
+    manager.save()
+    assert SettingsManager(manager.path).settings["gpu_device_index"] == "1"
+
+    manager.settings["gpu_device_index"] = "not-a-gpu"
+    manager.save()
+    assert manager.settings["gpu_device_index"] == "auto"
+
+
 def test_audio_tail_review_defaults_off_and_sanitizes_threshold_order(tmp_path):
     manager = SettingsManager(tmp_path / "config.json")
     assert manager.settings["review"]["tail_analysis_enabled"] is False

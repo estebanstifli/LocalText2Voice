@@ -137,6 +137,13 @@ QFrame#sidebar {
     background: #0f192a;
     border-right: 1px solid #26344a;
 }
+QWidget#sidebarBrand,
+QFrame#sidebar QLabel {
+    background: transparent;
+}
+QFrame#sidebar QLabel#engineStatusIcon {
+    background: #2f7dff;
+}
 QLabel#sidebarTitleLabel,
 QLabel#pageTitleLabel,
 QLabel#titleLabel,

@@ -15,7 +15,7 @@ from num2words import num2words
 from app.utils.paths import app_data_root
 
 
-DEFAULT_DICTIONARY_VERSION = 2
+DEFAULT_DICTIONARY_VERSION = 3
 DEFAULT_ENGLISH_ENTRIES: tuple[tuple[str, str, str], ...] = (
     ("symbols", "&", "and"),
     ("symbols", "%", "percent"),
@@ -97,6 +97,7 @@ BUILTIN_DICTIONARY_NAMES: dict[str, str] = {
     "it": "Italiano",
     "ja": "日本語",
     "pt": "Português",
+    "ru": "Русский",
     "zh": "中文",
 }
 
@@ -274,6 +275,45 @@ DEFAULT_DICTIONARY_ENTRIES: dict[str, tuple[tuple[str, str, str], ...]] = {
             },
             "acronyms": {"IA": "I A", "TTS": "T T S", "USB": "U S B", "URL": "U R L"},
             "internet": {"www.": "W W W ponto ", ".com": " ponto com", ".pt": " ponto P T"},
+        }
+    ),
+    "ru": _flatten_dictionary(
+        {
+            "symbols": {
+                "&": "и", "%": "процентов", "=": "равно",
+                "@": "собака", "€": "евро", "$": "долларов",
+                "£": "фунтов", "₽": "рублей", "руб.": "рублей",
+                "°": "градусов",
+            },
+            "abbreviations": {
+                "г.": "год", "гг.": "годы", "ул.": "улица",
+                "д.": "дом", "кв.": "квартира", "стр.": "страница",
+                "им.": "имени", "т. е.": "то есть", "т. д.": "так далее",
+                "т. п.": "тому подобное", "например": "например",
+            },
+            "units": {
+                "km": "километров", "км": "километров",
+                "cm": "сантиметров", "см": "сантиметров",
+                "mm": "миллиметров", "мм": "миллиметров",
+                "kg": "килограммов", "кг": "килограммов",
+                "mg": "миллиграммов", "мг": "миллиграммов",
+                "km/h": "километров в час", "км/ч": "километров в час",
+                "Hz": "герц", "Гц": "герц", "kHz": "килогерц",
+                "кГц": "килогерц", "MHz": "мегагерц", "МГц": "мегагерц",
+                "GHz": "гигагерц", "ГГц": "гигагерц",
+                "MB": "мегабайт", "МБ": "мегабайт",
+                "GB": "гигабайт", "ГБ": "гигабайт",
+                "TB": "терабайт", "ТБ": "терабайт",
+                "°C": "градусов Цельсия", "°F": "градусов Фаренгейта",
+            },
+            "acronyms": {
+                "ИИ": "и и", "TTS": "ти ти эс", "CPU": "си пи ю",
+                "GPU": "джи пи ю", "USB": "ю эс би", "URL": "ю эр эл",
+            },
+            "internet": {
+                "www.": "дабл-ю дабл-ю дабл-ю точка ",
+                ".com": " точка ком", ".ru": " точка ру",
+            },
         }
     ),
     "zh": _flatten_dictionary(
@@ -959,8 +999,8 @@ def english_ordinal_to_words(value: int) -> str:
     return f"{prefix}{separator}{ordinal_final}" if prefix else ordinal_final
 
 
-NUMBER_RULE_LANGUAGES = frozenset({"ar", "de", "en", "es", "fr", "it", "ja", "pt"})
-_COMMA_DECIMAL_LANGUAGES = frozenset({"de", "es", "fr", "it", "pt"})
+NUMBER_RULE_LANGUAGES = frozenset({"ar", "de", "en", "es", "fr", "it", "ja", "pt", "ru"})
+_COMMA_DECIMAL_LANGUAGES = frozenset({"de", "es", "fr", "it", "pt", "ru"})
 _DECIMAL_WORDS = {
     "ar": "فاصلة",
     "de": "Komma",
@@ -970,6 +1010,7 @@ _DECIMAL_WORDS = {
     "it": "virgola",
     "ja": "点",
     "pt": "vírgula",
+    "ru": "запятая",
 }
 _SIGN_WORDS = {
     "ar": {"-": "سالب", "+": "موجب"},
@@ -980,6 +1021,7 @@ _SIGN_WORDS = {
     "it": {"-": "meno", "+": "più"},
     "ja": {"-": "マイナス", "+": "プラス"},
     "pt": {"-": "menos", "+": "mais"},
+    "ru": {"-": "минус", "+": "плюс"},
 }
 _PERCENT_WORDS = {
     "ar": "بالمئة",
@@ -990,6 +1032,7 @@ _PERCENT_WORDS = {
     "it": "percento",
     "ja": "パーセント",
     "pt": "por cento",
+    "ru": "процентов",
 }
 _LANGUAGE_ALIASES = {
     "arabic": "ar", "العربية": "ar",
@@ -1001,10 +1044,11 @@ _LANGUAGE_ALIASES = {
     "italian": "it", "italiano": "it",
     "japanese": "ja", "日本語": "ja",
     "portuguese": "pt", "português": "pt", "portugues": "pt",
+    "russian": "ru", "русский": "ru", "рус": "ru",
     "chinese": "zh", "中文": "zh",
 }
-_CURRENCY_CODES = {"$": "USD", "€": "EUR", "£": "GBP"}
-_NUM2WORDS_CURRENCY_LANGUAGES = frozenset({"de", "es", "fr", "it", "pt"})
+_CURRENCY_CODES = {"$": "USD", "€": "EUR", "£": "GBP", "₽": "RUB"}
+_NUM2WORDS_CURRENCY_LANGUAGES = frozenset({"de", "es", "fr", "it", "pt", "ru"})
 
 
 def number_rules_available(language: str) -> bool:
@@ -1103,12 +1147,12 @@ class TextNormalizer:
     _markup_command = re.compile(r"(\{\{.*?\}\})", re.DOTALL)
     _percent = re.compile(r"(?<!\w)([-+]?\d[\d,]*(?:\.\d+)?)\s*%")
     _currency = re.compile(
-        r"(?<!\w)(?P<sign>[-+]?)\s*(?P<symbol>[$€£])\s*"
+        r"(?<!\w)(?P<sign>[-+]?)\s*(?P<symbol>[$€£₽])\s*"
         r"(?P<amount>\d[\d.,]*\d|\d)(?!\w)"
     )
     _currency_suffix = re.compile(
         r"(?<![\w.])(?P<sign>[-+]?)\s*"
-        r"(?P<amount>\d[\d.,]*\d|\d)\s*(?P<symbol>[$€£])(?!\w)"
+        r"(?P<amount>\d[\d.,]*\d|\d)\s*(?P<symbol>[$€£₽])(?!\w)"
     )
     _iso_date = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
     _numeric_date = re.compile(
@@ -1559,6 +1603,8 @@ class TextNormalizer:
             )
         if base == "ja":
             return (re.compile(r"第\s*(\d+)"),)
+        if base == "ru":
+            return (re.compile(r"\b(\d+)\s*-(?:й|я|е|го|му|м|ю)\b", re.IGNORECASE),)
         return ()
 
     @staticmethod

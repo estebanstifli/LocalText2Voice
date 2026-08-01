@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.utils.gpu_detection import gpu_runtime_environment
+
 from app.tts.python_runtime_manager import (
     PythonRuntimeCancelled,
     PythonRuntimeError,
@@ -306,7 +308,7 @@ class FasterWhisperManager:
         return [str(self.python_runtime.python_exe), str(self.cli_path)]
 
     def runtime_environment(self) -> dict[str, str]:
-        env = dict(os.environ)
+        env = gpu_runtime_environment()
         env["PYTHONUTF8"] = "1"
         env["PYTHONPATH"] = str(self.dependency_dir)
         env["HF_HOME"] = str(self.cache_dir)

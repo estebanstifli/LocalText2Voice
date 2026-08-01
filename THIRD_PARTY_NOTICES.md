@@ -97,6 +97,66 @@ Qwen3 TTS model assets are downloaded on demand to the user's local app data
 folder through Hugging Face tooling. Review the model card, license, and usage
 terms before redistributing model files or using generated audio commercially.
 
+## OmniVoice Runtime and Model Assets
+
+- Project: OmniVoice by k2-fsa
+- Upstream: https://github.com/k2-fsa/OmniVoice
+- Model page: https://huggingface.co/k2-fsa/OmniVoice
+- Source-code license: Apache License 2.0
+- Pretrained-model license: Creative Commons Attribution-NonCommercial
+  (CC-BY-NC), as stated by the upstream model card
+
+OmniVoice is installed only on demand into an isolated dependency folder, and
+its model assets are downloaded to the user's selected AI storage location.
+The permissive source-code license does not replace the non-commercial terms of
+the pretrained model. Review the current upstream model card and license before
+redistribution or commercial use, and use reference voices only with the
+speaker's permission.
+
+## F5-TTS Russian Model and Optional Runtime
+
+- Russian model: F5-TTS Russian by Misha24-10
+- Model page: https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN
+- Selected checkpoint: `F5TTS_v1_Base_v2/model_last_inference.safetensors`
+- Model license: Creative Commons Attribution-NonCommercial 4.0 International
+  (CC BY-NC 4.0)
+- Base project: F5-TTS by Yushen Chen, Zhikang Niu, Ziyang Ma, Keqi Deng,
+  Chunhui Wang, Jian Zhao, Kai Yu, and Xie Chen (SWivid),
+  https://github.com/SWivid/F5-TTS and https://arxiv.org/abs/2410.06885
+- Stress model: Silero Stress by Silero Team,
+  https://github.com/snakers4/silero-stress (MIT)
+
+F5-TTS Russian is an optional download and is not part of the base
+LocalText2Voice installation. The app displays and requires acknowledgement of
+the non-commercial restriction before installation. The restriction applies to
+the Russian model and its generated output: do not use it for commercial
+purposes. Give appropriate credit to Misha24-10 and F5-TTS/SWivid, link to the
+license, and indicate modifications where required by CC BY-NC 4.0.
+
+Installing this engine creates a dedicated dependency folder containing F5-TTS,
+PyTorch, and Silero Stress. Silero Stress is not installed for or loaded by any
+other engine. Its installed package metadata and MIT license are authoritative.
+See `licenses/F5-TTS-RUSSIAN-CC-BY-NC-4.0.txt` for the attribution notice and
+license link.
+
+## OpenAI TTS API
+
+- API reference: https://platform.openai.com/docs/api-reference/audio
+
+OpenAI TTS is an optional remote provider. No OpenAI model files are bundled.
+Users supply their own API credentials and are responsible for applicable API
+terms, billing, data handling, voice requirements, and generated-audio usage.
+
+## ElevenLabs TTS API
+
+- Product documentation:
+  https://elevenlabs.io/docs/overview/capabilities/text-to-speech
+- API reference: https://elevenlabs.io/docs/api-reference/text-to-speech/convert
+
+ElevenLabs is an optional remote provider. No ElevenLabs models or voices are
+bundled. Users supply their own API credentials and remain responsible for
+provider terms, voice permissions, billing, and generated-audio usage.
+
 ## Google Gemini TTS API
 
 - Product documentation: https://ai.google.dev/gemini-api/docs/speech-generation
@@ -107,6 +167,16 @@ Google Gemini TTS is integrated as an optional remote API provider. No Gemini
 model files are bundled with LocalText2Voice. Users must provide their own API
 key and are responsible for Google API terms, billing, regional availability,
 data handling, safety policies, and permitted usage of generated audio.
+
+## Microsoft Azure Speech API
+
+- Product documentation:
+  https://learn.microsoft.com/en-us/azure/ai-services/speech-service/overview
+
+Azure Speech is an optional remote provider. No Azure speech models or voices
+are bundled. Users supply their own subscription credentials and are
+responsible for Microsoft terms, billing, regional availability, SSML usage,
+voice permissions, and generated-audio usage.
 
 ## FFmpeg
 

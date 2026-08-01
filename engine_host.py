@@ -15,6 +15,7 @@ import uvicorn
 
 from app.core.settings_manager import SettingsManager
 from app.server.http_app import create_http_app
+from app.utils.gpu_detection import configure_gpu_device, detect_gpus
 
 
 def _server_settings(settings_manager: SettingsManager) -> dict[str, Any]:
@@ -34,6 +35,10 @@ def main() -> int:
     args = parser.parse_args()
 
     settings_manager = SettingsManager()
+    configure_gpu_device(
+        settings_manager.settings.get("gpu_device_index", "auto"),
+        detect_gpus(),
+    )
     settings = _server_settings(settings_manager)
     host = args.host or str(settings.get("host", "127.0.0.1") or "127.0.0.1")
     if not args.allow_lan and not bool(settings.get("allow_lan", False)):

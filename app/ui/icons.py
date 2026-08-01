@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtGui import QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 try:
@@ -116,23 +117,107 @@ def ui_icon(
     active: bool = False,
     danger: bool = False,
 ) -> QIcon:
-    """Return a scalable app icon using QtAwesome, with a Qt fallback."""
-    resolved_color = color or _icon_color(name, active=active, danger=danger)
-    if qta is not None:
-        icon_name = _QTAWESOME_ICONS.get(name, _QTAWESOME_ICONS["file"])
-        try:
-            return qta.icon(icon_name, color=resolved_color, color_disabled=ICON_MUTED)
-        except Exception:
-            pass
-    return _fallback_icon(name)
+    """Return a scalable icon that follows live application theme changes."""
+
+    return QIcon(
+        _ThemeAwareIconEngine(
+            name,
+            color=color,
+            active=active,
+            danger=danger,
+        )
+    )
 
 
-def _icon_color(name: str, *, active: bool, danger: bool) -> str:
+class _ThemeAwareIconEngine(QIconEngine):
+    """Resolve icon colors when Qt paints, rather than only at creation time."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        color: str | None = None,
+        active: bool = False,
+        danger: bool = False,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.color = color
+        self.active = active
+        self.danger = danger
+        self._icons: dict[bool, QIcon] = {}
+
+    def clone(self) -> _ThemeAwareIconEngine:
+        return _ThemeAwareIconEngine(
+            self.name,
+            color=self.color,
+            active=self.active,
+            danger=self.danger,
+        )
+
+    def paint(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        mode: QIcon.Mode,
+        state: QIcon.State,
+    ) -> None:
+        self._resolved_icon().paint(
+            painter,
+            rect,
+            Qt.AlignmentFlag.AlignCenter,
+            mode,
+            state,
+        )
+
+    def pixmap(
+        self,
+        size: QSize,
+        mode: QIcon.Mode,
+        state: QIcon.State,
+    ) -> QPixmap:
+        return self._resolved_icon().pixmap(size, mode, state)
+
+    def _resolved_icon(self) -> QIcon:
+        dark = _dark_theme_active()
+        cached = self._icons.get(dark)
+        if cached is not None:
+            return cached
+        resolved_color = self.color or _icon_color(
+            self.name,
+            active=self.active,
+            danger=self.danger,
+        )
+        if qta is not None:
+            icon_name = _QTAWESOME_ICONS.get(
+                self.name,
+                _QTAWESOME_ICONS["file"],
+            )
+            try:
+                icon = qta.icon(
+                    icon_name,
+                    color=resolved_color,
+                    color_disabled=(ICON_MUTED_DARK if dark else ICON_MUTED),
+                )
+                self._icons[dark] = icon
+                return icon
+            except Exception:
+                pass
+        icon = _fallback_icon(self.name)
+        self._icons[dark] = icon
+        return icon
+
+
+def _dark_theme_active() -> bool:
     application = QApplication.instance()
-    dark = bool(
+    return bool(
         application is not None
         and application.property("uiTheme") == "dark"
     )
+
+
+def _icon_color(name: str, *, active: bool, danger: bool) -> str:
+    dark = _dark_theme_active()
     if danger or name in {"cancel", "close", "delete", "stop"}:
         return ICON_DANGER_DARK if dark else ICON_DANGER
     if active:

@@ -1,0 +1,27 @@
+F5-TTS Russian attribution and license notice
+=============================================
+
+Work: F5-TTS Russian, checkpoint F5TTS_v1_Base_v2
+Creator / model publisher: Misha24-10
+Model page: https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN
+Based on: F5-TTS by Yushen Chen, Zhikang Niu, Ziyang Ma, Keqi Deng,
+Chunhui Wang, Jian Zhao, Kai Yu, and Xie Chen (SWivid)
+https://github.com/SWivid/F5-TTS
+https://arxiv.org/abs/2410.06885
+
+The F5-TTS Russian model is licensed under the Creative Commons
+Attribution-NonCommercial 4.0 International license (CC BY-NC 4.0):
+
+https://creativecommons.org/licenses/by-nc/4.0/
+https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+Commercial use of this model or its generated output is not permitted by the
+model license. Appropriate attribution must be preserved and modifications
+must be indicated as required by the license.
+
+LocalText2Voice source code remains licensed separately under MIT. This notice
+does not replace the authoritative model card or Creative Commons legal code.
+
+Silero Stress, installed only inside this optional engine runtime, is published
+by the Silero Team under the MIT License:
+https://github.com/snakers4/silero-stress

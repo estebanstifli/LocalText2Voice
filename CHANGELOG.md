@@ -7,8 +7,23 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-01
+
 ### Added
 
+- Added the optional F5-TTS Russian engine using the pinned
+  `F5TTS_v1_Base_v2` safetensors checkpoint, persistent local inference,
+  reference-audio cloning, selected-GPU support, previews, server generation,
+  and voice-gallery imports.
+- Added Russian deterministic text normalization for numbers, ordinals,
+  percentages, ruble amounts, common abbreviations, and units.
+- Added Silero Stress as an F5-only isolated dependency with lazy loading,
+  automatic Russian stress marks, and preservation of manual `+` marks.
+- Added mandatory CC BY-NC 4.0 acknowledgement and non-commercial notices for
+  F5-TTS Russian in its installation dialog, engine UI, README, and
+  third-party notices.
+- Added a global NVIDIA GPU selector under General settings, with an automatic
+  mode and a sidebar shortcut when multiple CUDA GPUs are available.
 - Added a persistent light/dark interface theme with a localized sun/moon
   toggle, accessible tooltips, and an automatic progress dialog while the
   interface switches themes.
@@ -27,6 +42,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- F5-TTS Russian installations now configure the Voice Gallery `Russian Man`
+  reference audio and its exact Russian transcript by default.
+- Official F5-TTS long-silence trimming is now enabled by default, including
+  its documented handling of long internal pauses, and remains user-configurable.
+- F5-TTS Russian now shares the remote `Russian Man` and `Russian Woman`
+  reference voices with OmniVoice, including automatic download and selection.
+- Theme switching now restyles the existing interface and recolors icons in
+  place instead of rebuilding every page and reloading application state.
+- CUDA-based TTS engines and Faster Whisper now run on the selected GPU, and
+  loaded models are released safely when the selection changes.
 - Renamed the existing Qwen model in the UI to `CustomVoice 0.6B (Fast)` and
   documented the experimental Base 1.7B emotion/style instruction path.
 - Qwen runtime upgrades are staged and validated before a profile is activated,
@@ -39,11 +64,15 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Selecting a TTS engine now keeps its row selected and visible, while routine
+  status refreshes preserve the engine table's current scroll position.
 - Qwen now selects a PyTorch 2.11 CUDA 13.0 build for RTX 50-series and other
   Blackwell GPUs instead of installing the incompatible PyTorch 2.6 CUDA 12.6
   wheel.
 - A Qwen CUDA profile that cannot be installed or execute kernels now records a
   CPU fallback instead of repeatedly treating the runtime as missing.
+- New Windows installations now write the current settings schema instead of
+  relying on a first-launch migration.
 
 ## [1.3.0] - 2026-07-24
 
@@ -136,6 +165,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/estebanstifli/LocalText2Voice/releases/tag/v1.2.0

@@ -115,10 +115,23 @@ def test_starter_dictionaries_match_all_ui_languages(tmp_path: Path) -> None:
     dictionaries = store.list_dictionaries()
 
     assert {dictionary.language for dictionary in dictionaries} == {
-        "ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "zh"
+        "ar", "de", "en", "es", "fr", "hi", "it", "ja", "pt", "ru", "zh"
     }
     assert all(dictionary.is_builtin for dictionary in dictionaries)
     assert all(store.list_entries(dictionary.language) for dictionary in dictionaries)
+
+
+def test_russian_numbers_rubles_ordinals_and_dictionary(tmp_path: Path) -> None:
+    normalizer = TextNormalizer(db_path=tmp_path / "normalization.sqlite3")
+
+    assert normalizer.normalize("42%", language="ru") == "сорок два процентов"
+    assert normalizer.normalize("₽12,34", language="ru") == (
+        "двенадцать рублей, тридцать четыре копейки"
+    )
+    assert normalizer.normalize("21-й век", language="ru") == "двадцать первый век"
+    assert normalizer.normalize("ул. Ленина, д. 5", language="ru") == (
+        "улица Ленина, дом пять"
+    )
 
 
 def test_custom_dictionary_json_round_trip_and_legacy_import(tmp_path: Path) -> None:

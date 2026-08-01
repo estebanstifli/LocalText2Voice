@@ -18,8 +18,8 @@ config.json
 assets-location.txt
 data/
 logs/
-output/*.mp3
-output/*.wav
+output/**
+!output/.gitkeep
 engines/piper/*
 !engines/piper/PIPER_RUNTIME_INFO.txt
 engines/kokoro/*.exe

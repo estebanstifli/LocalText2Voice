@@ -13,6 +13,8 @@ from .api_engines import (
 from .base import BaseTTSEngine, TTSEngineError
 from .chatterbox_engine import ChatterboxTTSEngine
 from .chatterbox_manager import ChatterboxManager
+from .f5_russian_engine import F5RussianTTSEngine
+from .f5_russian_manager import F5RussianManager
 from .kokoro_python_engine import KokoroPythonTTSEngine
 from .kokoro_python_manager import KokoroPythonManager
 from .omnivoice_engine import OmniVoiceTTSEngine
@@ -35,6 +37,7 @@ TTS_ENGINES: tuple[TTSEngineDefinition, ...] = (
     TTSEngineDefinition("chatterbox", "Chatterbox", True),
     TTSEngineDefinition("qwen", "Qwen3 TTS", True),
     TTSEngineDefinition("omnivoice", "OmniVoice", True),
+    TTSEngineDefinition("f5_russian", "F5-TTS Russian", True),
     TTSEngineDefinition("openai", "OpenAI TTS (API)", False),
     TTSEngineDefinition("elevenlabs", "ElevenLabs (API)", False),
     TTSEngineDefinition("gemini", "Google Gemini TTS (API)", False),
@@ -57,6 +60,8 @@ def create_tts_engine(engine_id: str, piper_path: Path) -> BaseTTSEngine:
         return QwenTTSEngine(QwenManager())
     if engine_id == "omnivoice":
         return OmniVoiceTTSEngine(OmniVoiceManager())
+    if engine_id == "f5_russian":
+        return F5RussianTTSEngine(F5RussianManager())
     if engine_id == "openai":
         return OpenAITTSEngine()
     if engine_id == "elevenlabs":

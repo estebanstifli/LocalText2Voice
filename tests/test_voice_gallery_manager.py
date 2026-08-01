@@ -203,6 +203,76 @@ class VoiceGalleryManagerTest(unittest.TestCase):
             self.assertIsNotNone(installed)
             self.assertTrue(installed.is_file())
 
+    def test_f5_russian_reuses_the_two_remote_russian_references(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            reference = root / "reference.wav"
+            reference.write_bytes(b"reference")
+            manager = VoiceGalleryManager(
+                db_path=root / "voice-gallery.sqlite3",
+                files_root=root / "files",
+            )
+            manager._replace_catalog(
+                [
+                    {
+                        "id": "omnivoice_ru_russian_man",
+                        "name": "Russian Man",
+                        "engine": "omnivoice",
+                        "language": "ru",
+                        "language_name": "Russian",
+                        "type": "Reference voice",
+                        "install_type": "reference_audio",
+                        "ref_audio": str(reference),
+                        "ref_text": "Точная русская расшифровка.",
+                    },
+                    {
+                        "id": "omnivoice_ru_russian_woman",
+                        "name": "Russian Woman",
+                        "engine": "omnivoice",
+                        "language": "ru",
+                        "language_name": "Russian",
+                        "type": "Reference voice",
+                        "install_type": "reference_audio",
+                        "ref_audio": str(reference),
+                        "ref_text": "Точная русская расшифровка.",
+                    },
+                    {
+                        "id": "omnivoice_en_other",
+                        "name": "Other Voice",
+                        "engine": "omnivoice",
+                        "language": "en",
+                        "language_name": "English",
+                        "type": "Reference voice",
+                        "install_type": "reference_audio",
+                        "ref_audio": str(reference),
+                        "ref_text": "An English transcript.",
+                    },
+                    {
+                        "id": "f5_russian_imported",
+                        "name": "Imported Russian Voice",
+                        "engine": "f5_russian",
+                        "language": "ru",
+                        "language_name": "Russian",
+                        "type": "Reference voice",
+                        "install_type": "reference_audio",
+                        "ref_audio": str(reference),
+                        "ref_text": "Ещё одна точная расшифровка.",
+                    },
+                ]
+            )
+
+            voices = manager.list_voices("f5_russian")
+
+            self.assertEqual(
+                {voice.voice_id for voice in voices},
+                {
+                    "f5_russian_imported",
+                    "omnivoice_ru_russian_man",
+                    "omnivoice_ru_russian_woman",
+                },
+            )
+            self.assertNotIn("Other Voice", {voice.name for voice in voices})
+
     def test_sync_removes_stale_remote_rows_but_preserves_imported_voices(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)

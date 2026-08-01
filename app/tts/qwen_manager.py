@@ -14,6 +14,8 @@ from app.utils.gpu_detection import (
     GPUDetectionResult,
     detect_gpus,
     format_gpu_detection,
+    gpu_detection_for_selected_device,
+    gpu_runtime_environment,
 )
 from app.utils.paths import engine_dependencies_root, models_root
 
@@ -639,7 +641,9 @@ class QwenManager:
         )
 
     def has_runtime(self) -> bool:
-        return self.has_runtime_for_detection(detect_gpus())
+        return self.has_runtime_for_detection(
+            gpu_detection_for_selected_device(detect_gpus())
+        )
 
     def has_runtime_for_detection(
         self,
@@ -833,7 +837,7 @@ class QwenManager:
         return [str(self.python_runtime.python_exe), str(self.cli_path)]
 
     def runtime_environment(self) -> dict[str, str]:
-        env = dict(os.environ)
+        env = gpu_runtime_environment()
         env["PYTHONUTF8"] = "1"
         env["PYTHONPATH"] = str(self.dependency_dir)
         env["HF_HOME"] = str(self.cache_dir)
@@ -927,7 +931,7 @@ class QwenManager:
                 ),
                 cancel_token,
             )
-        gpu_detection = detect_gpus()
+        gpu_detection = gpu_detection_for_selected_device(detect_gpus())
         requested_profile = self.select_runtime_profile(gpu_detection)
         current_manifest = self.runtime_manifest()
         runtime_is_usable = self.has_runtime_for_detection(gpu_detection)

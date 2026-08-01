@@ -1,11 +1,12 @@
 {
-  "settings_schema_version": 17,
+  "settings_schema_version": 18,
   "storage": {
     "base_dir": ".",
     "previous_roots": []
   },
   "ui_language": "en",
   "ui_theme": "light",
+  "gpu_device_index": "auto",
   "output_dir": "output",
   "voice_id": "",
   "language": "",
@@ -21,7 +22,8 @@
     "kokoro": 0,
     "chatterbox": 0,
     "qwen": 0,
-    "omnivoice": 0
+    "omnivoice": 0,
+    "f5_russian": 0
   },
   "editor_syntax_highlighting": true,
   "show_markup_toolbar": true,
@@ -109,6 +111,16 @@
     "num_step": 32,
     "speed": 1.0,
     "duration": 0.0
+  },
+  "f5_russian": {
+    "model": "f5tts_v1_base_v2",
+    "device": "auto",
+    "reference_audio_path": "",
+    "reference_text": "",
+    "use_stress": true,
+    "nfe_step": 32,
+    "speed": 1.0,
+    "remove_silence": true
   },
   "review": {
     "enabled": false,

@@ -75,6 +75,10 @@ class VoiceGalleryManager:
     """SQLite-backed catalog for previewable/installable voices."""
 
     DB_FILENAME = "voice-gallery.sqlite3"
+    F5_RUSSIAN_REFERENCE_VOICE_IDS = (
+        "omnivoice_ru_russian_man",
+        "omnivoice_ru_russian_woman",
+    )
     REFERENCE_MIN_SECONDS = 3.0
     REFERENCE_MAX_SECONDS = 20.0
     REFERENCE_SAMPLE_RATE = 24000
@@ -176,7 +180,45 @@ class VoiceGalleryManager:
         query += " ORDER BY name COLLATE NOCASE, language_name COLLATE NOCASE"
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
-        return [self._row_to_voice(row) for row in rows]
+        voices = [self._row_to_voice(row) for row in rows]
+        if engine == "f5_russian":
+            voices = self._with_f5_russian_reference_voices(voices)
+        return voices
+
+    def _with_f5_russian_reference_voices(
+        self,
+        voices: list[GalleryVoice],
+    ) -> list[GalleryVoice]:
+        represented_source_ids = {voice.voice_id for voice in voices}
+        for voice in voices:
+            metadata = voice.metadata or {}
+            source_id = str(metadata.get("compatible_source_id", "")).strip()
+            if source_id:
+                represented_source_ids.add(source_id)
+        missing_ids = [
+            voice_id
+            for voice_id in self.F5_RUSSIAN_REFERENCE_VOICE_IDS
+            if voice_id not in represented_source_ids
+        ]
+        if not missing_ids:
+            return voices
+
+        placeholders = ", ".join("?" for _voice_id in missing_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM voice_gallery_voices WHERE id IN ({placeholders})",
+                tuple(missing_ids),
+            ).fetchall()
+        compatible = [
+            self._row_to_voice(row)
+            for row in rows
+            if str(row["ref_text"]).strip()
+            and (str(row["ref_audio_url"]).strip() or str(row["ref_audio_path"]).strip())
+        ]
+        return sorted(
+            [*voices, *compatible],
+            key=lambda voice: (voice.name.casefold(), voice.language_name.casefold()),
+        )
 
     def get_voice(self, voice_id: str) -> GalleryVoice | None:
         with self._connect() as connection:

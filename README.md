@@ -27,18 +27,50 @@
   <a href="https://andromedanova.com"><strong>AndromedaNova.com</strong></a>
 </p>
 
-LocalText2Voice is a desktop app for creating long-form spoken audio with AI text-to-speech. It can run fully local and offline with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, and OmniVoice, while also leaving room for optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, and Azure Speech.
+LocalText2Voice is a desktop app for creating long-form spoken audio with AI text-to-speech. It can run fully local and offline with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and the optional non-commercial F5-TTS Russian engine, while also leaving room for optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, and Azure Speech.
 
 The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
 
-## What's New In 1.3.0
+## System Requirements (Guidance)
 
-- Run LocalText2Voice from source on **Linux**, including Wayland detection, extensionless Piper/FFmpeg executable discovery, and Linux virtual-environment support.
-- Choose where large AI models, engine dependencies, downloaded voices, and caches are stored during Windows installation or later from Settings.
-- Move managed AI assets safely between drives without moving projects or generated audio.
-- See detailed live package-download and installation logs for optional local engines.
-- Export generated audio safely when temporary and output directories are on different Linux filesystems.
-- Preserve existing Windows behavior, upgrade compatibility, and guarded uninstall cleanup for user-selected model storage.
+LocalText2Voice can run on modest computers, but its actual requirements depend
+on the local TTS model, text length, optional transcript verification, and audio
+processing features you use. These profiles are practical recommendations, not
+strict compatibility limits:
+
+| Profile | Suggested hardware | Suitable for |
+| --- | --- | --- |
+| Basic | 64-bit 4-core CPU, 8 GB RAM, and 5 GB free disk space; no dedicated GPU required | Editing projects, cloud APIs, and lightweight local generation |
+| Recommended | Modern 6-core CPU, 16 GB RAM, SSD with 20–30 GB free, and an NVIDIA CUDA GPU with 8 GB VRAM | Regular use of local neural TTS models with substantially better generation speed |
+| High performance | Modern 8-core or better CPU, 32 GB RAM, SSD with at least 50 GB free, and an NVIDIA RTX GPU with 12 GB or more VRAM | Larger local models, long-form production, and optional speech verification with greater headroom |
+
+Supported platforms:
+
+- **Windows 10 or 11, 64-bit:** the Windows installer is the recommended and
+  fully packaged distribution.
+- **Linux, 64-bit:** currently runs from source and requires Python 3.10+ with
+  virtual-environment support and FFmpeg in `PATH`. The [documented Linux
+  workflow](docs/LINUX.md) has been tested on Arch/CachyOS with KDE Plasma and
+  Wayland.
+- **macOS:** not currently tested or officially supported.
+
+An NVIDIA GPU is optional. Most local engines can fall back to CPU execution,
+but generation may be considerably slower. GPU acceleration currently focuses
+on NVIDIA CUDA; other GPU families should not be assumed to accelerate every
+engine. Disk usage also grows with each optional engine because models and
+isolated dependencies, including PyTorch runtimes, are downloaded on demand.
+Generated projects and exported audio require additional space beyond the
+figures above.
+
+## What's New In 1.4.0
+
+- Generate with the new **Qwen3-TTS Base 1.7B** voice-cloning model or keep using the faster CustomVoice 0.6B model.
+- Install the optional **F5-TTS Russian** engine with reference-voice cloning, automatic Russian stress marks, and explicit non-commercial licensing.
+- Prepare Russian text through two complementary layers: deterministic normalization for numbers, ordinals, rubles, abbreviations, and units, followed by optional F5-local Silero Stress processing.
+- Switch between persistent light and dark interface themes without rebuilding the current workspace.
+- Detect multiple NVIDIA GPUs and choose which device runs CUDA TTS engines and Faster Whisper.
+- Select hardware-aware Qwen runtime profiles, including a CUDA 13 / PyTorch profile for Blackwell and RTX 50-series GPUs.
+- Preserve TTS engine selection and table position during background status refreshes.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 
@@ -49,7 +81,7 @@ See the complete release history in the [changelog](CHANGELOG.md).
 - **Free local workflow:** no subscription is required for local TTS engines.
 - **Privacy-first:** with local engines, your texts and generated audio stay on your PC.
 - **Works on normal computers:** Piper and Kokoro can run without a powerful GPU.
-- **Scales up on strong PCs:** Chatterbox, Qwen3 TTS, and OmniVoice can use NVIDIA CUDA when available.
+- **Scales up on strong PCs:** Chatterbox, Qwen3 TTS, OmniVoice, and F5-TTS Russian can use a selected NVIDIA CUDA GPU when available.
 - **Long-form first:** built for chapters, lessons, audiobooks, courses, and large documents.
 - **Review loop included:** optional Faster Whisper verification compares generated audio against the original text.
 - **Podcast-ready:** export clean narration and then create an Audio Mix with background music.
@@ -74,7 +106,7 @@ flowchart TD
     A["1. Input text<br>Paste text or import TXT / MD / DOCX"] --> B["2. Optional normalization<br>Dictionaries and structured-value rules"]
     B --> C["3. Smart text processing<br>Paragraphs, chapters, safe chunks"]
     C --> D["4. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
-    D --> E["5. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, or API"]
+    D --> E["5. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, F5, or API"]
     E --> F["6. Clean WAV/MP3 narration<br>Non-destructive audio output"]
     F --> G["7. Optional Whisper review<br>Transcript, similarity, tail analysis, retries"]
     G --> H["8. Manual or automatic fixes<br>Edit, regenerate, trim, approve, rebuild"]
@@ -95,7 +127,8 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Kokoro | Local/offline CPU/CUDA | Better local quality with on-demand model install | Uses embedded Python runtime |
 | Chatterbox | Local GPU/CPU | Advanced voice cloning and expressive speech | CUDA recommended |
 | Qwen3 TTS | Local GPU/CPU | Fast preset voices or high-fidelity voice cloning | CustomVoice 0.6B and Base 1.7B, with an accelerated CUDA path |
-| OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand, CUDA recommended |
+| OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand; pretrained model is CC-BY-NC |
+| F5-TTS Russian | Optional local GPU/CPU | Russian voice cloning with automatic stress marks | F5TTS_v1_Base_v2; **non-commercial only (CC BY-NC 4.0)** |
 | OpenAI TTS | Cloud API | High-quality remote TTS | Optional API key |
 | ElevenLabs | Cloud API | Commercial voices and voice design workflows | Optional API key |
 | Google Gemini TTS | Cloud API | Gemini voices and style prompts | Optional API key |
@@ -103,6 +136,18 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Custom HTTP TTS | Local or remote HTTP | Connect private servers such as local TTS APIs | URL, headers, body template, and response format are configurable |
 
 The base app stays lightweight. Heavy models and isolated Python dependencies are installed on demand into local application storage.
+
+F5-TTS Russian is never included in the base installation. When the user accepts
+its non-commercial license and installs the engine, LocalText2Voice creates a
+separate runtime containing F5-TTS and Silero Stress and downloads
+`F5TTS_v1_Base_v2`. Silero Stress is not installed or loaded for any other
+engine; inside F5 it is loaded only when automatic Russian stress marks are
+enabled. A clean 3–12 second Russian reference recording and its exact
+transcript are required, avoiding an extra automatic-speech-recognition model.
+Manual stress marks can be preserved with `+` immediately before the stressed
+vowel. RuAccent is not installed: its public repositories currently expose
+conflicting license declarations, so the integration uses the clearly MIT
+licensed Silero Stress path instead.
 
 Qwen3 TTS exposes two independently downloadable checkpoints in Settings:
 
@@ -121,7 +166,7 @@ Qwen3 TTS exposes two independently downloadable checkpoints in Settings:
 - Store voice catalog metadata in a local SQLite cache for fast browsing.
 - Download only the reference voices you want into the user app data folder.
 - Download Piper voices directly from the app.
-- Import Chatterbox or OmniVoice reference voices from your own WAV/MP3 files.
+- Import Chatterbox, OmniVoice, or F5-TTS Russian reference voices from your own WAV/MP3 files.
 - Select the default voice for generation.
 - Use flexible voice matching in markup, so `{{voice "edu"}}` can select a longer voice name such as `Eduardo - es`.
 
@@ -173,7 +218,7 @@ Voice gallery architecture: [docs/VOICE_GALLERY.md](docs/VOICE_GALLERY.md)
 
 ### Text Normalization
 
-Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, and Spanish. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
+Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, and Spanish. Russian normalization includes numbers, ordinals, percentages, ruble amounts, common abbreviations, and units; F5 can then apply Silero Stress as its engine-local pronunciation layer. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
 
 ### Whisper Review And Quality Control
 
@@ -251,7 +296,9 @@ The local workflow can be free to run:
 
 - Piper local voices: free/offline, depending on each model license.
 - Kokoro local models: downloaded on demand, license depends on the model.
-- Chatterbox/Qwen/OmniVoice local engines: free to run locally when installed, subject to their upstream licenses and hardware requirements.
+- Chatterbox and Qwen local engines: free to run locally when installed, subject to their upstream licenses and hardware requirements.
+- OmniVoice: optional and local; its code is Apache 2.0, while the pretrained model is licensed CC-BY-NC by its authors.
+- F5-TTS Russian: optional and local, but its model and generated output are restricted to **non-commercial use** under CC BY-NC 4.0. It is attributed to Misha24-10 and is based on F5-TTS by SWivid.
 - FFmpeg: bundled or local, subject to FFmpeg licensing.
 
 Cloud APIs are optional and may be paid:
@@ -351,6 +398,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 | Chatterbox TTS | Optional advanced local voice/reference engine |
 | Qwen3 TTS | Optional local multilingual neural TTS |
 | OmniVoice | Optional local zero-shot TTS with voice design/cloning |
+| F5-TTS Russian | Optional Russian voice cloning and stress-aware TTS |
 | Faster Whisper | Optional transcription and generation review |
 | FastAPI + MCP SDK | Optional local automation server |
 | Uvicorn | Local ASGI server for HTTP/MCP |
@@ -634,7 +682,7 @@ course-generator
 
 - [x] Offline Piper TTS generation.
 - [x] Voice manager with download and preview.
-- [x] Multiple local engines: Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice.
+- [x] Multiple local engines: Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, F5-TTS Russian.
 - [x] External voice gallery repository with previews and per-voice install flow.
 - [x] Optional cloud engines: OpenAI, ElevenLabs, Gemini, Azure.
 - [x] Audio Mix page with waveform preview and full mix render.
@@ -643,7 +691,7 @@ course-generator
 - [x] SQLite project/segment persistence.
 - [x] Word-level timestamps for future subtitle and timeline features.
 - [x] Sound effects and music timeline commands from markup.
-- [ ] Subtitle export from Whisper timestamps.
+- [x] SRT and karaoke-style ASS subtitle export from Whisper timestamps.
 - [ ] Video/audio cover workflow.
 - [ ] Visual chapter and segment editor.
 - [x] Windows installer with CPU/GPU setup profiles.
@@ -684,6 +732,31 @@ Special thanks also to
 [Eugene Schelakov](https://www.youtube.com/@AyiTheDeer) for his help with the
 Russian localization of the LocalText2Voice user interface and for creating a
 detailed video about the project for the Russian-speaking community.
+
+## TTS Engine And Model Credits
+
+LocalText2Voice is possible because researchers, open-source maintainers, model
+authors, and commercial voice providers have made strong speech technology
+available to developers. Thank you to the following upstream projects and
+teams:
+
+| Engine or provider | Upstream project and models | LocalText2Voice integration |
+| --- | --- | --- |
+| Piper | [Rhasspy Piper](https://github.com/rhasspy/piper) and the [Piper voice catalog](https://huggingface.co/rhasspy/piper-voices) | Bundled lightweight Windows runtime; voices are optional downloads with model-specific licenses |
+| Kokoro | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad and [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) by thewh1teagle | Optional ONNX runtime and voice bundle downloaded on demand |
+| Chatterbox | [Chatterbox TTS](https://github.com/resemble-ai/chatterbox) by Resemble AI | Optional local multilingual and reference-voice generation |
+| Qwen3 TTS | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by the Qwen team, including [CustomVoice 0.6B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice) and [Base 1.7B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | Optional preset-voice and ICL voice-cloning models |
+| OmniVoice | [OmniVoice](https://github.com/k2-fsa/OmniVoice) by k2-fsa and its [pretrained model](https://huggingface.co/k2-fsa/OmniVoice) | Optional multilingual cloning and voice design; pretrained model is CC-BY-NC |
+| F5-TTS Russian | [F5-TTS Russian](https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN) by Misha24-10, based on [F5-TTS](https://github.com/SWivid/F5-TTS) by SWivid, with [Silero Stress](https://github.com/snakers4/silero-stress) | Optional Russian cloning and stress processing; F5-TTS Russian is CC BY-NC 4.0 |
+| OpenAI | [OpenAI Audio API](https://platform.openai.com/docs/api-reference/audio) | Optional cloud TTS using the user's API credentials |
+| ElevenLabs | [ElevenLabs Text to Speech](https://elevenlabs.io/docs/overview/capabilities/text-to-speech) | Optional cloud voices using the user's API credentials |
+| Google | [Gemini text-to-speech](https://ai.google.dev/gemini-api/docs/speech-generation) | Optional controllable cloud speech generation |
+| Microsoft | [Azure Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/overview) | Optional cloud neural voices and SSML |
+
+LocalText2Voice is an independent project and is not endorsed by these upstream
+projects or providers. Each engine, model, voice, dataset, and API remains
+subject to its own license and terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+before redistribution or commercial use.
 
 ## License
 

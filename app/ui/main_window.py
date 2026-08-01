@@ -105,6 +105,7 @@ from app.server.server_controller import LocalServerController
 from app.tts.base import BaseTTSEngine, TTSEngineError
 from app.tts.engine_registry import TTS_ENGINES
 from app.tts.chatterbox_manager import ChatterboxManager
+from app.tts.f5_russian_manager import F5RussianManager
 from app.tts.chatterbox_voice_manager import (
     ChatterboxReferenceVoice,
     ChatterboxReferenceVoiceManager,
@@ -137,11 +138,23 @@ from app.utils.paths import (
     resolve_executable,
     resource_root,
 )
-from app.utils.gpu_detection import detect_gpus, format_gpu_detection
+from app.utils.gpu_detection import (
+    AUTO_GPU_DEVICE,
+    configure_gpu_device,
+    detect_gpus,
+    format_gpu_detection,
+    normalize_gpu_device,
+    selectable_nvidia_gpus,
+    selected_nvidia_gpu,
+)
 from app.workers.chatterbox_worker import (
     ChatterboxHardwareWorker,
     ChatterboxInstallWorker,
     ChatterboxPreviewWorker,
+)
+from app.workers.f5_russian_worker import (
+    F5RussianInstallWorker,
+    F5RussianPreviewWorker,
 )
 from app.workers.asset_storage_worker import AssetStorageMoveWorker
 from app.workers.chatterbox_voice_worker import ChatterboxVoiceWorker
@@ -673,6 +686,11 @@ class MainWindow(QMainWindow):
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
         self.ui_theme = normalize_theme(self.settings.get("ui_theme", "light"))
+        self.gpu_detection_result = detect_gpus()
+        self.gpu_device_selection = configure_gpu_device(
+            self.settings.get("gpu_device_index", AUTO_GPU_DEVICE),
+            self.gpu_detection_result,
+        )
         application = QApplication.instance()
         if application is not None:
             application.setProperty("uiTheme", self.ui_theme)
@@ -685,6 +703,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
         self.omnivoice_manager = OmniVoiceManager()
+        self.f5_russian_manager = F5RussianManager()
         gallery_settings = self.settings.get("voice_gallery", {})
         self.voice_gallery_manager = VoiceGalleryManager(
             catalog_url=str(
@@ -695,7 +714,6 @@ class MainWindow(QMainWindow):
         self.voice_gallery_manager.ensure_seed_loaded()
         self.audiobook_store = AudiobookStore()
         self.faster_whisper_manager = FasterWhisperManager()
-        self.gpu_detection_result = detect_gpus()
         self.current_audiobook_id = self._stored_project_id()
         self.project_dirty = False
         self._loading_project = False
@@ -718,6 +736,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_voice_thread: QThread | None = None
         self.voice_gallery_worker: VoiceGalleryWorker | None = None
         self.voice_gallery_thread: QThread | None = None
+        self.pending_f5_russian_gallery_voice_id: str | None = None
         self.qwen_worker: QwenInstallWorker | None = None
         self.qwen_thread: QThread | None = None
         self.qwen_preview_worker: QwenPreviewWorker | None = None
@@ -734,6 +753,10 @@ class MainWindow(QMainWindow):
         self.omnivoice_design_thread: QThread | None = None
         self.omnivoice_hardware_worker: OmniVoiceHardwareWorker | None = None
         self.omnivoice_hardware_thread: QThread | None = None
+        self.f5_russian_worker: F5RussianInstallWorker | None = None
+        self.f5_russian_thread: QThread | None = None
+        self.f5_russian_preview_worker: F5RussianPreviewWorker | None = None
+        self.f5_russian_preview_thread: QThread | None = None
         self.preload_worker: EngineHostMemoryWorker | None = None
         self.preload_thread: QThread | None = None
         self.whisper_worker: FasterWhisperInstallWorker | None = None
@@ -813,6 +836,9 @@ class MainWindow(QMainWindow):
         self.omnivoice_sample_player.playbackStateChanged.connect(
             self._on_omnivoice_playback_state_changed
         )
+        self.f5_russian_audio_output = QAudioOutput(self)
+        self.f5_russian_sample_player = QMediaPlayer(self)
+        self.f5_russian_sample_player.setAudioOutput(self.f5_russian_audio_output)
         self.music_library_audio_output = QAudioOutput(self)
         self.music_library_player = QMediaPlayer(self)
         self.music_library_player.setAudioOutput(self.music_library_audio_output)
@@ -1066,6 +1092,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
 
         brand_widget = QWidget()
+        brand_widget.setObjectName("sidebarBrand")
         brand_widget.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         brand_layout = QHBoxLayout(brand_widget)
         brand_layout.setContentsMargins(0, 8, 0, 12)
@@ -1143,6 +1170,25 @@ class MainWindow(QMainWindow):
         self.sidebar_engine_detail_label.setObjectName("helperLabel")
         self.sidebar_engine_detail_label.setWordWrap(True)
         engine_layout.addWidget(self.sidebar_engine_detail_label)
+        self.sidebar_change_gpu_button = QPushButton(
+            self.tr("change_gpu", "Change GPU")
+        )
+        self.sidebar_change_gpu_button.setObjectName("inlineActionButton")
+        self.sidebar_change_gpu_button.setIcon(ui_icon("settings"))
+        self.sidebar_change_gpu_button.setToolTip(
+            self.tr(
+                "change_gpu_tooltip",
+                "Choose which NVIDIA GPU runs the AI models",
+            )
+        )
+        self.sidebar_change_gpu_button.setAccessibleName(
+            self.sidebar_change_gpu_button.toolTip()
+        )
+        self.sidebar_change_gpu_button.setVisible(
+            len(selectable_nvidia_gpus(self.gpu_detection_result)) > 1
+        )
+        self.sidebar_change_gpu_button.clicked.connect(self._show_gpu_settings)
+        engine_layout.addWidget(self.sidebar_change_gpu_button)
         layout.addWidget(engine_card)
 
         footer = QHBoxLayout()
@@ -1252,9 +1298,6 @@ class MainWindow(QMainWindow):
     def _toggle_ui_theme(self, _checked: bool = False) -> None:
         if self.theme_progress_dialog is not None:
             return
-        text = self.text_editor.toPlainText()
-        page_index = self.page_stack.currentIndex()
-        self._save_settings()
         target_theme = "light" if self.ui_theme == DARK_THEME else DARK_THEME
         message = self.tr(
             (
@@ -1284,8 +1327,6 @@ class MainWindow(QMainWindow):
             lambda: self._apply_ui_theme_change(
                 dialog,
                 target_theme,
-                text,
-                page_index,
             ),
         )
 
@@ -1293,9 +1334,8 @@ class MainWindow(QMainWindow):
         self,
         dialog: QProgressDialog,
         target_theme: str,
-        text: str,
-        page_index: int,
     ) -> None:
+        self.setUpdatesEnabled(False)
         try:
             self.ui_theme = target_theme
             self.settings["ui_theme"] = self.ui_theme
@@ -1303,12 +1343,27 @@ class MainWindow(QMainWindow):
             application = QApplication.instance()
             if application is not None:
                 application.setProperty("uiTheme", self.ui_theme)
-            self._rebuild_interface(text, page_index)
+            self._apply_style()
+            self._refresh_theme_button()
+            self._refresh_theme_pixmaps()
+            self.log_view.refresh_theme()
+            self._refresh_review_item_styles()
         finally:
+            self.setUpdatesEnabled(True)
+            self.update()
             dialog.close()
             dialog.deleteLater()
             if self.theme_progress_dialog is dialog:
                 self.theme_progress_dialog = None
+
+    def _refresh_theme_pixmaps(self) -> None:
+        for label in self.findChildren(QLabel):
+            icon_name = str(label.property("themeIconName") or "")
+            if not icon_name:
+                continue
+            width = int(label.property("themeIconWidth") or 16)
+            height = int(label.property("themeIconHeight") or width)
+            label.setPixmap(ui_icon(icon_name).pixmap(width, height))
 
     def _apply_language_direction(self) -> None:
         direction = (
@@ -1611,6 +1666,8 @@ class MainWindow(QMainWindow):
                 if language:
                     return language
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if engine_id == "f5_russian":
+            return "ru"
         combo_by_engine = {
             "piper": self.language_combo,
             "chatterbox": self.chatterbox_language_combo,
@@ -2590,6 +2647,17 @@ class MainWindow(QMainWindow):
         )
         self._refresh_wav_cache_stats()
 
+    def _show_gpu_settings(self, _checked: bool = False) -> None:
+        self._show_settings_page()
+        self.settings_tabs.setCurrentIndex(0)
+        self.gpu_device_combo.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        QTimer.singleShot(
+            0,
+            lambda: self.general_settings_scroll.ensureWidgetVisible(
+                self.gpu_settings_group
+            ),
+        )
+
     def _run_pending_installer_setup(self) -> None:
         setup = self.settings.get("installer_setup", {})
         if not isinstance(setup, dict) or setup.get("completed"):
@@ -2900,6 +2968,9 @@ class MainWindow(QMainWindow):
         missing_layout.setContentsMargins(14, 12, 14, 12)
         missing_layout.setSpacing(12)
         missing_icon = QLabel()
+        missing_icon.setProperty("themeIconName", "warning")
+        missing_icon.setProperty("themeIconWidth", 22)
+        missing_icon.setProperty("themeIconHeight", 22)
         missing_icon.setPixmap(ui_icon("warning").pixmap(22, 22))
         missing_text = QLabel(
             self.tr(
@@ -3813,6 +3884,7 @@ class MainWindow(QMainWindow):
             ("chatterbox", self._build_chatterbox_engine_panel()),
             ("qwen", self._build_qwen_engine_panel()),
             ("omnivoice", self._build_omnivoice_engine_panel()),
+            ("f5_russian", self._build_f5_russian_engine_panel()),
             ("openai", self._build_openai_engine_panel()),
             ("elevenlabs", self._build_elevenlabs_engine_panel()),
             ("gemini", self._build_gemini_engine_panel()),
@@ -6093,6 +6165,433 @@ class MainWindow(QMainWindow):
             "cache_dir": str(self.omnivoice_manager.cache_dir),
         }
 
+    def _build_f5_russian_engine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+
+        license_notice = QLabel(
+            self.tr(
+                "f5_russian_noncommercial_notice",
+                "Non-commercial engine: F5-TTS Russian is licensed under "
+                '<a href="https://creativecommons.org/licenses/by-nc/4.0/">'
+                "CC BY-NC 4.0</a>. Voice cloning and generated audio must not "
+                "be used commercially. Model by Misha24-10; based on F5-TTS.",
+            )
+        )
+        license_notice.setObjectName("warningLabel")
+        license_notice.setWordWrap(True)
+        license_notice.setOpenExternalLinks(True)
+        layout.addWidget(license_notice)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        self.f5_russian_model_combo = QComboBox()
+        for model in self.f5_russian_manager.list_models():
+            self.f5_russian_model_combo.addItem(model.display_name, model.model_id)
+        self.f5_russian_device_combo = QComboBox()
+        self.f5_russian_device_combo.addItem(
+            self.tr("automatic_recommended", "Auto (recommended)"), "auto"
+        )
+        self.f5_russian_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
+        self.f5_russian_device_combo.addItem(
+            self.tr("cpu_only", "CPU only"), "cpu"
+        )
+        self.f5_russian_reference_picker = FilePicker(
+            self.tr("browse", "Browse"),
+            "Audio files (*.wav *.mp3 *.flac *.m4a);;All files (*.*)",
+        )
+        self.f5_russian_reference_text_edit = QTextEdit()
+        self.f5_russian_reference_text_edit.setMaximumHeight(82)
+        self.f5_russian_reference_text_edit.setPlaceholderText(
+            self.tr(
+                "f5_russian_reference_text_placeholder",
+                "Required: exact Russian transcript of the reference audio.",
+            )
+        )
+        self.f5_russian_stress_checkbox = QCheckBox(
+            self.tr(
+                "f5_russian_use_silero_stress",
+                "Automatic Russian stress marks (Silero Stress)",
+            )
+        )
+        self.f5_russian_stress_checkbox.setChecked(True)
+        self.f5_russian_stress_checkbox.setToolTip(
+            self.tr(
+                "f5_russian_silero_scope_tooltip",
+                "Silero Stress belongs only to the optional F5-TTS Russian runtime "
+                "and is loaded only when this option is enabled.",
+            )
+        )
+        self.f5_russian_nfe_spin = QSpinBox()
+        self.f5_russian_nfe_spin.setRange(8, 64)
+        self.f5_russian_nfe_spin.setSingleStep(4)
+        self.f5_russian_nfe_spin.setValue(32)
+        self.f5_russian_speed_spin = QDoubleSpinBox()
+        self.f5_russian_speed_spin.setRange(0.5, 2.0)
+        self.f5_russian_speed_spin.setSingleStep(0.05)
+        self.f5_russian_speed_spin.setDecimals(2)
+        self.f5_russian_speed_spin.setValue(1.0)
+        self.f5_russian_remove_silence_checkbox = QCheckBox(
+            self.tr(
+                "f5_russian_remove_silence",
+                "Remove long silences (official F5-TTS trimming)",
+            )
+        )
+        self.f5_russian_remove_silence_checkbox.setChecked(True)
+        self.f5_russian_remove_silence_checkbox.setToolTip(
+            self.tr(
+                "f5_russian_remove_silence_tooltip",
+                "Shortens detected long silences, including internal pauses, while "
+                "keeping about 500 ms at each side.",
+            )
+        )
+        form.addRow(
+            self.tr("f5_russian_model", "Russian model"),
+            self.f5_russian_model_combo,
+        )
+        form.addRow(
+            self.tr("compute_device", "Compute device"),
+            self.f5_russian_device_combo,
+        )
+        form.addRow(
+            self.tr("reference_audio", "Reference audio"),
+            self.f5_russian_reference_picker,
+        )
+        form.addRow(
+            self.tr("reference_transcript", "Reference transcript"),
+            self.f5_russian_reference_text_edit,
+        )
+        form.addRow("", self.f5_russian_stress_checkbox)
+        form.addRow(
+            self.tr("f5_russian_inference_steps", "Inference steps"),
+            self.f5_russian_nfe_spin,
+        )
+        form.addRow(
+            self.tr("engine_speed", "Engine speed"),
+            self.f5_russian_speed_spin,
+        )
+        form.addRow("", self.f5_russian_remove_silence_checkbox)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        self.f5_russian_install_button = QPushButton(self.tr("install", "Install"))
+        self.f5_russian_install_button.setIcon(ui_icon("apply"))
+        self.f5_russian_install_button.clicked.connect(self._install_f5_russian)
+        self.f5_russian_remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
+        self.f5_russian_remove_button.setIcon(ui_icon("delete"))
+        self.f5_russian_remove_button.clicked.connect(self._remove_f5_russian)
+        self.f5_russian_test_button = QPushButton(self.tr("test_voice", "Test voice"))
+        self.f5_russian_test_button.setIcon(ui_icon("play"))
+        self.f5_russian_test_button.clicked.connect(self._test_f5_russian_voice)
+        self.f5_russian_load_button = QPushButton()
+        self.f5_russian_load_button.clicked.connect(
+            lambda _checked=False: self._toggle_preloaded_tts_engine("f5_russian")
+        )
+        self.f5_russian_cancel_button = QPushButton(self.tr("cancel", "Cancel"))
+        self.f5_russian_cancel_button.clicked.connect(
+            self._cancel_f5_russian_operation
+        )
+        actions.addWidget(self.f5_russian_install_button)
+        actions.addWidget(self.f5_russian_remove_button)
+        actions.addWidget(self.f5_russian_test_button)
+        actions.addWidget(self.f5_russian_load_button)
+        actions.addWidget(self.f5_russian_cancel_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self.f5_russian_progress_bar = QProgressBar()
+        self.f5_russian_progress_bar.setRange(0, 100)
+        self.f5_russian_progress_bar.setVisible(False)
+        layout.addWidget(self.f5_russian_progress_bar)
+        self.f5_russian_status_label = QLabel()
+        self.f5_russian_status_label.setObjectName("helperLabel")
+        self.f5_russian_status_label.setWordWrap(True)
+        self.f5_russian_path_label = QLabel()
+        self.f5_russian_path_label.setObjectName("helperLabel")
+        self.f5_russian_path_label.setWordWrap(True)
+        layout.addWidget(self.f5_russian_status_label)
+        layout.addWidget(self.f5_russian_path_label)
+        helper = QLabel(
+            self.tr(
+                "f5_russian_help",
+                "Use a clean Russian reference recording of about 3–12 seconds. "
+                "Its exact transcript is mandatory. You can preserve a manual "
+                "stress by writing + immediately before the stressed vowel.",
+            )
+        )
+        helper.setObjectName("helperLabel")
+        helper.setWordWrap(True)
+        layout.addWidget(helper)
+        self._refresh_f5_russian_status()
+        return panel
+
+    def _refresh_f5_russian_status(self) -> None:
+        if not hasattr(self, "f5_russian_status_label"):
+            return
+        model_detected = self._manager_model_detected(self.f5_russian_manager)
+        runtime_ready = self.f5_russian_manager.has_runtime()
+        installed = self.f5_russian_manager.is_installed()
+        running = self.f5_russian_thread is not None
+        status = self._local_engine_install_status(
+            installed, model_detected, runtime_ready
+        )
+        self.f5_russian_status_label.setText(
+            self.tr(
+                "f5_russian_status",
+                "F5-TTS Russian: {status}. Silero Stress is contained only in "
+                "this optional runtime.",
+                status=status,
+            )
+        )
+        self.f5_russian_path_label.setText(
+            self.tr(
+                "f5_russian_model_path",
+                "Model cache: {path}",
+                path=str(self.f5_russian_manager.cache_dir),
+            )
+        )
+        self.f5_russian_install_button.setText(
+            self._local_engine_install_action(
+                installed, model_detected, runtime_ready
+            )
+        )
+        self.f5_russian_install_button.setEnabled(not running)
+        self.f5_russian_remove_button.setEnabled(
+            (runtime_ready or self.f5_russian_manager.install_dir.exists())
+            and not running
+        )
+        self.f5_russian_test_button.setEnabled(
+            installed and self.f5_russian_preview_thread is None and not running
+        )
+        self.f5_russian_cancel_button.setVisible(running)
+        self._configure_preload_button(
+            self.f5_russian_load_button,
+            "f5_russian",
+            installed and not running,
+        )
+        self._refresh_tts_engine_table()
+
+    def _ensure_default_f5_russian_reference(
+        self,
+        *,
+        allow_sync: bool = False,
+    ) -> bool:
+        if not hasattr(self, "f5_russian_reference_picker"):
+            return False
+        current_path = self.f5_russian_reference_picker.path()
+        current_text = self.f5_russian_reference_text_edit.toPlainText().strip()
+        if current_path is not None and current_path.is_file() and current_text:
+            return True
+        if current_path is not None or current_text:
+            # A partial manual configuration still represents user intent. Do not
+            # replace it silently with the bundled gallery default.
+            return False
+
+        voice_id = VoiceGalleryManager.F5_RUSSIAN_REFERENCE_VOICE_IDS[0]
+        voice = self.voice_gallery_manager.get_voice(voice_id)
+        if voice is None and allow_sync:
+            try:
+                self.voice_gallery_manager.sync()
+                voice = self.voice_gallery_manager.get_voice(voice_id)
+            except Exception as exc:
+                self.log_view.append_event(
+                    "Could not sync the F5-TTS Russian default reference voice: "
+                    f"{exc}"
+                )
+        if voice is None or not voice.ref_text.strip():
+            return False
+
+        try:
+            audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+        except Exception as exc:
+            self.log_view.append_event(
+                "Could not prepare the F5-TTS Russian default reference voice: "
+                f"{exc}"
+            )
+            return False
+        if audio_path is None or not audio_path.is_file():
+            return False
+
+        self.f5_russian_reference_picker.set_path(audio_path)
+        self.f5_russian_reference_text_edit.setPlainText(voice.ref_text)
+        self.log_view.append_event(
+            "F5-TTS Russian default reference voice ready: "
+            f"{voice.name} ({audio_path})"
+        )
+        return True
+
+    def _install_f5_russian(self) -> None:
+        self._show_tts_engine_install_dialog("f5_russian")
+
+    def _remove_f5_russian(self) -> None:
+        if self.preloaded_tts_engine_id == "f5_russian":
+            self._unload_preloaded_tts_engine()
+        self._start_f5_russian_operation("remove")
+
+    def _cancel_f5_russian_operation(self) -> None:
+        if self.f5_russian_worker is not None:
+            self.f5_russian_cancel_button.setEnabled(False)
+            self.f5_russian_worker.request_cancel()
+
+    def _start_f5_russian_operation(self, operation: str) -> None:
+        if self.f5_russian_thread is not None:
+            return
+        self.f5_russian_progress_bar.setVisible(True)
+        self.f5_russian_progress_bar.setRange(0, 0 if operation == "install" else 100)
+        thread = QThread(self)
+        worker = F5RussianInstallWorker(
+            F5RussianManager(),
+            operation,
+            str(self.f5_russian_model_combo.currentData() or "f5tts_v1_base_v2"),
+            str(self.f5_russian_device_combo.currentData() or "auto"),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_f5_russian_progress)
+        worker.finished.connect(self._on_f5_russian_finished)
+        worker.failed.connect(self._on_f5_russian_failed)
+        worker.cancelled.connect(self._on_f5_russian_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_f5_russian_worker)
+        self.f5_russian_thread = thread
+        self.f5_russian_worker = worker
+        self._refresh_f5_russian_status()
+        thread.start()
+
+    def _on_f5_russian_progress(self, current: int, total: int, message: str) -> None:
+        if is_install_detail(message):
+            self._update_tts_engine_install_dialog("f5_russian", current, total, message)
+            self.log_view.append_event(install_detail_text(message))
+            return
+        if total:
+            self.f5_russian_progress_bar.setRange(0, 100)
+            self.f5_russian_progress_bar.setValue(
+                max(0, min(100, int((current / total) * 100)))
+            )
+        self.f5_russian_status_label.setText(message)
+        self._update_tts_engine_install_dialog("f5_russian", current, total, message)
+        self.log_view.append_event(message)
+
+    def _on_f5_russian_finished(self, path: str) -> None:
+        self.f5_russian_progress_bar.setRange(0, 100)
+        self.f5_russian_progress_bar.setValue(100)
+        self._finish_tts_engine_install_dialog(
+            "f5_russian", True,
+            self.tr("engine_install_complete", "{engine} installation completed.", engine="F5-TTS Russian"),
+        )
+        self.log_view.append_event(f"F5-TTS Russian ready: {path}")
+        if self._ensure_default_f5_russian_reference(allow_sync=True):
+            self._save_settings()
+        self._continue_pending_installer_setup()
+
+    def _on_f5_russian_failed(self, message: str) -> None:
+        self.f5_russian_progress_bar.setVisible(False)
+        self._finish_tts_engine_install_dialog("f5_russian", False, message)
+        self.log_view.append_event(message)
+        self._abort_pending_installer_setup(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_f5_russian_cancelled(self) -> None:
+        message = self.tr("engine_install_cancelled", "Installation cancelled.")
+        self._finish_tts_engine_install_dialog("f5_russian", False, message)
+        self.log_view.append_event(message)
+        self._abort_pending_installer_setup(message)
+
+    def _clear_f5_russian_worker(self) -> None:
+        self.f5_russian_worker = None
+        self.f5_russian_thread = None
+        self.f5_russian_progress_bar.setVisible(False)
+        self.f5_russian_manager = F5RussianManager()
+        self._refresh_f5_russian_status()
+
+    def _test_f5_russian_voice(self) -> None:
+        if self.f5_russian_preview_thread is not None:
+            return
+        voice_config = self._f5_russian_voice_config_for_ui()
+        if voice_config is None:
+            return
+        thread = QThread(self)
+        worker = F5RussianPreviewWorker(
+            F5RussianManager(),
+            voice_config,
+            "Сегодня прекрасный день для создания русской аудиокниги.",
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_f5_russian_preview_ready)
+        worker.failed.connect(self._on_f5_russian_preview_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_f5_russian_preview_worker)
+        self.f5_russian_preview_thread = thread
+        self.f5_russian_preview_worker = worker
+        self.f5_russian_status_label.setText(
+            self.tr("f5_russian_preview_generating", "Generating Russian preview...")
+        )
+        thread.start()
+
+    def _on_f5_russian_preview_ready(self, path: str) -> None:
+        self.f5_russian_sample_player.setSource(QUrl.fromLocalFile(path))
+        self.f5_russian_sample_player.play()
+        self.log_view.append_event(
+            self.tr("f5_russian_preview_ready", "Playing F5-TTS Russian preview.")
+        )
+
+    def _on_f5_russian_preview_failed(self, message: str) -> None:
+        self.log_view.append_event(message)
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _clear_f5_russian_preview_worker(self) -> None:
+        self.f5_russian_preview_worker = None
+        self.f5_russian_preview_thread = None
+        self._refresh_f5_russian_status()
+
+    def _f5_russian_voice_config_for_ui(self) -> dict[str, object] | None:
+        if not self.f5_russian_manager.is_installed():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "f5_russian_runtime_missing",
+                    "F5-TTS Russian is not installed. Open Settings > TTS "
+                    "Engines and click Install.",
+                ),
+            )
+            return None
+        self._ensure_default_f5_russian_reference(allow_sync=True)
+        reference_path = self.f5_russian_reference_picker.path()
+        reference_text = self.f5_russian_reference_text_edit.toPlainText().strip()
+        if reference_path is None or not reference_path.is_file() or not reference_text:
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "f5_russian_reference_required",
+                    "F5-TTS Russian requires a reference audio file and its exact transcript.",
+                ),
+            )
+            return None
+        return {
+            "engine": "f5_russian",
+            "speed": self.speed_spin.value(),
+            "model": self.f5_russian_model_combo.currentData() or "f5tts_v1_base_v2",
+            "device": self.f5_russian_device_combo.currentData() or "auto",
+            "language": "ru",
+            "reference_audio_path": str(reference_path),
+            "reference_text": reference_text,
+            "use_stress": self.f5_russian_stress_checkbox.isChecked(),
+            "nfe_step": self.f5_russian_nfe_spin.value(),
+            "engine_speed": self.f5_russian_speed_spin.value(),
+            "remove_silence": self.f5_russian_remove_silence_checkbox.isChecked(),
+            "license": "CC BY-NC 4.0",
+            "commercial_use": False,
+        }
+
     def _build_openai_engine_panel(self) -> QWidget:
         panel = QWidget()
         form = QFormLayout(panel)
@@ -6656,7 +7155,7 @@ class MainWindow(QMainWindow):
         index = self.engine_stack_indexes.get(stack_key, 0)
         self.engine_settings_stack.setCurrentIndex(index)
         self._update_voice_panel_for_engine()
-        self._refresh_tts_engine_table()
+        self._refresh_tts_engine_table(ensure_selected_visible=True)
         self._refresh_custom_engine_panel()
         self._refresh_generation_voice_combo()
         self._update_header_engine_label()
@@ -6713,7 +7212,7 @@ class MainWindow(QMainWindow):
     def _sidebar_hardware_summary(self) -> str:
         result = self.gpu_detection_result
         if result.has_nvidia_gpu:
-            gpu = next((candidate for candidate in result.gpus if candidate.is_nvidia), None)
+            gpu = selected_nvidia_gpu(result, self.gpu_device_selection)
             if gpu is None:
                 return self.tr("cuda_detected", "CUDA detected")
             parts = [gpu.name]
@@ -6791,6 +7290,7 @@ class MainWindow(QMainWindow):
             ),
             "qwen": self.tr("tts_engine_qwen", "Qwen3 TTS"),
             "omnivoice": self.tr("tts_engine_omnivoice", "OmniVoice"),
+            "f5_russian": self.tr("tts_engine_f5_russian", "F5-TTS Russian"),
             "openai": self.tr("tts_engine_openai", "OpenAI TTS (API)"),
             "elevenlabs": self.tr("tts_engine_elevenlabs", "ElevenLabs (API)"),
             "gemini": self.tr("tts_engine_gemini", "Google Gemini TTS (API)"),
@@ -6844,6 +7344,7 @@ class MainWindow(QMainWindow):
             "chatterbox": self.chatterbox_manager,
             "qwen": self.qwen_manager,
             "omnivoice": self.omnivoice_manager,
+            "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
         if manager is None:
             return False
@@ -6879,6 +7380,11 @@ class MainWindow(QMainWindow):
         )
         omnivoice_runtime_ready = self.omnivoice_manager.has_runtime()
         omnivoice_ready = self.omnivoice_manager.is_installed()
+        f5_russian_model_detected = self._manager_model_detected(
+            self.f5_russian_manager
+        )
+        f5_russian_runtime_ready = self.f5_russian_manager.has_runtime()
+        f5_russian_ready = self.f5_russian_manager.is_installed()
 
         local_type = self.tr("engine_type_local", "Local")
         remote_type = self.tr("engine_type_remote", "Remote")
@@ -6948,6 +7454,19 @@ class MainWindow(QMainWindow):
                 ),
             },
             {
+                "engine_id": "f5_russian",
+                "type": local_type,
+                "name": self._tts_engine_label("f5_russian"),
+                "speed": self.tr("engine_speed_slow", "Slow"),
+                "quality": self.tr("engine_quality_high", "High"),
+                "gpu": self.tr("recommended", "Recommended"),
+                "installed": self._local_engine_install_status(
+                    f5_russian_ready,
+                    f5_russian_model_detected,
+                    f5_russian_runtime_ready,
+                ),
+            },
+            {
                 "engine_id": "openai",
                 "type": remote_type,
                 "name": self._tts_engine_label("openai"),
@@ -7009,7 +7528,7 @@ class MainWindow(QMainWindow):
                 or engine_id in self.host_loaded_tts_engine_ids
             ):
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
-            elif engine_id in {"chatterbox", "qwen", "omnivoice"}:
+            elif engine_id in {"chatterbox", "qwen", "omnivoice", "f5_russian"}:
                 row["selected"] = self.tr(
                     "selected_not_loaded",
                     "Selected / not loaded",
@@ -7018,14 +7537,22 @@ class MainWindow(QMainWindow):
                 row["selected"] = self.tr("selected", "Selected")
         return rows
 
-    def _refresh_tts_engine_table(self) -> None:
+    def _refresh_tts_engine_table(
+        self,
+        *,
+        ensure_selected_visible: bool = False,
+    ) -> None:
         if not hasattr(self, "tts_engine_table"):
             return
-        self.tts_engine_table.blockSignals(True)
-        self.tts_engine_table.setRowCount(0)
+        table = self.tts_engine_table
+        scroll_bar = table.verticalScrollBar()
+        previous_scroll_position = scroll_bar.value()
+        signals_were_blocked = table.blockSignals(True)
+        table.setRowCount(0)
         current_engine = str(self.tts_engine_combo.currentData() or "piper")
+        selected_item: QTableWidgetItem | None = None
         for row_index, row in enumerate(self._engine_table_rows()):
-            self.tts_engine_table.insertRow(row_index)
+            table.insertRow(row_index)
             for column, key in enumerate(
                 ("type", "name", "speed", "quality", "gpu", "installed", "selected")
             ):
@@ -7033,16 +7560,59 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, row["engine_id"])
                 if column in (0, 2, 3, 4, 5, 6):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.tts_engine_table.setItem(row_index, column, item)
-            self.tts_engine_table.setCellWidget(
+                table.setItem(row_index, column, item)
+                if column == 0 and row["engine_id"] == current_engine:
+                    selected_item = item
+            table.setCellWidget(
                 row_index,
                 7,
                 self._build_tts_engine_action_widget(row["engine_id"]),
             )
             if row["engine_id"] == current_engine:
-                self.tts_engine_table.selectRow(row_index)
-        self.tts_engine_table.blockSignals(False)
-        self.tts_engine_table.resizeRowsToContents()
+                table.selectRow(row_index)
+        table.resizeRowsToContents()
+        if selected_item is not None:
+            table.setCurrentItem(selected_item)
+        if ensure_selected_visible and selected_item is not None:
+            table.scrollToItem(
+                selected_item,
+                QAbstractItemView.ScrollHint.EnsureVisible,
+            )
+            # The selected engine panel can change the surrounding layout after
+            # this rebuild. Re-apply the minimal scroll once Qt has processed it.
+            QTimer.singleShot(
+                0,
+                lambda engine_id=current_engine: self._ensure_tts_engine_table_row_visible(
+                    engine_id
+                ),
+            )
+        else:
+            scroll_bar.setValue(
+                min(previous_scroll_position, scroll_bar.maximum())
+            )
+        table.blockSignals(signals_were_blocked)
+
+    def _ensure_tts_engine_table_row_visible(self, engine_id: str) -> None:
+        if not hasattr(self, "tts_engine_table"):
+            return
+        if str(self.tts_engine_combo.currentData() or "piper") != engine_id:
+            return
+        table = self.tts_engine_table
+        for row_index in range(table.rowCount()):
+            item = table.item(row_index, 0)
+            if item is None:
+                continue
+            if str(item.data(Qt.ItemDataRole.UserRole) or "") != engine_id:
+                continue
+            signals_were_blocked = table.blockSignals(True)
+            table.setCurrentItem(item)
+            table.selectRow(row_index)
+            table.scrollToItem(
+                item,
+                QAbstractItemView.ScrollHint.EnsureVisible,
+            )
+            table.blockSignals(signals_were_blocked)
+            return
 
     def _build_tts_engine_action_widget(self, engine_id: str) -> QWidget:
         widget = QWidget()
@@ -7246,6 +7816,35 @@ class MainWindow(QMainWindow):
                 )
                 install_button.setEnabled(self.omnivoice_thread is None)
                 layout.addWidget(install_button)
+        elif engine_id == "f5_russian":
+            model_detected = self._manager_model_detected(self.f5_russian_manager)
+            runtime_ready = self.f5_russian_manager.has_runtime()
+            installed = self.f5_russian_manager.is_installed()
+            install_button = QPushButton(
+                self._local_engine_install_action(
+                    installed, model_detected, runtime_ready
+                )
+            )
+            install_button.setIcon(ui_icon("apply"))
+            install_button.clicked.connect(
+                lambda _checked=False: self._select_and_install_engine("f5_russian")
+            )
+            install_button.setEnabled(self.f5_russian_thread is None)
+            layout.addWidget(install_button)
+            if installed:
+                remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
+                remove_button.setIcon(ui_icon("delete"))
+                remove_button.clicked.connect(self._remove_f5_russian)
+                remove_button.setEnabled(self.f5_russian_thread is None)
+                layout.addWidget(remove_button)
+                load_button = QPushButton()
+                load_button.clicked.connect(
+                    lambda _checked=False: self._toggle_preloaded_tts_engine(
+                        "f5_russian"
+                    )
+                )
+                self._configure_preload_button(load_button, "f5_russian", True)
+                layout.addWidget(load_button)
         elif engine_id.startswith("custom:"):
             configure_button = QPushButton(self.tr("configure", "Configure"))
             configure_button.setIcon(ui_icon("settings"))
@@ -7278,8 +7877,15 @@ class MainWindow(QMainWindow):
             self._select_tts_engine(engine_id)
 
     def _select_tts_engine(self, engine_id: str) -> None:
-        self._select_combo_data(self.tts_engine_combo, engine_id)
-        self._on_tts_engine_changed()
+        index = self.tts_engine_combo.findData(engine_id)
+        if index < 0:
+            return
+        if index == self.tts_engine_combo.currentIndex():
+            self._on_tts_engine_changed()
+            return
+        self.tts_engine_combo.setCurrentIndex(index)
+        if self.tts_engine_combo.signalsBlocked():
+            self._on_tts_engine_changed()
 
     def _select_and_install_engine(self, engine_id: str) -> None:
         self._select_tts_engine(engine_id)
@@ -7291,6 +7897,8 @@ class MainWindow(QMainWindow):
             self._install_qwen()
         elif engine_id == "omnivoice":
             self._install_omnivoice()
+        elif engine_id == "f5_russian":
+            self._install_f5_russian()
 
     def _show_tts_engine_install_dialog(self, engine_id: str) -> None:
         requirement = ENGINE_INSTALL_REQUIREMENTS.get(engine_id)
@@ -7310,6 +7918,7 @@ class MainWindow(QMainWindow):
             "chatterbox": self.chatterbox_manager,
             "qwen": self.qwen_manager,
             "omnivoice": self.omnivoice_manager,
+            "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
         install_path = Path(
             getattr(manager, "install_dir", app_data_root())
@@ -7324,6 +7933,21 @@ class MainWindow(QMainWindow):
             self,
             install_path=install_path,
             existing_model_detected=self._tts_engine_model_detected(engine_id),
+            license_notice=(
+                self.tr(
+                    "f5_russian_install_license_notice",
+                    "F5-TTS Russian is an optional non-commercial model. "
+                    "Installing it also installs Silero Stress inside the same "
+                    "isolated runtime; neither component is loaded by other engines.",
+                )
+                if engine_id == "f5_russian"
+                else ""
+            ),
+            license_url=(
+                "https://creativecommons.org/licenses/by-nc/4.0/"
+                if engine_id == "f5_russian"
+                else ""
+            ),
         )
         self.engine_install_dialogs[engine_id] = dialog
         dialog.install_requested.connect(
@@ -7350,6 +7974,7 @@ class MainWindow(QMainWindow):
             "chatterbox": self.chatterbox_thread,
             "qwen": self.qwen_thread,
             "omnivoice": self.omnivoice_thread,
+            "f5_russian": self.f5_russian_thread,
         }.get(engine_id)
 
     def _start_tts_engine_install(self, engine_id: str) -> None:
@@ -7363,6 +7988,8 @@ class MainWindow(QMainWindow):
             self._start_qwen_operation("install")
         elif engine_id == "omnivoice":
             self._start_omnivoice_operation("install")
+        elif engine_id == "f5_russian":
+            self._start_f5_russian_operation("install")
 
     def _cancel_tts_engine_install(self, engine_id: str) -> None:
         if engine_id == "kokoro":
@@ -7373,6 +8000,8 @@ class MainWindow(QMainWindow):
             self._cancel_qwen_operation()
         elif engine_id == "omnivoice":
             self._cancel_omnivoice_operation()
+        elif engine_id == "f5_russian":
+            self._cancel_f5_russian_operation()
 
     def _update_tts_engine_install_dialog(
         self,
@@ -7473,7 +8102,7 @@ class MainWindow(QMainWindow):
     def _start_preload_tts_engine(self, engine_id: str) -> None:
         if self.preload_thread is not None:
             return
-        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice"}:
+        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "f5_russian"}:
             return
         self._select_tts_engine(engine_id)
         voice_config = self._current_voice_config()
@@ -7594,6 +8223,7 @@ class MainWindow(QMainWindow):
         self._refresh_chatterbox_status()
         self._refresh_qwen_status()
         self._refresh_omnivoice_status()
+        self._refresh_f5_russian_status()
         self._refresh_custom_engine_panel()
 
     def _sync_engine_host_memory_state(self) -> None:
@@ -7638,6 +8268,69 @@ class MainWindow(QMainWindow):
         )
         editor_form = QFormLayout(editor_group)
         editor_form.setSpacing(10)
+
+        self.gpu_settings_group = QGroupBox(
+            self.tr("gpu_settings", "Graphics processor (GPU)")
+        )
+        gpu_layout = QVBoxLayout(self.gpu_settings_group)
+        gpu_layout.setSpacing(8)
+        gpu_help = QLabel(
+            self.tr(
+                "gpu_settings_help",
+                "Choose the NVIDIA GPU used by CUDA-based TTS and speech review models. "
+                "Changing it releases loaded models before the next use.",
+            )
+        )
+        gpu_help.setObjectName("helperLabel")
+        gpu_help.setWordWrap(True)
+        gpu_form = QFormLayout()
+        self.gpu_device_combo = QComboBox()
+        self.gpu_device_combo.setAccessibleName(
+            self.tr("gpu_device", "GPU device")
+        )
+        self.gpu_device_combo.addItem(
+            self.tr("gpu_automatic", "Automatic (first available GPU)"),
+            AUTO_GPU_DEVICE,
+        )
+        selectable_gpus = selectable_nvidia_gpus(self.gpu_detection_result)
+        for gpu in selectable_gpus:
+            parts = [f"GPU {gpu.index}: {gpu.name}"]
+            if gpu.memory_total_gb is not None:
+                parts.append(f"{gpu.memory_total_gb:.1f} GB VRAM")
+            self.gpu_device_combo.addItem(" · ".join(parts), str(gpu.index))
+        if (
+            self.gpu_device_selection != AUTO_GPU_DEVICE
+            and self.gpu_device_combo.findData(self.gpu_device_selection) < 0
+        ):
+            self.gpu_device_combo.addItem(
+                self.tr(
+                    "gpu_not_detected",
+                    "GPU {index} (not detected)",
+                    index=self.gpu_device_selection,
+                ),
+                self.gpu_device_selection,
+            )
+        self._select_combo_data(self.gpu_device_combo, self.gpu_device_selection)
+        self.gpu_device_combo.setEnabled(
+            bool(selectable_gpus)
+            or self.gpu_device_selection != AUTO_GPU_DEVICE
+        )
+        gpu_form.addRow(self.tr("gpu_device", "GPU device"), self.gpu_device_combo)
+        gpu_layout.addWidget(gpu_help)
+        gpu_layout.addLayout(gpu_form)
+        if not selectable_gpus:
+            unavailable = QLabel(
+                self.tr(
+                    "gpu_selection_unavailable",
+                    "No selectable NVIDIA CUDA GPU was detected. Automatic mode remains active.",
+                )
+            )
+            unavailable.setObjectName("helperLabel")
+            unavailable.setWordWrap(True)
+            gpu_layout.addWidget(unavailable)
+        self.gpu_device_combo.currentIndexChanged.connect(
+            self._on_gpu_device_changed
+        )
 
         self.speed_spin = QDoubleSpinBox()
         self.speed_spin.setRange(0.5, 2.0)
@@ -7841,18 +8534,113 @@ class MainWindow(QMainWindow):
         reset_layout.addWidget(reset_help, 1)
         reset_layout.addWidget(self.reset_settings_button)
 
-        grid.addWidget(narration_group, 0, 0)
-        grid.addWidget(editor_group, 0, 1)
-        grid.addWidget(cache_group, 1, 0, 1, 2)
-        grid.addWidget(storage_group, 2, 0, 1, 2)
-        grid.addWidget(reset_group, 3, 0, 1, 2)
+        grid.addWidget(self.gpu_settings_group, 0, 0, 1, 2)
+        grid.addWidget(narration_group, 1, 0)
+        grid.addWidget(editor_group, 1, 1)
+        grid.addWidget(cache_group, 2, 0, 1, 2)
+        grid.addWidget(storage_group, 3, 0, 1, 2)
+        grid.addWidget(reset_group, 4, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(widget)
+        self.general_settings_scroll = scroll
         return scroll
+
+    def _on_gpu_device_changed(self, _index: int) -> None:
+        if self._restoring_settings:
+            return
+        selection = normalize_gpu_device(self.gpu_device_combo.currentData())
+        if selection == self.gpu_device_selection:
+            return
+        if self._gpu_change_in_progress():
+            self.gpu_device_combo.blockSignals(True)
+            self._select_combo_data(self.gpu_device_combo, self.gpu_device_selection)
+            self.gpu_device_combo.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                self.tr("gpu_change_busy_title", "GPU is busy"),
+                self.tr(
+                    "gpu_change_busy_message",
+                    "Wait for generation, installation, preview, or verification to finish before changing GPU.",
+                ),
+            )
+            return
+
+        previous_selection = self.gpu_device_selection
+        server_was_running = self.engine_host_client.health(timeout=0.25)
+        self._unload_faster_whisper()
+        self._unload_preloaded_tts_engine(log_message=False)
+        if server_was_running and not self.engine_host_client.shutdown():
+            self.gpu_device_combo.blockSignals(True)
+            self._select_combo_data(self.gpu_device_combo, previous_selection)
+            self.gpu_device_combo.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                self.tr("gpu_change_failed_title", "Could not change GPU"),
+                self.tr(
+                    "gpu_change_failed_message",
+                    "The shared engine host could not be stopped. Close active MCP clients and try again.",
+                ),
+            )
+            return
+
+        self.host_loaded_tts_engine_ids.clear()
+        self.loaded_tts_engine_id = None
+        self.gpu_device_selection = configure_gpu_device(
+            selection,
+            self.gpu_detection_result,
+        )
+        self.settings["gpu_device_index"] = self.gpu_device_selection
+        self.settings_manager.save()
+        if server_was_running:
+            try:
+                self.local_server_controller.start()
+            except Exception as exc:
+                self.log_view.append_event(f"Local server restart warning: {exc}")
+        self._refresh_all_engine_status()
+        selected_gpu = selected_nvidia_gpu(
+            self.gpu_detection_result,
+            self.gpu_device_selection,
+        )
+        selected_name = (
+            selected_gpu.name
+            if selected_gpu is not None
+            else self.tr(
+                "gpu_not_detected",
+                "GPU {index} (not detected)",
+                index=self.gpu_device_selection,
+            )
+        )
+        message = self.tr(
+            "gpu_changed",
+            "GPU changed to {gpu}. It will be used the next time a model is loaded.",
+            gpu=selected_name,
+        )
+        self.statusBar().showMessage(message, 6000)
+        self.log_view.append_event(message)
+
+    def _gpu_change_in_progress(self) -> bool:
+        thread_names = (
+            "worker_thread",
+            "preload_thread",
+            "whisper_preload_thread",
+            "verification_thread",
+            "segment_regeneration_thread",
+            "kokoro_python_thread",
+            "kokoro_python_preview_thread",
+            "chatterbox_thread",
+            "chatterbox_preview_thread",
+            "qwen_thread",
+            "qwen_preview_thread",
+            "omnivoice_thread",
+            "omnivoice_preview_thread",
+            "f5_russian_thread",
+            "f5_russian_preview_thread",
+        )
+        return any(getattr(self, name, None) is not None for name in thread_names)
 
     def _set_editor_highlighting_enabled(self, enabled: bool) -> None:
         if hasattr(self, "markup_highlighter"):
@@ -8046,6 +8834,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
         self.omnivoice_manager = OmniVoiceManager()
+        self.f5_russian_manager = F5RussianManager()
         self.faster_whisper_manager = FasterWhisperManager()
         gallery_settings = self.settings.get("voice_gallery", {})
         self.voice_gallery_manager = VoiceGalleryManager(
@@ -8068,6 +8857,7 @@ class MainWindow(QMainWindow):
             ("chatterbox", "reference_audio_path"),
             ("qwen", "reference_audio_path"),
             ("omnivoice", "reference_audio_path"),
+            ("f5_russian", "reference_audio_path"),
             ("voice_gallery", "local_catalog_path"),
         ):
             section = self.settings.get(section_name)
@@ -8090,6 +8880,8 @@ class MainWindow(QMainWindow):
                 self.qwen_reference_picker.set_path(relocated)
             elif section_name == "omnivoice":
                 self.omnivoice_reference_picker.set_path(relocated)
+            elif section_name == "f5_russian":
+                self.f5_russian_reference_picker.set_path(relocated)
 
     def _open_ai_asset_location(self) -> None:
         root = large_assets_root()
@@ -8502,6 +9294,10 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 border-right: 1px solid #e5e7eb;
             }
+            QWidget#sidebarBrand,
+            QFrame#sidebar QLabel {
+                background: transparent;
+            }
             QLabel#closeDot, QLabel#minDot, QLabel#maxDot {
                 border-radius: 6px;
             }
@@ -8540,7 +9336,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid #e5eaf3;
                 border-radius: 10px;
             }
-            QLabel#engineStatusIcon {
+            QFrame#sidebar QLabel#engineStatusIcon {
                 background: #1769ff;
                 border-radius: 8px;
                 padding: 6px;
@@ -8952,7 +9748,9 @@ class MainWindow(QMainWindow):
             )
         )
         self.voices_manage_button.setText(self._voices_manage_button_text(engine_id))
-        self.voices_manage_button.setEnabled(engine_id in {"piper", "chatterbox", "omnivoice"})
+        self.voices_manage_button.setEnabled(
+            engine_id in {"piper", "chatterbox", "omnivoice", "f5_russian"}
+        )
         self.voices_design_button.setVisible(engine_id == "omnivoice")
         self.voices_design_button.setEnabled(
             engine_id == "omnivoice" and self.omnivoice_manager.is_installed()
@@ -9043,6 +9841,8 @@ class MainWindow(QMainWindow):
             return self.tr("import_reference_voice", "Import reference voice")
         if engine_id == "omnivoice":
             return self.tr("import_reference_voice", "Import reference voice")
+        if engine_id == "f5_russian":
+            return self.tr("import_reference_voice", "Import reference voice")
         return self.tr("manage", "Manage")
 
     def _voices_status_text(self, engine_id: str) -> str:
@@ -9065,6 +9865,12 @@ class MainWindow(QMainWindow):
             return self.tr(
                 "omnivoice_voices_page_help",
                 "OmniVoice uses gallery voices as cloning references. Selecting a voice downloads its preview/reference audio when needed.",
+            )
+        if engine_id == "f5_russian":
+            return self.tr(
+                "f5_russian_voices_page_help",
+                "F5-TTS Russian uses Russian gallery voices as cloning references. "
+                "Each voice needs reference audio and an exact transcript.",
             )
         if engine_id == "chatterbox":
             return self.tr(
@@ -9145,6 +9951,24 @@ class MainWindow(QMainWindow):
             return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "omnivoice":
             return self._merge_voice_gallery_rows(engine_id, [])
+        if engine_id == "f5_russian":
+            rows: list[dict[str, object]] = []
+            reference_path = self.f5_russian_reference_picker.path()
+            if reference_path is not None and reference_path.is_file():
+                rows.append(
+                    {
+                        "engine": "f5_russian",
+                        "id": str(reference_path),
+                        "name": reference_path.stem,
+                        "language": "Русский",
+                        "type": self.tr("reference_voice", "Reference voice"),
+                        "status": self.tr("configured", "Configured"),
+                        "selected": True,
+                        "installed": True,
+                        "path": reference_path,
+                    }
+                )
+            return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "chatterbox":
             return self._merge_voice_gallery_rows(engine_id, [])
         if engine_id == "openai":
@@ -9240,6 +10064,12 @@ class MainWindow(QMainWindow):
             gallery_voice = self._matching_gallery_voice(engine_id, row, gallery_voices)
             if gallery_voice is not None:
                 row = dict(row)
+                if engine_id == "f5_russian":
+                    row["id"] = gallery_voice.voice_id
+                    row["name"] = gallery_voice.name
+                    row["language"] = (
+                        gallery_voice.language_name or gallery_voice.language
+                    )
                 row["gallery_voice"] = gallery_voice
                 row["preview_source"] = self.voice_gallery_manager.preview_source(gallery_voice)
                 row["short_description"] = gallery_voice.short_description
@@ -9292,6 +10122,18 @@ class MainWindow(QMainWindow):
                 if str(row.get("name", "")).casefold() == voice.name.casefold():
                     return voice
             elif engine_id == "omnivoice":
+                if str(row.get("id", "")).casefold() == (
+                    voice.engine_voice_id or voice.voice_id
+                ).casefold():
+                    return voice
+            elif engine_id == "f5_russian":
+                row_path = row.get("path")
+                if (
+                    isinstance(row_path, Path)
+                    and voice.installed_path
+                    and row_path.resolve() == Path(voice.installed_path).resolve()
+                ):
+                    return voice
                 if str(row.get("id", "")).casefold() == (
                     voice.engine_voice_id or voice.voice_id
                 ).casefold():
@@ -9360,6 +10202,13 @@ class MainWindow(QMainWindow):
             return bool(path and selected and path.resolve() == selected.resolve())
         if engine_id == "omnivoice":
             selected = self.omnivoice_reference_picker.path()
+            return bool(
+                selected
+                and voice.installed_path
+                and Path(voice.installed_path).resolve() == selected.resolve()
+            )
+        if engine_id == "f5_russian":
+            selected = self.f5_russian_reference_picker.path()
             return bool(
                 selected
                 and voice.installed_path
@@ -9479,7 +10328,7 @@ class MainWindow(QMainWindow):
                     )
                     layout.addWidget(install_button)
 
-        if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "chatterbox"}:
+        if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "chatterbox", "f5_russian"}:
             test_button = self._small_icon_button(
                 "preview",
                 self.tr("test_voice", "Test voice"),
@@ -9575,6 +10424,10 @@ class MainWindow(QMainWindow):
                 gallery_voice.is_reference_audio
                 and not self.voice_gallery_manager.is_installed(gallery_voice)
             ):
+                if engine_id == "f5_russian":
+                    self.pending_f5_russian_gallery_voice_id = (
+                        gallery_voice.voice_id
+                    )
                 self._start_voice_gallery_operation("install", gallery_voice)
                 return
             installed_path = (
@@ -9586,6 +10439,8 @@ class MainWindow(QMainWindow):
                 self.chatterbox_reference_picker.set_path(installed_path)
             elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(gallery_voice)
+            elif engine_id == "f5_russian":
+                self._apply_f5_russian_gallery_reference(gallery_voice)
         if engine_id == "piper":
             voice = row.get("voice")
             if isinstance(voice, VoiceInfo):
@@ -9611,6 +10466,8 @@ class MainWindow(QMainWindow):
         elif engine_id == "omnivoice":
             if not isinstance(gallery_voice, GalleryVoice):
                 self._select_combo_data(self.omnivoice_mode_combo, voice_id)
+        elif engine_id == "f5_russian":
+            pass
         elif engine_id == "chatterbox":
             if not bool(row.get("installed")):
                 self._install_chatterbox_reference_voice_data(row)
@@ -9653,6 +10510,28 @@ class MainWindow(QMainWindow):
         )
         return True
 
+    def _apply_f5_russian_gallery_reference(self, voice: GalleryVoice) -> bool:
+        try:
+            audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+        except Exception as exc:
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                f"Could not prepare F5-TTS Russian reference voice: {exc}",
+            )
+            return False
+        if audio_path is None or not audio_path.is_file() or not voice.ref_text.strip():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                "F5-TTS Russian reference voices require audio and an exact transcript.",
+            )
+            return False
+        self.f5_russian_reference_picker.set_path(audio_path)
+        self.f5_russian_reference_text_edit.setPlainText(voice.ref_text)
+        self.log_view.append_event(
+            f"F5-TTS Russian reference voice selected: {voice.name}"
+        )
+        return True
+
     def _test_voice_page_row(self, row_index: int) -> None:
         if not 0 <= row_index < len(self.voice_page_rows):
             return
@@ -9679,6 +10558,8 @@ class MainWindow(QMainWindow):
             self._test_qwen_voice()
         elif engine_id == "omnivoice":
             self._test_omnivoice_voice()
+        elif engine_id == "f5_russian":
+            self._test_f5_russian_voice()
         elif engine_id == "chatterbox":
             self._test_chatterbox_voice()
 
@@ -9730,6 +10611,7 @@ class MainWindow(QMainWindow):
             ("fr_", "La lune est magnifique ce soir."),
             ("de_", "Der Mond ist heute Nacht wunderschoen."),
             ("pt_", "A lua esta linda esta noite."),
+            ("ru_", "Сегодня луна особенно прекрасна."),
             ("en_", "The moon looks beautiful tonight."),
             ("zh_", "今晚的月亮很美。"),
             ("ja_", "今夜の月はとてもきれいです。"),
@@ -9884,16 +10766,29 @@ class MainWindow(QMainWindow):
             ),
             local_catalog_path=str(gallery_settings.get("local_catalog_path", "")),
         )
+        pending_f5_voice_id = self.pending_f5_russian_gallery_voice_id
+        self.pending_f5_russian_gallery_voice_id = None
+        if pending_f5_voice_id:
+            pending_voice = self.voice_gallery_manager.get_voice(
+                pending_f5_voice_id
+            )
+            if (
+                pending_voice is not None
+                and self._apply_f5_russian_gallery_reference(pending_voice)
+            ):
+                self._save_settings()
         self.log_view.append_event(message)
         self._refresh_voices_page()
 
     def _on_voice_gallery_failed(self, message: str) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_f5_russian_gallery_voice_id = None
         self.log_view.append_event(message)
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
 
     def _on_voice_gallery_cancelled(self) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_f5_russian_gallery_voice_id = None
         self.log_view.append_event(
             self.tr("voice_gallery_cancelled", "Voice gallery operation cancelled.")
         )
@@ -9917,6 +10812,9 @@ class MainWindow(QMainWindow):
             return
         if engine_id == "omnivoice":
             self._import_gallery_reference_voice("omnivoice")
+            return
+        if engine_id == "f5_russian":
+            self._import_gallery_reference_voice("f5_russian")
 
     def _show_chatterbox_voice_manage_menu(self) -> None:
         self._import_chatterbox_reference_voice()
@@ -9954,6 +10852,15 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
+        if engine_id == "f5_russian" and not str(values["ref_text"]).strip():
+            self._show_error(
+                self.tr("import_failed", "Import failed"),
+                self.tr(
+                    "f5_russian_reference_required",
+                    "F5-TTS Russian requires a reference audio file and its exact transcript.",
+                ),
+            )
+            return
         try:
             voice = self.voice_gallery_manager.import_reference_voice(
                 engine_id,
@@ -10277,6 +11184,14 @@ class MainWindow(QMainWindow):
 
     def _restore_settings_widgets(self) -> None:
         self._ensure_default_music_selection()
+        self.gpu_device_selection = configure_gpu_device(
+            self.settings.get("gpu_device_index", AUTO_GPU_DEVICE),
+            self.gpu_detection_result,
+        )
+        self._select_combo_data(
+            self.gpu_device_combo,
+            self.gpu_device_selection,
+        )
         selected_engine = self.settings.get("tts_engine", "piper")
         if selected_engine == "kokoro_python":
             selected_engine = "kokoro"
@@ -10411,6 +11326,34 @@ class MainWindow(QMainWindow):
         )
         self.omnivoice_duration_spin.setValue(
             float(omnivoice.get("duration", 0.0))
+        )
+
+        f5_russian = self.settings.get("f5_russian", {})
+        if not isinstance(f5_russian, dict):
+            f5_russian = {}
+        self._select_combo_data(
+            self.f5_russian_model_combo,
+            f5_russian.get("model", "f5tts_v1_base_v2"),
+        )
+        self._select_combo_data(
+            self.f5_russian_device_combo,
+            f5_russian.get("device", "auto"),
+        )
+        self.f5_russian_reference_picker.set_path(
+            str(f5_russian.get("reference_audio_path", ""))
+        )
+        self.f5_russian_reference_text_edit.setPlainText(
+            str(f5_russian.get("reference_text", ""))
+        )
+        if self.f5_russian_manager.is_installed():
+            self._ensure_default_f5_russian_reference(allow_sync=False)
+        self.f5_russian_stress_checkbox.setChecked(
+            bool(f5_russian.get("use_stress", True))
+        )
+        self.f5_russian_nfe_spin.setValue(int(f5_russian.get("nfe_step", 32)))
+        self.f5_russian_speed_spin.setValue(float(f5_russian.get("speed", 1.0)))
+        self.f5_russian_remove_silence_checkbox.setChecked(
+            bool(f5_russian.get("remove_silence", True))
         )
 
         review = self.settings.get("review", {})
@@ -10710,8 +11653,20 @@ class MainWindow(QMainWindow):
         page_index = self.page_stack.currentIndex()
         defaults = deepcopy(DEFAULT_SETTINGS)
         defaults["storage"] = deepcopy(self.settings.get("storage", {}))
+        previous_gpu_device = self.gpu_device_selection
         self.settings_manager.save(defaults)
         self.settings = self.settings_manager.settings
+        default_gpu_device = normalize_gpu_device(
+            self.settings.get("gpu_device_index", AUTO_GPU_DEVICE)
+        )
+        if default_gpu_device != previous_gpu_device:
+            self._unload_faster_whisper()
+            self._unload_preloaded_tts_engine(log_message=False)
+            self.engine_host_client.shutdown()
+        self.gpu_device_selection = configure_gpu_device(
+            default_gpu_device,
+            self.gpu_detection_result,
+        )
         self.translator.set_language(str(self.settings["ui_language"]))
         self.ui_theme = normalize_theme(self.settings.get("ui_theme", "light"))
         application = QApplication.instance()
@@ -12190,6 +13145,8 @@ class MainWindow(QMainWindow):
             return self._qwen_voice_config_for_ui()
         if engine_id == "omnivoice":
             return self._omnivoice_voice_config_for_ui()
+        if engine_id == "f5_russian":
+            return self._f5_russian_voice_config_for_ui()
         if engine_id == "elevenlabs":
             return {
                 "engine": "elevenlabs",
@@ -13056,6 +14013,17 @@ class MainWindow(QMainWindow):
             item.setBackground(QBrush(background))
         if foreground is not None:
             item.setForeground(QBrush(foreground))
+
+    def _refresh_review_item_styles(self) -> None:
+        if not hasattr(self, "review_table"):
+            return
+        for row in range(self.review_table.rowCount()):
+            state_item = self.review_table.item(row, 2)
+            state = state_item.text() if state_item is not None else ""
+            for column in range(7):
+                item = self.review_table.item(row, column)
+                if item is not None:
+                    self._apply_review_item_style(item, state)
 
     def _on_review_selection_changed(self) -> None:
         segment = self._selected_review_segment()
@@ -14174,6 +15142,8 @@ class MainWindow(QMainWindow):
             self.export_combo,
             self.ui_language_combo,
             self.theme_button,
+            self.gpu_device_combo,
+            self.sidebar_change_gpu_button,
             self.tts_engine_combo,
             self.tts_engine_table,
             self.piper_path_edit,
@@ -14222,6 +15192,18 @@ class MainWindow(QMainWindow):
             self.omnivoice_test_button,
             self.omnivoice_load_button,
             self.omnivoice_detect_gpu_button,
+            self.f5_russian_model_combo,
+            self.f5_russian_device_combo,
+            self.f5_russian_reference_picker,
+            self.f5_russian_reference_text_edit,
+            self.f5_russian_stress_checkbox,
+            self.f5_russian_nfe_spin,
+            self.f5_russian_speed_spin,
+            self.f5_russian_remove_silence_checkbox,
+            self.f5_russian_install_button,
+            self.f5_russian_remove_button,
+            self.f5_russian_test_button,
+            self.f5_russian_load_button,
             self.review_enabled_checkbox,
             self.review_auto_checkbox,
             self.review_filter_combo,
@@ -14314,6 +15296,7 @@ class MainWindow(QMainWindow):
             self._refresh_chatterbox_status()
             self._refresh_qwen_status()
             self._refresh_omnivoice_status()
+            self._refresh_f5_russian_status()
             self._refresh_wav_cache_stats()
             self._update_review_tail_controls_state()
 
@@ -14327,6 +15310,9 @@ class MainWindow(QMainWindow):
                 "output_dir": str(output_dir),
                 "ui_language": self.ui_language_combo.currentData() or "en",
                 "ui_theme": self.ui_theme,
+                "gpu_device_index": normalize_gpu_device(
+                    self.gpu_device_combo.currentData()
+                ),
                 "tts_engine": self.tts_engine_combo.currentData() or "piper",
                 "piper_path": self.piper_path_edit.text().strip()
                 or "engines/piper/piper.exe",
@@ -14480,6 +15466,25 @@ class MainWindow(QMainWindow):
                     "num_step": self.omnivoice_num_step_spin.value(),
                     "speed": self.omnivoice_engine_speed_spin.value(),
                     "duration": self.omnivoice_duration_spin.value(),
+                },
+                "f5_russian": {
+                    "model": (
+                        self.f5_russian_model_combo.currentData()
+                        or "f5tts_v1_base_v2"
+                    ),
+                    "device": self.f5_russian_device_combo.currentData() or "auto",
+                    "reference_audio_path": str(
+                        self.f5_russian_reference_picker.path() or ""
+                    ),
+                    "reference_text": (
+                        self.f5_russian_reference_text_edit.toPlainText().strip()
+                    ),
+                    "use_stress": self.f5_russian_stress_checkbox.isChecked(),
+                    "nfe_step": self.f5_russian_nfe_spin.value(),
+                    "speed": self.f5_russian_speed_spin.value(),
+                    "remove_silence": (
+                        self.f5_russian_remove_silence_checkbox.isChecked()
+                    ),
                 },
                 "review": {
                     "enabled": self.review_enabled_checkbox.isChecked(),
