@@ -87,13 +87,25 @@ See the complete release history in the [changelog](CHANGELOG.md).
 - **Podcast-ready:** export clean narration and then create an Audio Mix with background music.
 - **Extensible AI architecture:** local engines and cloud providers are isolated from the UI.
 
-## Screenshots
+## Screenshot and videos
 
-### Audio Mix With Music
+### Videos
+
+#### Demo
+
+[![LocalText2Voice demo video](https://img.youtube.com/vi/CuoBJlbknp4/maxresdefault.jpg)](https://www.youtube.com/watch?v=CuoBJlbknp4)
+
+#### Review
+
+[Watch the review on YouTube](https://www.youtube.com/watch?v=mOhEeRcX5k0) (in Russian, with the option to dub it into English).
+
+### Screenshots
+
+#### Audio Mix With Music
 
 ![LocalText2Voice Audio Mix page with voice waveform, background music, preview controls, ducking, fades, and podcast render options](capturas/captura_lt2v_mix_music.png)
 
-### Markup Editor
+#### Markup Editor
 
 ![LocalText2Voice editor with custom markup commands for voice, language, pauses, speed, volume, and model parameters](capturas/captura_lt2v_editor_markup.png)
 
