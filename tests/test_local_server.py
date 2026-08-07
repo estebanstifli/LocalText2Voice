@@ -334,10 +334,11 @@ def test_generation_options_enable_shared_russian_silero_when_configured(tmp_pat
 def test_service_rejects_unsafe_requested_chunk_size(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["chunk_size"] = 2500
+    settings.settings["engine_chunk_sizes"]["omnivoice"] = 420
     settings.save()
     service = LocalText2VoiceService(settings)
 
-    assert service._chunk_size("omnivoice", {"chunk_size": 1}) == 2500
+    assert service._chunk_size("omnivoice", {"chunk_size": 1}) == 420
     assert service._chunk_size("omnivoice", {"chunk_size": 120}) == 120
 
 

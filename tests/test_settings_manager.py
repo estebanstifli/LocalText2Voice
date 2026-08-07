@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
+from app import __version__
+from app.core.settings_manager import (
+    CURRENT_SETTINGS_SCHEMA_VERSION,
+    DEFAULT_SETTINGS,
+    SettingsManager,
+)
 from app.core.text_processor import TextProcessor
 
 
@@ -10,6 +16,23 @@ RUSSIAN_SAMPLE = (
     "Тихий ветер гуляет по улицам старого города. "
     "Скоро наступит вечер, и в окнах зажгутся тёплые огни."
 )
+
+
+def test_distribution_metadata_matches_runtime_defaults() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    example = json.loads(
+        (repository_root / "config.example.json").read_text(encoding="utf-8")
+    )
+    installer = (repository_root / "installer" / "LocalText2Voice.iss").read_text(
+        encoding="utf-8"
+    )
+
+    assert example["settings_schema_version"] == CURRENT_SETTINGS_SCHEMA_VERSION
+    assert (
+        f'"settings_schema_version": {CURRENT_SETTINGS_SCHEMA_VERSION},'
+        in installer
+    )
+    assert f'#define MyAppVersion "{__version__}"' in installer
 
 
 def test_invalid_partial_settings_fall_back_to_safe_defaults(tmp_path):

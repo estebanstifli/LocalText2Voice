@@ -62,15 +62,15 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.4.0
+## What's New In 1.4.1
 
-- Generate with the new **Qwen3-TTS Base 1.7B** voice-cloning model or keep using the faster CustomVoice 0.6B model.
-- Install the optional **F5-TTS Russian** engine with reference-voice cloning, automatic Russian stress marks, and explicit non-commercial licensing.
-- Prepare Russian text through deterministic normalization for numbers, ordinals, rubles, abbreviations, and units, then optionally install a shared Silero Stress layer on demand to restore `Ё` for any TTS engine. F5-TTS Russian also receives its stress notation; other engines receive the safe `Ё` spelling only.
-- Switch between persistent light and dark interface themes without rebuilding the current workspace.
-- Detect multiple NVIDIA GPUs and choose which device runs CUDA TTS engines and Faster Whisper.
-- Select hardware-aware Qwen runtime profiles, including a CUDA 13 / PyTorch profile for Blackwell and RTX 50-series GPUs.
-- Preserve TTS engine selection and table position during background status refreshes.
+- Install **Silero Stress** as an optional shared Russian normalization layer, with safe `Ё` output for every engine and explicit stress notation for F5-TTS Russian.
+- Use conservative, engine-specific safe chunk limits for long-form generation while still allowing short phrases and voice tests.
+- Edit, replace, and permanently remove user-imported reference voices without affecting read-only catalog voices.
+- Pause, stop, or restart Voice Library previews and open curated external voice resources directly from the app.
+- Keep the persistent engine host isolated on its own loopback port so desktop generation, MCP clients, and future remote transport settings do not conflict.
+- Improve Whisper review of normalized Russian speech while preserving the raw transcript and current tail-analysis evidence.
+- Recover more reliably after cancelled engine jobs and record engine-host startup errors in a persistent diagnostic log.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 

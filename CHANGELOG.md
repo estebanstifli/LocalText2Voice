@@ -7,6 +7,48 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-07
+
+### Added
+
+- Added an optional shared Silero Stress installation under Text Normalization,
+  with asynchronous installation, removal, preview processing, and managed
+  model storage independent from the F5-TTS runtime.
+- Added pause, stop, and restart controls for Voice Library sample playback.
+- Added in-app links to curated external voice-library resources.
+- Added persistent engine-host stderr logging to simplify startup diagnostics.
+
+### Changed
+
+- Russian Silero processing now runs after dictionaries and deterministic
+  rules for any TTS engine. F5-TTS Russian receives explicit `+` stress marks,
+  while other engines receive pronunciation-safe `Ё` spelling.
+- Safe chunking now uses explicit per-engine defaults: 300 characters for
+  Piper, Kokoro, Chatterbox, OmniVoice, and F5-TTS Russian, and 520 for Qwen.
+  Short explicit requests remain valid from 50 characters upward.
+- The persistent engine host now uses a dedicated loopback-only port, separate
+  from the future remote MCP transport port.
+- User-imported reference voices can now be edited, replaced with a normalized
+  WAV, or permanently deleted; synchronized catalog voices remain read-only.
+- Voice Gallery synchronization now removes stale remote entries while
+  preserving locally imported references.
+- Fallback Python runtimes are stored with the other managed AI assets so the
+  selected large-asset location remains authoritative.
+
+### Fixed
+
+- Whisper review now compares normalized text without overwriting the raw
+  transcript, and strips Russian stress marks only for segments that were
+  actually preprocessed for F5-TTS Russian.
+- Tail review now handles missing alignment, stale metrics, retranscription
+  after automatic trimming, and review status selection more consistently.
+- Cancelled persistent engines are discarded before the next generation, and
+  repeated cancellation or shutdown requests no longer race the engine host.
+- Pending OmniVoice setup no longer overrides a different engine selected by
+  the user.
+- New Windows installations and the example configuration now start directly
+  on settings schema 20 with safe per-engine chunk limits.
+
 ## [1.4.0] - 2026-08-01
 
 ### Added
@@ -165,7 +207,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.0...v1.2.1

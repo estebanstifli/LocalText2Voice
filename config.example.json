@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 18,
+  "settings_schema_version": 20,
   "storage": {
     "base_dir": ".",
     "previous_roots": []

@@ -980,6 +980,12 @@ class MainWindowUITests(unittest.TestCase):
             window = MainWindow()
         self.addCleanup(window.deleteLater)
         panel = window.text_normalization_panel
+        # Keep the test independent from optional assets installed on the host.
+        silero_state = {"installed": False}
+        window.russian_normalization_manager.is_installed = (
+            lambda: silero_state["installed"]
+        )
+        panel.set_russian_silero_status(False)
 
         self.assertTrue(panel.russian_silero_frame.isHidden())
         panel.enabled_checkbox.setChecked(True)
@@ -995,6 +1001,7 @@ class MainWindowUITests(unittest.TestCase):
         self.assertIsNotNone(window.russian_normalization_install_dialog)
         window.russian_normalization_install_dialog.reject()
 
+        silero_state["installed"] = True
         panel.set_russian_silero_status(True)
         self.assertTrue(panel.russian_silero_checkbox.isEnabled())
         panel.russian_silero_checkbox.setChecked(True)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.core.settings_manager import CURRENT_SETTINGS_SCHEMA_VERSION
+
 
 INSTALLER_SCRIPT = (
     Path(__file__).resolve().parents[1] / "installer" / "LocalText2Voice.iss"
@@ -43,7 +45,10 @@ def test_uninstaller_cleanup_preserves_projects_and_exports() -> None:
 def test_installer_writes_current_settings_schema() -> None:
     script = INSTALLER_SCRIPT.read_text(encoding="utf-8")
 
-    assert "'  \"settings_schema_version\": 18,'" in script
+    assert (
+        f"'  \"settings_schema_version\": {CURRENT_SETTINGS_SCHEMA_VERSION},'"
+        in script
+    )
     assert "CreateInputDirPage(" in script
     assert "'  \"storage\": {'" in script
     assert "'    \"base_dir\": \"' + AssetsBaseDir + '\"'" in script
