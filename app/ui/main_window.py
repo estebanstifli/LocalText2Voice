@@ -2825,6 +2825,111 @@ class MainWindow(QMainWindow):
             ),
         )
 
+    def _show_external_voice_libraries(self) -> None:
+        dialog = QDialog(self)
+        dialog.setModal(True)
+        dialog.setWindowTitle(
+            self.tr("external_voice_libraries", "External Voice Libraries")
+        )
+        dialog.setMinimumSize(720, 520)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+        title = QLabel(dialog.windowTitle())
+        title.setObjectName("sectionLabel")
+        help_label = QLabel(
+            self.tr(
+                "external_voice_libraries_help",
+                "These links open in your browser. Before downloading or cloning a "
+                "voice, verify the license, source terms, and the speaker's consent. "
+                "Some datasets are intended for research only or contain mixed licenses.",
+            )
+        )
+        help_label.setObjectName("helperLabel")
+        help_label.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(help_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        entries = QWidget()
+        entries_layout = QVBoxLayout(entries)
+        entries_layout.setContentsMargins(0, 0, 4, 0)
+        entries_layout.setSpacing(8)
+        for name, url, description in self._external_voice_libraries():
+            source_frame = QFrame()
+            source_frame.setObjectName("inlineStatusFrame")
+            source_layout = QVBoxLayout(source_frame)
+            source_layout.setContentsMargins(12, 10, 12, 10)
+            source_layout.setSpacing(4)
+            name_label = QLabel(name)
+            name_label.setObjectName("sectionLabel")
+            url_label = QLabel(f'<a href="{url}">{url}</a>')
+            url_label.setOpenExternalLinks(True)
+            url_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            description_label = QLabel(description)
+            description_label.setObjectName("helperLabel")
+            description_label.setWordWrap(True)
+            source_layout.addWidget(name_label)
+            source_layout.addWidget(url_label)
+            source_layout.addWidget(description_label)
+            entries_layout.addWidget(source_frame)
+        entries_layout.addStretch(1)
+        scroll.setWidget(entries)
+        layout.addWidget(scroll, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        close_button = QPushButton(self.tr("close", "Close"))
+        close_button.clicked.connect(dialog.accept)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+        dialog.exec()
+
+    @staticmethod
+    def _external_voice_libraries() -> tuple[tuple[str, str, str], ...]:
+        return (
+            (
+                "yaph/tts-samples",
+                "https://github.com/yaph/tts-samples/tree/main/mp3",
+                "300+ synthetic TTS samples across 70+ languages. Useful as a "
+                "demonstration catalog, not as original human voices.",
+            ),
+            (
+                "Voice-Zero",
+                "https://github.com/OwenTyme/voice-zero",
+                "About 150 clean, normalized FLAC samples prepared for cloning. "
+                "The base folder is CC0; emotional variations are separate.",
+            ),
+            (
+                "Kyutai TTS Voices",
+                "https://huggingface.co/kyutai/tts-voices",
+                "228 verified donated voices plus other packs. The voice-donations "
+                "folder is CC0; licenses vary in other folders.",
+            ),
+            (
+                "Open Swara",
+                "https://github.com/jaymunshi/open-swara",
+                "4,065 multilingual voices in 44 languages, organized by language "
+                "and gender. Some upstream sources have non-commercial restrictions.",
+            ),
+            (
+                "MiniMax TTS Multilingual Test Set",
+                "https://huggingface.co/datasets/MiniMaxAI/TTS-Multilingual-Test-Set",
+                "A small multilingual catalog: one male and one female voice in 24 "
+                "languages, with Spanish, transcripts, and short samples.",
+            ),
+            (
+                "YodasSpeakerPool",
+                "https://huggingface.co/datasets/fangningshao/YodasSpeakerPool",
+                "7,600 English and Chinese speakers with transcripts, emotion, "
+                "dialect, style, noise level, and voice descriptions.",
+            ),
+        )
+
     def _build_review_page(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -3080,6 +3185,14 @@ class MainWindow(QMainWindow):
         self.voices_sync_button.setIcon(ui_icon("save"))
         self.voices_sync_button.setIconSize(QSize(18, 18))
         self.voices_sync_button.clicked.connect(self._sync_voice_gallery)
+        self.voices_external_libraries_button = QPushButton(
+            self.tr("external_voice_libraries", "External Voice Libraries")
+        )
+        self.voices_external_libraries_button.setIcon(ui_icon("export"))
+        self.voices_external_libraries_button.setIconSize(QSize(18, 18))
+        self.voices_external_libraries_button.clicked.connect(
+            self._show_external_voice_libraries
+        )
         self.voices_manage_button = QPushButton(self.tr("manage", "Manage"))
         self.voices_manage_button.setIcon(ui_icon("settings"))
         self.voices_manage_button.setIconSize(QSize(18, 18))
@@ -3090,6 +3203,7 @@ class MainWindow(QMainWindow):
         self.voices_design_button.clicked.connect(self._open_omnivoice_design_dialog)
         header.addWidget(self.voices_refresh_button)
         header.addWidget(self.voices_sync_button)
+        header.addWidget(self.voices_external_libraries_button)
         header.addWidget(self.voices_manage_button)
         header.addWidget(self.voices_design_button)
         card_layout.addLayout(header)

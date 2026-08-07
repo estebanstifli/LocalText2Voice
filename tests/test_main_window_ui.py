@@ -139,6 +139,23 @@ class MainWindowUITests(unittest.TestCase):
         dialog._accept_selection()
         self.assertEqual(dialog.selected_path, Path("effect-017.wav"))
 
+    def test_external_voice_libraries_puts_yaph_first(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        sources = window._external_voice_libraries()
+
+        self.assertEqual(len(sources), 6)
+        self.assertEqual(sources[0][0], "yaph/tts-samples")
+        self.assertEqual(
+            sources[0][1],
+            "https://github.com/yaph/tts-samples/tree/main/mp3",
+        )
+        self.assertEqual(
+            window.voices_external_libraries_button.text(),
+            "External Voice Libraries",
+        )
+
     def test_generation_and_settings_views_are_separate(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
