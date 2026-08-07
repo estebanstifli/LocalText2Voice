@@ -13,6 +13,8 @@ from typing import Any
 from app.core.settings_manager import SettingsManager
 from app.utils.paths import application_root
 
+from .engine_host_config import engine_host_stderr_log_path, internal_engine_host_url
+
 
 class EngineHostClientError(RuntimeError):
     pass
@@ -37,15 +39,18 @@ class EngineHostClient:
             if hasattr(subprocess, "CREATE_NO_WINDOW")
             else 0
         )
+        stderr_path = engine_host_stderr_log_path()
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._process = subprocess.Popen(
-                command,
-                cwd=str(application_root()),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
+            with stderr_path.open("a", encoding="utf-8", buffering=1) as stderr_log:
+                self._process = subprocess.Popen(
+                    command,
+                    cwd=str(application_root()),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_log,
+                    creationflags=creationflags,
+                )
         except OSError as exc:
             raise EngineHostClientError(
                 f"Could not start the LocalText2Voice engine host: {exc}"
@@ -146,12 +151,7 @@ class EngineHostClient:
         return stopped
 
     def base_url(self) -> str:
-        settings = self._server_settings()
-        host = str(settings.get("host", "127.0.0.1") or "127.0.0.1")
-        if host in {"0.0.0.0", "::"}:
-            host = "127.0.0.1"
-        port = int(settings.get("port", 8765) or 8765)
-        return f"http://{host}:{port}"
+        return internal_engine_host_url(self.settings_manager.settings)
 
     def _server_settings(self) -> dict[str, Any]:
         value = self.settings_manager.settings.get("local_server", {})

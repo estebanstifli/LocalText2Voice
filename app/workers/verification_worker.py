@@ -29,7 +29,11 @@ from app.core.audio_tail_cut import (
 from app.core.transcript_similarity import similarity_metrics, verification_status
 from app.core.audio_event_timeline import resolve_audio_event_timeline
 from app.core.subtitle_export import export_audiobook_subtitles
-from app.core.text_normalization import TextNormalizer, normalization_rule_settings
+from app.core.text_normalization import (
+    TextNormalizer,
+    normalization_rule_settings,
+    strip_russian_stress_marks,
+)
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.tts.engine_registry import create_tts_engine
 from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
@@ -486,9 +490,15 @@ class SegmentVerificationWorker(QObject):
         comparison_language = self._comparison_language(
             comparison_language_hint
         )
-        comparison_source, comparison_transcript, comparison_words = (
+        (
+            comparison_source,
+            comparison_transcript,
+            comparison_words,
+            russian_silero_stress_comparison,
+            russian_silero_stress_marks_removed,
+        ) = (
             self._comparison_values(
-                segment.source_text,
+                segment,
                 transcript,
                 word_timestamps,
                 comparison_language_hint,
@@ -517,16 +527,23 @@ class SegmentVerificationWorker(QObject):
             "tail_analysis": tail_analysis,
             "selection_score": round(selection_score, 3),
             "comparison_normalization_applied": (
-                comparison_language is not None
-                and (
-                    comparison_source != segment.source_text
-                    or comparison_transcript != transcript
+                russian_silero_stress_comparison
+                or (
+                    comparison_language is not None
+                    and (
+                        comparison_source != segment.source_text
+                        or comparison_transcript != transcript
+                    )
                 )
             ),
             "comparison_normalization": {
                 "enabled": comparison_language is not None,
                 "language": comparison_language or "",
                 "rules": dict(self.comparison_normalization_rules),
+            },
+            "russian_silero_stress_comparison": {
+                "enabled": russian_silero_stress_comparison,
+                "markers_removed": russian_silero_stress_marks_removed,
             },
             "raw_similarity_score": float(raw_metrics["similarity_score"]),
         }
@@ -551,17 +568,39 @@ class SegmentVerificationWorker(QObject):
 
     def _comparison_values(
         self,
-        source_text: str,
+        segment: StoredSegment,
         transcript: str,
         word_timestamps: list[object],
         language_hint: str,
-    ) -> tuple[str, str, list[object]]:
+    ) -> tuple[str, str, list[object], bool, bool]:
+        source_text = segment.source_text
+        russian_silero_stress_comparison = self._uses_russian_silero_stress(
+            segment,
+            language_hint,
+        )
+        russian_silero_stress_marks_removed = False
+        if russian_silero_stress_comparison:
+            stripped_source = strip_russian_stress_marks(source_text)
+            russian_silero_stress_marks_removed = stripped_source != source_text
+            source_text = stripped_source
         normalizer = self.comparison_normalizer
         if normalizer is None:
-            return source_text, transcript, word_timestamps
+            return (
+                source_text,
+                transcript,
+                word_timestamps,
+                russian_silero_stress_comparison,
+                russian_silero_stress_marks_removed,
+            )
         resolved_language = self._comparison_language(language_hint)
         if resolved_language is None:
-            return source_text, transcript, word_timestamps
+            return (
+                source_text,
+                transcript,
+                word_timestamps,
+                russian_silero_stress_comparison,
+                russian_silero_stress_marks_removed,
+            )
         normalized_source = normalizer.normalize(
             source_text,
             language=resolved_language,
@@ -587,7 +626,41 @@ class SegmentVerificationWorker(QObject):
                 rules=self.comparison_normalization_rules,
             )
             normalized_words.append(normalized_value)
-        return normalized_source, normalized_transcript, normalized_words
+        return (
+            normalized_source,
+            normalized_transcript,
+            normalized_words,
+            russian_silero_stress_comparison,
+            russian_silero_stress_marks_removed,
+        )
+
+    def _uses_russian_silero_stress(
+        self,
+        segment: StoredSegment,
+        language_hint: str,
+    ) -> bool:
+        """Identify only source text that retained Silero's F5 ``+`` syntax."""
+        try:
+            config = json.loads(segment.engine_config_json or "{}")
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(config, dict):
+            return False
+        if str(config.get("engine", "")).strip().casefold() != "f5_russian":
+            return False
+        if not bool(config.get("russian_silero_preprocessed", False)):
+            return False
+        language_candidates = (
+            language_hint,
+            segment.language,
+            str(config.get("language", "")),
+            str(config.get("lang", "")),
+            str(config.get("locale", "")),
+        )
+        return any(
+            self._normalize_whisper_language(str(candidate)) == "ru"
+            for candidate in language_candidates
+        )
 
     def _comparison_language(self, language_hint: str) -> str | None:
         if self.comparison_normalizer is None:
@@ -627,6 +700,8 @@ class SegmentVerificationWorker(QObject):
         if transcript_pending:
             return True
         language = self._language_for_segment(segment)
+        if self._russian_silero_comparison_needs_refresh(segment, language):
+            return True
         comparison_language = self._comparison_language(language)
         normalization_current = comparison_normalization_is_current(
             segment.review_metrics_json,
@@ -661,6 +736,17 @@ class SegmentVerificationWorker(QObject):
                 ):
                     return True
         return False
+
+    def _russian_silero_comparison_needs_refresh(
+        self,
+        segment: StoredSegment,
+        language_hint: str,
+    ) -> bool:
+        if not self._uses_russian_silero_stress(segment, language_hint):
+            return False
+        metrics = parse_review_metrics(segment.review_metrics_json)
+        value = metrics.get("russian_silero_stress_comparison")
+        return not isinstance(value, dict) or not bool(value.get("enabled", False))
 
     @staticmethod
     def _result_summary(result: dict[str, object]) -> str:

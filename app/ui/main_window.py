@@ -4,7 +4,6 @@ import math
 import json
 import os
 import re
-import secrets
 import shutil
 import sys
 import tempfile
@@ -44,7 +43,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMenuBar,
     QMessageBox,
     QProgressBar,
@@ -92,7 +94,7 @@ from app.core.settings_manager import (
     sanitize_chunk_size,
 )
 from app.core.subtitle_export import export_audiobook_subtitles
-from app.core.text_normalization import TextNormalizer
+from app.core.text_normalization import TextNormalizer, normalize_text_for_speech
 from app.core.update_manager import (
     CHECK_INTERVAL_SECONDS,
     UpdateError,
@@ -101,6 +103,7 @@ from app.core.update_manager import (
     launch_installer,
 )
 from app.server.engine_host_client import EngineHostClient
+from app.server.engine_host_config import engine_host_stderr_log_path
 from app.server.server_controller import LocalServerController
 from app.tts.base import BaseTTSEngine, TTSEngineError
 from app.tts.engine_registry import TTS_ENGINES
@@ -115,6 +118,7 @@ from app.tts.kokoro_python_manager import KokoroPythonManager
 from app.tts.install_logging import install_detail_text, is_install_detail
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
+from app.tts.russian_normalization_manager import RussianNormalizationManager
 from app.tts.piper_engine import PiperTTSEngine
 from app.tts.voice_gallery_manager import (
     DEFAULT_GALLERY_CATALOG_URL,
@@ -170,6 +174,10 @@ from app.workers.qwen_worker import (
     QwenHardwareWorker,
     QwenInstallWorker,
     QwenPreviewWorker,
+)
+from app.workers.russian_normalization_worker import (
+    RussianNormalizationInstallWorker,
+    RussianNormalizationPreviewWorker,
 )
 from app.workers.verification_worker import (
     AudioTailCutWorker,
@@ -297,17 +305,99 @@ MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
     },
 )
 
+class MarkupAudioPickerDialog(QDialog):
+    """Keyboard-friendly picker used when an audio library is large."""
+
+    def __init__(
+        self,
+        files: list[Path],
+        library: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        label = "music" if library == "music" else "sound effects"
+        self.setWindowTitle(f"Choose {label}")
+        self.setMinimumSize(520, 420)
+        self._files = files
+        self.selected_path: Path | None = None
+
+        layout = QVBoxLayout(self)
+        helper = QLabel(f"Search {len(files)} local {label} files:")
+        helper.setObjectName("helperLabel")
+        layout.addWidget(helper)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to filter files...")
+        self.search_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.search_edit)
+        self.files_list = QListWidget()
+        self.files_list.setAlternatingRowColors(True)
+        layout.addWidget(self.files_list, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("Cancel")
+        self.insert_button = QPushButton("Insert")
+        self.insert_button.setEnabled(False)
+        cancel_button.clicked.connect(self.reject)
+        self.insert_button.clicked.connect(self._accept_selection)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(self.insert_button)
+        layout.addLayout(buttons)
+
+        self.search_edit.textChanged.connect(self._filter_files)
+        self.files_list.currentItemChanged.connect(
+            lambda current, _previous: self.insert_button.setEnabled(
+                current is not None
+            )
+        )
+        self.files_list.itemDoubleClicked.connect(
+            lambda _item: self._accept_selection()
+        )
+        self.files_list.itemActivated.connect(
+            lambda _item: self._accept_selection()
+        )
+        self._filter_files("")
+        self.search_edit.setFocus()
+
+    def _filter_files(self, query: str) -> None:
+        normalized = query.strip().casefold()
+        self.files_list.clear()
+        for path in self._files:
+            if normalized and normalized not in path.name.casefold():
+                continue
+            item = QListWidgetItem(path.name)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.files_list.addItem(item)
+        if self.files_list.count():
+            self.files_list.setCurrentRow(0)
+
+    def _accept_selection(self) -> None:
+        item = self.files_list.currentItem()
+        path = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(path, Path):
+            return
+        self.selected_path = path
+        self.accept()
+
 
 class ReferenceVoiceImportDialog(QDialog):
-    def __init__(self, source: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        source: Path,
+        parent: QWidget | None = None,
+        existing_voice: GalleryVoice | None = None,
+    ) -> None:
         super().__init__(parent)
         self.source = source
-        self.setWindowTitle("Import reference voice")
+        self.existing_voice = existing_voice
+        self.replacement_source: Path | None = None
+        editing = existing_voice is not None
+        self.setWindowTitle("Edit reference voice" if editing else "Import reference voice")
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        title = QLabel("Import reference voice")
+        title = QLabel("Edit reference voice" if editing else "Import reference voice")
         title.setObjectName("sectionLabel")
         helper = QLabel(
             "WAV/MP3 files will be normalized to WAV, mono, 24 kHz. "
@@ -315,16 +405,23 @@ class ReferenceVoiceImportDialog(QDialog):
         )
         helper.setObjectName("helperLabel")
         helper.setWordWrap(True)
-        source_label = QLabel(str(source))
-        source_label.setObjectName("helperLabel")
-        source_label.setWordWrap(True)
+        source_row = QHBoxLayout()
+        self.source_label = QLabel(str(source))
+        self.source_label.setObjectName("helperLabel")
+        self.source_label.setWordWrap(True)
+        source_row.addWidget(self.source_label, 1)
+        if editing:
+            replace_audio_button = QPushButton("Replace audio sample")
+            replace_audio_button.setIcon(ui_icon("folder"))
+            replace_audio_button.clicked.connect(self._choose_replacement_source)
+            source_row.addWidget(replace_audio_button)
         layout.addWidget(title)
         layout.addWidget(helper)
-        layout.addWidget(source_label)
+        layout.addLayout(source_row)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.name_edit = QLineEdit(source.stem)
+        self.name_edit = QLineEdit(existing_voice.name if existing_voice else source.stem)
         self.language_combo = QComboBox()
         for label, code in (
             ("Reference / Auto", "reference"),
@@ -337,6 +434,7 @@ class ReferenceVoiceImportDialog(QDialog):
             ("Japanese", "ja"),
             ("Chinese", "zh"),
             ("Hindi", "hi"),
+            ("Russian", "ru"),
         ):
             self.language_combo.addItem(label, code)
         self.short_description_edit = QLineEdit()
@@ -370,6 +468,19 @@ class ReferenceVoiceImportDialog(QDialog):
         self.reference_text_edit.setPlaceholderText(
             "Transcript of the reference audio. Recommended for better cloning."
         )
+        if existing_voice is not None:
+            language_index = self.language_combo.findData(existing_voice.language)
+            if language_index >= 0:
+                self.language_combo.setCurrentIndex(language_index)
+            self.short_description_edit.setText(existing_voice.short_description)
+            gender_index = self.gender_combo.findData(existing_voice.gender)
+            if gender_index >= 0:
+                self.gender_combo.setCurrentIndex(gender_index)
+            age_style_index = self.age_style_combo.findData(existing_voice.age_style)
+            if age_style_index >= 0:
+                self.age_style_combo.setCurrentIndex(age_style_index)
+            self.voice_style_edit.setText(existing_voice.voice_style)
+            self.reference_text_edit.setPlainText(existing_voice.ref_text)
         form.addRow("Voice name", self.name_edit)
         form.addRow("Language", self.language_combo)
         form.addRow("Short description", self.short_description_edit)
@@ -382,13 +493,25 @@ class ReferenceVoiceImportDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         cancel_button = QPushButton("Cancel")
-        import_button = QPushButton("Import voice")
+        import_button = QPushButton("Save changes" if editing else "Import voice")
         import_button.setIcon(ui_icon("save"))
         cancel_button.clicked.connect(self.reject)
         import_button.clicked.connect(self.accept)
         buttons.addWidget(cancel_button)
         buttons.addWidget(import_button)
         layout.addLayout(buttons)
+
+    def _choose_replacement_source(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Replace reference audio",
+            str(self.source.parent),
+            "Audio files (*.mp3 *.wav)",
+        )
+        if not selected:
+            return
+        self.replacement_source = Path(selected)
+        self.source_label.setText(str(self.replacement_source))
 
     def values(self) -> dict[str, object]:
         language_code = str(self.language_combo.currentData() or "reference")
@@ -412,6 +535,7 @@ class ReferenceVoiceImportDialog(QDialog):
             "age_style": age_style,
             "voice_style": voice_style,
             "tags": tags,
+            "source": self.replacement_source,
         }
 
 
@@ -704,6 +828,7 @@ class MainWindow(QMainWindow):
         self.qwen_manager = QwenManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
+        self.russian_normalization_manager = RussianNormalizationManager()
         gallery_settings = self.settings.get("voice_gallery", {})
         self.voice_gallery_manager = VoiceGalleryManager(
             catalog_url=str(
@@ -737,6 +862,7 @@ class MainWindow(QMainWindow):
         self.voice_gallery_worker: VoiceGalleryWorker | None = None
         self.voice_gallery_thread: QThread | None = None
         self.pending_f5_russian_gallery_voice_id: str | None = None
+        self.pending_removed_gallery_voice: tuple[str, GalleryVoice] | None = None
         self.qwen_worker: QwenInstallWorker | None = None
         self.qwen_thread: QThread | None = None
         self.qwen_preview_worker: QwenPreviewWorker | None = None
@@ -757,6 +883,12 @@ class MainWindow(QMainWindow):
         self.f5_russian_thread: QThread | None = None
         self.f5_russian_preview_worker: F5RussianPreviewWorker | None = None
         self.f5_russian_preview_thread: QThread | None = None
+        self.russian_normalization_worker: RussianNormalizationInstallWorker | None = None
+        self.russian_normalization_thread: QThread | None = None
+        self.russian_normalization_preview_worker: RussianNormalizationPreviewWorker | None = None
+        self.russian_normalization_preview_thread: QThread | None = None
+        self.russian_normalization_preview_source = ""
+        self.russian_normalization_install_dialog: EngineInstallDialog | None = None
         self.preload_worker: EngineHostMemoryWorker | None = None
         self.preload_thread: QThread | None = None
         self.whisper_worker: FasterWhisperInstallWorker | None = None
@@ -865,7 +997,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._restore_active_project()
         self._set_running(False)
-        QTimer.singleShot(700, self._maybe_start_local_server)
+        QTimer.singleShot(700, self._refresh_local_server_status)
         QTimer.singleShot(900, self._run_pending_installer_setup)
         QTimer.singleShot(1200, self._sync_engine_host_memory_state)
         QTimer.singleShot(3000, self._maybe_check_for_updates)
@@ -1566,6 +1698,13 @@ class MainWindow(QMainWindow):
         intro.setObjectName("helperLabel")
         layout.addWidget(intro)
         for command in MARKUP_COMMANDS:
+            if command["name"] == "voice":
+                layout.addWidget(self._build_markup_voice_button(command))
+                continue
+            if command["name"] == "play":
+                layout.addWidget(self._build_markup_play_button(command, "music"))
+                layout.addWidget(self._build_markup_play_button(command, "sfx"))
+                continue
             button = QPushButton(command["label"])
             button.setObjectName("markupCommandButton")
             button.setProperty("markup_color", command["color"])
@@ -1590,6 +1729,211 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return toolbar
 
+    def _build_markup_play_button(
+        self,
+        command: dict[str, str],
+        library: str,
+    ) -> QPushButton:
+        label = "Play Music" if library == "music" else "Play SFX"
+        menu = QMenu(self)
+        menu.aboutToShow.connect(
+            lambda source=library: self._populate_markup_audio_menu(source)
+        )
+        if not hasattr(self, "markup_audio_menus"):
+            self.markup_audio_menus: dict[str, QMenu] = {}
+            self.markup_audio_menu_buttons: dict[str, QPushButton] = {}
+        self.markup_audio_menus[library] = menu
+
+        button = QPushButton(label)
+        button.setObjectName("markupCommandButton")
+        button.setProperty("markup_color", command["color"])
+        button.setToolTip(
+            self.tr(
+                "markup_play_library_select",
+                "Choose a local audio file to play at this position",
+            )
+        )
+        button.setStyleSheet(
+            "QPushButton#markupCommandButton {"
+            f"background: {command['background']};"
+            f"color: {command['color']};"
+            f"border: 1px solid {command['color']};"
+            "border-radius: 14px;"
+            "padding: 5px 10px;"
+            "font-weight: 700;"
+            "}"
+            "QPushButton#markupCommandButton:hover { background: #ffffff; }"
+        )
+        button.clicked.connect(
+            lambda _checked=False, source=library: self._show_markup_audio_menu(
+                source
+            )
+        )
+        self.markup_audio_menu_buttons[library] = button
+        return button
+
+    def _show_markup_audio_menu(self, library: str) -> None:
+        menu = self.markup_audio_menus[library]
+        button = self.markup_audio_menu_buttons[library]
+        files = self._markup_audio_library_files(library)
+        if len(files) > 20:
+            dialog = MarkupAudioPickerDialog(files, library, self)
+            if (
+                dialog.exec() == QDialog.DialogCode.Accepted
+                and dialog.selected_path is not None
+            ):
+                self._insert_markup_play(dialog.selected_path, library)
+            return
+        self._populate_markup_audio_menu(library, files)
+        menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _populate_markup_audio_menu(
+        self,
+        library: str,
+        files: list[Path] | None = None,
+    ) -> None:
+        menu = self.markup_audio_menus.get(library)
+        if menu is None:
+            return
+        menu.clear()
+        if files is None:
+            files = self._markup_audio_library_files(library)
+        if not files:
+            library_name = "music" if library == "music" else "sound effects"
+            empty_action = menu.addAction(
+                self.tr(
+                    "markup_play_library_empty",
+                    f"No local {library_name} files are available.",
+                )
+            )
+            empty_action.setEnabled(False)
+            return
+        for path in files:
+            action = menu.addAction(path.name)
+            action.triggered.connect(
+                lambda _checked=False, selected_path=path, track=library: self._insert_markup_play(
+                    selected_path, track
+                )
+            )
+
+    def _markup_audio_library_directory(self, library: str) -> Path:
+        return library_directory(self.settings, library, create=True)
+
+    def _markup_audio_library_files(self, library: str) -> list[Path]:
+        return audio_library_files(self._markup_audio_library_directory(library))
+
+    def _build_markup_voice_button(self, command: dict[str, str]) -> QWidget:
+        """Create the Voice selector for the locally available voices."""
+        self.markup_voice_menu = QMenu(self)
+        self.markup_voice_menu.aboutToShow.connect(
+            self._populate_markup_voice_menu
+        )
+        self.markup_voice_menu_button = QPushButton(command["label"])
+        self.markup_voice_menu_button.setObjectName("markupCommandButton")
+        self.markup_voice_menu_button.setProperty("markup_color", command["color"])
+        self.markup_voice_menu_button.setText(command["label"])
+        self.markup_voice_menu_button.setToolTip(
+            self.tr("markup_voice_select", "Choose an available local voice")
+        )
+        self.markup_voice_menu_button.clicked.connect(
+            self._show_markup_voice_menu
+        )
+        self.markup_voice_menu_button.setStyleSheet(
+            "QPushButton#markupCommandButton {"
+            f"background: {command['background']};"
+            f"color: {command['color']};"
+            f"border: 1px solid {command['color']};"
+            "border-radius: 14px;"
+            "padding: 5px 10px;"
+            "font-weight: 700;"
+            "}"
+            "QPushButton#markupCommandButton:hover { background: #ffffff; }"
+        )
+        return self.markup_voice_menu_button
+
+    def _show_markup_voice_menu(self) -> None:
+        self._populate_markup_voice_menu()
+        self.markup_voice_menu.popup(
+            self.markup_voice_menu_button.mapToGlobal(
+                self.markup_voice_menu_button.rect().bottomLeft()
+            )
+        )
+
+    def _populate_markup_voice_menu(self) -> None:
+        """Refresh the Voice menu so downloads/imports appear immediately."""
+        if not hasattr(self, "markup_voice_menu"):
+            return
+        menu = self.markup_voice_menu
+        menu.clear()
+        choices = self._local_markup_voice_choices()
+        if not choices:
+            empty_action = menu.addAction(
+                self.tr(
+                    "markup_voice_no_local",
+                    "No local voices are available for the selected engine.",
+                )
+            )
+            empty_action.setEnabled(False)
+            return
+        for name, label in choices:
+            action = menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, voice_name=name: self._insert_markup_voice(
+                    voice_name
+                )
+            )
+
+    def _local_markup_voice_choices(self) -> list[tuple[str, str]]:
+        """Return voices usable by markup for the currently selected local engine."""
+        if not hasattr(self, "tts_engine_combo"):
+            return []
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if engine_id not in {
+            "piper",
+            "kokoro",
+            "qwen",
+            "omnivoice",
+            "f5_russian",
+            "chatterbox",
+        }:
+            return []
+        choices: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for row in self._voice_page_rows(engine_id):
+            if not self._markup_voice_row_is_local(engine_id, row):
+                continue
+            name = str(row.get("name", "")).strip()
+            if not name or name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            language = str(
+                row.get("language_name") or row.get("language") or ""
+            ).strip()
+            # Always make the language a distinct field in the menu. It may
+            # also form part of a Qwen display name, but hiding it there made
+            # the selector inconsistent with every other engine.
+            label = f"{name} ({language or 'Unknown language'})"
+            choices.append((name, label))
+        return choices
+
+    def _markup_voice_row_is_local(
+        self, engine_id: str, row: dict[str, object]
+    ) -> bool:
+        gallery_voice = row.get("gallery_voice")
+        if isinstance(gallery_voice, GalleryVoice):
+            return gallery_voice.is_builtin or self.voice_gallery_manager.is_installed(
+                gallery_voice
+            )
+        if bool(row.get("installed", False)):
+            return True
+        if engine_id == "piper":
+            return True
+        if engine_id == "kokoro":
+            return self.kokoro_python_manager.is_installed()
+        if engine_id == "qwen":
+            return self.qwen_manager.is_installed()
+        return False
+
     def _text_normalization_configuration(self) -> dict[str, object]:
         if hasattr(self, "text_normalization_panel"):
             return self.text_normalization_panel.configuration()
@@ -1598,6 +1942,7 @@ class MainWindow(QMainWindow):
 
     def _on_text_normalization_settings_changed(self) -> None:
         self._update_text_normalization_editor_state()
+        self._refresh_russian_silero_status()
         self._mark_normalization_preview_stale()
         self._save_settings()
         # A project/settings refresh may run during persistence; finish by
@@ -1637,6 +1982,8 @@ class MainWindow(QMainWindow):
     def _mark_normalization_preview_stale(self) -> None:
         if not hasattr(self, "normalized_text_editor"):
             return
+        if self.russian_normalization_preview_worker is not None:
+            self.russian_normalization_preview_worker.request_cancel()
         self.normalization_preview_stale = True
         self.normalization_preview_status.setText(
             self.tr(
@@ -1712,26 +2059,290 @@ class MainWindow(QMainWindow):
                 "No dictionary matches the selected voice language. The original text is shown unchanged.",
             )
         else:
-            normalizer = TextNormalizer(
-                store=self.text_normalization_panel.store
-                if hasattr(self, "text_normalization_panel")
-                else None
+            russian_silero = config.get("russian_silero")
+            use_russian_silero = bool(
+                russian_silero.get("enabled", False)
+                if isinstance(russian_silero, dict)
+                else False
             )
-            normalized = normalizer.normalize(
-                source,
-                language=resolved_language,
-                language_hint=hint,
-                preserve_markup=True,
-                rules=config.get("rules"),
-            )
-            status = self.tr(
-                "normalization_preview_ready",
-                "Preview updated. This is the text that will be prepared for speech.",
-            )
+            if (
+                use_russian_silero
+                and resolved_language.split("-", 1)[0] == "ru"
+            ):
+                if not self.russian_normalization_manager.is_installed():
+                    normalized = source
+                    status = self.tr(
+                        "russian_silero_preview_missing",
+                        "Russian Silero normalization is enabled but not installed. Install it from Text Normalization first.",
+                    )
+                else:
+                    self._start_russian_normalization_preview(
+                        source,
+                        language=selected_language,
+                        language_hint=hint,
+                        rules=config.get("rules"),
+                    )
+                    return ""
+            else:
+                result = normalize_text_for_speech(
+                    source,
+                    enabled=True,
+                    language=selected_language,
+                    language_hint=hint,
+                    preserve_markup=True,
+                    rules=config.get("rules"),
+                    store=(
+                        self.text_normalization_panel.store
+                        if hasattr(self, "text_normalization_panel")
+                        else None
+                    ),
+                    engine_id=str(self.tts_engine_combo.currentData() or ""),
+                )
+                normalized = result.text
+                status = self.tr(
+                    "normalization_preview_ready",
+                    "Preview updated. This is the text that will be prepared for speech.",
+                )
         self.normalized_text_editor.setPlainText(normalized)
         self.normalization_preview_status.setText(status)
         self.normalization_preview_stale = False
         return normalized
+
+    def _start_russian_normalization_preview(
+        self,
+        source: str,
+        *,
+        language: str,
+        language_hint: str,
+        rules: object,
+    ) -> None:
+        if self.russian_normalization_preview_thread is not None:
+            return
+        self.russian_normalization_preview_source = source
+        self.normalization_preview_stale = True
+        self.normalization_preview_status.setText(
+            self.tr(
+                "russian_silero_preview_running",
+                "Applying Russian Silero normalization...",
+            )
+        )
+        thread = QThread(self)
+        worker = RussianNormalizationPreviewWorker(
+            self.russian_normalization_manager,
+            source,
+            language=language,
+            language_hint=language_hint,
+            rules=rules,
+            engine_id=str(self.tts_engine_combo.currentData() or ""),
+            db_path=(
+                self.text_normalization_panel.store.db_path
+                if hasattr(self, "text_normalization_panel")
+                else None
+            ),
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_russian_normalization_preview_finished)
+        worker.failed.connect(self._on_russian_normalization_preview_failed)
+        worker.cancelled.connect(self._on_russian_normalization_preview_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_russian_normalization_preview_worker)
+        self.russian_normalization_preview_worker = worker
+        self.russian_normalization_preview_thread = thread
+        thread.start()
+
+    def _on_russian_normalization_preview_finished(
+        self,
+        text: str,
+        _language: str,
+        _silero_applied: bool,
+    ) -> None:
+        if self.text_editor.toPlainText() != self.russian_normalization_preview_source:
+            return
+        self.normalized_text_editor.setPlainText(text)
+        self.normalization_preview_status.setText(
+            self.tr(
+                "russian_silero_preview_ready",
+                "Preview updated with Russian Silero normalization.",
+            )
+        )
+        self.normalization_preview_stale = False
+
+    def _on_russian_normalization_preview_failed(self, message: str) -> None:
+        self.log_view.append_event(message)
+        self.normalization_preview_status.setText(message)
+        self.normalization_preview_stale = True
+
+    def _on_russian_normalization_preview_cancelled(self) -> None:
+        self.normalization_preview_stale = True
+
+    def _clear_russian_normalization_preview_worker(self) -> None:
+        self.russian_normalization_preview_worker = None
+        self.russian_normalization_preview_thread = None
+
+    def _refresh_russian_silero_status(self) -> None:
+        if not hasattr(self, "text_normalization_panel"):
+            return
+        self.text_normalization_panel.set_russian_silero_status(
+            self.russian_normalization_manager.is_installed(),
+            installing=self.russian_normalization_thread is not None,
+        )
+
+    def _show_russian_normalization_install_dialog(self) -> None:
+        if self.russian_normalization_thread is not None:
+            return
+        dialog = self.russian_normalization_install_dialog
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        requirement = ENGINE_INSTALL_REQUIREMENTS["russian_normalization"]
+        install_path = self.russian_normalization_manager.dependency_dir
+        free_gb, volume = available_disk_space_gb(install_path)
+        dialog = EngineInstallDialog(
+            self.tr(
+                "russian_silero_component_name",
+                "Russian normalization (Silero Stress)",
+            ),
+            requirement,
+            free_gb,
+            volume,
+            self.tr,
+            self,
+            install_path=install_path,
+            existing_model_detected=install_path.exists(),
+        )
+        self.russian_normalization_install_dialog = dialog
+        dialog.install_requested.connect(self._start_russian_normalization_install)
+        dialog.cancel_requested.connect(self._cancel_russian_normalization_operation)
+        dialog.rejected.connect(
+            lambda opened=dialog: self._defer_russian_normalization_install(opened)
+        )
+        dialog.finished.connect(
+            lambda _result, opened=dialog: self._forget_russian_normalization_install_dialog(opened)
+        )
+        dialog.open()
+
+    def _defer_russian_normalization_install(
+        self,
+        dialog: EngineInstallDialog,
+    ) -> None:
+        if dialog.installation_started:
+            return
+        self.log_view.append_event("Russian Silero normalization installation postponed.")
+
+    def _forget_russian_normalization_install_dialog(
+        self,
+        dialog: EngineInstallDialog,
+    ) -> None:
+        if self.russian_normalization_install_dialog is dialog:
+            self.russian_normalization_install_dialog = None
+
+    def _start_russian_normalization_install(self) -> None:
+        self._start_russian_normalization_operation("install")
+
+    def _remove_russian_normalization(self) -> None:
+        if self.russian_normalization_thread is not None:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("russian_silero_remove_title", "Remove Russian normalization"),
+            self.tr(
+                "russian_silero_remove_message",
+                "Remove the local Silero Stress runtime? F5-TTS Russian keeps its own separate runtime.",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._start_russian_normalization_operation("remove")
+
+    def _start_russian_normalization_operation(self, operation: str) -> None:
+        if self.russian_normalization_thread is not None:
+            return
+        thread = QThread(self)
+        worker = RussianNormalizationInstallWorker(
+            RussianNormalizationManager(),
+            operation,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_russian_normalization_progress)
+        worker.finished.connect(self._on_russian_normalization_finished)
+        worker.failed.connect(self._on_russian_normalization_failed)
+        worker.cancelled.connect(self._on_russian_normalization_cancelled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_russian_normalization_worker)
+        self.russian_normalization_worker = worker
+        self.russian_normalization_thread = thread
+        self._refresh_russian_silero_status()
+        thread.start()
+
+    def _cancel_russian_normalization_operation(self) -> None:
+        if self.russian_normalization_worker is not None:
+            self.russian_normalization_worker.request_cancel()
+
+    def _on_russian_normalization_progress(
+        self,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        dialog = self.russian_normalization_install_dialog
+        if dialog is not None:
+            dialog.update_progress(current, total, message)
+        self.log_view.append_event(
+            install_detail_text(message) if is_install_detail(message) else message
+        )
+
+    def _on_russian_normalization_finished(self, path: str) -> None:
+        installed = self.russian_normalization_manager.is_installed()
+        if hasattr(self, "text_normalization_panel"):
+            self.text_normalization_panel.russian_silero_checkbox.setChecked(installed)
+        dialog = self.russian_normalization_install_dialog
+        if dialog is not None:
+            dialog.finish(
+                True,
+                self.tr(
+                    "russian_silero_install_complete",
+                    "Russian Silero normalization installation completed.",
+                ),
+            )
+        self.log_view.append_event(f"Russian Silero normalization ready: {path}")
+        self._refresh_russian_silero_status()
+        self._mark_normalization_preview_stale()
+
+    def _on_russian_normalization_failed(self, message: str) -> None:
+        dialog = self.russian_normalization_install_dialog
+        if dialog is not None:
+            dialog.finish(False, message)
+        self.log_view.append_event(message)
+        self._refresh_russian_silero_status()
+        self._show_error(self.tr("generation_failed", "Generation failed"), message)
+
+    def _on_russian_normalization_cancelled(self) -> None:
+        message = self.tr("engine_install_cancelled", "Installation cancelled.")
+        dialog = self.russian_normalization_install_dialog
+        if dialog is not None:
+            dialog.finish(False, message)
+        self.log_view.append_event(message)
+        self._refresh_russian_silero_status()
+
+    def _clear_russian_normalization_worker(self) -> None:
+        self.russian_normalization_worker = None
+        self.russian_normalization_thread = None
+        self.russian_normalization_manager = RussianNormalizationManager()
+        self._refresh_russian_silero_status()
 
     def _insert_markup_template(self, command: dict[str, str]) -> None:
         if not hasattr(self, "text_editor"):
@@ -1743,6 +2354,33 @@ class MainWindow(QMainWindow):
         cursor.insertText(template)
         cursor_position = insert_position + len(cursor_marker)
         cursor.setPosition(cursor_position)
+        self.text_editor.setTextCursor(cursor)
+        self.text_editor.setFocus()
+        self._update_markup_editor_assist()
+
+    def _insert_markup_voice(self, voice_name: str) -> None:
+        """Insert a complete, quoted voice command selected from the local menu."""
+        if not hasattr(self, "text_editor"):
+            return
+        name = str(voice_name).strip()
+        if not name:
+            return
+        # LTV markup values are quoted. Voice names normally do not contain
+        # quotes, but escaping them preserves a name imported from a file.
+        escaped_name = name.replace("\\", "\\\\").replace('"', '\\"')
+        cursor = self.text_editor.textCursor()
+        cursor.insertText(f'{{{{voice "{escaped_name}"}}}}')
+        self.text_editor.setTextCursor(cursor)
+        self.text_editor.setFocus()
+        self._update_markup_editor_assist()
+
+    def _insert_markup_play(self, path: Path, track: str) -> None:
+        """Insert a PLAY command that unambiguously identifies a local asset."""
+        if not hasattr(self, "text_editor") or track not in {"music", "sfx"}:
+            return
+        reference = path.name.replace('"', '\\"')
+        cursor = self.text_editor.textCursor()
+        cursor.insertText(f'{{{{play "{reference}" track={track} volume=1}}}}')
         self.text_editor.setTextCursor(cursor)
         self.text_editor.setFocus()
         self._update_markup_editor_assist()
@@ -2547,6 +3185,26 @@ class MainWindow(QMainWindow):
         self.voice_preview_bar.setFixedWidth(150)
         preview_layout.addWidget(self.voice_preview_status_label, 1)
         preview_layout.addWidget(self.voice_preview_bar)
+        self.voice_preview_pause_button = QPushButton(self.tr("pause", "Pause"))
+        self.voice_preview_pause_button.setIcon(ui_icon("pause"))
+        self.voice_preview_pause_button.setToolTip(self.tr("pause", "Pause"))
+        self.voice_preview_pause_button.clicked.connect(self._pause_voice_preview)
+        self.voice_preview_stop_button = QPushButton(self.tr("stop", "Stop"))
+        self.voice_preview_stop_button.setIcon(ui_icon("stop", danger=True))
+        self.voice_preview_stop_button.setToolTip(self.tr("stop", "Stop"))
+        self.voice_preview_stop_button.clicked.connect(self._stop_voice_preview)
+        self.voice_preview_restart_button = QPushButton(
+            self.tr("restart_preview", "Restart")
+        )
+        self.voice_preview_restart_button.setIcon(ui_icon("refresh"))
+        self.voice_preview_restart_button.setToolTip(
+            self.tr("restart_preview", "Restart")
+        )
+        self.voice_preview_restart_button.clicked.connect(self._restart_voice_preview)
+        preview_layout.addWidget(self.voice_preview_pause_button)
+        preview_layout.addWidget(self.voice_preview_stop_button)
+        preview_layout.addWidget(self.voice_preview_restart_button)
+        self._refresh_voice_preview_controls()
         self.voice_preview_frame.setVisible(False)
         card_layout.addWidget(self.voice_preview_frame)
 
@@ -2597,6 +3255,13 @@ class MainWindow(QMainWindow):
         self.text_normalization_panel.dictionaryChanged.connect(
             self._mark_normalization_preview_stale
         )
+        self.text_normalization_panel.russianSileroInstallRequested.connect(
+            self._show_russian_normalization_install_dialog
+        )
+        self.text_normalization_panel.russianSileroRemoveRequested.connect(
+            self._remove_russian_normalization
+        )
+        self._refresh_russian_silero_status()
         self.settings_tabs.addTab(
             self.text_normalization_panel,
             ui_icon("language"),
@@ -2605,7 +3270,7 @@ class MainWindow(QMainWindow):
         self.settings_tabs.addTab(
             self._build_local_server_settings(),
             ui_icon("server"),
-            self.tr("local_server_settings", "Local Server"),
+            self.tr("local_server_settings", "Shared Engine Host"),
         )
         self.settings_tabs.addTab(
             self._build_advanced_settings(),
@@ -2670,9 +3335,18 @@ class MainWindow(QMainWindow):
         if not pending:
             return
 
+        selected_engine = str(self.settings.get("tts_engine", "")).strip()
+        if "omnivoice" in pending and selected_engine != "omnivoice":
+            self._complete_pending_installer_setup(
+                notify=False,
+                note=(
+                    "Skipped optional OmniVoice first-run setup because the "
+                    f"selected TTS engine is {selected_engine or 'not OmniVoice'}."
+                ),
+            )
+            return
+
         profile = str(setup.get("profile", "gpu")).casefold()
-        if "omnivoice" in pending:
-            self.settings["tts_engine"] = "omnivoice"
         if "faster_whisper" in pending:
             review = self.settings.get("review", {})
             if not isinstance(review, dict):
@@ -2750,26 +3424,36 @@ class MainWindow(QMainWindow):
         self.installer_setup_queue = []
         self.installer_setup_running = False
 
-    def _complete_pending_installer_setup(self) -> None:
+    def _complete_pending_installer_setup(
+        self,
+        *,
+        notify: bool = True,
+        note: str = "",
+    ) -> None:
         setup = self.settings.get("installer_setup", {})
         if not isinstance(setup, dict):
             setup = {}
         setup["pending_installs"] = []
         setup["completed"] = True
         setup["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if note:
+            setup["completion_note"] = note
         self.settings["installer_setup"] = setup
         self.settings_manager.save(self.settings)
         self.installer_setup_running = False
         self._refresh_tts_engine_table()
         self._refresh_whisper_status()
-        QMessageBox.information(
-            self,
-            self.tr("installer_setup_title", "LocalText2Voice setup"),
-            self.tr(
-                "installer_setup_complete",
-                "Optional components are ready. You can start creating audiobooks.",
-            ),
-        )
+        if notify:
+            QMessageBox.information(
+                self,
+                self.tr("installer_setup_title", "LocalText2Voice setup"),
+                self.tr(
+                    "installer_setup_complete",
+                    "Optional components are ready. You can start creating audiobooks.",
+                ),
+            )
+        elif note:
+            self.log_view.append_event(note)
 
     def _show_mix_preview_page(self) -> None:
         self._ensure_audio_mix_preview_context()
@@ -3361,124 +4045,31 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(desktop_group)
 
-        group = QGroupBox(
-            self.tr("local_server_settings", "Advanced HTTP / Remote MCP Server")
-        )
+        group = QGroupBox(self.tr("local_server_settings", "Shared Engine Host"))
         form = QFormLayout(group)
         form.setSpacing(10)
 
         intro = QLabel(
             self.tr(
                 "local_server_intro",
-                "Optional advanced server for HTTP clients or future remote workflows. "
-                "For Claude Desktop, prefer the stdio configuration above.",
+                "LocalText2VoiceEngineHost.exe is the shared background process used "
+                "automatically by the desktop app and MCP stdio clients. It owns the "
+                "job queue and keeps TTS models loaded between requests.",
             )
         )
         intro.setObjectName("helperLabel")
         intro.setWordWrap(True)
         form.addRow("", intro)
 
-        self.local_server_enabled_checkbox = QCheckBox(
-            self.tr("enable_local_server", "Enable local server")
-        )
-        self.local_server_enabled_checkbox.toggled.connect(
-            self._on_local_server_enabled_changed
-        )
-        form.addRow("", self.local_server_enabled_checkbox)
-
-        self.local_server_auto_start_checkbox = QCheckBox(
-            self.tr("local_server_auto_start", "Start server when LocalText2Voice opens")
-        )
-        self.local_server_auto_start_checkbox.toggled.connect(
-            lambda _checked: self._save_settings()
-        )
-        form.addRow("", self.local_server_auto_start_checkbox)
-
-        host_row = QWidget()
-        host_layout = QHBoxLayout(host_row)
-        host_layout.setContentsMargins(0, 0, 0, 0)
-        host_layout.setSpacing(8)
-        self.local_server_host_edit = QLineEdit("127.0.0.1")
-        self.local_server_host_edit.textChanged.connect(
-            lambda _text: self._on_local_server_field_changed()
-        )
         self.local_server_port_spin = QSpinBox()
         self.local_server_port_spin.setRange(1024, 65535)
         self.local_server_port_spin.setValue(8765)
         self.local_server_port_spin.valueChanged.connect(
-            lambda _value: self._on_local_server_field_changed()
-        )
-        host_layout.addWidget(self.local_server_host_edit, 1)
-        host_layout.addWidget(QLabel(":"))
-        host_layout.addWidget(self.local_server_port_spin)
-        form.addRow(self.tr("local_server_bind", "Bind address"), host_row)
-
-        self.local_server_allow_lan_checkbox = QCheckBox(
-            self.tr("local_server_allow_lan", "Allow access from this LAN")
-        )
-        self.local_server_allow_lan_checkbox.setToolTip(
-            self.tr(
-                "local_server_allow_lan_tip",
-                "Keep this off unless you need another device on your network to connect.",
-            )
-        )
-        self.local_server_allow_lan_checkbox.toggled.connect(
-            lambda _checked: self._on_local_server_field_changed()
-        )
-        form.addRow("", self.local_server_allow_lan_checkbox)
-
-        token_row = QWidget()
-        token_layout = QHBoxLayout(token_row)
-        token_layout.setContentsMargins(0, 0, 0, 0)
-        token_layout.setSpacing(8)
-        self.local_server_token_edit = QLineEdit()
-        self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.local_server_token_edit.textChanged.connect(
-            lambda _text: self._on_local_server_field_changed()
-        )
-        self.local_server_show_token_button = QPushButton(
-            self.tr("show_token", "Show")
-        )
-        self.local_server_show_token_button.setIcon(ui_icon("show"))
-        self.local_server_show_token_button.setCheckable(True)
-        self.local_server_show_token_button.toggled.connect(
-            self._toggle_local_server_token_visibility
-        )
-        self.local_server_copy_token_button = QPushButton(
-            self.tr("copy_token", "Copy")
-        )
-        self.local_server_copy_token_button.setIcon(ui_icon("copy"))
-        self.local_server_copy_token_button.clicked.connect(
-            self._copy_local_server_token
-        )
-        self.local_server_generate_token_button = QPushButton(
-            self.tr("generate_token", "Generate token")
-        )
-        self.local_server_generate_token_button.setIcon(ui_icon("refresh"))
-        self.local_server_generate_token_button.clicked.connect(
-            self._generate_local_server_token
-        )
-        token_layout.addWidget(self.local_server_token_edit, 1)
-        token_layout.addWidget(self.local_server_show_token_button)
-        token_layout.addWidget(self.local_server_copy_token_button)
-        token_layout.addWidget(self.local_server_generate_token_button)
-        form.addRow(self.tr("local_server_token", "Access token"), token_row)
-
-        self.local_server_max_jobs_spin = QSpinBox()
-        self.local_server_max_jobs_spin.setRange(1, 1)
-        self.local_server_max_jobs_spin.setValue(1)
-        self.local_server_max_jobs_spin.setToolTip(
-            self.tr(
-                "local_server_one_job_tip",
-                "Heavy TTS models are safest with one generation job at a time.",
-            )
-        )
-        self.local_server_max_jobs_spin.valueChanged.connect(
-            lambda _value: self._on_local_server_field_changed()
+            self._on_engine_host_port_changed
         )
         form.addRow(
-            self.tr("local_server_parallel_jobs", "Parallel jobs"),
-            self.local_server_max_jobs_spin,
+            self.tr("local_server_bind", "Internal EngineHost port"),
+            self.local_server_port_spin,
         )
 
         self.local_server_status_label = QLabel("")
@@ -3486,24 +4077,13 @@ class MainWindow(QMainWindow):
         self.local_server_status_label.setWordWrap(True)
         form.addRow("", self.local_server_status_label)
 
-        self.local_server_endpoint_label = QLabel("")
-        self.local_server_endpoint_label.setObjectName("helperLabel")
-        self.local_server_endpoint_label.setTextInteractionFlags(
+        self.local_server_log_label = QLabel(str(engine_host_stderr_log_path()))
+        self.local_server_log_label.setObjectName("helperLabel")
+        self.local_server_log_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.local_server_endpoint_label.setWordWrap(True)
-        form.addRow(self.tr("local_server_mcp_url", "MCP endpoint"), self.local_server_endpoint_label)
-
-        http_help = QLabel(
-            self.tr(
-                "local_server_http_help",
-                "HTTP endpoints: GET /health, GET /voices, GET /background-music, "
-                "POST /jobs, GET /jobs/{job_id}, POST /jobs/{job_id}/cancel.",
-            )
-        )
-        http_help.setObjectName("helperLabel")
-        http_help.setWordWrap(True)
-        form.addRow("", http_help)
+        self.local_server_log_label.setWordWrap(True)
+        form.addRow(self.tr("engine_host_log", "Diagnostic log"), self.local_server_log_label)
 
         actions = QHBoxLayout()
         self.local_server_start_stop_button = QPushButton()
@@ -3525,21 +4105,10 @@ class MainWindow(QMainWindow):
         self._refresh_mcp_desktop_json()
         return scroll
 
-    def _local_server_settings_from_ui(self) -> dict[str, object]:
-        current = self.settings.get("local_server", {})
-        fallback = dict(current) if isinstance(current, dict) else {}
-        if not hasattr(self, "local_server_enabled_checkbox"):
-            return fallback
-        return {
-            "enabled": self.local_server_enabled_checkbox.isChecked(),
-            "auto_start": self.local_server_auto_start_checkbox.isChecked(),
-            "host": self.local_server_host_edit.text().strip() or "127.0.0.1",
-            "port": self.local_server_port_spin.value(),
-            "auth_token": self.local_server_token_edit.text().strip(),
-            "allow_lan": self.local_server_allow_lan_checkbox.isChecked(),
-            "serve_files": True,
-            "max_parallel_jobs": self.local_server_max_jobs_spin.value(),
-        }
+    def _internal_engine_host_port_from_ui(self) -> int:
+        if not hasattr(self, "local_server_port_spin"):
+            return int(self.settings.get("internal_engine_host_port", 8765) or 8765)
+        return self.local_server_port_spin.value()
 
     def _mcp_desktop_config(self) -> dict[str, object]:
         app_root = application_root()
@@ -3633,47 +4202,15 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _restore_local_server_settings(self) -> None:
-        if not hasattr(self, "local_server_enabled_checkbox"):
+        if not hasattr(self, "local_server_port_spin"):
             return
-        settings = self.settings.get("local_server", {})
-        if not isinstance(settings, dict):
-            settings = {}
-        if not str(settings.get("auth_token", "")).strip():
-            settings = dict(settings)
-            settings["auth_token"] = secrets.token_urlsafe(24)
-            self.settings["local_server"] = settings
-            self.settings_manager.save(self.settings)
-        widgets = (
-            self.local_server_enabled_checkbox,
-            self.local_server_auto_start_checkbox,
-            self.local_server_host_edit,
-            self.local_server_port_spin,
-            self.local_server_token_edit,
-            self.local_server_allow_lan_checkbox,
-            self.local_server_max_jobs_spin,
+        self.local_server_port_spin.blockSignals(True)
+        self.local_server_port_spin.setValue(
+            int(self.settings.get("internal_engine_host_port", 8765) or 8765)
         )
-        for widget in widgets:
-            widget.blockSignals(True)
-        self.local_server_enabled_checkbox.setChecked(bool(settings.get("enabled", False)))
-        self.local_server_auto_start_checkbox.setChecked(bool(settings.get("auto_start", False)))
-        self.local_server_host_edit.setText(str(settings.get("host", "127.0.0.1")))
-        self.local_server_port_spin.setValue(int(settings.get("port", 8765) or 8765))
-        self.local_server_token_edit.setText(str(settings.get("auth_token", "")))
-        self.local_server_allow_lan_checkbox.setChecked(bool(settings.get("allow_lan", False)))
-        self.local_server_max_jobs_spin.setValue(1)
-        for widget in widgets:
-            widget.blockSignals(False)
+        self.local_server_port_spin.blockSignals(False)
         self._refresh_local_server_status()
         self._refresh_mcp_desktop_json()
-
-    def _maybe_start_local_server(self) -> None:
-        settings = self.settings.get("local_server", {})
-        if not isinstance(settings, dict):
-            return
-        if bool(settings.get("enabled", False)) or bool(settings.get("auto_start", False)):
-            self._start_local_server(show_errors=False)
-        else:
-            self._refresh_local_server_status()
 
     def _toggle_local_server(self) -> None:
         if self.local_server_controller.is_running():
@@ -3682,107 +4219,52 @@ class MainWindow(QMainWindow):
         self._start_local_server(show_errors=True)
 
     def _start_local_server(self, show_errors: bool = True) -> None:
-        if not hasattr(self, "local_server_enabled_checkbox"):
-            return
-        if not self.local_server_token_edit.text().strip():
-            self.local_server_token_edit.setText(secrets.token_urlsafe(24))
-        self.local_server_enabled_checkbox.blockSignals(True)
-        self.local_server_enabled_checkbox.setChecked(True)
-        self.local_server_enabled_checkbox.blockSignals(False)
         self._save_settings()
         try:
             self.local_server_controller.start()
             self.log_view.append_event(
-                f"Local MCP/HTTP server started: {self.local_server_controller.endpoint_url()}"
+                "Shared LocalText2Voice EngineHost started."
             )
         except Exception as exc:
-            self.local_server_enabled_checkbox.blockSignals(True)
-            self.local_server_enabled_checkbox.setChecked(False)
-            self.local_server_enabled_checkbox.blockSignals(False)
-            self._save_settings()
-            message = f"Could not start local server: {exc}"
+            message = f"Could not start LocalText2Voice EngineHost: {exc}"
             self.log_view.append_event(message)
             if show_errors:
                 self._show_error(
-                    self.tr("local_server_start_failed", "Local server failed"),
+                    self.tr("local_server_start_failed", "Engine Host failed"),
                     message,
                 )
         self._refresh_local_server_status()
 
     def _stop_local_server(self) -> None:
         self.local_server_controller.stop()
-        if hasattr(self, "local_server_enabled_checkbox"):
-            self.local_server_enabled_checkbox.blockSignals(True)
-            self.local_server_enabled_checkbox.setChecked(False)
-            self.local_server_enabled_checkbox.blockSignals(False)
-        self._save_settings()
-        self.log_view.append_event("Local MCP/HTTP server stopped.")
+        self.log_view.append_event("Shared LocalText2Voice EngineHost stopped.")
         self._refresh_local_server_status()
 
-    def _on_local_server_enabled_changed(self, enabled: bool) -> None:
-        if enabled:
-            self._start_local_server(show_errors=True)
-        else:
-            self._stop_local_server()
-
-    def _on_local_server_field_changed(self) -> None:
+    def _on_engine_host_port_changed(self, _port: int) -> None:
+        was_running = self.local_server_controller.is_running()
+        if was_running:
+            self.local_server_controller.stop()
         self._save_settings()
+        if was_running:
+            try:
+                self.local_server_controller.start()
+            except Exception as exc:
+                self.log_view.append_event(
+                    f"Could not restart LocalText2Voice EngineHost: {exc}"
+                )
         self._refresh_local_server_status()
-
-    def _generate_local_server_token(self) -> None:
-        self.local_server_token_edit.setText(secrets.token_urlsafe(24))
-        self._save_settings()
-        self._refresh_local_server_status()
-
-    def _toggle_local_server_token_visibility(self, checked: bool) -> None:
-        if checked:
-            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.local_server_show_token_button.setText(self.tr("hide_token", "Hide"))
-            self.local_server_show_token_button.setIcon(ui_icon("hide"))
-        else:
-            self.local_server_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.local_server_show_token_button.setText(self.tr("show_token", "Show"))
-            self.local_server_show_token_button.setIcon(ui_icon("show"))
-
-    def _copy_local_server_token(self) -> None:
-        token = self.local_server_token_edit.text().strip()
-        if not token:
-            QMessageBox.information(
-                self,
-                self.tr("local_server_token", "Access token"),
-                self.tr("no_token_to_copy", "There is no access token to copy yet."),
-            )
-            return
-        QApplication.clipboard().setText(token)
-        self.statusBar().showMessage(
-            self.tr("token_copied", "Access token copied to clipboard."),
-            3000,
-        )
 
     def _refresh_local_server_status(self) -> None:
         if not hasattr(self, "local_server_status_label"):
             return
         running = self.local_server_controller.is_running()
-        endpoint = self.local_server_controller.endpoint_url()
-        self.local_server_endpoint_label.setText(endpoint)
         self.local_server_start_stop_button.setText(
-            self.tr("stop_server", "Stop server")
+            self.tr("stop_server", "Stop Engine Host")
             if running
-            else self.tr("start_server", "Start server")
+            else self.tr("start_server", "Start Engine Host")
         )
         self.local_server_start_stop_button.setIcon(
             ui_icon("stop", danger=True) if running else ui_icon("server")
-        )
-        token_hint = (
-            self.tr(
-                "local_server_token_hint",
-                "Use the access token as a Bearer token, or as ?token=... for file URLs.",
-            )
-            if self.local_server_token_edit.text().strip()
-            else self.tr(
-                "local_server_no_token_hint",
-                "No token is configured. This is acceptable only for localhost experiments.",
-            )
         )
         status = (
             self.tr("local_server_running", "Running")
@@ -3792,9 +4274,10 @@ class MainWindow(QMainWindow):
         self.local_server_status_label.setText(
             self.tr(
                 "local_server_status_text",
-                "Status: {status}. {token_hint}",
+                "Status: {status}. Internal port: {port}. It starts automatically when "
+                "the desktop app or an MCP client needs it.",
                 status=status,
-                token_hint=token_hint,
+                port=self._internal_engine_host_port_from_ui(),
             )
         )
 
@@ -8059,9 +8542,18 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def _tts_engine_install_in_progress(self) -> bool:
-        return any(
+        tts_install_active = any(
             dialog.installation_active
             for dialog in self.engine_install_dialogs.values()
+        )
+        russian_dialog = self.russian_normalization_install_dialog
+        return (
+            tts_install_active
+            or self.russian_normalization_thread is not None
+            or (
+                russian_dialog is not None
+                and russian_dialog.installation_active
+            )
         )
 
     def _configure_preload_button(
@@ -8343,11 +8835,6 @@ class MainWindow(QMainWindow):
             ui_icon("file"),
             self.tr("split_safe", "Split by safe chunks"),
             "safe_chunks",
-        )
-        self.split_combo.addItem(
-            ui_icon("file"),
-            self.tr("split_chapters", "Split by chapters/headings"),
-            "chapters",
         )
 
         self.export_combo = QComboBox()
@@ -8639,6 +9126,8 @@ class MainWindow(QMainWindow):
             "omnivoice_preview_thread",
             "f5_russian_thread",
             "f5_russian_preview_thread",
+            "russian_normalization_thread",
+            "russian_normalization_preview_thread",
         )
         return any(getattr(self, name, None) is not None for name in thread_names)
 
@@ -9064,14 +9553,6 @@ class MainWindow(QMainWindow):
         )
         splitting_form = QFormLayout(splitting_group)
         splitting_form.setSpacing(10)
-        splitting_help = QLabel(
-            self.tr(
-                "text_splitting_help",
-                "Default chunking applies to every engine unless a specific engine override is set.",
-            )
-        )
-        splitting_help.setObjectName("helperLabel")
-        splitting_help.setWordWrap(True)
         self.chunk_size_spin = QSpinBox()
         self.chunk_size_spin.setRange(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE)
         self.chunk_size_spin.setSingleStep(20)
@@ -9081,32 +9562,35 @@ class MainWindow(QMainWindow):
         self.omnivoice_chunk_size_spin = self._engine_chunk_spin()
         self.kokoro_chunk_size_spin = self._engine_chunk_spin()
         self.piper_chunk_size_spin = self._engine_chunk_spin()
-        splitting_form.addRow(self.tr("split_mode", "Text splitting"), self.split_combo)
+        self.f5_russian_chunk_size_spin = self._engine_chunk_spin()
         splitting_form.addRow(
             self.tr("default_chunk_size", "Default chunk size"),
             self.chunk_size_spin,
         )
         splitting_form.addRow(
-            self.tr("piper_chunk_size", "Piper override"),
+            self.tr("piper_chunk_size", "Piper maximum"),
             self.piper_chunk_size_spin,
         )
         splitting_form.addRow(
-            self.tr("kokoro_chunk_size", "Kokoro override"),
+            self.tr("kokoro_chunk_size", "Kokoro maximum"),
             self.kokoro_chunk_size_spin,
         )
         splitting_form.addRow(
-            self.tr("chatterbox_chunk_size", "Chatterbox override"),
+            self.tr("chatterbox_chunk_size", "Chatterbox maximum"),
             self.chatterbox_chunk_size_spin,
         )
         splitting_form.addRow(
-            self.tr("qwen_chunk_size", "Qwen override"),
+            self.tr("qwen_chunk_size", "Qwen maximum"),
             self.qwen_chunk_size_spin,
         )
         splitting_form.addRow(
-            self.tr("omnivoice_chunk_size", "OmniVoice override"),
+            self.tr("omnivoice_chunk_size", "OmniVoice maximum"),
             self.omnivoice_chunk_size_spin,
         )
-        splitting_form.addRow("", splitting_help)
+        splitting_form.addRow(
+            self.tr("f5_russian_chunk_size", "F5-TTS Russian maximum"),
+            self.f5_russian_chunk_size_spin,
+        )
 
         libraries_group = QGroupBox(
             self.tr("audio_library_folders", "Audio library folders")
@@ -9156,9 +9640,8 @@ class MainWindow(QMainWindow):
 
     def _engine_chunk_spin(self) -> QSpinBox:
         spin = QSpinBox()
-        spin.setRange(0, MAX_CHUNK_SIZE)
+        spin.setRange(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE)
         spin.setSingleStep(20)
-        spin.setSpecialValueText(self.tr("use_default", "Use default"))
         spin.setSuffix(self.tr("characters_suffix", " chars"))
         return spin
 
@@ -9183,6 +9666,7 @@ class MainWindow(QMainWindow):
             "chatterbox": getattr(self, "chatterbox_chunk_size_spin", None),
             "qwen": getattr(self, "qwen_chunk_size_spin", None),
             "omnivoice": getattr(self, "omnivoice_chunk_size_spin", None),
+            "f5_russian": getattr(self, "f5_russian_chunk_size_spin", None),
         }
         override = 0
         spin = spin_map.get(engine)
@@ -10327,6 +10811,15 @@ class MainWindow(QMainWindow):
                         ),
                     )
                     layout.addWidget(install_button)
+        if isinstance(gallery_voice, GalleryVoice) and gallery_voice.is_user_import:
+            edit_button = self._small_icon_button(
+                "edit",
+                self.tr("edit", "Edit"),
+                lambda _checked=False, voice_row=row: self._edit_gallery_reference_voice_data(
+                    voice_row
+                ),
+            )
+            layout.addWidget(edit_button)
 
         if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "chatterbox", "f5_russian"}:
             test_button = self._small_icon_button(
@@ -10638,6 +11131,33 @@ class MainWindow(QMainWindow):
         if hasattr(self, "voice_preview_frame"):
             self.voice_preview_frame.setVisible(False)
 
+    def _refresh_voice_preview_controls(self) -> None:
+        if not hasattr(self, "voice_preview_pause_button"):
+            return
+        state = self.voices_player.playbackState()
+        has_source = not self.voices_player.source().isEmpty()
+        self.voice_preview_pause_button.setEnabled(
+            state == QMediaPlayer.PlaybackState.PlayingState
+        )
+        self.voice_preview_stop_button.setEnabled(
+            state != QMediaPlayer.PlaybackState.StoppedState
+        )
+        self.voice_preview_restart_button.setEnabled(has_source)
+
+    def _pause_voice_preview(self) -> None:
+        if self.voices_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.voices_player.pause()
+
+    def _stop_voice_preview(self) -> None:
+        self.voices_player.stop()
+        self.voices_player.setPosition(0)
+
+    def _restart_voice_preview(self) -> None:
+        if self.voices_player.source().isEmpty():
+            return
+        self.voices_player.setPosition(0)
+        self.voices_player.play()
+
     def _on_voice_preview_playback_state_changed(
         self,
         state: QMediaPlayer.PlaybackState,
@@ -10649,6 +11169,12 @@ class MainWindow(QMainWindow):
             )
         elif state == QMediaPlayer.PlaybackState.StoppedState:
             QTimer.singleShot(900, self._hide_voice_preview_status)
+        elif state == QMediaPlayer.PlaybackState.PausedState:
+            self._show_voice_preview_status(
+                self.tr("voice_preview_paused", "Voice preview paused."),
+                busy=False,
+            )
+        self._refresh_voice_preview_controls()
 
     def _play_voice_page_sample(self, row_index: int) -> None:
         if not 0 <= row_index < len(self.voice_page_rows):
@@ -10700,7 +11226,73 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
+        if gallery_voice.is_user_import and self._is_gallery_voice_selected(
+            str(row.get("engine", gallery_voice.engine)), gallery_voice
+        ):
+            self.pending_removed_gallery_voice = (
+                str(row.get("engine", gallery_voice.engine)),
+                gallery_voice,
+            )
         self._start_voice_gallery_operation("remove", gallery_voice)
+
+    def _edit_gallery_reference_voice_data(self, row: dict[str, object]) -> None:
+        gallery_voice = row.get("gallery_voice")
+        if not isinstance(gallery_voice, GalleryVoice) or not gallery_voice.is_user_import:
+            return
+        source = Path(
+            gallery_voice.installed_path
+            or gallery_voice.ref_audio_path
+            or gallery_voice.preview_path
+        )
+        if not source.is_file():
+            self._show_error(
+                self.tr("import_failed", "Import failed"),
+                f"Reference audio file not found: {source}",
+            )
+            return
+        dialog = ReferenceVoiceImportDialog(source, self, gallery_voice)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        engine_id = str(row.get("engine", gallery_voice.engine))
+        if engine_id == "f5_russian" and not str(values["ref_text"]).strip():
+            self._show_error(
+                self.tr("import_failed", "Import failed"),
+                self.tr(
+                    "f5_russian_reference_required",
+                    "F5-TTS Russian requires a reference audio file and its exact transcript.",
+                ),
+            )
+            return
+        replacement = values.get("source")
+        try:
+            voice = self.voice_gallery_manager.update_reference_voice(
+                gallery_voice.voice_id,
+                source=replacement if isinstance(replacement, Path) else None,
+                name=str(values["name"]),
+                language=str(values["language"]),
+                language_name=str(values["language_name"]),
+                ref_text=str(values["ref_text"]),
+                short_description=str(values["short_description"]),
+                gender=str(values["gender"]),
+                age_style=str(values["age_style"]),
+                voice_style=str(values["voice_style"]),
+                tags=list(values["tags"]),
+                ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            )
+        except Exception as exc:
+            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        if self._is_gallery_voice_selected(engine_id, gallery_voice):
+            if engine_id == "omnivoice":
+                self._apply_omnivoice_gallery_reference(voice)
+            elif engine_id == "f5_russian":
+                self._apply_f5_russian_gallery_reference(voice)
+            elif engine_id == "chatterbox" and voice.installed_path:
+                self.chatterbox_reference_picker.set_path(Path(voice.installed_path))
+            self._save_settings()
+        self.log_view.append_event(f"Updated {engine_id} reference voice: {voice.name}")
+        self._refresh_voices_page()
 
     def _start_voice_gallery_operation(
         self,
@@ -10777,18 +11369,33 @@ class MainWindow(QMainWindow):
                 and self._apply_f5_russian_gallery_reference(pending_voice)
             ):
                 self._save_settings()
+        pending_removed = self.pending_removed_gallery_voice
+        self.pending_removed_gallery_voice = None
+        if pending_removed is not None:
+            engine_id, _voice = pending_removed
+            if engine_id == "omnivoice":
+                self.omnivoice_reference_picker.set_path(None)
+                self.omnivoice_reference_text_edit.clear()
+            elif engine_id == "f5_russian":
+                self.f5_russian_reference_picker.set_path(None)
+                self.f5_russian_reference_text_edit.clear()
+            elif engine_id == "chatterbox":
+                self.chatterbox_reference_picker.set_path(None)
+            self._save_settings()
         self.log_view.append_event(message)
         self._refresh_voices_page()
 
     def _on_voice_gallery_failed(self, message: str) -> None:
         self.voices_progress_bar.setVisible(False)
         self.pending_f5_russian_gallery_voice_id = None
+        self.pending_removed_gallery_voice = None
         self.log_view.append_event(message)
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
 
     def _on_voice_gallery_cancelled(self) -> None:
         self.voices_progress_bar.setVisible(False)
         self.pending_f5_russian_gallery_voice_id = None
+        self.pending_removed_gallery_voice = None
         self.log_view.append_event(
             self.tr("voice_gallery_cancelled", "Voice gallery operation cancelled.")
         )
@@ -11399,6 +12006,7 @@ class MainWindow(QMainWindow):
         self.text_normalization_panel.set_configuration(
             self.settings.get("text_normalization", {})
         )
+        self._refresh_russian_silero_status()
 
         elevenlabs = api_tts.get("elevenlabs", {})
         self.elevenlabs_api_key_edit.setText(str(elevenlabs.get("api_key", "")))
@@ -11484,28 +12092,31 @@ class MainWindow(QMainWindow):
         self.periodic_pause_max_spin.setValue(periodic_max / 1000)
         self._select_combo_data(
             self.split_combo,
-            self.settings.get("split_mode", "safe_chunks"),
+            "safe_chunks",
         )
         try:
-            default_chunk_size = int(self.settings.get("chunk_size", 2500))
+            default_chunk_size = int(self.settings.get("chunk_size", 300))
         except (TypeError, ValueError):
-            default_chunk_size = 2500
+            default_chunk_size = 300
         self.chunk_size_spin.setValue(default_chunk_size)
         engine_chunk_sizes = self.settings.get("engine_chunk_sizes", {})
         if not isinstance(engine_chunk_sizes, dict):
             engine_chunk_sizes = {}
 
-        def chunk_override(engine: str) -> int:
+        def chunk_size_for(engine: str) -> int:
             try:
-                return int(engine_chunk_sizes.get(engine, 0) or 0)
+                value = int(engine_chunk_sizes.get(engine, 0) or 0)
             except (TypeError, ValueError):
-                return 0
+                value = 0
+            default = 520 if engine == "qwen" else 300
+            return value if value >= MIN_CHUNK_SIZE else default
 
-        self.piper_chunk_size_spin.setValue(chunk_override("piper"))
-        self.kokoro_chunk_size_spin.setValue(chunk_override("kokoro"))
-        self.chatterbox_chunk_size_spin.setValue(chunk_override("chatterbox"))
-        self.qwen_chunk_size_spin.setValue(chunk_override("qwen"))
-        self.omnivoice_chunk_size_spin.setValue(chunk_override("omnivoice"))
+        self.piper_chunk_size_spin.setValue(chunk_size_for("piper"))
+        self.kokoro_chunk_size_spin.setValue(chunk_size_for("kokoro"))
+        self.chatterbox_chunk_size_spin.setValue(chunk_size_for("chatterbox"))
+        self.qwen_chunk_size_spin.setValue(chunk_size_for("qwen"))
+        self.omnivoice_chunk_size_spin.setValue(chunk_size_for("omnivoice"))
+        self.f5_russian_chunk_size_spin.setValue(chunk_size_for("f5_russian"))
         self._select_combo_data(
             self.export_combo,
             self.settings.get("export_mode", "single"),
@@ -13873,6 +14484,25 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, path=segment.wav_path: self._play_review_audio(path)
             )
             action_layout.addWidget(play_button)
+            pause_button = QPushButton()
+            pause_button.setIcon(ui_icon("pause"))
+            pause_button.setToolTip(self.tr("pause", "Pause"))
+            pause_button.setFixedWidth(34)
+            pause_button.setEnabled(Path(segment.wav_path).is_file())
+            pause_button.clicked.connect(
+                lambda _checked=False: self._pause_review_audio()
+            )
+            action_layout.addWidget(pause_button)
+            stop_button = QPushButton()
+            stop_button.setIcon(ui_icon("stop"))
+            stop_button.setToolTip(self.tr("stop", "Stop"))
+            stop_button.setObjectName("dangerButton")
+            stop_button.setFixedWidth(34)
+            stop_button.setEnabled(Path(segment.wav_path).is_file())
+            stop_button.clicked.connect(
+                lambda _checked=False: self._stop_review_audio()
+            )
+            action_layout.addWidget(stop_button)
             self.review_table.setCellWidget(row_index, 7, action_widget)
         self.review_table.blockSignals(False)
         if selected_row >= 0:
@@ -13924,6 +14554,7 @@ class MainWindow(QMainWindow):
                 segment.similarity_score is None
                 or segment.verification_status in {"", "not_verified"}
                 or not self._comparison_normalization_current(segment)
+                or not self._russian_silero_stress_comparison_current(segment)
                 or not tail_analysis_is_current(
                     segment.review_metrics_json,
                     enabled=tail_enabled,
@@ -13952,6 +14583,35 @@ class MainWindow(QMainWindow):
             language=resolved or "",
             rules=config.get("rules"),
         )
+
+    @staticmethod
+    def _russian_silero_stress_comparison_current(segment: StoredSegment) -> bool:
+        """Require one fresh review only for F5 segments retaining Silero ``+``."""
+        try:
+            config = json.loads(segment.engine_config_json or "{}")
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(config, dict):
+            return True
+        if str(config.get("engine", "")).strip().casefold() != "f5_russian":
+            return True
+        if not bool(config.get("russian_silero_preprocessed", False)):
+            return True
+        language_candidates = (
+            segment.language,
+            str(config.get("language", "")),
+            str(config.get("lang", "")),
+            str(config.get("locale", "")),
+        )
+        uses_russian = any(
+            TextNormalizer.resolve_language("auto", str(candidate)) == "ru"
+            for candidate in language_candidates
+        )
+        if not uses_russian:
+            return True
+        metrics = parse_review_metrics(segment.review_metrics_json)
+        value = metrics.get("russian_silero_stress_comparison")
+        return isinstance(value, dict) and bool(value.get("enabled", False))
 
     def _tail_review_enabled(self) -> bool:
         return (
@@ -14733,7 +15393,7 @@ class MainWindow(QMainWindow):
             output_dir=output_dir,
             voice_config=voice_config,
             ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
-            split_mode=str(audiobook.split_mode or self.split_combo.currentData()),
+            split_mode="safe_chunks",
             export_mode="single",
             chunk_size=self._current_chunk_size(
                 str(voice_config.get("engine", "piper"))
@@ -15114,6 +15774,14 @@ class MainWindow(QMainWindow):
         self.review_player.setSource(QUrl.fromLocalFile(str(path)))
         self.review_player.play()
 
+    def _pause_review_audio(self) -> None:
+        if self.review_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.review_player.pause()
+
+    def _stop_review_audio(self) -> None:
+        self.review_player.stop()
+        self.review_player.setPosition(0)
+
     @staticmethod
     def _short_table_text(text: str, limit: int = 120) -> str:
         clean = " ".join(text.split())
@@ -15258,6 +15926,7 @@ class MainWindow(QMainWindow):
             self.chatterbox_chunk_size_spin,
             self.qwen_chunk_size_spin,
             self.omnivoice_chunk_size_spin,
+            self.f5_russian_chunk_size_spin,
             self.output_picker,
             self.normalize_checkbox,
             self.auto_delete_segment_wavs_checkbox,
@@ -15343,7 +16012,7 @@ class MainWindow(QMainWindow):
                 "periodic_pause_max_ms": round(
                     self.periodic_pause_max_spin.value() * 1000
                 ),
-                "split_mode": self.split_combo.currentData(),
+                "split_mode": "safe_chunks",
                 "export_mode": self.export_combo.currentData(),
                 "chunk_size": self.chunk_size_spin.value(),
                 "engine_chunk_sizes": {
@@ -15352,6 +16021,7 @@ class MainWindow(QMainWindow):
                     "chatterbox": self.chatterbox_chunk_size_spin.value(),
                     "qwen": self.qwen_chunk_size_spin.value(),
                     "omnivoice": self.omnivoice_chunk_size_spin.value(),
+                    "f5_russian": self.f5_russian_chunk_size_spin.value(),
                 },
                 "normalize_audio": self.normalize_checkbox.isChecked(),
                 "text_normalization": (
@@ -15519,7 +16189,7 @@ class MainWindow(QMainWindow):
                         self.review_tail_failure_spin.value()
                     ),
                 },
-                "local_server": self._local_server_settings_from_ui(),
+                "internal_engine_host_port": self._internal_engine_host_port_from_ui(),
                 "voice_gallery": {
                     "catalog_url": str(
                         self.settings.get("voice_gallery", {}).get(

@@ -55,6 +55,7 @@ class VoiceManagerDialog(QDialog):
         self.visible_voices: list[RemoteVoice] = []
         self.worker: VoiceCatalogWorker | None = None
         self.worker_thread: QThread | None = None
+        self.previewed_voice_id = ""
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(1.0)
         self.sample_player = QMediaPlayer(self)
@@ -201,6 +202,17 @@ class VoiceManagerDialog(QDialog):
         self.preview_button = QPushButton(self.tr("preview_voice", "Preview"))
         self.preview_button.setIcon(ui_icon("preview"))
         self.preview_button.clicked.connect(self._preview_selected)
+        self.pause_button = QPushButton(self.tr("pause", "Pause"))
+        self.pause_button.setIcon(ui_icon("pause"))
+        self.pause_button.clicked.connect(self._pause_sample)
+        self.stop_preview_button = QPushButton(self.tr("stop_preview", "Stop preview"))
+        self.stop_preview_button.setIcon(ui_icon("stop", danger=True))
+        self.stop_preview_button.clicked.connect(self._stop_sample)
+        self.restart_preview_button = QPushButton(
+            self.tr("restart_preview", "Restart")
+        )
+        self.restart_preview_button.setIcon(ui_icon("refresh"))
+        self.restart_preview_button.clicked.connect(self._restart_sample)
         self.remove_button = QPushButton(self.tr("remove_voice", "Remove"))
         self.remove_button.setIcon(ui_icon("delete"))
         self.remove_button.clicked.connect(self._remove_selected)
@@ -215,6 +227,9 @@ class VoiceManagerDialog(QDialog):
         actions.addStretch(1)
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.preview_button)
+        actions.addWidget(self.pause_button)
+        actions.addWidget(self.stop_preview_button)
+        actions.addWidget(self.restart_preview_button)
         actions.addWidget(self.remove_button)
         actions.addWidget(self.install_button)
         actions.addWidget(self.close_button)
@@ -386,20 +401,18 @@ class VoiceManagerDialog(QDialog):
     def _selection_changed(self) -> None:
         if self.sample_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState:
             self.sample_player.stop()
+        self.previewed_voice_id = ""
         self._update_actions()
 
     def _preview_selected(self) -> None:
         voice = self._selected_voice()
         if voice is None or not voice.has_sample:
             return
-        if (
-            self.sample_player.playbackState()
-            == QMediaPlayer.PlaybackState.PlayingState
-        ):
-            self.sample_player.stop()
-            return
-        sample_url = self.catalog_service.sample_url(voice)
-        self.sample_player.setSource(QUrl(sample_url))
+        if voice.voice_id != self.previewed_voice_id:
+            sample_url = self.catalog_service.sample_url(voice)
+            self.sample_player.setSource(QUrl(sample_url))
+            self.previewed_voice_id = voice.voice_id
+        self.sample_player.setPosition(0)
         self.status_label.setText(
             self.tr(
                 "loading_voice_sample",
@@ -407,6 +420,20 @@ class VoiceManagerDialog(QDialog):
                 voice=voice.display_name,
             )
         )
+        self.sample_player.play()
+
+    def _pause_sample(self) -> None:
+        if self.sample_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.sample_player.pause()
+
+    def _stop_sample(self) -> None:
+        self.sample_player.stop()
+        self.sample_player.setPosition(0)
+
+    def _restart_sample(self) -> None:
+        if not self.previewed_voice_id:
+            return
+        self.sample_player.setPosition(0)
         self.sample_player.play()
 
     def _preview_row(self, row: int) -> None:
@@ -420,7 +447,6 @@ class VoiceManagerDialog(QDialog):
         state: QMediaPlayer.PlaybackState,
     ) -> None:
         if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.preview_button.setText(self.tr("stop_preview", "Stop preview"))
             voice = self._selected_voice()
             if voice is not None:
                 self.status_label.setText(
@@ -430,8 +456,9 @@ class VoiceManagerDialog(QDialog):
                         voice=voice.display_name,
                     )
                 )
-        else:
-            self.preview_button.setText(self.tr("preview_voice", "Preview"))
+        elif state == QMediaPlayer.PlaybackState.PausedState:
+            self.status_label.setText(self.tr("voice_preview_paused", "Voice preview paused."))
+        self._update_actions()
 
     def _on_sample_error(
         self,
@@ -565,6 +592,17 @@ class VoiceManagerDialog(QDialog):
         self.preview_button.setEnabled(
             idle and voice is not None and voice.has_sample
         )
+        playing = (
+            self.sample_player.playbackState()
+            == QMediaPlayer.PlaybackState.PlayingState
+        )
+        stopped = (
+            self.sample_player.playbackState()
+            == QMediaPlayer.PlaybackState.StoppedState
+        )
+        self.pause_button.setEnabled(idle and playing)
+        self.stop_preview_button.setEnabled(idle and not stopped)
+        self.restart_preview_button.setEnabled(idle and bool(self.previewed_voice_id))
 
     def _set_busy(self, busy: bool) -> None:
         self.cancel_button.setEnabled(busy)
@@ -576,6 +614,13 @@ class VoiceManagerDialog(QDialog):
         self.installed_filter.setEnabled(not busy)
         self.table.setEnabled(not busy)
         self.preview_button.setEnabled(False if busy else self.preview_button.isEnabled())
+        self.pause_button.setEnabled(False if busy else self.pause_button.isEnabled())
+        self.stop_preview_button.setEnabled(
+            False if busy else self.stop_preview_button.isEnabled()
+        )
+        self.restart_preview_button.setEnabled(
+            False if busy else self.restart_preview_button.isEnabled()
+        )
         if busy:
             self.install_button.setEnabled(False)
             self.remove_button.setEnabled(False)

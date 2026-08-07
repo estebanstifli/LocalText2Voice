@@ -29,6 +29,7 @@ from app.core.settings_manager import (
     sanitize_chunk_size,
 )
 from app.core.subtitle_export import export_audiobook_subtitles
+from app.server.engine_host_config import ENGINE_HOST_ADDRESS, internal_engine_host_port
 from app.tts.base import BaseTTSEngine
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
@@ -95,19 +96,14 @@ class LocalText2VoiceService:
         self.settings_manager.settings = self.settings_manager.load()
         return self.settings_manager.settings
 
-    def server_settings(self) -> dict[str, Any]:
-        value = self.settings.get("local_server", {})
-        return dict(value) if isinstance(value, dict) else {}
-
     def server_info(self) -> dict[str, Any]:
         self.refresh_settings()
-        server_settings = self.server_settings()
         return {
             "name": "LocalText2Voice",
             "version": "1.0.0",
             "description": "Local audiobook and podcast generation server.",
-            "host": server_settings.get("host", "127.0.0.1"),
-            "port": int(server_settings.get("port", 8765)),
+            "host": ENGINE_HOST_ADDRESS,
+            "port": internal_engine_host_port(self.settings),
             "engines": self.list_engines(),
             "engine_memory": self.engine_status(),
         }
@@ -836,6 +832,11 @@ class LocalText2VoiceService:
             text_normalization_rules=dict(normalization.get("rules", {}))
             if isinstance(normalization.get("rules"), dict)
             else {},
+            russian_silero_enabled=bool(
+                normalization.get("russian_silero", {}).get("enabled", False)
+                if isinstance(normalization.get("russian_silero"), dict)
+                else False
+            ),
             project_audiobook_id=self._project_audiobook_id(request),
             project_settings=project_settings,
         )

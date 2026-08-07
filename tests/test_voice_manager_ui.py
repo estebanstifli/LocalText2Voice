@@ -53,6 +53,9 @@ class VoiceManagerUITests(unittest.TestCase):
             self.assertIsInstance(preview, QPushButton)
             self.assertTrue(preview.isEnabled())
             self.assertFalse(preview.icon().isNull())
+            self.assertTrue(hasattr(dialog, "pause_button"))
+            self.assertTrue(hasattr(dialog, "stop_preview_button"))
+            self.assertTrue(hasattr(dialog, "restart_preview_button"))
 
 
 if __name__ == "__main__":

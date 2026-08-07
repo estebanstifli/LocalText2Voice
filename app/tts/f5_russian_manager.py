@@ -265,7 +265,8 @@ def main() -> int:
                 raise ValueError("The exact transcript of the reference audio is required.")
             if bool(request.get("use_stress", True)):
                 stress_model = get_accentor()
-                text = accent_preserving_manual_marks(stress_model, text)
+                if not bool(request.get("stress_text_preprocessed", False)):
+                    text = accent_preserving_manual_marks(stress_model, text)
                 ref_text = accent_preserving_manual_marks(stress_model, ref_text)
             output_path = Path(str(request["output"]))
             output_path.parent.mkdir(parents=True, exist_ok=True)

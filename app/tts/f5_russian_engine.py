@@ -85,6 +85,9 @@ class F5RussianTTSEngine(BaseTTSEngine):
                 ),
             ),
             "use_stress": bool(voice_config.get("use_stress", True)),
+            "stress_text_preprocessed": bool(
+                voice_config.get("russian_silero_preprocessed", False)
+            ),
             "remove_silence": bool(voice_config.get("remove_silence", True)),
         }
         self._send_request(process, request)

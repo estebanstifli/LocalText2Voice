@@ -66,7 +66,7 @@ figures above.
 
 - Generate with the new **Qwen3-TTS Base 1.7B** voice-cloning model or keep using the faster CustomVoice 0.6B model.
 - Install the optional **F5-TTS Russian** engine with reference-voice cloning, automatic Russian stress marks, and explicit non-commercial licensing.
-- Prepare Russian text through two complementary layers: deterministic normalization for numbers, ordinals, rubles, abbreviations, and units, followed by optional F5-local Silero Stress processing.
+- Prepare Russian text through deterministic normalization for numbers, ordinals, rubles, abbreviations, and units, then optionally install a shared Silero Stress layer on demand to restore `Ё` for any TTS engine. F5-TTS Russian also receives its stress notation; other engines receive the safe `Ё` spelling only.
 - Switch between persistent light and dark interface themes without rebuilding the current workspace.
 - Detect multiple NVIDIA GPUs and choose which device runs CUDA TTS engines and Faster Whisper.
 - Select hardware-aware Qwen runtime profiles, including a CUDA 13 / PyTorch profile for Blackwell and RTX 50-series GPUs.
@@ -230,7 +230,7 @@ Voice gallery architecture: [docs/VOICE_GALLERY.md](docs/VOICE_GALLERY.md)
 
 ### Text Normalization
 
-Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, and Spanish. Russian normalization includes numbers, ordinals, percentages, ruble amounts, common abbreviations, and units; F5 can then apply Silero Stress as its engine-local pronunciation layer. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
+Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, and Spanish. Russian normalization includes numbers, ordinals, percentages, ruble amounts, common abbreviations, and units. When Russian is selected, the user can explicitly install the optional shared Silero Stress runtime from this tab; it runs after the generic rules, restores `Ё`, and is shown in the Normalized preview. F5-TTS Russian receives Silero's `+` stress notation, while other engines receive the safe spelling with `Ё` only. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
 
 ### Whisper Review And Quality Control
 
@@ -338,7 +338,7 @@ You choose the engine. The app does not force subscriptions.
 10. Review segments if Whisper review is enabled.
 11. Open **Audio Mix** to create the podcast version.
 
-The Windows installer is the recommended distribution artifact. Downloadable models, isolated engine dependencies, voice-gallery files, and caches share one managed `data` tree. Its location can be moved later from **Settings > General > AI model storage**, including between drives, without moving projects or exported audio.
+The Windows installer is the recommended distribution artifact. Downloadable models, isolated engine dependencies, fallback Python runtimes, voice-gallery files, and caches share one managed `data` tree. Its location can be moved later from **Settings > General > AI model storage**, including between drives, without moving projects or exported audio.
 
 Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 

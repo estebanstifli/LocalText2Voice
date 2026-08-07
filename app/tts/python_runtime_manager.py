@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from app.utils.paths import app_data_root, application_root
+from app.utils.paths import application_root, python_runtime_root
 from app.tts.install_logging import (
     ProcessOutputCallback,
     communicate_with_live_output,
@@ -555,7 +555,7 @@ class PythonRuntimeManager:
         bundled = cls.bundled_runtime_dir()
         if (bundled / "python" / "python.exe").is_file():
             return bundled
-        return app_data_root() / "runtimes" / "python311"
+        return python_runtime_root()
 
     @staticmethod
     def bundled_runtime_dir() -> Path:

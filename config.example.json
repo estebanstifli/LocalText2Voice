@@ -16,14 +16,14 @@
   "export_mode": "single",
   "piper_path": "engines/piper/piper.exe",
   "ffmpeg_path": "ffmpeg/ffmpeg.exe",
-  "chunk_size": 2500,
+  "chunk_size": 300,
   "engine_chunk_sizes": {
-    "piper": 0,
-    "kokoro": 0,
-    "chatterbox": 0,
-    "qwen": 0,
-    "omnivoice": 0,
-    "f5_russian": 0
+    "piper": 300,
+    "kokoro": 300,
+    "chatterbox": 300,
+    "qwen": 520,
+    "omnivoice": 300,
+    "f5_russian": 300
   },
   "editor_syntax_highlighting": true,
   "show_markup_toolbar": true,
@@ -31,6 +31,9 @@
   "text_normalization": {
     "enabled": false,
     "language": "auto",
+    "russian_silero": {
+      "enabled": false
+    },
     "rules": {
       "enabled": true,
       "numbers": true,
@@ -139,13 +142,10 @@
     "tail_warning_threshold_seconds": 0.5,
     "tail_failure_threshold_seconds": 1.0
   },
+  "internal_engine_host_port": 8765,
+  "remote_mcp_port": 8766,
   "local_server": {
-    "enabled": false,
-    "auto_start": false,
-    "host": "127.0.0.1",
-    "port": 8765,
     "auth_token": "",
-    "allow_lan": false,
     "serve_files": true,
     "max_parallel_jobs": 1
   },

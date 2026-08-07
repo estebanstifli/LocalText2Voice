@@ -41,6 +41,8 @@ Translate = Callable[..., str]
 class TextNormalizationSettingsWidget(QWidget):
     settingsChanged = Signal()
     dictionaryChanged = Signal()
+    russianSileroInstallRequested = Signal()
+    russianSileroRemoveRequested = Signal()
 
     def __init__(
         self,
@@ -53,6 +55,8 @@ class TextNormalizationSettingsWidget(QWidget):
         self.store = store or TextNormalizationStore()
         self._rules = normalization_rule_settings()
         self._loading = False
+        self._russian_silero_installed = False
+        self._russian_silero_installing = False
         self._build_ui()
         self._reload_dictionaries(preferred_editor="en")
         self._reload_categories()
@@ -64,6 +68,9 @@ class TextNormalizationSettingsWidget(QWidget):
             "enabled": self.enabled_checkbox.isChecked(),
             "language": str(self.language_combo.currentData() or "auto"),
             "rules": dict(self._rules),
+            "russian_silero": {
+                "enabled": self.russian_silero_checkbox.isChecked(),
+            },
         }
 
     def set_configuration(self, values: object) -> None:
@@ -71,17 +78,26 @@ class TextNormalizationSettingsWidget(QWidget):
         self.enabled_checkbox.blockSignals(True)
         self.language_combo.blockSignals(True)
         self.rules_enabled_checkbox.blockSignals(True)
+        self.russian_silero_checkbox.blockSignals(True)
         self.enabled_checkbox.setChecked(bool(config.get("enabled", False)))
         self._rules = normalization_rule_settings(config.get("rules"))
         self.rules_enabled_checkbox.setChecked(self._rules["enabled"])
+        russian_silero = config.get("russian_silero")
+        self.russian_silero_checkbox.setChecked(
+            bool(russian_silero.get("enabled", False))
+            if isinstance(russian_silero, dict)
+            else False
+        )
         wanted = str(config.get("language", "auto"))
         index = self.language_combo.findData(wanted)
         self.language_combo.setCurrentIndex(index if index >= 0 else 0)
         self.language_combo.blockSignals(False)
         self.rules_enabled_checkbox.blockSignals(False)
+        self.russian_silero_checkbox.blockSignals(False)
         self.enabled_checkbox.blockSignals(False)
         self._update_enabled_state()
         self._update_rules_summary()
+        self._update_russian_silero_controls()
         if wanted != "auto":
             editor_index = self.editor_language_combo.findData(wanted)
             if editor_index >= 0:
@@ -192,6 +208,54 @@ class TextNormalizationSettingsWidget(QWidget):
         auto_help.setObjectName("helperLabel")
         auto_help.setWordWrap(True)
         layout.addWidget(auto_help)
+
+        self.russian_silero_frame = QFrame()
+        self.russian_silero_frame.setObjectName("card")
+        russian_layout = QVBoxLayout(self.russian_silero_frame)
+        russian_layout.setContentsMargins(14, 12, 14, 12)
+        russian_layout.setSpacing(6)
+        russian_title = QLabel(
+            self.tr(
+                "russian_silero_title",
+                "Russian pronunciation (Silero Stress)",
+            )
+        )
+        russian_title.setStyleSheet("font-weight: 600;")
+        russian_layout.addWidget(russian_title)
+        self.russian_silero_checkbox = QCheckBox(
+            self.tr(
+                "russian_silero_enable",
+                "Restore Ё and add Russian stress marks",
+            )
+        )
+        self.russian_silero_checkbox.toggled.connect(
+            self._on_configuration_changed
+        )
+        russian_layout.addWidget(self.russian_silero_checkbox)
+        self.russian_silero_status_label = QLabel()
+        self.russian_silero_status_label.setObjectName("helperLabel")
+        self.russian_silero_status_label.setWordWrap(True)
+        russian_layout.addWidget(self.russian_silero_status_label)
+        russian_actions = QHBoxLayout()
+        self.russian_silero_install_button = QPushButton(
+            self.tr("russian_silero_install", "Install and enable")
+        )
+        self.russian_silero_install_button.setIcon(ui_icon("apply"))
+        self.russian_silero_install_button.clicked.connect(
+            self.russianSileroInstallRequested.emit
+        )
+        self.russian_silero_remove_button = QPushButton(
+            self.tr("russian_silero_remove", "Remove local runtime")
+        )
+        self.russian_silero_remove_button.setIcon(ui_icon("delete"))
+        self.russian_silero_remove_button.clicked.connect(
+            self.russianSileroRemoveRequested.emit
+        )
+        russian_actions.addWidget(self.russian_silero_install_button)
+        russian_actions.addWidget(self.russian_silero_remove_button)
+        russian_actions.addStretch(1)
+        russian_layout.addLayout(russian_actions)
+        layout.addWidget(self.russian_silero_frame)
 
         dictionary_tools = QFrame()
         dictionary_tools.setObjectName("card")
@@ -320,6 +384,7 @@ class TextNormalizationSettingsWidget(QWidget):
         layout.addLayout(footer)
         self._update_enabled_state()
         self._update_rules_summary()
+        self._update_russian_silero_controls()
 
     def _reload_dictionaries(self, *, preferred_editor: str = "") -> None:
         active = str(self.language_combo.currentData() or "auto")
@@ -478,6 +543,62 @@ class TextNormalizationSettingsWidget(QWidget):
         self.language_combo.setEnabled(enabled)
         self.rules_enabled_checkbox.setEnabled(enabled)
         self.rules_details_button.setEnabled(enabled)
+        self._update_russian_silero_controls()
+
+    def set_russian_silero_status(
+        self,
+        installed: bool,
+        *,
+        installing: bool = False,
+    ) -> None:
+        self._russian_silero_installed = bool(installed)
+        self._russian_silero_installing = bool(installing)
+        self._update_russian_silero_controls()
+
+    def _update_russian_silero_controls(self) -> None:
+        if not hasattr(self, "russian_silero_frame"):
+            return
+        selected_russian = str(self.language_combo.currentData() or "") == "ru"
+        visible = selected_russian
+        self.russian_silero_frame.setVisible(visible)
+        if not visible:
+            return
+        normalizing = self.enabled_checkbox.isChecked()
+        ready = self._russian_silero_installed and not self._russian_silero_installing
+        self.russian_silero_checkbox.setEnabled(normalizing and ready)
+        self.russian_silero_install_button.setVisible(
+            not self._russian_silero_installed
+        )
+        self.russian_silero_install_button.setEnabled(
+            normalizing and not self._russian_silero_installing
+        )
+        self.russian_silero_remove_button.setVisible(
+            self._russian_silero_installed
+        )
+        self.russian_silero_remove_button.setEnabled(
+            not self._russian_silero_installing
+        )
+        if self._russian_silero_installing:
+            status = self.tr(
+                "russian_silero_installing",
+                "Installing the optional local Russian normalizer...",
+            )
+        elif self._russian_silero_installed:
+            status = self.tr(
+                "russian_silero_ready",
+                "Installed. It runs after dictionaries and number rules; only F5-TTS Russian receives + stress marks.",
+            )
+        elif not normalizing:
+            status = self.tr(
+                "russian_silero_enable_normalization",
+                "Enable text normalization before installing the optional Russian layer.",
+            )
+        else:
+            status = self.tr(
+                "russian_silero_not_installed",
+                "Optional local download. It restores Ё with Silero Stress for any selected TTS engine.",
+            )
+        self.russian_silero_status_label.setText(status)
 
     def _editor_language(self) -> str:
         return str(self.editor_language_combo.currentData() or "en")

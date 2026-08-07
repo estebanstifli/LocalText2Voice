@@ -17,7 +17,7 @@ from app.utils.paths import (
     write_assets_location_file,
 )
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 18
+CURRENT_SETTINGS_SCHEMA_VERSION = 20
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -60,14 +60,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "export_mode": "single",
     "piper_path": "engines/piper/piper.exe",
     "ffmpeg_path": "ffmpeg/ffmpeg.exe",
-    "chunk_size": 2500,
+    "chunk_size": 300,
     "engine_chunk_sizes": {
-        "piper": 0,
-        "kokoro": 0,
-        "chatterbox": 0,
-        "qwen": 0,
-        "omnivoice": 0,
-        "f5_russian": 0,
+        "piper": 300,
+        "kokoro": 300,
+        "chatterbox": 300,
+        "qwen": 520,
+        "omnivoice": 300,
+        "f5_russian": 300,
     },
     "editor_syntax_highlighting": True,
     "show_markup_toolbar": True,
@@ -76,6 +76,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "enabled": False,
         "language": "auto",
         "rules": dict(DEFAULT_NORMALIZATION_RULES),
+        "russian_silero": {"enabled": False},
     },
     "pause_between_blocks_ms": 350,
     "pause_between_chapters_ms": 900,
@@ -185,13 +186,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "tail_warning_threshold_seconds": 0.50,
         "tail_failure_threshold_seconds": 1.00,
     },
+    "internal_engine_host_port": 8765,
+    "remote_mcp_port": 8766,
     "local_server": {
-        "enabled": False,
-        "auto_start": False,
-        "host": "127.0.0.1",
-        "port": 8765,
         "auth_token": "",
-        "allow_lan": False,
         "serve_files": True,
         "max_parallel_jobs": 1,
     },
@@ -311,6 +309,30 @@ def _migrate_settings(
             "previous_roots": [],
         }
 
+    if version < 19:
+        legacy_server = result.get("local_server", {})
+        legacy_port = (
+            legacy_server.get("port", 8765)
+            if isinstance(legacy_server, dict)
+            else 8765
+        )
+        result["internal_engine_host_port"] = legacy_port
+        result["remote_mcp_port"] = 8766
+
+    if version < 20:
+        # Safe chunks is now the only desktop splitting policy. Convert the
+        # old implicit/default values to explicit engine limits.
+        result["split_mode"] = "safe_chunks"
+        if result.get("chunk_size") == 2500:
+            result["chunk_size"] = 300
+        engine_sizes = result.get("engine_chunk_sizes")
+        if not isinstance(engine_sizes, dict):
+            engine_sizes = {}
+        for engine, size in DEFAULT_SETTINGS["engine_chunk_sizes"].items():
+            if not engine_sizes.get(engine):
+                engine_sizes[engine] = size
+        result["engine_chunk_sizes"] = engine_sizes
+
     invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
     _sanitize_core_settings(result)
     if (
@@ -356,6 +378,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     _sanitize_choice(settings, "ui_language", SUPPORTED_UI_LANGUAGES)
     _sanitize_choice(settings, "ui_theme", SUPPORTED_UI_THEMES)
     _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
+    settings["split_mode"] = "safe_chunks"
     _sanitize_choice(settings, "export_mode", SUPPORTED_EXPORT_MODES)
 
     gpu_device = str(settings.get("gpu_device_index", "auto")).strip().casefold()
@@ -366,6 +389,20 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
             gpu_index = -1
         gpu_device = str(gpu_index) if gpu_index >= 0 else "auto"
     settings["gpu_device_index"] = gpu_device
+
+    def sanitized_port(key: str, fallback: int) -> int:
+        try:
+            port = int(settings.get(key, fallback))
+        except (TypeError, ValueError):
+            return fallback
+        return port if 1024 <= port <= 65535 else fallback
+
+    internal_port = sanitized_port("internal_engine_host_port", 8765)
+    remote_port = sanitized_port("remote_mcp_port", 8766)
+    if remote_port == internal_port:
+        remote_port = internal_port + 1 if internal_port < 65535 else internal_port - 1
+    settings["internal_engine_host_port"] = internal_port
+    settings["remote_mcp_port"] = remote_port
 
     engine = settings.get("tts_engine")
     if not isinstance(engine, str) or not engine.strip():
@@ -398,6 +435,10 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         if not isinstance(settings.get(section), dict):
             settings[section] = deepcopy(DEFAULT_SETTINGS[section])
 
+    server = settings["local_server"]
+    for obsolete_key in ("enabled", "auto_start", "host", "port", "allow_lan"):
+        server.pop(obsolete_key, None)
+
     normalization = settings["text_normalization"]
     normalization["enabled"] = bool(normalization.get("enabled", False))
     language = str(normalization.get("language", "auto")).strip().casefold().replace("_", "-")
@@ -410,6 +451,12 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     normalization["rules"] = normalization_rule_settings(
         normalization.get("rules")
     )
+    russian_silero = normalization.get("russian_silero")
+    if not isinstance(russian_silero, dict):
+        russian_silero = {}
+    normalization["russian_silero"] = {
+        "enabled": bool(russian_silero.get("enabled", False)),
+    }
 
     review = settings["review"]
     review["tail_analysis_enabled"] = bool(
@@ -491,7 +538,14 @@ def _sanitize_chunk_sizes(settings: dict[str, Any]) -> None:
             value = int(raw_value or 0)
         except (TypeError, ValueError):
             value = 0
-        sanitized[str(engine)] = value if _valid_chunk_size(value) else 0
+        default_value = (
+            int(defaults.get(engine, DEFAULT_SETTINGS["chunk_size"]))
+            if isinstance(defaults, dict)
+            else int(DEFAULT_SETTINGS["chunk_size"])
+        )
+        sanitized[str(engine)] = (
+            value if _valid_chunk_size(value) else default_value
+        )
     settings["engine_chunk_sizes"] = sanitized
 
 

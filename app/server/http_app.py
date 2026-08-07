@@ -12,6 +12,7 @@ from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
 from app.server.job_manager import LocalServerJobManager, wait_for_job
 from app.server.job_source_editor import JobSourceEditor
+from app.server.engine_host_config import internal_engine_host_url
 from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
 from app.utils.paths import application_root
 
@@ -45,7 +46,7 @@ def create_http_app(
     settings_manager = settings_manager or SettingsManager()
     service = LocalText2VoiceService(settings_manager, keep_engines_alive=True)
     server_settings = _server_settings(settings_manager)
-    base_url = _base_url_from_settings(server_settings)
+    base_url = _base_url_from_settings(settings_manager.settings)
     mcp_url = f"{base_url}/mcp"
     manager = job_manager or LocalServerJobManager(
         service,
@@ -580,14 +581,11 @@ def _authorized(request: Request, settings_manager: SettingsManager) -> bool:
 
 
 def _base_url_from_settings(settings: dict[str, Any]) -> str:
-    host = str(settings.get("host", "127.0.0.1") or "127.0.0.1")
-    if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
-    return f"http://{host}:{int(settings.get('port', 8765) or 8765)}"
+    return internal_engine_host_url(settings)
 
 
 def _mcp_url(settings_manager: SettingsManager) -> str:
-    return f"{_base_url_from_settings(_server_settings(settings_manager))}/mcp"
+    return f"{_base_url_from_settings(settings_manager.settings)}/mcp"
 
 
 def _job_response(
@@ -599,7 +597,7 @@ def _job_response(
     payload = job.to_dict(include_logs=include_logs)
     token = str(_server_settings(settings_manager).get("auth_token", "") or "").strip()
     suffix = f"?token={token}" if token else ""
-    base = base_url or _base_url_from_settings(_server_settings(settings_manager))
+    base = base_url or _base_url_from_settings(settings_manager.settings)
     if payload.get("clean_mp3_path"):
         payload["clean_mp3_url"] = f"{base}/files/jobs/{job.job_id}/clean{suffix}"
     if payload.get("mix_mp3_path"):

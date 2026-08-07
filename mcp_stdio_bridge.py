@@ -45,6 +45,7 @@ from typing import Any, Callable, TypeVar
 from mcp.server.fastmcp import FastMCP
 
 from app.core.settings_manager import SettingsManager
+from app.server.engine_host_config import engine_host_stderr_log_path, internal_engine_host_url
 from app.utils.paths import application_root
 
 T = TypeVar("T")
@@ -79,12 +80,8 @@ def _server_settings() -> dict[str, Any]:
 
 
 def _base_url() -> str:
-    settings = _server_settings()
-    host = str(settings.get("host", "127.0.0.1") or "127.0.0.1")
-    if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
-    port = int(settings.get("port", 8765) or 8765)
-    return f"http://{host}:{port}"
+    _settings_manager.settings = _settings_manager.load()
+    return internal_engine_host_url(_settings_manager.settings)
 
 
 def _headers() -> dict[str, str]:
@@ -156,14 +153,17 @@ def _ensure_engine_host() -> None:
         return
 
     creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    _engine_host_process = subprocess.Popen(
-        _engine_host_command(),
-        cwd=str(application_root()),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
-    )
+    stderr_path = engine_host_stderr_log_path()
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    with stderr_path.open("a", encoding="utf-8", buffering=1) as stderr_log:
+        _engine_host_process = subprocess.Popen(
+            _engine_host_command(),
+            cwd=str(application_root()),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_log,
+            creationflags=creationflags,
+        )
     _wait_for_engine_host()
 
 
@@ -189,7 +189,7 @@ def _safe(action: Callable[[], T]) -> T | dict[str, str]:
             "error": str(exc),
             "hint": (
                 "Check that LocalText2VoiceEngineHost.exe exists, the configured "
-                "local server port is free, and the selected engine/model is installed."
+                "internal EngineHost port is free, and the selected engine/model is installed."
             ),
         }
 

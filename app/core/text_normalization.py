@@ -376,6 +376,16 @@ class NormalizationDictionary:
     is_builtin: bool
 
 
+@dataclass(frozen=True)
+class SpeechNormalizationResult:
+    """The exact text prepared for a speech engine and its applied stages."""
+
+    text: str
+    language: str | None
+    dictionary_applied: bool
+    russian_silero_applied: bool
+
+
 class TextNormalizationStore:
     """Editable language dictionaries backed by a small SQLite database."""
 
@@ -1679,3 +1689,62 @@ class TextNormalizer:
             )
             text = pattern.sub(lambda _match, value=entry.replacement: value, text)
         return text
+
+
+_RUSSIAN_STRESS_MARK = re.compile(r"\+(?=[АЕЁИОУЫЭЮЯаеёиоуыэюя])")
+
+
+def strip_russian_stress_marks(text: str) -> str:
+    """Remove only Silero/F5 stress markers, preserving ordinary plus signs."""
+    return _RUSSIAN_STRESS_MARK.sub("", text)
+
+
+def normalize_text_for_speech(
+    text: str,
+    *,
+    enabled: bool,
+    language: str = "auto",
+    language_hint: str = "",
+    preserve_markup: bool = True,
+    rules: object = None,
+    store: TextNormalizationStore | None = None,
+    db_path: Path | None = None,
+    russian_silero_enabled: bool = False,
+    engine_id: str = "",
+    russian_manager: object | None = None,
+) -> SpeechNormalizationResult:
+    """Apply the shared normalization chain used by preview and generation.
+
+    The optional Russian stage runs after dictionaries and structured-value
+    rules, while markup remains untouched.  Only F5-TTS Russian receives
+    Silero's ``+`` stress notation; other engines receive the safe orthographic
+    form with restored ``ё`` characters.
+    """
+    if not enabled:
+        return SpeechNormalizationResult(text, None, False, False)
+    resolved = TextNormalizer.resolve_language(language, language_hint)
+    if resolved is None:
+        return SpeechNormalizationResult(text, None, False, False)
+    normalizer = TextNormalizer(store=store, db_path=db_path)
+    normalized = normalizer.normalize(
+        text,
+        language=resolved,
+        language_hint=language_hint,
+        preserve_markup=preserve_markup,
+        rules=rules,
+    )
+    apply_silero = (
+        russian_silero_enabled
+        and resolved.split("-", 1)[0] == "ru"
+    )
+    if not apply_silero:
+        return SpeechNormalizationResult(normalized, resolved, True, False)
+    manager = russian_manager
+    if manager is None:
+        from app.tts.russian_normalization_manager import RussianNormalizationManager
+
+        manager = RussianNormalizationManager()
+    accented = manager.accentuate(normalized)
+    if str(engine_id).strip().casefold() != "f5_russian":
+        accented = strip_russian_stress_marks(accented)
+    return SpeechNormalizationResult(accented, resolved, True, True)

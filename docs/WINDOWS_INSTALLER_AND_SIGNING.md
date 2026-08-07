@@ -40,6 +40,7 @@ assets. LocalText2Voice creates a managed `data` child below it. For example:
 D:\LocalText2Voice\data\
 |-- models\
 |-- engine-deps\
+|-- runtimes\
 |-- voice-gallery\
 `-- downloads\
 ```
@@ -104,8 +105,9 @@ The base installer still includes the application, Piper runtime, FFmpeg, bundle
 ## Uninstall behavior
 
 Fresh installations store downloaded TTS models, Faster Whisper caches,
-voice-gallery files, and isolated optional-engine Python dependencies under the
-managed location selected by the user:
+voice-gallery files, isolated optional-engine Python dependencies, and any
+downloaded fallback Python runtime under the managed location selected by the
+user:
 
 ```text
 <selected base>\data\

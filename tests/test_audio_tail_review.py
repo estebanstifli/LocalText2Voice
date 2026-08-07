@@ -368,6 +368,86 @@ class AudioTailReviewTests(unittest.TestCase):
         )
         self.assertFalse(worker._segment_needs_review(current_review))
 
+    def test_worker_strips_silero_marks_only_for_flagged_russian_f5_segments(
+        self,
+    ) -> None:
+        source = "Н+а выс+окой гор+е сто+ял стар+инный з+амок."
+        transcript = "На высокой горе стоял старинный замок."
+        verifier = Mock()
+        verifier.transcribe.return_value = {
+            "text": transcript,
+            "words": [],
+            "language": "ru",
+        }
+        worker = SegmentVerificationWorker(
+            Mock(),
+            1,
+            verifier,
+            "cpu",
+            "int8",
+            "ru",
+            1,
+            92.0,
+            comparison_normalization_enabled=True,
+            comparison_normalization_language="ru",
+        )
+        segment = StoredSegment(
+            id=1,
+            audiobook_id=1,
+            sequence_index=1,
+            chapter_index=1,
+            chapter_title="Course",
+            source_text=source,
+            wav_path="segment.wav",
+            status="rendered",
+            similarity_score=32.5,
+            verification_status="retry_needed",
+            transcript_text=transcript,
+            language="ru",
+            engine_config_json=json.dumps(
+                {
+                    "engine": "f5_russian",
+                    "language": "ru",
+                    "russian_silero_preprocessed": True,
+                }
+            ),
+        )
+
+        result = worker._transcribe_and_score(segment, Path("segment.wav"), "ru")
+        metrics = json.loads(str(result["review_metrics_json"]))
+
+        self.assertEqual(result["score"], 100.0)
+        self.assertLess(float(result["raw_score"]), 40.0)
+        self.assertTrue(metrics["russian_silero_stress_comparison"]["enabled"])
+        self.assertTrue(
+            metrics["russian_silero_stress_comparison"]["markers_removed"]
+        )
+        # Existing reviewed projects lack this metric and are queued once so
+        # their score is fixed without regenerating their audio.
+        self.assertTrue(worker._segment_needs_review(segment))
+        current_review = replace(
+            segment,
+            similarity_score=100.0,
+            verification_status="approved",
+            review_metrics_json=str(result["review_metrics_json"]),
+        )
+        self.assertFalse(worker._segment_needs_review(current_review))
+
+        unflagged = replace(
+            segment,
+            engine_config_json=json.dumps({"engine": "f5_russian", "language": "ru"}),
+        )
+        unflagged_result = worker._transcribe_and_score(
+            unflagged,
+            Path("segment.wav"),
+            "ru",
+        )
+        unflagged_metrics = json.loads(str(unflagged_result["review_metrics_json"]))
+        self.assertLess(float(unflagged_result["score"]), 40.0)
+        self.assertFalse(
+            unflagged_metrics["russian_silero_stress_comparison"]["enabled"]
+        )
+
     def test_user_currency_percent_and_date_example_improves_substantially(
         self,
     ) -> None:

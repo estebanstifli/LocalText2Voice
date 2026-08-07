@@ -23,12 +23,7 @@ class LocalServerController:
         return self.client.health(timeout=0.25)
 
     def endpoint_url(self) -> str:
-        settings = self._settings()
-        host = str(settings.get("host", "127.0.0.1") or "127.0.0.1")
-        if host in {"0.0.0.0", "::"}:
-            host = "127.0.0.1"
-        port = int(settings.get("port", 8765) or 8765)
-        return f"http://{host}:{port}/mcp"
+        return self.client.base_url()
 
     def start(self) -> None:
         if self.is_running():
@@ -45,7 +40,3 @@ class LocalServerController:
 
     def engine_memory(self) -> dict[str, dict[str, Any]]:
         return self.client.engine_memory()
-
-    def _settings(self) -> dict[str, Any]:
-        value = self.settings_manager.settings.get("local_server", {})
-        return dict(value) if isinstance(value, dict) else {}

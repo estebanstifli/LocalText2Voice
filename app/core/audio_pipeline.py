@@ -29,7 +29,7 @@ from app.utils.ffmpeg_utils import (
 from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
 from .text_processor import TextChunk, TextProcessor
-from .text_normalization import TextNormalizer
+from .text_normalization import normalize_text_for_speech
 
 
 def _move_file(src: Path, dst: Path) -> None:
@@ -95,6 +95,7 @@ class AudioGenerationOptions:
     text_normalization_language_hint: str = ""
     text_normalization_db_path: Path | None = None
     text_normalization_rules: dict[str, bool] = field(default_factory=dict)
+    russian_silero_enabled: bool = False
     project_audiobook_id: int | None = None
     project_settings: dict[str, Any] = field(default_factory=dict)
 
@@ -493,36 +494,40 @@ class AudioPipeline:
         text: str,
         options: AudioGenerationOptions,
     ) -> str:
-        if not options.text_normalization_enabled:
-            return text
         language_hint = options.text_normalization_language_hint or str(
             options.voice_config.get("language")
             or options.voice_config.get("lang")
             or options.voice_config.get("locale")
             or ""
         )
-        resolved_language = TextNormalizer.resolve_language(
-            options.text_normalization_language,
-            language_hint,
+        result = normalize_text_for_speech(
+            text,
+            enabled=options.text_normalization_enabled,
+            language=options.text_normalization_language,
+            language_hint=language_hint,
+            preserve_markup=True,
+            rules=options.text_normalization_rules,
+            db_path=options.text_normalization_db_path,
+            russian_silero_enabled=options.russian_silero_enabled,
+            engine_id=str(options.voice_config.get("engine", "")),
         )
-        if resolved_language is None:
+        if not result.dictionary_applied:
+            if not options.text_normalization_enabled:
+                return text
             self.log_callback(
                 "Text normalization skipped: no dictionary matches the selected language."
             )
             return text
-        normalized = TextNormalizer(
-            db_path=options.text_normalization_db_path
-        ).normalize(
-            text,
-            language=resolved_language,
-            language_hint=language_hint,
-            preserve_markup=True,
-            rules=options.text_normalization_rules,
-        )
         self.log_callback(
-            f"Text normalization applied with the {resolved_language} dictionary."
+            f"Text normalization applied with the {result.language} dictionary."
         )
-        return normalized
+        if result.russian_silero_applied:
+            self.log_callback("Russian Silero normalization applied after dictionaries.")
+            if str(options.voice_config.get("engine", "")) == "f5_russian":
+                options.voice_config["russian_silero_preprocessed"] = True
+        else:
+            options.voice_config.pop("russian_silero_preprocessed", None)
+        return result.text
 
     def _prepare_markup_groups(
         self,

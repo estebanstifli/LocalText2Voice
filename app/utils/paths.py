@@ -147,6 +147,21 @@ def engine_dependencies_root() -> Path:
     return large_assets_root() / "engine-deps"
 
 
+def python_runtime_root() -> Path:
+    """Return the writable private Python runtime location.
+
+    A packaged application normally ships its own runtime beside the executable.
+    When that runtime is unavailable, keep the downloaded replacement beside the
+    configured AI assets as well.  This prevents a model installed on another
+    drive from depending on a second, implicit runtime under ``LOCALAPPDATA``.
+    Older configurations without a storage location retain their historical
+    AppData runtime path.
+    """
+    if configured_assets_base_dir() is None:
+        return app_data_root() / "runtimes" / "python311"
+    return large_assets_root() / "runtimes" / "python311"
+
+
 def assets_location_file() -> Path:
     """A tiny locator used by the Windows uninstaller without parsing JSON."""
     return application_root() / ASSETS_LOCATION_FILENAME

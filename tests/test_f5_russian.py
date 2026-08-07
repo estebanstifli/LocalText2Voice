@@ -38,6 +38,7 @@ def test_f5_russian_is_optional_and_pinned() -> None:
     assert "silero-stress==1.4" in F5RussianManager.SUPPORT_REQUIREMENTS
     assert "load_accentor()" in F5_RUSSIAN_PYTHON_CLI
     assert "def get_accentor" in F5_RUSSIAN_PYTHON_CLI
+    assert 'request.get("stress_text_preprocessed", False)' in F5_RUSSIAN_PYTHON_CLI
     assert 'request.get("remove_silence", True)' in F5_RUSSIAN_PYTHON_CLI
 
 

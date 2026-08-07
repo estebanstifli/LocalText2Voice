@@ -70,6 +70,10 @@ class GalleryVoice:
     def is_builtin(self) -> bool:
         return self.install_type == "engine_builtin"
 
+    @property
+    def is_user_import(self) -> bool:
+        return bool((self.metadata or {}).get("source") == "user_import")
+
 
 class VoiceGalleryManager:
     """SQLite-backed catalog for previewable/installable voices."""
@@ -291,12 +295,47 @@ class VoiceGalleryManager:
         return destination
 
     def uninstall(self, voice: GalleryVoice) -> None:
+        if voice.is_user_import:
+            self.delete_reference_voice(voice)
+            return
         if voice.installed_path:
             path = Path(voice.installed_path)
             if path.is_file():
                 path.unlink()
             self._prune_empty(path.parent)
         self._mark_installed(voice.voice_id, "")
+
+    def delete_reference_voice(self, voice: GalleryVoice) -> None:
+        """Permanently remove a user-imported reference and its local record."""
+        existing = self.get_voice(voice.voice_id)
+        if existing is None:
+            return
+        if not existing.is_user_import or not existing.is_reference_audio:
+            raise VoiceGalleryError(
+                "Only user-imported reference voices can be permanently deleted."
+            )
+
+        root = self.files_root.resolve()
+        paths = {
+            Path(value)
+            for value in (
+                existing.installed_path,
+                existing.ref_audio_path,
+                existing.preview_path,
+            )
+            if value
+        }
+        for path in paths:
+            resolved = path.resolve()
+            if root not in resolved.parents:
+                continue
+            if resolved.is_file():
+                resolved.unlink()
+            self._prune_empty(resolved.parent)
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM voice_gallery_voices WHERE id = ?", (existing.voice_id,)
+            )
 
     def import_reference_voice(
         self,
@@ -414,6 +453,126 @@ class VoiceGalleryManager:
         if voice is None:
             raise VoiceGalleryError("Imported voice could not be saved.")
         return voice
+
+    def update_reference_voice(
+        self,
+        voice_id: str,
+        *,
+        source: Path | None = None,
+        name: str,
+        language: str,
+        language_name: str,
+        ref_text: str,
+        short_description: str,
+        gender: str,
+        age_style: str,
+        voice_style: str,
+        tags: list[str] | tuple[str, ...] | None = None,
+        ffmpeg_path: str | Path = "ffmpeg/ffmpeg.exe",
+    ) -> GalleryVoice:
+        """Update a user-imported reference voice without changing its identity.
+
+        The replacement sample is normalized before it replaces the existing
+        clip, so a failed conversion never destroys the voice currently in use.
+        Catalog voices remain read-only because a later gallery sync owns their
+        metadata.
+        """
+        existing = self.get_voice(voice_id)
+        if existing is None:
+            raise VoiceGalleryError(f"Reference voice was not found: {voice_id}")
+        if not existing.is_reference_audio or not existing.is_user_import:
+            raise VoiceGalleryError("Only user-imported reference voices can be edited.")
+
+        destination = Path(
+            existing.installed_path
+            or existing.ref_audio_path
+            or existing.preview_path
+        )
+        if not destination.is_file():
+            raise VoiceGalleryError(
+                f"Reference audio file not found for {existing.name}: {destination}"
+            )
+
+        metadata = dict(existing.metadata or {})
+        minimum = float(metadata.get("duration_min_seconds", self.REFERENCE_MIN_SECONDS))
+        maximum = float(metadata.get("duration_max_seconds", self.REFERENCE_MAX_SECONDS))
+        duration_seconds = self._wav_duration_seconds(destination)
+        if source is not None:
+            if not source.is_file():
+                raise VoiceGalleryError(f"Reference audio file not found: {source}")
+            if source.suffix.lower() not in {".wav", ".mp3"}:
+                raise VoiceGalleryError("Reference audio must be a WAV or MP3 file.")
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            duration_seconds = self._normalize_reference_audio(
+                source,
+                temporary,
+                ffmpeg_path,
+                minimum,
+                maximum,
+            )
+            temporary.replace(destination)
+            metadata["original_file"] = str(source)
+
+        normalized_language = language.strip() or "reference"
+        normalized_language_name = (
+            language_name.strip()
+            or (
+                normalized_language.title()
+                if normalized_language != "reference"
+                else "Reference"
+            )
+        )
+        normalized_tags = [
+            str(tag).strip()
+            for tag in (tags or ["imported", existing.engine, "reference"])
+            if str(tag).strip()
+        ]
+        metadata.update(
+            {
+                "source": "user_import",
+                "normalized_format": (
+                    f"wav pcm_s16le mono {self.REFERENCE_SAMPLE_RATE}hz"
+                ),
+                "duration_seconds": round(duration_seconds, 3),
+                "duration_min_seconds": minimum,
+                "duration_max_seconds": maximum,
+            }
+        )
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE voice_gallery_voices
+                SET name = ?, language = ?, language_name = ?, ref_text = ?,
+                    short_description = ?, gender = ?, age_style = ?,
+                    voice_style = ?, tags_json = ?, metadata_json = ?,
+                    preview_path = ?, ref_audio_path = ?, installed_path = ?,
+                    installed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name.strip() or existing.name,
+                    normalized_language,
+                    normalized_language_name,
+                    ref_text.strip(),
+                    short_description.strip(),
+                    gender.strip(),
+                    age_style.strip(),
+                    voice_style.strip(),
+                    json.dumps(normalized_tags, ensure_ascii=False),
+                    json.dumps(metadata, ensure_ascii=False),
+                    str(destination),
+                    str(destination),
+                    str(destination),
+                    now,
+                    now,
+                    voice_id,
+                ),
+            )
+        updated = self.get_voice(voice_id)
+        if updated is None:
+            raise VoiceGalleryError("Updated reference voice could not be loaded.")
+        return updated
 
     def _normalize_reference_audio(
         self,

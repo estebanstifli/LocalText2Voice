@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 import json
 import tempfile
@@ -13,7 +14,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread, Qt
+from PySide6.QtCore import QThread, Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -27,12 +28,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.audio_mix import AudioMixSettings
-from app.core.audiobook_store import AudiobookStore, StoredAudioEvent
+from app.core.audiobook_store import AudiobookStore, StoredAudioEvent, StoredSegment
 from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
 from app.core.text_normalization import TextNormalizationStore
 from app.tts.voice_gallery_manager import GalleryVoice
 from app.ui.audio_mix_preview_panel import AudioMixPreviewContext
-from app.ui.main_window import MainWindow
+from app.ui.main_window import MainWindow, MarkupAudioPickerDialog
 from app.utils.gpu_detection import GPUDetectionResult, GPUInfo
 
 
@@ -40,6 +41,103 @@ class MainWindowUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_review_marks_old_silero_f5_scores_as_pending_once(self) -> None:
+        segment = StoredSegment(
+            id=1,
+            audiobook_id=1,
+            sequence_index=1,
+            chapter_index=1,
+            chapter_title="Course",
+            source_text="text",
+            wav_path="segment.wav",
+            status="rendered",
+            similarity_score=32.5,
+            verification_status="retry_needed",
+            transcript_text="text",
+            language="ru",
+            engine_config_json=json.dumps(
+                {
+                    "engine": "f5_russian",
+                    "language": "ru",
+                    "russian_silero_preprocessed": True,
+                }
+            ),
+        )
+
+        self.assertFalse(MainWindow._russian_silero_stress_comparison_current(segment))
+
+        current_segment = replace(
+            segment,
+            review_metrics_json=json.dumps(
+                {"russian_silero_stress_comparison": {"enabled": True}}
+            ),
+        )
+        self.assertTrue(
+            MainWindow._russian_silero_stress_comparison_current(current_segment)
+        )
+
+    def test_markup_voice_menu_inserts_only_a_local_voice(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window._select_tts_engine("f5_russian")
+        rows = [
+            {"name": "Narrator", "language": "Russian", "installed": True},
+            {
+                "name": "Not downloaded",
+                "language": "Russian",
+                "installed": False,
+            },
+        ]
+        with patch.object(window, "_voice_page_rows", return_value=rows):
+            window._populate_markup_voice_menu()
+
+        actions = window.markup_voice_menu.actions()
+        self.assertEqual([action.text() for action in actions], ["Narrator (Russian)"])
+        window.text_editor.clear()
+        actions[0].trigger()
+        self.assertEqual(window.text_editor.toPlainText(), '{{voice "Narrator"}}')
+
+    def test_markup_play_menu_inserts_the_selected_library_asset(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            asset = directory / "intro.mp3"
+            asset.touch()
+            with (
+                patch.object(
+                    window,
+                    "_markup_audio_library_directory",
+                    return_value=directory,
+                ),
+                patch.object(
+                    window,
+                    "_markup_audio_library_files",
+                    return_value=[asset],
+                ),
+            ):
+                window._populate_markup_audio_menu("music")
+
+            actions = window.markup_audio_menus["music"].actions()
+            self.assertEqual([action.text() for action in actions], ["intro.mp3"])
+            window.text_editor.clear()
+            actions[0].trigger()
+            self.assertEqual(
+                window.text_editor.toPlainText(),
+                '{{play "intro.mp3" track=music volume=1}}',
+            )
+
+    def test_markup_audio_picker_filters_a_large_library(self) -> None:
+        files = [Path(f"effect-{index:03d}.wav") for index in range(25)]
+        dialog = MarkupAudioPickerDialog(files, "sfx")
+        self.addCleanup(dialog.deleteLater)
+
+        self.assertEqual(dialog.files_list.count(), 25)
+        dialog.search_edit.setText("effect-017")
+        self.assertEqual(dialog.files_list.count(), 1)
+        dialog._accept_selection()
+        self.assertEqual(dialog.selected_path, Path("effect-017.wav"))
 
     def test_generation_and_settings_views_are_separate(self) -> None:
         window = MainWindow()
@@ -50,6 +148,11 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(window.page_stack.currentIndex(), 0)
         self.assertEqual(window.ui_language_combo.count(), 11)
         self.assertEqual(window.ui_language_combo.maxVisibleItems(), 11)
+        self.assertTrue(hasattr(window, "local_server_port_spin"))
+        self.assertTrue(hasattr(window, "local_server_log_label"))
+        self.assertFalse(hasattr(window, "local_server_enabled_checkbox"))
+        self.assertFalse(hasattr(window, "local_server_auto_start_checkbox"))
+        self.assertFalse(hasattr(window, "local_server_endpoint_label"))
         self.assertTrue(hasattr(window, "theme_button"))
         self.assertFalse(window.theme_button.icon().isNull())
         self.assertEqual(window.theme_button.objectName(), "themeToggleButton")
@@ -71,7 +174,8 @@ class MainWindowUITests(unittest.TestCase):
             "markupCommandButton",
         )
         self.assertGreaterEqual(len(markup_buttons), 6)
-        self.assertIn("Play", [button.text() for button in markup_buttons])
+        self.assertIn("Play Music", [button.text() for button in markup_buttons])
+        self.assertIn("Play SFX", [button.text() for button in markup_buttons])
         self.assertIn("Stop Audio", [button.text() for button in markup_buttons])
         window.text_editor.clear()
         markup_buttons[0].click()
@@ -835,6 +939,51 @@ class MainWindowUITests(unittest.TestCase):
         self.assertGreaterEqual(repaired_index, 0)
         self.assertTrue(window.editor_tabs.isTabVisible(repaired_index))
 
+    def test_russian_silero_controls_are_explicit_and_only_visible_for_russian(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        manager = SettingsManager(root / "config.json")
+        values = deepcopy(manager.settings)
+        values["text_normalization"] = {"enabled": False, "language": "auto"}
+        manager.save(values)
+        normalization_store = TextNormalizationStore(
+            root / "text_normalization.sqlite3"
+        )
+        with (
+            patch(
+                "app.ui.main_window.SettingsManager",
+                return_value=SettingsManager(root / "config.json"),
+            ),
+            patch(
+                "app.ui.text_normalization_settings.TextNormalizationStore",
+                return_value=normalization_store,
+            ),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        panel = window.text_normalization_panel
+
+        self.assertTrue(panel.russian_silero_frame.isHidden())
+        panel.enabled_checkbox.setChecked(True)
+        panel.language_combo.setCurrentIndex(panel.language_combo.findData("ru"))
+
+        self.assertFalse(panel.russian_silero_frame.isHidden())
+        self.assertFalse(panel.russian_silero_checkbox.isEnabled())
+        self.assertTrue(panel.russian_silero_install_button.isEnabled())
+        requested: list[bool] = []
+        panel.russianSileroInstallRequested.connect(lambda: requested.append(True))
+        panel.russian_silero_install_button.click()
+        self.assertEqual(requested, [True])
+        self.assertIsNotNone(window.russian_normalization_install_dialog)
+        window.russian_normalization_install_dialog.reject()
+
+        panel.set_russian_silero_status(True)
+        self.assertTrue(panel.russian_silero_checkbox.isEnabled())
+        panel.russian_silero_checkbox.setChecked(True)
+        config = panel.configuration()
+        self.assertTrue(config["russian_silero"]["enabled"])
+
     def test_chatterbox_installed_state_is_shown(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
@@ -922,6 +1071,51 @@ class MainWindowUITests(unittest.TestCase):
             self.assertEqual(dialog.install_button.text(), window.tr("close", "Close"))
             dialog.install_button.click()
             self.assertNotIn("omnivoice", window.engine_install_dialogs)
+
+    def test_pending_omnivoice_setup_never_overrides_another_selected_engine(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.settings = deepcopy(DEFAULT_SETTINGS)
+        window.settings["tts_engine"] = "f5_russian"
+        window.settings["installer_setup"] = {
+            "profile": "gpu",
+            "pending_installs": ["omnivoice", "faster_whisper"],
+            "completed": False,
+        }
+        window._select_tts_engine("f5_russian")
+
+        with (
+            patch.object(window.settings_manager, "save") as save_settings,
+            patch("app.ui.main_window.QMessageBox.information") as show_message,
+        ):
+            window._run_pending_installer_setup()
+
+        self.assertEqual(window.tts_engine_combo.currentData(), "f5_russian")
+        self.assertEqual(window.settings["tts_engine"], "f5_russian")
+        self.assertTrue(window.settings["installer_setup"]["completed"])
+        self.assertEqual(window.settings["installer_setup"]["pending_installs"], [])
+        save_settings.assert_called()
+        show_message.assert_not_called()
+
+    def test_voice_preview_has_pause_stop_and_restart_controls(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.voices_player.setSource(QUrl.fromLocalFile("C:/voice-sample.mp3"))
+        window._refresh_voice_preview_controls()
+
+        self.assertTrue(window.voice_preview_restart_button.isEnabled())
+        with (
+            patch.object(window.voices_player, "stop") as stop,
+            patch.object(window.voices_player, "setPosition") as set_position,
+            patch.object(window.voices_player, "play") as play,
+        ):
+            window._stop_voice_preview()
+            window._restart_voice_preview()
+
+        stop.assert_called_once_with()
+        self.assertEqual(set_position.call_args_list[0].args, (0,))
+        self.assertEqual(set_position.call_args_list[1].args, (0,))
+        play.assert_called_once_with()
 
     def test_recent_projects_menu_opens_a_stored_project(self) -> None:
         window = MainWindow()

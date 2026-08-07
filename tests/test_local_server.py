@@ -137,6 +137,16 @@ def test_engine_host_client_waits_until_shutdown_completes(tmp_path):
     )
 
 
+def test_engine_host_client_uses_dedicated_internal_port(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["internal_engine_host_port"] = 9123
+    settings.settings["remote_mcp_port"] = 9456
+
+    client = EngineHostClient(settings)
+
+    assert client.base_url() == "http://127.0.0.1:9123"
+
+
 def test_repeated_cancel_requests_are_sent_to_engine_host_only_once():
     client = MagicMock()
     client.submit_job.return_value = {"job_id": "job-123"}
@@ -301,6 +311,24 @@ def test_generation_options_use_explicit_normalization_language_hint(tmp_path):
     )
 
     assert options.text_normalization_language_hint == "Spanish"
+
+
+def test_generation_options_enable_shared_russian_silero_when_configured(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["text_normalization"] = {
+        "enabled": True,
+        "language": "ru",
+        "russian_silero": {"enabled": True},
+    }
+    settings.save()
+    service = LocalText2VoiceService(settings)
+
+    options = service._generation_options(
+        {"output_dir": str(tmp_path / "output")},
+        {"engine": "piper", "language": "ru"},
+    )
+
+    assert options.russian_silero_enabled is True
 
 
 def test_service_rejects_unsafe_requested_chunk_size(tmp_path):

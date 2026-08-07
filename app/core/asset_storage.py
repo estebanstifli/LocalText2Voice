@@ -26,7 +26,13 @@ class AssetStorageCancelled(AssetStorageError):
 
 
 StorageProgress = Callable[[int, int, str], None]
-MANAGED_DIRECTORIES = ("models", "engine-deps", "voice-gallery", "downloads")
+MANAGED_DIRECTORIES = (
+    "models",
+    "engine-deps",
+    "runtimes",
+    "voice-gallery",
+    "downloads",
+)
 
 
 @dataclass(frozen=True)

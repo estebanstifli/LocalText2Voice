@@ -37,8 +37,14 @@ def test_invalid_partial_settings_fall_back_to_safe_defaults(tmp_path):
     assert settings["export_mode"] == DEFAULT_SETTINGS["export_mode"]
     assert settings["speed"] == DEFAULT_SETTINGS["speed"]
     assert settings["chunk_size"] == DEFAULT_SETTINGS["chunk_size"]
-    assert settings["engine_chunk_sizes"]["omnivoice"] == 0
-    assert settings["engine_chunk_sizes"]["qwen"] == 0
+    assert (
+        settings["engine_chunk_sizes"]["omnivoice"]
+        == DEFAULT_SETTINGS["engine_chunk_sizes"]["omnivoice"]
+    )
+    assert (
+        settings["engine_chunk_sizes"]["qwen"]
+        == DEFAULT_SETTINGS["engine_chunk_sizes"]["qwen"]
+    )
     assert settings["review"] == DEFAULT_SETTINGS["review"]
     assert len(TextProcessor.split_paragraph_chunks(RUSSIAN_SAMPLE, settings["chunk_size"])) == 1
 
@@ -50,6 +56,41 @@ def test_malformed_json_uses_complete_defaults(tmp_path):
     settings = SettingsManager(path).settings
 
     assert settings == DEFAULT_SETTINGS
+
+
+def test_chunk_defaults_migrate_to_explicit_safe_engine_limits(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "settings_schema_version": 19,
+                "split_mode": "chapters",
+                "chunk_size": 2500,
+                "engine_chunk_sizes": {
+                    "piper": 0,
+                    "kokoro": 0,
+                    "chatterbox": 0,
+                    "qwen": 0,
+                    "omnivoice": 0,
+                    "f5_russian": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = SettingsManager(path).settings
+
+    assert settings["split_mode"] == "safe_chunks"
+    assert settings["chunk_size"] == 300
+    assert settings["engine_chunk_sizes"] == {
+        "piper": 300,
+        "kokoro": 300,
+        "chatterbox": 300,
+        "qwen": 520,
+        "omnivoice": 300,
+        "f5_russian": 300,
+    }
 
 
 def test_large_asset_storage_defaults_to_application_folder(tmp_path):
@@ -75,6 +116,36 @@ def test_schema_16_config_keeps_legacy_asset_location(tmp_path):
     storage = SettingsManager(path).settings["storage"]
 
     assert storage == {"base_dir": "", "previous_roots": []}
+
+
+def test_schema_18_server_port_migrates_to_internal_engine_host_port(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "settings_schema_version": 18,
+                "local_server": {"port": 9123},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = SettingsManager(path).settings
+
+    assert settings["internal_engine_host_port"] == 9123
+    assert settings["remote_mcp_port"] == 8766
+    assert "port" not in settings["local_server"]
+
+
+def test_internal_and_remote_ports_are_sanitized_and_kept_distinct(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    manager.settings["internal_engine_host_port"] = 9000
+    manager.settings["remote_mcp_port"] = 9000
+
+    manager.save()
+
+    assert manager.settings["internal_engine_host_port"] == 9000
+    assert manager.settings["remote_mcp_port"] == 9001
 
 
 def test_save_preserves_existing_settings_reference(tmp_path):
