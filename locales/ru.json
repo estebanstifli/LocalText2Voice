@@ -926,5 +926,13 @@
   "engine_install_accept_noncommercial": "Я понимаю, что эта модель и созданное ею аудио предназначены только для некоммерческого использования.",
   "engine_not_installed": "Движок не установлен",
   "voices_engine_not_installed_help": "Этот движок не установлен. Показанные голоса являются только записями каталога; их нельзя выбрать или протестировать до установки движка.",
-  "voice_selection_engine_not_installed": "Установите {engine}, прежде чем выбирать один из его голосов."
+  "voice_selection_engine_not_installed": "Установите {engine}, прежде чем выбирать один из его голосов.",
+  "engine_must_be_installed": "Установите этот движок, прежде чем выбирать его.",
+  "selected_unloading": "Выбран / выгружается",
+  "unloading_from_memory": "Выгрузка из памяти...",
+  "loading_engine_memory_modal": "Загрузка {engine} в память. Подождите...",
+  "unloading_engine_memory_modal": "Выгрузка {engine} из памяти. Подождите...",
+  "engine_unloaded_from_memory": "{engine} выгружен из памяти.",
+  "legacy_assets_migration_start": "Перенос ресурсов из предыдущей установки LocalText2Voice...",
+  "legacy_assets_migration_title": "Перенос предыдущей установки"
 }

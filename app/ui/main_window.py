@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import wave
 from copy import deepcopy
@@ -69,7 +70,11 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.core.audio_pipeline import AudioGenerationOptions
-from app.core.asset_storage import AssetStorageManager, AssetTransferResult
+from app.core.asset_storage import (
+    AssetStorageCancelled,
+    AssetStorageManager,
+    AssetTransferResult,
+)
 from app.core.audio_mix import AudioMixSettings
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
@@ -922,6 +927,8 @@ class MainWindow(QMainWindow):
         self.host_loaded_tts_engine_ids: set[str] = set()
         self.host_generation_engine_id: str | None = None
         self.preloading_tts_engine_id: str | None = None
+        self.preload_memory_action_load: bool | None = None
+        self.engine_memory_progress_dialog: QProgressDialog | None = None
         self.loaded_tts_engine_id: str | None = None
         self.installer_setup_queue: list[str] = []
         self.installer_setup_running = False
@@ -997,6 +1004,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
         self._restore_active_project()
         self._set_running(False)
+        QTimer.singleShot(0, self._migrate_legacy_duplicate_asset_root)
         QTimer.singleShot(700, self._refresh_local_server_status)
         QTimer.singleShot(900, self._run_pending_installer_setup)
         QTimer.singleShot(1200, self._sync_engine_host_memory_state)
@@ -4813,6 +4821,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(message)
 
     def _on_kokoro_python_finished(self, path: str) -> None:
+        self.kokoro_python_manager = KokoroPythonManager()
+        self._select_tts_engine("kokoro")
         self.kokoro_python_progress_bar.setValue(100)
         self._finish_tts_engine_install_dialog(
             "kokoro",
@@ -5326,6 +5336,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(message)
 
     def _on_chatterbox_finished(self, path: str) -> None:
+        self.chatterbox_manager = ChatterboxManager()
+        self._select_tts_engine("chatterbox")
         self.chatterbox_progress_bar.setRange(0, 100)
         self.chatterbox_progress_bar.setValue(100)
         self._finish_tts_engine_install_dialog(
@@ -5953,6 +5965,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(message)
 
     def _on_qwen_finished(self, path: str) -> None:
+        self.qwen_manager = QwenManager()
+        self._select_tts_engine("qwen")
         self.qwen_progress_bar.setRange(0, 100)
         self.qwen_progress_bar.setValue(100)
         self._finish_tts_engine_install_dialog(
@@ -6600,6 +6614,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(message)
 
     def _on_omnivoice_finished(self, path: str) -> None:
+        self.omnivoice_manager = OmniVoiceManager()
+        self._select_tts_engine("omnivoice")
         self.omnivoice_progress_bar.setRange(0, 100)
         self.omnivoice_progress_bar.setValue(100)
         self._finish_tts_engine_install_dialog(
@@ -7099,6 +7115,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(message)
 
     def _on_f5_russian_finished(self, path: str) -> None:
+        self.f5_russian_manager = F5RussianManager()
+        self._select_tts_engine("f5_russian")
         self.f5_russian_progress_bar.setRange(0, 100)
         self.f5_russian_progress_bar.setValue(100)
         self._finish_tts_engine_install_dialog(
@@ -7772,6 +7790,15 @@ class MainWindow(QMainWindow):
 
     def _on_tts_engine_changed(self) -> None:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if not self._tts_engine_is_installed(engine_id):
+            fallback = self._first_installed_tts_engine()
+            if fallback and fallback != engine_id:
+                index = self.tts_engine_combo.findData(fallback)
+                if index >= 0:
+                    signals_were_blocked = self.tts_engine_combo.blockSignals(True)
+                    self.tts_engine_combo.setCurrentIndex(index)
+                    self.tts_engine_combo.blockSignals(signals_were_blocked)
+                    engine_id = fallback
         if not self._restoring_settings:
             self.settings["tts_engine"] = engine_id
             self._skip_pending_omnivoice_setup_if_not_selected(engine_id)
@@ -7817,7 +7844,7 @@ class MainWindow(QMainWindow):
         engine_label = self._tts_engine_label(engine_id)
         self.header_engine_label.setText(engine_label)
         if self.preloading_tts_engine_id == engine_id:
-            status_text = self.tr("loading_into_memory", "Loading into memory...")
+            status_text = self._engine_memory_action_text()
         elif self.worker_thread is not None and self.loaded_tts_engine_id == engine_id:
             status_text = self.tr("active", "Active")
         else:
@@ -7826,7 +7853,7 @@ class MainWindow(QMainWindow):
             self.sidebar_ready_label.setText(status_text)
         if hasattr(self, "sidebar_engine_detail_label"):
             if self.preloading_tts_engine_id == engine_id:
-                memory_text = self.tr("loading_into_memory", "Loading into memory...")
+                memory_text = self._engine_memory_action_text()
             elif (
                 self.preloaded_tts_engine_id == engine_id
                 or engine_id in self.host_loaded_tts_engine_ids
@@ -8169,7 +8196,14 @@ class MainWindow(QMainWindow):
             if engine_id != current_engine:
                 row["selected"] = ""
             elif self.preloading_tts_engine_id == engine_id:
-                row["selected"] = self.tr("selected_loading", "Selected / loading")
+                row["selected"] = self.tr(
+                    "selected_loading"
+                    if self.preload_memory_action_load
+                    else "selected_unloading",
+                    "Selected / loading"
+                    if self.preload_memory_action_load
+                    else "Selected / unloading",
+                )
             elif (
                 self.preloaded_tts_engine_id == engine_id
                 or engine_id in self.host_loaded_tts_engine_ids
@@ -8272,6 +8306,15 @@ class MainWindow(QMainWindow):
         select_button.clicked.connect(
             lambda _checked=False, selected=engine_id: self._select_tts_engine(selected)
         )
+        engine_selectable = self._tts_engine_is_installed(engine_id)
+        select_button.setEnabled(engine_selectable)
+        if not engine_selectable:
+            select_button.setToolTip(
+                self.tr(
+                    "engine_must_be_installed",
+                    "Install this engine before selecting it.",
+                )
+            )
         layout.addWidget(select_button)
 
         if engine_id == "piper":
@@ -8523,19 +8566,55 @@ class MainWindow(QMainWindow):
         if engine_id:
             self._select_tts_engine(engine_id)
 
-    def _select_tts_engine(self, engine_id: str) -> None:
+    def _tts_engine_is_installed(self, engine_id: str) -> bool:
+        if engine_id == "piper":
+            executable = resolve_executable(
+                self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
+            )
+            return executable.exists()
+        manager = {
+            "kokoro": self.kokoro_python_manager,
+            "chatterbox": self.chatterbox_manager,
+            "qwen": self.qwen_manager,
+            "omnivoice": self.omnivoice_manager,
+            "f5_russian": self.f5_russian_manager,
+        }.get(engine_id)
+        if manager is None:
+            return True
+        return bool(manager.is_installed())
+
+    def _first_installed_tts_engine(self) -> str | None:
+        for index in range(self.tts_engine_combo.count()):
+            candidate = str(self.tts_engine_combo.itemData(index) or "")
+            if candidate and self._tts_engine_is_installed(candidate):
+                return candidate
+        return None
+
+    def _select_tts_engine(self, engine_id: str) -> bool:
+        if not self._tts_engine_is_installed(engine_id):
+            self.log_view.append_event(
+                f"Cannot select {self._tts_engine_label(engine_id)}: engine is not installed."
+            )
+            self._show_error(
+                self.tr("engine_not_installed", "Engine not installed"),
+                self.tr(
+                    "engine_must_be_installed",
+                    "Install this engine before selecting it.",
+                ),
+            )
+            return False
         index = self.tts_engine_combo.findData(engine_id)
         if index < 0:
-            return
+            return False
         if index == self.tts_engine_combo.currentIndex():
             self._on_tts_engine_changed()
-            return
+            return True
         self.tts_engine_combo.setCurrentIndex(index)
         if self.tts_engine_combo.signalsBlocked():
             self._on_tts_engine_changed()
+        return True
 
     def _select_and_install_engine(self, engine_id: str) -> None:
-        self._select_tts_engine(engine_id)
         if engine_id == "kokoro":
             self._install_kokoro_python()
         elif engine_id == "chatterbox":
@@ -8726,6 +8805,7 @@ class MainWindow(QMainWindow):
         engine_id: str,
         can_load: bool,
     ) -> None:
+        action_in_progress = self.preloading_tts_engine_id == engine_id
         loaded = (
             engine_id in self.host_loaded_tts_engine_ids
             or (
@@ -8733,15 +8813,22 @@ class MainWindow(QMainWindow):
                 and self.preloaded_tts_engine_id == engine_id
             )
         )
-        loading = self.preloading_tts_engine_id == engine_id
-        if loaded:
+        if action_in_progress:
+            is_loading = self.preload_memory_action_load is not False
+            button.setText(
+                self.tr(
+                    "loading_into_memory" if is_loading else "unloading_from_memory",
+                    "Loading into memory..."
+                    if is_loading
+                    else "Unloading from memory...",
+                )
+            )
+            button.setIcon(ui_icon("refresh"))
+            button.setEnabled(False)
+        elif loaded:
             button.setText(self.tr("unload_from_memory", "Unload from memory"))
             button.setIcon(ui_icon("delete"))
             button.setEnabled(self.preload_thread is None and self.worker_thread is None)
-        elif loading:
-            button.setText(self.tr("loading_into_memory", "Loading into memory..."))
-            button.setIcon(ui_icon("refresh"))
-            button.setEnabled(False)
         else:
             button.setText(self.tr("load_into_memory", "Load into memory"))
             button.setIcon(ui_icon("open"))
@@ -8760,9 +8847,16 @@ class MainWindow(QMainWindow):
             return
         if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "f5_russian"}:
             return
-        self._select_tts_engine(engine_id)
+        # Show a visible acknowledgement before doing any local preparation.
+        # Some model configurations take noticeable time to assemble.
+        self._show_engine_memory_progress_dialog(engine_id, load=True)
+        QApplication.processEvents()
+        if not self._select_tts_engine(engine_id):
+            self._close_engine_memory_progress_dialog()
+            return
         voice_config = self._current_voice_config()
         if voice_config is None:
+            self._close_engine_memory_progress_dialog()
             return
         self._unload_preloaded_tts_engine(log_message=False)
         self._save_settings()
@@ -8781,6 +8875,10 @@ class MainWindow(QMainWindow):
         if self.preload_thread is not None:
             return
         self.preloading_tts_engine_id = engine_id
+        self.preload_memory_action_load = load
+        if self.engine_memory_progress_dialog is None:
+            self._show_engine_memory_progress_dialog(engine_id, load)
+        QApplication.processEvents()
         self.log_view.append_event(
             self.tr(
                 "preloading_engine" if load else "unloading_engine",
@@ -8802,6 +8900,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.log.connect(self.log_view.append_event)
+        worker.log.connect(self._update_engine_memory_progress_dialog)
         worker.finished.connect(self._on_tts_engine_preloaded)
         worker.failed.connect(self._on_tts_engine_preload_failed)
         worker.finished.connect(thread.quit)
@@ -8834,9 +8933,18 @@ class MainWindow(QMainWindow):
                 engine=self._tts_engine_label(engine_id),
             )
         )
+        # Update the visible state first.  Waiting for QThread.finished made
+        # the modal disappear a few seconds before the sidebar caught up.
+        self.preloading_tts_engine_id = None
+        self.preload_memory_action_load = None
         self._refresh_all_engine_status()
+        self._close_engine_memory_progress_dialog()
 
     def _on_tts_engine_preload_failed(self, message: str) -> None:
+        self.preloading_tts_engine_id = None
+        self.preload_memory_action_load = None
+        self._refresh_all_engine_status()
+        self._close_engine_memory_progress_dialog()
         self.log_view.append_event(message)
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
         self._unload_preloaded_tts_engine(log_message=False)
@@ -8845,11 +8953,61 @@ class MainWindow(QMainWindow):
         self.preload_worker = None
         self.preload_thread = None
         self.preloading_tts_engine_id = None
+        self.preload_memory_action_load = None
+        self._close_engine_memory_progress_dialog()
         self._refresh_all_engine_status()
+
+    def _engine_memory_action_text(self) -> str:
+        if self.preload_memory_action_load is False:
+            return self.tr("unloading_from_memory", "Unloading from memory...")
+        return self.tr("loading_into_memory", "Loading into memory...")
+
+    def _show_engine_memory_progress_dialog(self, engine_id: str, load: bool) -> None:
+        self._close_engine_memory_progress_dialog()
+        dialog = QProgressDialog(
+            self.tr(
+                "loading_engine_memory_modal" if load else "unloading_engine_memory_modal",
+                "Loading {engine} into memory. Please wait..."
+                if load
+                else "Unloading {engine} from memory. Please wait...",
+                engine=self._tts_engine_label(engine_id),
+            ),
+            "",
+            0,
+            0,
+            self,
+        )
+        dialog.setWindowTitle(
+            self.tr(
+                "loading_into_memory" if load else "unloading_from_memory",
+                "Loading into memory" if load else "Unloading from memory",
+            )
+        )
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setCancelButton(None)
+        dialog.setMinimumDuration(0)
+        dialog.show()
+        self.engine_memory_progress_dialog = dialog
+        QApplication.processEvents()
+
+    def _update_engine_memory_progress_dialog(self, message: str) -> None:
+        dialog = self.engine_memory_progress_dialog
+        if dialog is not None:
+            dialog.setLabelText(message)
+            QApplication.processEvents()
+
+    def _close_engine_memory_progress_dialog(self) -> None:
+        dialog = self.engine_memory_progress_dialog
+        self.engine_memory_progress_dialog = None
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
 
     def _unload_preloaded_tts_engine(self, log_message: bool = True) -> None:
         if self.preload_worker is not None:
-            self.preload_worker.request_cancel()
+            cancel = getattr(self.preload_worker, "request_cancel", None)
+            if callable(cancel):
+                cancel()
         engine_id = self.preloaded_tts_engine_id
         engine = self.preloaded_tts_engine
         self.preloaded_tts_engine = None
@@ -9500,6 +9658,79 @@ class MainWindow(QMainWindow):
         self._refresh_all_engine_status()
         self._refresh_whisper_status()
         self._refresh_voices_page()
+
+    def _migrate_legacy_duplicate_asset_root(self) -> None:
+        """Recover models and imported voices saved by older ``data\\data`` builds."""
+        assets_root = large_assets_root()
+        legacy_root = AssetStorageManager.legacy_duplicate_root(assets_root)
+        if legacy_root is None:
+            return
+        dialog = QProgressDialog(
+            self.tr(
+                "legacy_assets_migration_start",
+                "Migrating assets from a previous LocalText2Voice installation...",
+            ),
+            self.tr("cancel", "Cancel"),
+            0,
+            100,
+            self,
+        )
+        dialog.setWindowTitle(
+            self.tr("legacy_assets_migration_title", "Migrating previous installation")
+        )
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setAutoClose(False)
+        dialog.setMinimumDuration(0)
+        dialog.show()
+        cancel_token = threading.Event()
+        dialog.canceled.connect(cancel_token.set)
+        last_message = ""
+
+        def progress(current: int, total: int, message: str) -> None:
+            nonlocal last_message
+            percentage = int((current / total) * 100) if total else 0
+            dialog.setValue(max(0, min(100, percentage)))
+            dialog.setLabelText(message)
+            if message != last_message:
+                self.log_view.append_event(f"Legacy asset migration: {message}")
+                last_message = message
+            QApplication.processEvents()
+
+        try:
+            result = AssetStorageManager.migrate_legacy_duplicate_root(
+                assets_root,
+                progress_callback=progress,
+                cancel_token=cancel_token,
+            )
+        except AssetStorageCancelled:
+            dialog.close()
+            self.log_view.append_event("Legacy asset migration cancelled.")
+            return
+        except Exception as exc:
+            dialog.close()
+            self.log_view.append_event(f"Legacy asset migration failed: {exc}")
+            self._show_error(
+                self.tr("legacy_assets_migration_title", "Migrating previous installation"),
+                str(exc),
+            )
+            return
+        dialog.setValue(100)
+        dialog.close()
+        if result is None:
+            return
+        self._relocate_selected_asset_paths(result.source_root, result.assets_root)
+        self._reload_asset_managers()
+        relocated_rows = self.voice_gallery_manager.relocate_paths(
+            result.source_root,
+            result.assets_root,
+        )
+        self._save_settings()
+        self._refresh_voices_page()
+        self.log_view.append_event(
+            "Legacy asset migration completed: "
+            f"{result.copied_files} file(s) copied, {relocated_rows} gallery voice(s) updated. "
+            "The original data\\data folder was kept as a backup."
+        )
 
     def _relocate_selected_asset_paths(
         self,

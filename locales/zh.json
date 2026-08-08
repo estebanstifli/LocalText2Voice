@@ -926,5 +926,13 @@
   "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
   "engine_not_installed": "语音引擎未安装",
   "voices_engine_not_installed_help": "此引擎尚未安装。当前显示的语音仅为目录条目，在安装引擎之前无法选择或测试。",
-  "voice_selection_engine_not_installed": "请先安装 {engine}，然后再选择其语音。"
+  "voice_selection_engine_not_installed": "请先安装 {engine}，然后再选择其语音。",
+  "engine_must_be_installed": "请先安装此引擎，然后再选择它。",
+  "selected_unloading": "已选择 / 正在卸载",
+  "unloading_from_memory": "正在从内存中卸载...",
+  "loading_engine_memory_modal": "正在将 {engine} 加载到内存中，请稍候...",
+  "unloading_engine_memory_modal": "正在从内存中卸载 {engine}，请稍候...",
+  "engine_unloaded_from_memory": "{engine} 已从内存中卸载。",
+  "legacy_assets_migration_start": "正在迁移之前 LocalText2Voice 安装中的资源...",
+  "legacy_assets_migration_title": "正在迁移之前的安装"
 }

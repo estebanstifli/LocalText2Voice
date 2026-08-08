@@ -926,5 +926,13 @@
   "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
   "engine_not_installed": "Engine nicht installiert",
   "voices_engine_not_installed_help": "Diese Engine ist nicht installiert. Die aufgeführten Stimmen sind nur Katalogeinträge und können erst nach der Installation der Engine ausgewählt oder getestet werden.",
-  "voice_selection_engine_not_installed": "Installieren Sie {engine}, bevor Sie eine Stimme auswählen."
+  "voice_selection_engine_not_installed": "Installieren Sie {engine}, bevor Sie eine Stimme auswählen.",
+  "engine_must_be_installed": "Installieren Sie diese Engine, bevor Sie sie auswählen.",
+  "selected_unloading": "Ausgewählt / wird entladen",
+  "unloading_from_memory": "Wird aus dem Speicher entladen...",
+  "loading_engine_memory_modal": "{engine} wird in den Speicher geladen. Bitte warten...",
+  "unloading_engine_memory_modal": "{engine} wird aus dem Speicher entladen. Bitte warten...",
+  "engine_unloaded_from_memory": "{engine} wurde aus dem Speicher entladen.",
+  "legacy_assets_migration_start": "Ressourcen aus einer früheren LocalText2Voice-Installation werden migriert...",
+  "legacy_assets_migration_title": "Frühere Installation wird migriert"
 }

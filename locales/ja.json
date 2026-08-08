@@ -926,5 +926,13 @@
   "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
   "engine_not_installed": "エンジンがインストールされていません",
   "voices_engine_not_installed_help": "このエンジンはインストールされていません。表示されている音声はカタログ項目のみで、エンジンをインストールするまで選択またはテストできません。",
-  "voice_selection_engine_not_installed": "音声を選択する前に {engine} をインストールしてください。"
+  "voice_selection_engine_not_installed": "音声を選択する前に {engine} をインストールしてください。",
+  "engine_must_be_installed": "選択する前にこのエンジンをインストールしてください。",
+  "selected_unloading": "選択済み / アンロード中",
+  "unloading_from_memory": "メモリからアンロード中...",
+  "loading_engine_memory_modal": "{engine} をメモリにロードしています。お待ちください...",
+  "unloading_engine_memory_modal": "{engine} をメモリからアンロードしています。お待ちください...",
+  "engine_unloaded_from_memory": "{engine} をメモリからアンロードしました。",
+  "legacy_assets_migration_start": "以前の LocalText2Voice インストールからリソースを移行しています...",
+  "legacy_assets_migration_title": "以前のインストールを移行中"
 }

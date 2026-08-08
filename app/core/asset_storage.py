@@ -33,6 +33,7 @@ MANAGED_DIRECTORIES = (
     "voice-gallery",
     "downloads",
 )
+LEGACY_DUPLICATE_MIGRATION_MARKER = ".legacy-double-data-migrated"
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,16 @@ class AssetTransferResult:
     assets_root: Path
     previous_assets_root: Path
     source_directories: tuple[Path, ...]
+    copied_bytes: int
+
+
+@dataclass(frozen=True)
+class LegacyAssetMigrationResult:
+    """Result of importing an older ``data\\data`` asset location."""
+
+    source_root: Path
+    assets_root: Path
+    copied_files: int
     copied_bytes: int
 
 
@@ -150,6 +161,133 @@ class AssetStorageManager:
             self._directory_size(source)
             for source, _name in self._source_directories(Path("__unused__"))
         )
+
+    @staticmethod
+    def legacy_duplicate_root(assets_root: Path | None = None) -> Path | None:
+        """Return the old nested data directory only when it contains assets."""
+        root = (assets_root or large_assets_root()).resolve()
+        if (root / LEGACY_DUPLICATE_MIGRATION_MARKER).is_file():
+            return None
+        candidate = root / ASSETS_DIRECTORY_NAME
+        if not candidate.is_dir():
+            return None
+        has_assets = any(
+            (candidate / directory_name).exists()
+            for directory_name in MANAGED_DIRECTORIES
+        ) or (candidate / "voice-gallery" / "voice-gallery.sqlite3").is_file()
+        return candidate if has_assets else None
+
+    @classmethod
+    def migrate_legacy_duplicate_root(
+        cls,
+        assets_root: Path | None = None,
+        progress_callback: StorageProgress | None = None,
+        cancel_token: threading.Event | None = None,
+    ) -> LegacyAssetMigrationResult | None:
+        """Copy a legacy ``data\\data`` tree into the canonical ``data`` tree.
+
+        This migration intentionally *copies* and never deletes the old tree.
+        A previous release allowed the managed data directory itself to be saved
+        as the storage base, which created this nested layout.  Keeping the
+        original directory is the safe recovery path for large model caches.
+        Existing canonical files win when they differ.
+        """
+        destination = (assets_root or large_assets_root()).resolve()
+        source = cls.legacy_duplicate_root(destination)
+        if source is None:
+            return None
+        progress = progress_callback or (lambda current, total, message: None)
+        files = [
+            path
+            for root, _directories, names in os.walk(source)
+            for path in (Path(root) / name for name in names)
+        ]
+        total = max(1, sum(path.stat().st_size for path in files if path.is_file()))
+        copied_bytes = 0
+        copied_files = 0
+        progress(0, total, "Preparing legacy data migration...")
+        for source_file in files:
+            cls._check_cancelled(cancel_token)
+            relative = source_file.relative_to(source)
+            destination_file = destination / relative
+            # The initial empty gallery database is created before the window.
+            # Replace it only when importing the old catalog, otherwise a
+            # populated canonical database is never overwritten.
+            is_gallery_database = relative == Path("voice-gallery") / "voice-gallery.sqlite3"
+            if destination_file.exists() and not (
+                is_gallery_database and cls._gallery_database_is_empty(destination_file)
+            ):
+                if destination_file.is_file():
+                    copied_bytes += source_file.stat().st_size
+                    progress(copied_bytes, total, f"Keeping current {relative.name}...")
+                continue
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
+            copied_bytes = cls._copy_file_non_destructive(
+                source_file,
+                destination_file,
+                copied_bytes,
+                total,
+                progress,
+                cancel_token,
+            )
+            copied_files += 1
+        ensure_assets_marker(destination)
+        (destination / LEGACY_DUPLICATE_MIGRATION_MARKER).write_text(
+            f"Migrated from {source}\n",
+            encoding="utf-8",
+        )
+        progress(total, total, "Legacy AI assets migrated. The original folder was kept.")
+        return LegacyAssetMigrationResult(source, destination, copied_files, copied_bytes)
+
+    @staticmethod
+    def _gallery_database_is_empty(path: Path) -> bool:
+        """The new gallery DB may contain only schema rows before migration."""
+        import sqlite3
+
+        try:
+            with sqlite3.connect(path) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM voice_gallery_voices"
+                ).fetchone()
+            return bool(row and row[0] == 0)
+        except sqlite3.Error:
+            return False
+
+    @classmethod
+    def _copy_file_non_destructive(
+        cls,
+        source_file: Path,
+        destination_file: Path,
+        copied: int,
+        total: int,
+        progress: StorageProgress,
+        cancel_token: threading.Event | None,
+    ) -> int:
+        temporary_file = destination_file.with_name(
+            f"{destination_file.name}.migration.tmp"
+        )
+        try:
+            with source_file.open("rb") as source_stream, temporary_file.open(
+                "wb"
+            ) as target_stream:
+                while True:
+                    cls._check_cancelled(cancel_token)
+                    block = source_stream.read(4 * 1024 * 1024)
+                    if not block:
+                        break
+                    target_stream.write(block)
+                    copied += len(block)
+                    progress(copied, total, f"Migrating {source_file.name}...")
+            shutil.copystat(source_file, temporary_file)
+            if temporary_file.stat().st_size != source_file.stat().st_size:
+                raise AssetStorageError(
+                    f"Could not verify migrated asset: {source_file}"
+                )
+            temporary_file.replace(destination_file)
+        except Exception:
+            temporary_file.unlink(missing_ok=True)
+            raise
+        return copied
 
     def _source_directories(self, destination: Path) -> list[tuple[Path, str]]:
         sources: list[tuple[Path, str]] = []

@@ -7,6 +7,35 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-08-08
+
+### Added
+
+- Added an automatic, cancellable recovery flow for AI assets created in the
+  legacy nested `data/data` location. Files are copied non-destructively and
+  the original directory is retained as a backup.
+- Added visible modal progress and distinct loading/unloading states while a
+  local TTS engine is moved into or out of shared memory.
+
+### Changed
+
+- Optional local engines can only become active after their installation is
+  complete. A successful install now refreshes its manager and selects the new
+  engine automatically.
+- Added localized engine-memory, installation, and legacy-migration guidance
+  to all eleven UI languages.
+
+### Fixed
+
+- Voice Gallery database entries and selected reference-audio paths are now
+  relocated when legacy assets are recovered, preserving imported voices and
+  previews.
+- Saved selections that point to an unavailable local engine now fall back to
+  the first installed engine instead of leaving the application in an invalid
+  state.
+- Engine-memory controls now update the sidebar and table consistently during
+  both load and unload operations.
+
 ## [1.4.2] - 2026-08-08
 
 ### Changed
@@ -231,7 +260,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.3.0...v1.4.0

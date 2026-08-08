@@ -185,6 +185,20 @@ class MainWindowUITests(unittest.TestCase):
             self.assertEqual(window._generation_voice_rows("f5_russian"), [])
             rows.assert_not_called()
 
+    def test_uninstalled_engine_cannot_become_active(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        original_engine = str(window.tts_engine_combo.currentData())
+
+        with (
+            patch.object(window.qwen_manager, "is_installed", return_value=False),
+            patch.object(QMessageBox, "critical") as error,
+        ):
+            self.assertFalse(window._select_tts_engine("qwen"))
+
+        self.assertEqual(str(window.tts_engine_combo.currentData()), original_engine)
+        error.assert_called_once()
+
     def test_generation_and_settings_views_are_separate(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

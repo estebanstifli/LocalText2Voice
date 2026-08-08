@@ -19,6 +19,65 @@ def write_reference_wav(path: Path, seconds: float = 3.2, sample_rate: int = 240
 
 
 class VoiceGalleryManagerTest(unittest.TestCase):
+    def test_relocate_paths_updates_only_entries_under_previous_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            previous = root / "old-data"
+            destination = root / "new-data"
+            external = root / "external" / "preview.wav"
+            manager = VoiceGalleryManager(
+                db_path=root / "voice-gallery.sqlite3",
+                files_root=root / "files",
+            )
+            manager._replace_catalog(
+                [
+                    {
+                        "id": "relocated",
+                        "name": "Relocated",
+                        "engine": "omnivoice",
+                    },
+                    {
+                        "id": "external",
+                        "name": "External",
+                        "engine": "omnivoice",
+                    },
+                ]
+            )
+            with manager._connect() as connection:
+                connection.execute(
+                    "UPDATE voice_gallery_voices SET preview_path = ?, "
+                    "ref_audio_path = ?, installed_path = ? WHERE id = ?",
+                    (
+                        str(previous / "previews" / "voice.wav"),
+                        str(previous / "references" / "voice.wav"),
+                        str(previous / "installed" / "voice.wav"),
+                        "relocated",
+                    ),
+                )
+                connection.execute(
+                    "UPDATE voice_gallery_voices SET preview_path = ? WHERE id = ?",
+                    (str(external), "external"),
+                )
+
+            self.assertEqual(manager.relocate_paths(previous, destination), 1)
+            relocated = manager.get_voice("relocated")
+            untouched = manager.get_voice("external")
+
+            self.assertIsNotNone(relocated)
+            self.assertIsNotNone(untouched)
+            self.assertEqual(
+                Path(relocated.preview_path), destination / "previews" / "voice.wav"
+            )
+            self.assertEqual(
+                Path(relocated.ref_audio_path),
+                destination / "references" / "voice.wav",
+            )
+            self.assertEqual(
+                Path(relocated.installed_path),
+                destination / "installed" / "voice.wav",
+            )
+            self.assertEqual(Path(untouched.preview_path), external)
+
     def test_sync_resolves_voice_relative_assets_and_installs_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)

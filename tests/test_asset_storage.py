@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from app.core.asset_storage import AssetStorageError, AssetStorageManager
+from app.core.asset_storage import (
+    AssetStorageCancelled,
+    AssetStorageError,
+    AssetStorageManager,
+)
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.python_runtime_manager import PythonRuntimeManager
 from app.tts.russian_normalization_manager import RussianNormalizationManager
@@ -41,6 +46,51 @@ def test_legacy_assets_root_does_not_create_a_second_data_directory(
         assert resolve_large_asset_path(
             assets_root / "data" / "voice-gallery" / "imported" / "voice.wav"
         ) == voice_path
+
+
+def test_legacy_duplicate_data_tree_is_copied_without_deleting_backup(tmp_path) -> None:
+    assets_root = tmp_path / "LocalText2Voice" / "data"
+    legacy_root = assets_root / "data"
+    legacy_voice = legacy_root / "voice-gallery" / "imported" / "voice.wav"
+    legacy_model = legacy_root / "models" / "omnivoice" / "model.bin"
+    legacy_voice.parent.mkdir(parents=True)
+    legacy_model.parent.mkdir(parents=True)
+    legacy_voice.write_bytes(b"voice")
+    legacy_model.write_bytes(b"model")
+
+    result = AssetStorageManager.migrate_legacy_duplicate_root(assets_root)
+
+    assert result is not None
+    assert result.source_root == legacy_root.resolve()
+    assert (assets_root / "voice-gallery" / "imported" / "voice.wav").read_bytes() == b"voice"
+    assert (assets_root / "models" / "omnivoice" / "model.bin").read_bytes() == b"model"
+    assert legacy_voice.is_file()
+    assert legacy_model.is_file()
+    assert AssetStorageManager.migrate_legacy_duplicate_root(assets_root) is None
+
+
+def test_cancelled_legacy_migration_does_not_keep_partial_destination(tmp_path) -> None:
+    assets_root = tmp_path / "LocalText2Voice" / "data"
+    legacy_model = assets_root / "data" / "models" / "engine" / "model.bin"
+    legacy_model.parent.mkdir(parents=True)
+    legacy_model.write_bytes(b"model-data")
+    cancel_token = threading.Event()
+
+    def cancel_during_copy(_current: int, _total: int, message: str) -> None:
+        if message.startswith("Migrating"):
+            cancel_token.set()
+
+    with pytest.raises(AssetStorageCancelled):
+        AssetStorageManager.migrate_legacy_duplicate_root(
+            assets_root,
+            progress_callback=cancel_during_copy,
+            cancel_token=cancel_token,
+        )
+
+    destination = assets_root / "models" / "engine" / "model.bin"
+    assert not destination.exists()
+    assert not destination.with_name("model.bin.migration.tmp").exists()
+    assert legacy_model.read_bytes() == b"model-data"
 
 
 def test_transfer_copies_known_assets_and_cleans_only_after_commit(tmp_path) -> None:

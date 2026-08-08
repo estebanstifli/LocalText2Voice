@@ -232,6 +232,38 @@ class VoiceGalleryManager:
             ).fetchone()
         return self._row_to_voice(row) if row is not None else None
 
+    def relocate_paths(self, previous_root: Path, assets_root: Path) -> int:
+        """Rewrite local gallery paths after an asset-storage migration."""
+        previous = previous_root.expanduser().resolve()
+        destination = assets_root.expanduser().resolve()
+        changed = 0
+        columns = ("preview_path", "ref_audio_path", "installed_path")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, preview_path, ref_audio_path, installed_path "
+                "FROM voice_gallery_voices"
+            ).fetchall()
+            for row in rows:
+                updates: dict[str, str] = {}
+                for column in columns:
+                    value = str(row[column] or "").strip()
+                    if not value:
+                        continue
+                    try:
+                        relative = Path(value).expanduser().resolve().relative_to(previous)
+                    except (OSError, ValueError):
+                        continue
+                    updates[column] = str(destination / relative)
+                if not updates:
+                    continue
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                connection.execute(
+                    f"UPDATE voice_gallery_voices SET {assignments} WHERE id = ?",
+                    (*updates.values(), str(row["id"])),
+                )
+                changed += 1
+        return changed
+
     def is_installed(self, voice: GalleryVoice) -> bool:
         if voice.is_builtin:
             return True

@@ -926,5 +926,13 @@
   "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
   "engine_not_installed": "المحرك غير مثبت",
   "voices_engine_not_installed_help": "هذا المحرك غير مثبت. الأصوات المعروضة هي إدخالات في الكتالوج فقط، ولا يمكن تحديدها أو اختبارها حتى يتم تثبيت المحرك.",
-  "voice_selection_engine_not_installed": "ثبّت {engine} قبل تحديد أحد أصواته."
+  "voice_selection_engine_not_installed": "ثبّت {engine} قبل تحديد أحد أصواته.",
+  "engine_must_be_installed": "ثبّت هذا المحرك قبل تحديده.",
+  "selected_unloading": "محدد / جارٍ إلغاء التحميل",
+  "unloading_from_memory": "جارٍ إلغاء التحميل من الذاكرة...",
+  "loading_engine_memory_modal": "جارٍ تحميل {engine} في الذاكرة. يرجى الانتظار...",
+  "unloading_engine_memory_modal": "جارٍ إلغاء تحميل {engine} من الذاكرة. يرجى الانتظار...",
+  "engine_unloaded_from_memory": "تم إلغاء تحميل {engine} من الذاكرة.",
+  "legacy_assets_migration_start": "جارٍ ترحيل الموارد من تثبيت سابق لـ LocalText2Voice...",
+  "legacy_assets_migration_title": "ترحيل التثبيت السابق"
 }

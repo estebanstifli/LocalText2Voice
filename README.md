@@ -62,14 +62,13 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.4.2
+## What's New In 1.4.3
 
-- Detect incomplete Chatterbox dependency installations and offer a repair instead of reusing a broken runtime.
-- Recover legacy AI storage paths that accidentally point to `data/data`, preserving existing models and imported voices.
-- Prevent voices from uninstalled engines from being selected, tested, or shown in the Generation voice selector.
-- Persist a newly selected TTS engine immediately and skip an obsolete pending OmniVoice first-run bundle when the user chooses another engine.
-- Improve markup command buttons, syntax colors, string highlighting, and error underlines in the dark theme.
-- Localize the new engine-readiness guidance across all eleven interface languages.
+- Recover models, imported voices, and gallery metadata from the legacy nested `data/data` location without deleting the original backup.
+- Prevent unavailable local engines from becoming active, then refresh and select them automatically after a successful installation.
+- Show clear modal progress and accurate sidebar/table states while loading or unloading TTS engines from shared memory.
+- Relocate saved reference-audio and Voice Gallery paths during legacy asset recovery.
+- Localize the new migration and engine-memory guidance across all eleven interface languages.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 
