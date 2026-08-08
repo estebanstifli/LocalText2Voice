@@ -923,5 +923,8 @@
   "f5_russian_runtime_missing": "F5-TTS Russian is not installed. Open Settings > TTS Engines and click Install.",
   "f5_russian_reference_required": "F5-TTS Russian requires a reference audio file and its exact transcript.",
   "f5_russian_voices_page_help": "F5-TTS Russian uses Russian gallery voices as cloning references. Each voice needs reference audio and an exact transcript.",
-  "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only."
+  "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
+  "engine_not_installed": "语音引擎未安装",
+  "voices_engine_not_installed_help": "此引擎尚未安装。当前显示的语音仅为目录条目，在安装引擎之前无法选择或测试。",
+  "voice_selection_engine_not_installed": "请先安装 {engine}，然后再选择其语音。"
 }

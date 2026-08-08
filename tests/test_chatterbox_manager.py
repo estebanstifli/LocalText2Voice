@@ -53,6 +53,10 @@ class ChatterboxManagerTests(unittest.TestCase):
                 install_dir=root / "models",
                 python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
             )
+            for package in ("torch", "torchaudio", "chatterbox"):
+                package_dir = manager.dependency_dir / package
+                package_dir.mkdir(parents=True)
+                (package_dir / "__init__.py").write_text("", encoding="utf-8")
             manager._write_cli()
             manager._write_runtime_manifest(
                 "installed",
@@ -64,6 +68,35 @@ class ChatterboxManagerTests(unittest.TestCase):
 
             self.assertTrue(manager.has_runtime())
             self.assertEqual(manager.runtime_command(), [sys.executable, str(manager.cli_path)])
+
+    def test_runtime_with_missing_torch_is_repaired_instead_of_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+
+            class FakePythonRuntime:
+                runtime_dir = root / "runtime"
+                python_exe = Path(sys.executable)
+
+                def is_installed(self) -> bool:
+                    return True
+
+                def cancel(self) -> None:
+                    pass
+
+            manager = ChatterboxManager(
+                install_dir=root / "models",
+                python_runtime=FakePythonRuntime(),  # type: ignore[arg-type]
+            )
+            manager._write_cli()
+            manager._write_runtime_manifest(
+                "installed",
+                ["chatterbox-tts==0.1.7"],
+                "cpu",
+                "System GPU: no compatible GPU detected.",
+                {"cuda_available": False},
+            )
+
+            self.assertFalse(manager.has_runtime())
 
     def test_old_runtime_manifest_is_not_current(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:

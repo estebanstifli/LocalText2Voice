@@ -477,6 +477,14 @@ class ChatterboxManager:
             and manifest.get("state") == "installed"
             and manifest.get("runtime_version") == self.RUNTIME_VERSION
             and self.cli_path.is_file()
+            and self._runtime_packages_present()
+        )
+
+    def _runtime_packages_present(self) -> bool:
+        """Detect interrupted ``pip --target`` installations before reuse."""
+        return all(
+            (self.dependency_dir / package / "__init__.py").is_file()
+            for package in ("torch", "torchaudio", "chatterbox")
         )
 
     def runtime_is_current(self) -> bool:

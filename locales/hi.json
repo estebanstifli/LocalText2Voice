@@ -923,5 +923,8 @@
   "f5_russian_runtime_missing": "F5-TTS Russian is not installed. Open Settings > TTS Engines and click Install.",
   "f5_russian_reference_required": "F5-TTS Russian requires a reference audio file and its exact transcript.",
   "f5_russian_voices_page_help": "F5-TTS Russian uses Russian gallery voices as cloning references. Each voice needs reference audio and an exact transcript.",
-  "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only."
+  "engine_install_accept_noncommercial": "I understand that this model and its generated output are for non-commercial use only.",
+  "engine_not_installed": "इंजन इंस्टॉल नहीं है",
+  "voices_engine_not_installed_help": "यह इंजन इंस्टॉल नहीं है। दिखाई गई आवाज़ें केवल कैटलॉग प्रविष्टियाँ हैं और इंजन इंस्टॉल होने तक उन्हें चुना या परखा नहीं जा सकता।",
+  "voice_selection_engine_not_installed": "किसी आवाज़ को चुनने से पहले {engine} इंस्टॉल करें।"
 }

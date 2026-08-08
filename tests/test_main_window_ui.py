@@ -156,8 +156,44 @@ class MainWindowUITests(unittest.TestCase):
             "External Voice Libraries",
         )
 
-    def test_generation_and_settings_views_are_separate(self) -> None:
+    def test_selecting_another_engine_skips_pending_omnivoice_setup(self) -> None:
         window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.settings["installer_setup"] = {
+            "pending_installs": ["omnivoice"],
+            "completed": False,
+        }
+
+        with patch.object(window.settings_manager, "save") as save:
+            window._select_tts_engine("piper")
+
+        self.assertEqual(window.settings["tts_engine"], "piper")
+        self.assertEqual(
+            window.settings["installer_setup"]["pending_installs"], []
+        )
+        self.assertTrue(window.settings["installer_setup"]["completed"])
+        save.assert_called()
+
+    def test_uninstalled_engine_has_no_generation_voice_choices(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        with (
+            patch.object(window.f5_russian_manager, "is_installed", return_value=False),
+            patch.object(window, "_voice_page_rows") as rows,
+        ):
+            self.assertEqual(window._generation_voice_rows("f5_russian"), [])
+            rows.assert_not_called()
+
+    def test_generation_and_settings_views_are_separate(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / "config.json"
+        with patch(
+            "app.ui.main_window.SettingsManager",
+            return_value=SettingsManager(config_path),
+        ):
+            window = MainWindow()
         self.addCleanup(window.deleteLater)
 
         self.assertEqual(window.page_stack.count(), 6)
@@ -353,9 +389,16 @@ class MainWindowUITests(unittest.TestCase):
         self.assertGreaterEqual(
             window.text_normalization_panel.editor_language_combo.count(), 10
         )
+        selected_normalization_language = window.settings.get(
+            "text_normalization", {}
+        ).get("language", "en")
         self.assertEqual(
             window.text_normalization_panel.editor_language_combo.currentData(),
-            window.settings.get("text_normalization", {}).get("language", "en"),
+            (
+                selected_normalization_language
+                if selected_normalization_language != "auto"
+                else "en"
+            ),
         )
         self.assertTrue(
             hasattr(window.text_normalization_panel, "create_dictionary_button")
@@ -534,7 +577,14 @@ class MainWindowUITests(unittest.TestCase):
         russian_woman_row = next(
             row for row in f5_voice_rows if row["name"] == "Russian Woman"
         )
-        with patch.object(window, "_start_voice_gallery_operation") as start_install:
+        with (
+            patch.object(
+                window.f5_russian_manager,
+                "is_installed",
+                return_value=True,
+            ),
+            patch.object(window, "_start_voice_gallery_operation") as start_install,
+        ):
             window._select_voice_page_row_data(russian_woman_row)
         start_install.assert_called_once_with("install", russian_woman)
         self.assertEqual(
@@ -1106,12 +1156,11 @@ class MainWindowUITests(unittest.TestCase):
             "pending_installs": ["omnivoice", "faster_whisper"],
             "completed": False,
         }
-        window._select_tts_engine("f5_russian")
-
         with (
             patch.object(window.settings_manager, "save") as save_settings,
             patch("app.ui.main_window.QMessageBox.information") as show_message,
         ):
+            window._select_tts_engine("f5_russian")
             window._run_pending_installer_setup()
 
         self.assertEqual(window.tts_engine_combo.currentData(), "f5_russian")
@@ -1142,11 +1191,15 @@ class MainWindowUITests(unittest.TestCase):
         play.assert_called_once_with()
 
     def test_recent_projects_menu_opens_a_stored_project(self) -> None:
-        window = MainWindow()
-        self.addCleanup(window.deleteLater)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
+        with patch(
+            "app.ui.main_window.SettingsManager",
+            return_value=SettingsManager(root / "config.json"),
+        ):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
         store = AudiobookStore(root / "projects.sqlite3")
         older = store.create_audiobook(
             "Primer texto",
@@ -1168,6 +1221,7 @@ class MainWindowUITests(unittest.TestCase):
         )
         window.audiobook_store = store
         window.current_audiobook_id = None
+        window.project_dirty = False
 
         window._populate_recent_projects_menu()
 

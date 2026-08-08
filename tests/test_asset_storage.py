@@ -13,6 +13,7 @@ from app.utils.paths import (
     engine_dependencies_root,
     large_assets_root,
     python_runtime_root,
+    resolve_large_asset_path,
 )
 
 
@@ -20,6 +21,26 @@ def test_configured_assets_base_creates_data_child(monkeypatch, tmp_path) -> Non
     monkeypatch.setenv("LOCALTEXT2VOICE_ASSETS_BASE_DIR", str(tmp_path))
 
     assert large_assets_root() == tmp_path.resolve() / "data"
+
+
+def test_legacy_assets_root_does_not_create_a_second_data_directory(
+    monkeypatch, tmp_path
+) -> None:
+    install_root = tmp_path / "LocalText2Voice"
+    assets_root = install_root / "data"
+    voice_path = assets_root / "voice-gallery" / "imported" / "voice.wav"
+    voice_path.parent.mkdir(parents=True)
+    voice_path.write_bytes(b"voice")
+    (assets_root / ".localtext2voice-assets.json").write_text("{}", encoding="utf-8")
+    (install_root / "config.json").write_text(
+        '{"storage": {"base_dir": "data"}}', encoding="utf-8"
+    )
+
+    with patch("app.utils.paths.application_root", return_value=install_root):
+        assert large_assets_root() == assets_root
+        assert resolve_large_asset_path(
+            assets_root / "data" / "voice-gallery" / "imported" / "voice.wav"
+        ) == voice_path
 
 
 def test_transfer_copies_known_assets_and_cleans_only_after_commit(tmp_path) -> None:

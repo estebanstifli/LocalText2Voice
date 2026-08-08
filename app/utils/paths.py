@@ -54,7 +54,7 @@ def configured_assets_base_dir() -> Path | None:
     """Return the user-selected storage folder without importing settings code."""
     override = os.environ.get("LOCALTEXT2VOICE_ASSETS_BASE_DIR", "").strip()
     if override:
-        return resolve_app_path(override).resolve()
+        return _normalize_assets_base_dir(resolve_app_path(override).resolve())
 
     config_path = application_root() / "config.json"
     if not config_path.exists():
@@ -69,7 +69,20 @@ def configured_assets_base_dir() -> Path | None:
     if not isinstance(storage, dict):
         return None
     value = str(storage.get("base_dir", "") or "").strip()
-    return resolve_app_path(value).resolve() if value else None
+    return _normalize_assets_base_dir(resolve_app_path(value).resolve()) if value else None
+
+
+def _normalize_assets_base_dir(candidate: Path) -> Path:
+    """Accept a legacy assets root where a storage base directory is expected.
+
+    The current setting stores the parent of the managed ``data`` directory.
+    Older builds showed the managed directory itself, so users could persist a
+    path already ending in ``data``. Treat that path as the managed directory
+    and use its parent to avoid creating ``data\\data``.
+    """
+    if candidate.name.casefold() != ASSETS_DIRECTORY_NAME:
+        return candidate
+    return candidate.parent
 
 
 def previous_assets_roots() -> tuple[Path, ...]:
@@ -120,6 +133,9 @@ def resolve_large_asset_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if path.exists():
         return path
+    collapsed = _collapse_duplicate_assets_directory(path)
+    if collapsed is not None and collapsed.exists():
+        return collapsed
     if configured_assets_base_dir() is None:
         return path
     candidates = (app_data_root().resolve(), *previous_assets_roots())
@@ -132,6 +148,19 @@ def resolve_large_asset_path(value: str | Path) -> Path:
         if relocated.exists():
             return relocated
     return path
+
+
+def _collapse_duplicate_assets_directory(path: Path) -> Path | None:
+    """Return a legacy ``.../data/data/...`` path with one level removed."""
+    parts = list(path.parts)
+    for index in range(len(parts) - 1):
+        if (
+            parts[index].casefold() == ASSETS_DIRECTORY_NAME
+            and parts[index + 1].casefold() == ASSETS_DIRECTORY_NAME
+        ):
+            del parts[index + 1]
+            return Path(*parts)
+    return None
 
 
 def legacy_engine_dependencies_root() -> Path:

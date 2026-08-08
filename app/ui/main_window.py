@@ -1691,6 +1691,7 @@ class MainWindow(QMainWindow):
     def _build_markup_toolbar(self) -> QWidget:
         toolbar = QFrame()
         toolbar.setObjectName("markupToolbar")
+        self._markup_command_button_specs: list[tuple[QPushButton, dict[str, str]]] = []
         layout = QHBoxLayout(toolbar)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(6)
@@ -1709,19 +1710,7 @@ class MainWindow(QMainWindow):
             button.setObjectName("markupCommandButton")
             button.setProperty("markup_color", command["color"])
             button.setToolTip(command["help"])
-            button.setStyleSheet(
-                "QPushButton#markupCommandButton {"
-                f"background: {command['background']};"
-                f"color: {command['color']};"
-                f"border: 1px solid {command['color']};"
-                "border-radius: 14px;"
-                "padding: 5px 10px;"
-                "font-weight: 700;"
-                "}"
-                "QPushButton#markupCommandButton:hover {"
-                "background: #ffffff;"
-                "}"
-            )
+            self._style_markup_command_button(button, command)
             button.clicked.connect(
                 lambda _checked=False, item=command: self._insert_markup_template(item)
             )
@@ -1753,17 +1742,7 @@ class MainWindow(QMainWindow):
                 "Choose a local audio file to play at this position",
             )
         )
-        button.setStyleSheet(
-            "QPushButton#markupCommandButton {"
-            f"background: {command['background']};"
-            f"color: {command['color']};"
-            f"border: 1px solid {command['color']};"
-            "border-radius: 14px;"
-            "padding: 5px 10px;"
-            "font-weight: 700;"
-            "}"
-            "QPushButton#markupCommandButton:hover { background: #ffffff; }"
-        )
+        self._style_markup_command_button(button, command)
         button.clicked.connect(
             lambda _checked=False, source=library: self._show_markup_audio_menu(
                 source
@@ -1838,7 +1817,49 @@ class MainWindow(QMainWindow):
         self.markup_voice_menu_button.clicked.connect(
             self._show_markup_voice_menu
         )
-        self.markup_voice_menu_button.setStyleSheet(
+        self._style_markup_command_button(self.markup_voice_menu_button, command)
+        return self.markup_voice_menu_button
+
+    def _style_markup_command_button(
+        self,
+        button: QPushButton,
+        command: dict[str, str],
+    ) -> None:
+        if not hasattr(self, "_markup_command_button_specs"):
+            self._markup_command_button_specs = []
+        if not any(existing is button for existing, _command in self._markup_command_button_specs):
+            self._markup_command_button_specs.append((button, command))
+        if self.ui_theme == DARK_THEME:
+            dark_color = {
+                "pause": "#fdba74",
+                "voice": "#c4b5fd",
+                "lang": "#5eead4",
+                "speed": "#fdba74",
+                "volume": "#7dd3fc",
+                "chapter": "#93c5fd",
+                "cmd": "#fb923c",
+                "preset": "#fcd34d",
+                "play": "#6ee7b7",
+                "stop": "#fca5a5",
+                "reset": "#cbd5e1",
+            }.get(command["name"], "#b8c6da")
+            button.setStyleSheet(
+                "QPushButton#markupCommandButton {"
+                "background: #142238;"
+                f"color: {dark_color};"
+                f"border: 1px solid {dark_color};"
+                "border-radius: 14px;"
+                "padding: 5px 10px;"
+                "font-weight: 600;"
+                "}"
+                "QPushButton#markupCommandButton:hover {"
+                "background: #1b2d47;"
+                f"border-color: {dark_color};"
+                f"color: {dark_color};"
+                "}"
+            )
+            return
+        button.setStyleSheet(
             "QPushButton#markupCommandButton {"
             f"background: {command['background']};"
             f"color: {command['color']};"
@@ -1849,7 +1870,10 @@ class MainWindow(QMainWindow):
             "}"
             "QPushButton#markupCommandButton:hover { background: #ffffff; }"
         )
-        return self.markup_voice_menu_button
+
+    def _refresh_markup_command_button_styles(self) -> None:
+        for button, command in getattr(self, "_markup_command_button_specs", []):
+            self._style_markup_command_button(button, command)
 
     def _show_markup_voice_menu(self) -> None:
         self._populate_markup_voice_menu()
@@ -7748,6 +7772,10 @@ class MainWindow(QMainWindow):
 
     def _on_tts_engine_changed(self) -> None:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if not self._restoring_settings:
+            self.settings["tts_engine"] = engine_id
+            self._skip_pending_omnivoice_setup_if_not_selected(engine_id)
+            self.settings_manager.save(self.settings)
         stack_key = "custom" if engine_id.startswith("custom:") else engine_id
         index = self.engine_stack_indexes.get(stack_key, 0)
         self.engine_settings_stack.setCurrentIndex(index)
@@ -7759,6 +7787,28 @@ class MainWindow(QMainWindow):
         self._mark_normalization_preview_stale()
         if hasattr(self, "page_stack") and self.page_stack.currentIndex() == 5:
             self._refresh_voices_page()
+
+    def _skip_pending_omnivoice_setup_if_not_selected(
+        self, engine_id: str
+    ) -> None:
+        if engine_id == "omnivoice":
+            return
+        setup = self.settings.get("installer_setup")
+        if not isinstance(setup, dict):
+            return
+        pending = setup.get("pending_installs", [])
+        if not isinstance(pending, list) or "omnivoice" not in pending:
+            return
+        # The GPU installer profile queues OmniVoice and Faster Whisper as one
+        # optional first-run bundle. Selecting another TTS engine opts out of
+        # that bundle, matching the existing startup skip behavior.
+        setup["pending_installs"] = []
+        setup["completed"] = True
+        setup["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        setup["completion_note"] = (
+            "Skipped optional OmniVoice first-run setup because another TTS "
+            "engine was selected."
+        )
 
     def _update_header_engine_label(self) -> None:
         if not hasattr(self, "header_engine_label"):
@@ -10198,6 +10248,13 @@ class MainWindow(QMainWindow):
         if self.ui_theme == DARK_THEME:
             style_sheet += DARK_THEME_STYLESHEET
         self.setStyleSheet(style_sheet)
+        self._refresh_markup_command_button_styles()
+        for highlighter in (
+            getattr(self, "markup_highlighter", None),
+            getattr(self, "normalized_markup_highlighter", None),
+        ):
+            if highlighter is not None:
+                highlighter.set_dark_mode(self.ui_theme == DARK_THEME)
         if hasattr(self, "review_table"):
             self._set_review_table_visible_rows(15)
 
@@ -10307,6 +10364,8 @@ class MainWindow(QMainWindow):
         self.generation_voice_combo.blockSignals(False)
 
     def _generation_voice_rows(self, engine_id: str) -> list[dict[str, object]]:
+        if not self._voice_engine_is_ready(engine_id):
+            return []
         rows = self._voice_page_rows(engine_id)
         usable_rows: list[dict[str, object]] = []
         for row in rows:
@@ -10444,6 +10503,12 @@ class MainWindow(QMainWindow):
         return self.tr("manage", "Manage")
 
     def _voices_status_text(self, engine_id: str) -> str:
+        if not self._voice_engine_is_ready(engine_id):
+            return self.tr(
+                "voices_engine_not_installed_help",
+                "This engine is not installed. The listed voices are catalog entries "
+                "only and cannot be selected or tested until the engine is installed.",
+            )
         if engine_id == "piper":
             return self.tr(
                 "piper_voices_page_help",
@@ -10479,6 +10544,25 @@ class MainWindow(QMainWindow):
             "api_voices_page_help",
             "API voices are configured locally and used only when that provider is selected.",
         )
+
+    def _voice_engine_is_ready(self, engine_id: str) -> bool:
+        if engine_id == "piper":
+            executable = resolve_executable(
+                self.piper_path_edit.text().strip()
+                or "engines/piper/piper.exe"
+            )
+            return executable.exists() and bool(self.voices)
+        manager = {
+            "kokoro": self.kokoro_python_manager,
+            "chatterbox": self.chatterbox_manager,
+            "qwen": self.qwen_manager,
+            "omnivoice": self.omnivoice_manager,
+            "f5_russian": self.f5_russian_manager,
+        }.get(engine_id)
+        if manager is None:
+            return True
+        checker = getattr(manager, "is_installed", None)
+        return bool(checker()) if callable(checker) else False
 
     def _voice_page_rows(self, engine_id: str) -> list[dict[str, object]]:
         if engine_id == "piper":
@@ -10884,6 +10968,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         engine_id = str(row.get("engine", ""))
+        engine_ready = self._voice_engine_is_ready(engine_id)
 
         select_button = self._small_icon_button(
             "apply",
@@ -10892,6 +10977,7 @@ class MainWindow(QMainWindow):
                 voice_row
             ),
         )
+        select_button.setEnabled(engine_ready)
         layout.addWidget(select_button)
 
         gallery_voice = row.get("gallery_voice")
@@ -10924,6 +11010,7 @@ class MainWindow(QMainWindow):
                             voice_row
                         ),
                     )
+                    install_button.setEnabled(engine_ready)
                     layout.addWidget(install_button)
         if isinstance(gallery_voice, GalleryVoice) and gallery_voice.is_user_import:
             edit_button = self._small_icon_button(
@@ -10944,7 +11031,8 @@ class MainWindow(QMainWindow):
                 ),
             )
             test_button.setEnabled(
-                (engine_id != "chatterbox" or bool(row.get("installed")))
+                engine_ready
+                and (engine_id != "chatterbox" or bool(row.get("installed")))
                 and not (
                     isinstance(gallery_voice, GalleryVoice)
                     and gallery_voice.is_reference_audio
@@ -11024,6 +11112,16 @@ class MainWindow(QMainWindow):
         refresh: bool = True,
     ) -> None:
         engine_id = str(row.get("engine", ""))
+        if not self._voice_engine_is_ready(engine_id):
+            self._show_error(
+                self.tr("engine_not_installed", "Engine not installed"),
+                self.tr(
+                    "voice_selection_engine_not_installed",
+                    "Install {engine} before selecting one of its voices.",
+                    engine=self._tts_engine_label(engine_id),
+                ),
+            )
+            return
         voice_id = row.get("id")
         gallery_voice = row.get("gallery_voice")
         if isinstance(gallery_voice, GalleryVoice):
@@ -11146,6 +11244,16 @@ class MainWindow(QMainWindow):
 
     def _test_voice_page_row_data(self, row: dict[str, object]) -> None:
         engine_id = str(row.get("engine", ""))
+        if not self._voice_engine_is_ready(engine_id):
+            self._show_error(
+                self.tr("engine_not_installed", "Engine not installed"),
+                self.tr(
+                    "voice_selection_engine_not_installed",
+                    "Install {engine} before selecting one of its voices.",
+                    engine=self._tts_engine_label(engine_id),
+                ),
+            )
+            return
         self._show_voice_preview_status(
             self.tr(
                 "voice_preview_preparing",

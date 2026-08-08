@@ -52,17 +52,8 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
         super().__init__(document)
         self._enabled = True
         self._corrector_enabled = True
-        self._delimiter_format = self._format("#9a3412")
-        self._delimiter_format.setBackground(QColor("#fff7ed"))
-        self._string_format = self._format("#475569")
-        self._string_format.setFontItalic(True)
-        self._bracket_format = self._format("#166534")
-        self._bracket_format.setBackground(QColor("#f0fdf4"))
-        self._bracket_format.setFontWeight(QFont.Weight.DemiBold)
-        self._error_format = self._format("#b91c1c")
-        self._error_format.setBackground(QColor("#fef2f2"))
-        self._error_format.setUnderlineColor(QColor("#dc2626"))
-        self._error_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+        self._dark_mode = False
+        self._set_theme_formats()
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
@@ -71,6 +62,38 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
     def set_corrector_enabled(self, enabled: bool) -> None:
         self._corrector_enabled = enabled
         self.rehighlight()
+
+    def set_dark_mode(self, enabled: bool) -> None:
+        if self._dark_mode == enabled:
+            return
+        self._dark_mode = enabled
+        self._set_theme_formats()
+        self.rehighlight()
+
+    def _set_theme_formats(self) -> None:
+        if self._dark_mode:
+            self._delimiter_format = self._format("#93c5fd")
+            self._delimiter_format.setBackground(QColor("#172b45"))
+            self._string_format = self._format("#c1d0e2")
+            self._bracket_format = self._format("#a7f3d0")
+            self._bracket_format.setBackground(QColor("#153247"))
+            self._error_format = self._format("#fca5a5")
+            self._error_format.setBackground(QColor("#321c27"))
+            self._error_format.setUnderlineColor(QColor("#f87171"))
+        else:
+            self._delimiter_format = self._format("#9a3412")
+            self._delimiter_format.setBackground(QColor("#fff7ed"))
+            self._string_format = self._format("#475569")
+            self._string_format.setFontItalic(True)
+            self._bracket_format = self._format("#166534")
+            self._bracket_format.setBackground(QColor("#f0fdf4"))
+            self._error_format = self._format("#b91c1c")
+            self._error_format.setBackground(QColor("#fef2f2"))
+            self._error_format.setUnderlineColor(QColor("#dc2626"))
+        self._bracket_format.setFontWeight(QFont.Weight.DemiBold)
+        self._error_format.setUnderlineStyle(
+            QTextCharFormat.UnderlineStyle.WaveUnderline
+        )
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802 - Qt API name
         self.setCurrentBlockState(0)

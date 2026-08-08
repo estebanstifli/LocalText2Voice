@@ -62,15 +62,14 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.4.1
+## What's New In 1.4.2
 
-- Install **Silero Stress** as an optional shared Russian normalization layer, with safe `Ё` output for every engine and explicit stress notation for F5-TTS Russian.
-- Use conservative, engine-specific safe chunk limits for long-form generation while still allowing short phrases and voice tests.
-- Edit, replace, and permanently remove user-imported reference voices without affecting read-only catalog voices.
-- Pause, stop, or restart Voice Library previews and open curated external voice resources directly from the app.
-- Keep the persistent engine host isolated on its own loopback port so desktop generation, MCP clients, and future remote transport settings do not conflict.
-- Improve Whisper review of normalized Russian speech while preserving the raw transcript and current tail-analysis evidence.
-- Recover more reliably after cancelled engine jobs and record engine-host startup errors in a persistent diagnostic log.
+- Detect incomplete Chatterbox dependency installations and offer a repair instead of reusing a broken runtime.
+- Recover legacy AI storage paths that accidentally point to `data/data`, preserving existing models and imported voices.
+- Prevent voices from uninstalled engines from being selected, tested, or shown in the Generation voice selector.
+- Persist a newly selected TTS engine immediately and skip an obsolete pending OmniVoice first-run bundle when the user chooses another engine.
+- Improve markup command buttons, syntax colors, string highlighting, and error underlines in the dark theme.
+- Localize the new engine-readiness guidance across all eleven interface languages.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 

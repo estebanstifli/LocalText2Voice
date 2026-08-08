@@ -7,6 +7,30 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-08-08
+
+### Changed
+
+- Voice Library actions and the Generation voice selector now expose only
+  voices whose local engine is installed and ready. Catalog entries remain
+  visible for discovery but cannot be selected or tested prematurely.
+- TTS engine changes are persisted immediately. Choosing an engine other than
+  OmniVoice now completes and clears the optional pending OmniVoice first-run
+  bundle created by the GPU installer profile.
+- Markup toolbar buttons and syntax highlighting now use theme-aware colors,
+  backgrounds, hover states, and error underlines in dark mode.
+- Added localized engine-readiness guidance to all eleven UI languages.
+
+### Fixed
+
+- Chatterbox no longer trusts an installed manifest when `torch`, `torchaudio`,
+  or the `chatterbox` package is missing after an interrupted dependency
+  installation; the runtime is reported as incomplete and can be repaired.
+- Legacy storage settings that already point to the managed `data` directory
+  no longer create a nested `data/data` tree.
+- Existing model and voice paths containing the old duplicated `data/data`
+  segment are resolved against the original managed asset directory.
+
 ## [1.4.1] - 2026-08-07
 
 ### Added
@@ -207,7 +231,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.2.1...v1.3.0
