@@ -78,6 +78,16 @@ class GalleryVoice:
 class VoiceGalleryManager:
     """SQLite-backed catalog for previewable/installable voices."""
 
+    SUPPORTED_REFERENCE_AUDIO_EXTENSIONS = {
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".m4a",
+        ".ogg",
+        ".opus",
+        ".aac",
+        ".webm",
+    }
     DB_FILENAME = "voice-gallery.sqlite3"
     F5_RUSSIAN_REFERENCE_VOICE_IDS = (
         "omnivoice_ru_russian_man",
@@ -388,8 +398,14 @@ class VoiceGalleryManager:
     ) -> GalleryVoice:
         if not source.is_file():
             raise VoiceGalleryError(f"Reference audio file not found: {source}")
-        if source.suffix.lower() not in {".wav", ".mp3"}:
-            raise VoiceGalleryError("Reference audio must be a WAV or MP3 file.")
+        if source.suffix.lower() not in self.SUPPORTED_REFERENCE_AUDIO_EXTENSIONS:
+            supported = ", ".join(
+                sorted(
+                    extension.removeprefix(".").upper()
+                    for extension in self.SUPPORTED_REFERENCE_AUDIO_EXTENSIONS
+                )
+            )
+            raise VoiceGalleryError(f"Unsupported reference audio format. Use {supported}.")
         display_name = name.strip() or source.stem
         digest = hashlib.sha1(
             f"{engine}:{display_name}:{source.stat().st_size}:{source.name}".encode("utf-8"),

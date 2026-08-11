@@ -70,6 +70,8 @@ echo Building portable application folder...
     --collect-submodules pydantic_core ^
     --collect-submodules starlette ^
     --collect-submodules uvicorn ^
+    --collect-submodules soundcard ^
+    --collect-data soundcard ^
     --add-data "locales;locales" ^
     --add-data "assets;assets" ^
     main.py

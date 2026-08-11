@@ -283,6 +283,12 @@ QPushButton:hover {
     background: #1d2d47;
     border-color: #536784;
 }
+QPushButton#cloneModeButton:checked {
+    background: #17325b;
+    border-color: #4f8cff;
+    color: #8bb4ff;
+    font-weight: 700;
+}
 QPushButton:pressed {
     background: #223754;
 }

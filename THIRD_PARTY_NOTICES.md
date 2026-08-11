@@ -9,6 +9,18 @@ Always review the license files shipped with the exact versions you distribute.
 Common license texts are included in the portable distribution under
 `licenses/`.
 
+## SoundCard
+
+- Project: SoundCard, a cross-platform real-time audio library
+- Upstream: https://github.com/bastibe/SoundCard
+- Package: `soundcard` 0.4.x
+- License: BSD 3-Clause
+
+LocalText2Voice uses SoundCard for microphone and operating-system loopback
+capture. SoundCard maps to WASAPI on Windows, CoreAudio on macOS, and
+PulseAudio-compatible services on Linux. Its license is reproduced in
+`licenses/SOUNDCARD-BSD-3-CLAUSE.txt`.
+
 ## Piper
 
 - Project: Piper, a local neural text-to-speech system

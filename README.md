@@ -62,13 +62,17 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.4.3
+## What's New In 1.4.4
 
-- Recover models, imported voices, and gallery metadata from the legacy nested `data/data` location without deleting the original backup.
-- Prevent unavailable local engines from becoming active, then refresh and select them automatically after a successful installation.
-- Show clear modal progress and accurate sidebar/table states while loading or unloading TTS engines from shared memory.
-- Relocate saved reference-audio and Voice Gallery paths during legacy asset recovery.
-- Localize the new migration and engine-memory guidance across all eleven interface languages.
+- Clone compatible voices from an uploaded recording, a selected microphone,
+  or Windows system-audio loopback directly from the Voice Library.
+- Preview samples, watch live recording levels, and validate the recommended
+  3-20 second reference-audio range before saving a voice.
+- Optionally transcribe a new reference sample locally with Faster Whisper or
+  enter and correct the exact transcript manually.
+- Import WAV, MP3, FLAC, M4A, OGG, OPUS, AAC, and WEBM reference recordings;
+  LocalText2Voice normalizes them to engine-compatible WAV audio.
+- Use the complete cloning workflow in all eleven supported interface languages.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 
@@ -176,7 +180,10 @@ Qwen3 TTS exposes two independently downloadable checkpoints in Settings:
 - Store voice catalog metadata in a local SQLite cache for fast browsing.
 - Download only the reference voices you want into the user app data folder.
 - Download Piper voices directly from the app.
-- Import Chatterbox, OmniVoice, or F5-TTS Russian reference voices from your own WAV/MP3 files.
+- Clone Chatterbox, OmniVoice, or F5-TTS Russian voices from uploaded audio,
+  a selectable microphone, or a selectable system-audio loopback source.
+- Record a recommended 12-second sample directly in the cloning dialog and,
+  when Faster Whisper is installed, optionally generate its transcript locally.
 - Select the default voice for generation.
 - Use flexible voice matching in markup, so `{{voice "edu"}}` can select a longer voice name such as `Eduardo - es`.
 

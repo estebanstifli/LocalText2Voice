@@ -7,6 +7,27 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-08-11
+
+### Added
+
+- Replaced the Voices-page reference import action with a Clone Voice dialog
+  supporting common uploaded audio formats, selectable microphones, and
+  selectable system-audio loopback sources.
+- Added optional local Faster Whisper transcription for new reference samples,
+  plus manual transcript entry and clear 12-second recording guidance.
+- Added live recording levels, sample playback, and 3-20 second validation to
+  the voice-cloning workflow.
+
+### Changed
+
+- Voice cloning now accepts WAV, MP3, FLAC, M4A, OGG, OPUS, AAC, and WEBM
+  sources before normalizing them to the engine-compatible WAV format.
+- Added all voice-cloning labels, guidance, progress states, and validation
+  messages to the eleven supported UI languages.
+- Added SoundCard and NumPy to the Windows application build for local
+  microphone and WASAPI loopback capture.
+
 ## [1.4.3] - 2026-08-08
 
 ### Added
@@ -260,7 +281,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.3...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.4...HEAD
+[1.4.4]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.0...v1.4.1

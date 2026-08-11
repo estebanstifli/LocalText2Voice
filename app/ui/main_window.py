@@ -201,6 +201,7 @@ from app.verification.faster_whisper_manager import (
 from mutagen import File as MutagenFile
 
 from .audio_mix_preview_panel import AudioMixPreviewContext, AudioMixPreviewPanel
+from .clone_voice_dialog import CloneVoiceDialog
 from .icons import ICON_LIGHT, ui_icon
 from .markup_highlighter import LTVMarkupHighlighter
 from .theme import DARK_THEME, DARK_THEME_STYLESHEET, normalize_theme, theme_palette
@@ -10391,6 +10392,12 @@ class MainWindow(QMainWindow):
             QPushButton:hover {
                 background: #f6f8fb;
             }
+            QPushButton#cloneModeButton:checked {
+                background: #e8f1ff;
+                border-color: #1769ff;
+                color: #1769ff;
+                font-weight: 700;
+            }
             QPushButton#themeToggleButton {
                 padding: 8px;
             }
@@ -10636,6 +10643,13 @@ class MainWindow(QMainWindow):
             )
         )
         self.voices_manage_button.setText(self._voices_manage_button_text(engine_id))
+        self.voices_manage_button.setIcon(
+            ui_icon(
+                "voice"
+                if engine_id in {"chatterbox", "omnivoice", "f5_russian"}
+                else "settings"
+            )
+        )
         self.voices_manage_button.setEnabled(
             engine_id in {"piper", "chatterbox", "omnivoice", "f5_russian"}
         )
@@ -10726,11 +10740,11 @@ class MainWindow(QMainWindow):
         if engine_id == "piper":
             return self.tr("download_piper_voices", "Download Piper voices")
         if engine_id == "chatterbox":
-            return self.tr("import_reference_voice", "Import reference voice")
+            return self.tr("clone_voice", "Clone Voice")
         if engine_id == "omnivoice":
-            return self.tr("import_reference_voice", "Import reference voice")
+            return self.tr("clone_voice", "Clone Voice")
         if engine_id == "f5_russian":
-            return self.tr("import_reference_voice", "Import reference voice")
+            return self.tr("clone_voice", "Clone Voice")
         return self.tr("manage", "Manage")
 
     def _voices_status_text(self, engine_id: str) -> str:
@@ -11899,46 +11913,50 @@ class MainWindow(QMainWindow):
         self._refresh_voices_page()
 
     def _import_gallery_reference_voice(self, engine_id: str) -> None:
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr("import_reference_voice", "Import reference voice"),
-            "",
-            self.tr("audio_files", "Audio files (*.mp3 *.wav)"),
-        )
-        if not selected:
-            return
-        source = Path(selected)
-        dialog = ReferenceVoiceImportDialog(source, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        values = dialog.values()
-        if engine_id == "f5_russian" and not str(values["ref_text"]).strip():
-            self._show_error(
-                self.tr("import_failed", "Import failed"),
-                self.tr(
-                    "f5_russian_reference_required",
-                    "F5-TTS Russian requires a reference audio file and its exact transcript.",
-                ),
-            )
-            return
-        try:
-            voice = self.voice_gallery_manager.import_reference_voice(
-                engine_id,
-                source,
-                name=str(values["name"]),
-                language=str(values["language"]),
-                language_name=str(values["language_name"]),
-                ref_text=str(values["ref_text"]),
-                short_description=str(values["short_description"]),
-                gender=str(values["gender"]),
-                age_style=str(values["age_style"]),
-                voice_style=str(values["voice_style"]),
-                tags=list(values["tags"]),
+        review = self.settings.get("review", {})
+        if not isinstance(review, dict):
+            review = {}
+        with tempfile.TemporaryDirectory(prefix="ltv_clone_voice_") as temporary:
+            dialog = CloneVoiceDialog(
+                self,
+                whisper_manager=self.faster_whisper_manager,
+                whisper_device=str(review.get("device", "cpu")),
+                whisper_compute_type=str(review.get("compute_type", "int8")),
                 ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+                recording_directory=Path(temporary),
+                translate=self.tr,
             )
-        except Exception as exc:
-            self._show_error(self.tr("import_failed", "Import failed"), str(exc))
-            return
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            values = dialog.values()
+            source = Path(values["source"])
+            if engine_id == "f5_russian" and not str(values["ref_text"]).strip():
+                self._show_error(
+                    self.tr("import_failed", "Import failed"),
+                    self.tr(
+                        "f5_russian_reference_required",
+                        "F5-TTS Russian requires a reference audio file and its exact transcript.",
+                    ),
+                )
+                return
+            try:
+                voice = self.voice_gallery_manager.import_reference_voice(
+                    engine_id,
+                    source,
+                    name=str(values["name"]),
+                    language=str(values["language"]),
+                    language_name=str(values["language_name"]),
+                    ref_text=str(values["ref_text"]),
+                    short_description=str(values["short_description"]),
+                    gender=str(values["gender"]),
+                    age_style=str(values["age_style"]),
+                    voice_style=str(values["voice_style"]),
+                    tags=list(values["tags"]),
+                    ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+                )
+            except Exception as exc:
+                self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+                return
         self.log_view.append_event(f"Imported {engine_id} reference voice: {voice.name}")
         self._refresh_voices_page()
 
