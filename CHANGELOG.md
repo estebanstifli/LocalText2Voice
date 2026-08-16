@@ -7,6 +7,47 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-16
+
+### Added
+
+- Added M4B, M4A, Opus, FLAC, and OGG export alongside MP3, with compact,
+  standard, and high-quality presets appropriate to each format.
+- Added M4B book properties, embedded cover art, and named chapters generated
+  from LTV chapter markers or detected text headings.
+- Added automatic project covers, normalized custom cover images, persistent
+  inline project names, and metadata updates without rerunning TTS.
+- Added the Bulk Audiobooks workspace for importing multiple TXT books,
+  creating independent editable projects, and rendering them sequentially
+  with pause, resume, cancel, retry, recovery, and review metrics.
+- Added per-book cover and music selection to bulk tasks, plus the option to
+  create projects without immediately generating audio.
+- Added the `Universo` background track by Da-Roz with its Pixabay source and
+  license documented in the third-party notices.
+
+### Changed
+
+- Generation, review rebuilds, subtitles, Audio Mix, HTTP, MCP, and persisted
+  project/job paths now follow the selected audio format and MIME type.
+  Deprecated `clean_mp3` and `mix_mp3` API aliases remain available.
+- Export now produces one finished audio file; use named M4B chapters when a
+  navigable chapter structure is required.
+- Qwen CustomVoice 0.6B and Base 1.7B now appear as separate engine rows. The
+  Base model can reuse the default Harold cloning reference from Voice Gallery.
+- Qwen model loading now materializes complete Hugging Face snapshots and
+  keeps synthesis workers offline after installation.
+- Added and updated all release UI strings in Arabic, Chinese, English,
+  French, German, Hindi, Italian, Japanese, Portuguese, Russian, and Spanish.
+
+### Fixed
+
+- Fixed Qwen installations that appeared complete but were missing nested
+  tokenizer configuration or preprocessing files required at synthesis time.
+- Fixed the TTS engine table repeatedly probing hardware and model state while
+  changing Qwen models, which could stall the interface and UI tests.
+- Preserved legacy MP3 settings, project manifests, and server-job records
+  while migrating them to generic audio-format fields.
+
 ## [1.4.4] - 2026-08-11
 
 ### Added
@@ -281,7 +322,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.4...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.4...v1.5.0
 [1.4.4]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.1...v1.4.2

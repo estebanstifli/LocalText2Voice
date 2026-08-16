@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.audio_formats import AUDIO_FORMATS, audio_format_spec
 from app.core.audio_mix import AudioMixSettings, render_audio_mix
 from app.core.audio_event_timeline import (
     resolved_audio_clips,
@@ -106,6 +107,25 @@ class LocalText2VoiceService:
             "port": internal_engine_host_port(self.settings),
             "engines": self.list_engines(),
             "engine_memory": self.engine_status(),
+            "audio_formats": [
+                {
+                    "id": spec.id,
+                    "label": spec.label,
+                    "extension": spec.extension,
+                    "mime_type": spec.mime_type,
+                    "supports_chapters": spec.supports_chapters,
+                    "default_quality": spec.default_quality,
+                    "qualities": [
+                        {
+                            "id": quality.id,
+                            "label": quality.label,
+                            "bitrate": quality.bitrate,
+                        }
+                        for quality in spec.qualities
+                    ],
+                }
+                for spec in AUDIO_FORMATS.values()
+            ],
         }
 
     def close(self) -> None:
@@ -347,12 +367,17 @@ class LocalText2VoiceService:
         if engine_id == "kokoro_python":
             engine_id = "kokoro"
         voice_config = self._voice_config(engine_id, request)
-        requested_options = self._generation_options(request, voice_config)
+        effective_settings = self._effective_settings(request)
+        requested_options = self._generation_options(
+            request,
+            voice_config,
+            effective_settings,
+        )
         play_required = any(
             event.type == "play" for event in LTVMarkupParser.parse(text).events
         )
         desktop_ui = str(request.get("client", "")).casefold() == "desktop_ui"
-        review_enabled = self._review_enabled(request)
+        review_enabled = self._review_enabled(request, effective_settings)
         if play_required and not desktop_ui:
             if not self.faster_whisper_manager.is_installed():
                 raise ValueError(
@@ -399,6 +424,7 @@ class LocalText2VoiceService:
                 progress,
                 log,
                 on_pipeline,
+                effective_settings,
             )
             if rebuilt_clean is not None:
                 outputs = [rebuilt_clean] + [
@@ -419,6 +445,7 @@ class LocalText2VoiceService:
                     clean_path,
                     requested_options,
                     log,
+                    effective_settings,
                 )
                 outputs = [clean_path, mix_path]
         clean_outputs = [path for path in outputs if not path.stem.endswith("_mix")]
@@ -439,11 +466,21 @@ class LocalText2VoiceService:
                     resolved_project_dir / PROJECT_MANIFEST_NAME
                 ),
             }
+        format_spec = audio_format_spec(requested_options.audio_format)
+        clean_audio = str(clean_outputs[0]) if clean_outputs else ""
+        mix_audio = str(mix_outputs[0]) if mix_outputs else ""
         return {
             "audiobook_id": audiobook_id,
             "outputs": [str(path) for path in outputs],
-            "clean_mp3": str(clean_outputs[0]) if clean_outputs else "",
-            "mix_mp3": str(mix_outputs[0]) if mix_outputs else "",
+            "audio_format": format_spec.id,
+            "audio_quality": requested_options.audio_quality,
+            "mime_type": format_spec.mime_type,
+            "clean_audio": clean_audio,
+            "mix_audio": mix_audio,
+            # Deprecated aliases retained for older clients. Their values can
+            # now point to M4A, Opus, FLAC or OGG files as well as MP3.
+            "clean_mp3": clean_audio,
+            "mix_mp3": mix_audio,
             "review": review_summary or {"enabled": False},
             "project": project,
             "project_edit_message": (
@@ -454,11 +491,17 @@ class LocalText2VoiceService:
             ),
         }
 
-    def _review_enabled(self, request: dict[str, Any]) -> bool:
+    def _review_enabled(
+        self,
+        request: dict[str, Any],
+        effective_settings: dict[str, Any] | None = None,
+    ) -> bool:
         policy = str(request.get("review_policy", "default") or "default").casefold()
         if policy in {"off", "none", "disabled", "false", "0"}:
             return False
-        review = self._settings_dict("review")
+        settings = effective_settings or self._effective_settings(request)
+        review_value = settings.get("review", {})
+        review = dict(review_value) if isinstance(review_value, dict) else {}
         if policy in {"on", "enabled", "true", "1", "required"}:
             enabled = True
         else:
@@ -480,9 +523,17 @@ class LocalText2VoiceService:
         progress: ProgressCallback,
         log: LogCallback,
         on_operation: PipelineCallback | None,
+        effective_settings: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], Path | None]:
-        review = self._settings_dict("review")
-        normalization = self._settings_dict("text_normalization")
+        settings = effective_settings or copy.deepcopy(self.settings)
+        review_value = settings.get("review", {})
+        review = dict(review_value) if isinstance(review_value, dict) else {}
+        normalization_value = settings.get("text_normalization", {})
+        normalization = (
+            dict(normalization_value)
+            if isinstance(normalization_value, dict)
+            else {}
+        )
         verifier: FasterWhisperVerifier | None = None
         if self.keep_engines_alive:
             if self._whisper_verifier is None:
@@ -507,7 +558,7 @@ class LocalText2VoiceService:
             float(review.get("approve_threshold", 92.0)),
             int(review.get("max_retries", 0)),
             resolve_executable(
-                self.settings.get("piper_path", "engines/piper/piper.exe")
+                settings.get("piper_path", "engines/piper/piper.exe")
             ),
             voice_config,
             True,
@@ -523,7 +574,7 @@ class LocalText2VoiceService:
                 review.get("tail_failure_threshold_seconds", 1.00)
             ),
             tail_autocut_enabled=bool(review.get("tail_autocut_enabled", False)),
-            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            ffmpeg_path=settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
             comparison_normalization_enabled=bool(
                 normalization.get("enabled", False)
             ),
@@ -557,6 +608,19 @@ class LocalText2VoiceService:
             for segment in segments
             if segment.verification_status in {"retry_needed", "review"}
         )
+        reviewed = sum(
+            1
+            for segment in segments
+            if segment.verification_status not in {"", "not_verified"}
+        )
+        errors = sum(
+            1
+            for segment in segments
+            if segment.status == "failed" or bool(segment.error_message)
+        )
+        retry_attempts = sum(
+            max(0, int(segment.attempt_count) - 1) for segment in segments
+        )
         dirty = sum(1 for segment in segments if segment.needs_rebuild)
         rebuilt_path: Path | None = None
         if dirty:
@@ -571,8 +635,11 @@ class LocalText2VoiceService:
         summary = {
             "enabled": True,
             "segments": len(segments),
+            "reviewed": reviewed,
             "approved": approved,
             "needs_attention": attention,
+            "errors": errors,
+            "retry_attempts": retry_attempts,
             "rebuilt": rebuilt_path is not None,
         }
         log(
@@ -621,7 +688,9 @@ class LocalText2VoiceService:
         clean_path: Path,
         options: AudioGenerationOptions,
         log: LogCallback,
+        effective_settings: dict[str, Any] | None = None,
     ) -> Path:
+        effective = effective_settings or self.settings
         mix_path = self._next_mix_path(clean_path)
         settings = AudioMixSettings(
             voice_volume_db=options.voice_volume_db,
@@ -634,22 +703,24 @@ class LocalText2VoiceService:
             ducking_strength=options.ducking_strength,
             loop_background=options.background_loop,
             normalize=options.podcast_normalize,
+            audio_format=options.audio_format,
+            audio_quality=options.audio_quality,
             mp3_bitrate=options.mp3_bitrate,
             markup_music_volume_db=float(
-                self.settings.get("markup_music_volume_db", 0.0)
+                effective.get("markup_music_volume_db", 0.0)
             ),
-            ambient_volume_db=float(self.settings.get("ambient_volume_db", 0.0)),
-            sfx_volume_db=float(self.settings.get("sfx_volume_db", 0.0)),
-            voice_muted=bool(self.settings.get("voice_muted", False)),
+            ambient_volume_db=float(effective.get("ambient_volume_db", 0.0)),
+            sfx_volume_db=float(effective.get("sfx_volume_db", 0.0)),
+            voice_muted=bool(effective.get("voice_muted", False)),
             background_music_muted=bool(
-                self.settings.get("background_music_muted", False)
+                effective.get("background_music_muted", False)
             ),
             markup_music_muted=bool(
-                self.settings.get("markup_music_muted", False)
+                effective.get("markup_music_muted", False)
             ),
-            ambient_muted=bool(self.settings.get("ambient_muted", False)),
-            sfx_muted=bool(self.settings.get("sfx_muted", False)),
-            solo_track=str(self.settings.get("markup_audio_solo_track", "")),
+            ambient_muted=bool(effective.get("ambient_muted", False)),
+            sfx_muted=bool(effective.get("sfx_muted", False)),
+            solo_track=str(effective.get("markup_audio_solo_track", "")),
         )
         music_path = options.background_path if options.background_enabled else None
         store = AudiobookStore()
@@ -691,10 +762,14 @@ class LocalText2VoiceService:
 
     @staticmethod
     def _next_mix_path(clean_path: Path) -> Path:
-        candidate = clean_path.with_name(f"{clean_path.stem}_mix.mp3")
+        candidate = clean_path.with_name(
+            f"{clean_path.stem}_mix{clean_path.suffix}"
+        )
         index = 2
         while candidate.exists():
-            candidate = clean_path.with_name(f"{clean_path.stem}_{index}_mix.mp3")
+            candidate = clean_path.with_name(
+                f"{clean_path.stem}_{index}_mix{clean_path.suffix}"
+            )
             index += 1
         return candidate
 
@@ -763,58 +838,90 @@ class LocalText2VoiceService:
         self,
         request: dict[str, Any],
         voice_config: dict[str, Any],
+        effective_settings: dict[str, Any] | None = None,
+    ) -> AudioGenerationOptions:
+        settings = (
+            copy.deepcopy(effective_settings)
+            if effective_settings is not None
+            else self._effective_settings(request)
+        )
+        return self._generation_options_from_settings(request, voice_config, settings)
+
+    def _effective_settings(self, request: dict[str, Any]) -> dict[str, Any]:
+        settings = copy.deepcopy(self.settings)
+        override_value = request.get("generation_settings", {})
+        overrides = dict(override_value) if isinstance(override_value, dict) else {}
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(settings.get(key), dict):
+                settings[key] = {**dict(settings[key]), **value}
+            else:
+                settings[key] = value
+        return settings
+
+    def _generation_options_from_settings(
+        self,
+        request: dict[str, Any],
+        voice_config: dict[str, Any],
+        settings: dict[str, Any],
     ) -> AudioGenerationOptions:
         engine_id = str(voice_config.get("engine", "piper"))
         output_dir = self._resolve_output_dir(request.get("output_dir"))
-        metadata = dict(self.settings.get("metadata", {}))
+        metadata = dict(settings.get("metadata", {}))
         title = str(request.get("title") or metadata.get("title") or "Audiobook").strip()
         metadata["title"] = title or "Audiobook"
         mix_policy = str(request.get("mix_policy", "always")).strip().casefold()
         render_mix = mix_policy not in {"off", "none", "clean_only", "clean-only"}
         background_path = self._resolve_music_path(request.get("background_music", ""))
-        project_settings = copy.deepcopy(self.settings)
+        project_settings = copy.deepcopy(settings)
         project_settings["server_request"] = {
             key: value
             for key, value in request.items()
-            if key not in {"text"}
+            if key not in {"text", "voice_config", "generation_settings"}
         }
-        normalization = self.settings.get("text_normalization", {})
+        normalization = settings.get("text_normalization", {})
         if not isinstance(normalization, dict):
             normalization = {}
         return AudioGenerationOptions(
             output_dir=output_dir,
             voice_config=voice_config,
-            ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
-            split_mode=str(request.get("split_mode") or self.settings.get("split_mode", "safe_chunks")),
-            export_mode=str(request.get("export_mode") or self.settings.get("export_mode", "single")),
+            ffmpeg_path=settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
+            split_mode=str(request.get("split_mode") or settings.get("split_mode", "safe_chunks")),
+            export_mode="single",
+            audio_format=str(
+                request.get("audio_format") or settings.get("audio_format", "mp3")
+            ),
+            audio_quality=str(
+                request.get("audio_quality")
+                or settings.get("audio_quality", "standard")
+            ),
             chunk_size=self._chunk_size(engine_id, request),
-            pause_between_blocks_ms=int(self.settings.get("pause_between_blocks_ms", 350)),
-            pause_between_chapters_ms=int(self.settings.get("pause_between_chapters_ms", 900)),
-            paragraph_pause_min_ms=int(self.settings.get("paragraph_pause_min_ms", 450)),
-            paragraph_pause_max_ms=int(self.settings.get("paragraph_pause_max_ms", 900)),
-            adaptive_paragraph_pause=bool(self.settings.get("adaptive_paragraph_pause", True)),
-            paragraph_length_reference_chars=int(self.settings.get("paragraph_length_reference_chars", 600)),
-            paragraph_length_extra_ms=int(self.settings.get("paragraph_length_extra_ms", 650)),
-            periodic_pause_every_paragraphs=int(self.settings.get("periodic_pause_every_paragraphs", 5)),
-            periodic_pause_min_ms=int(self.settings.get("periodic_pause_min_ms", 350)),
-            periodic_pause_max_ms=int(self.settings.get("periodic_pause_max_ms", 750)),
-            normalize_audio=bool(self.settings.get("normalize_audio", False)),
+            pause_between_blocks_ms=int(settings.get("pause_between_blocks_ms", 350)),
+            pause_between_chapters_ms=int(settings.get("pause_between_chapters_ms", 900)),
+            paragraph_pause_min_ms=int(settings.get("paragraph_pause_min_ms", 450)),
+            paragraph_pause_max_ms=int(settings.get("paragraph_pause_max_ms", 900)),
+            adaptive_paragraph_pause=bool(settings.get("adaptive_paragraph_pause", True)),
+            paragraph_length_reference_chars=int(settings.get("paragraph_length_reference_chars", 600)),
+            paragraph_length_extra_ms=int(settings.get("paragraph_length_extra_ms", 650)),
+            periodic_pause_every_paragraphs=int(settings.get("periodic_pause_every_paragraphs", 5)),
+            periodic_pause_min_ms=int(settings.get("periodic_pause_min_ms", 350)),
+            periodic_pause_max_ms=int(settings.get("periodic_pause_max_ms", 750)),
+            normalize_audio=bool(settings.get("normalize_audio", False)),
             podcast_enabled=render_mix,
-            background_enabled=render_mix and bool(self.settings.get("background_enabled", True)) and background_path is not None,
+            background_enabled=render_mix and bool(settings.get("background_enabled", True)) and background_path is not None,
             background_path=background_path,
-            background_loop=bool(self.settings.get("background_loop", True)),
-            background_volume_percent=int(self.settings.get("background_volume_percent", 45)),
-            voice_volume_db=float(self.settings.get("voice_volume_db", 0.0)),
-            music_volume_db=float(self.settings.get("music_volume_db", -7.0)),
-            voice_start_offset_ms=int(self.settings.get("voice_start_offset_ms", 2000)),
-            music_tail_ms=int(self.settings.get("music_tail_ms", 2000)),
-            music_fade_in_seconds=float(self.settings.get("music_fade_in_seconds", 1.0)),
-            music_fade_out_seconds=float(self.settings.get("music_fade_out_seconds", 1.0)),
-            podcast_gap_ms=int(self.settings.get("podcast_gap_ms", 500)),
-            podcast_normalize=bool(self.settings.get("podcast_normalize", True)),
-            podcast_ducking=bool(self.settings.get("podcast_ducking", True)),
-            ducking_strength=str(self.settings.get("ducking_strength", "low")),
-            mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
+            background_loop=bool(settings.get("background_loop", True)),
+            background_volume_percent=int(settings.get("background_volume_percent", 45)),
+            voice_volume_db=float(settings.get("voice_volume_db", 0.0)),
+            music_volume_db=float(settings.get("music_volume_db", -7.0)),
+            voice_start_offset_ms=int(settings.get("voice_start_offset_ms", 2000)),
+            music_tail_ms=int(settings.get("music_tail_ms", 2000)),
+            music_fade_in_seconds=float(settings.get("music_fade_in_seconds", 1.0)),
+            music_fade_out_seconds=float(settings.get("music_fade_out_seconds", 1.0)),
+            podcast_gap_ms=int(settings.get("podcast_gap_ms", 500)),
+            podcast_normalize=bool(settings.get("podcast_normalize", True)),
+            podcast_ducking=bool(settings.get("podcast_ducking", True)),
+            ducking_strength=str(settings.get("ducking_strength", "low")),
+            mp3_bitrate=str(settings.get("mp3_bitrate", "128k")),
             metadata=metadata,
             text_normalization_enabled=bool(
                 normalization.get("enabled", False)
@@ -852,6 +959,13 @@ class LocalText2VoiceService:
             raise ValueError("project_audiobook_id must be an integer.")
 
     def _voice_config(self, engine_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        provided_value = request.get("voice_config", {})
+        if isinstance(provided_value, dict) and provided_value:
+            provided = copy.deepcopy(provided_value)
+            provided["engine"] = engine_id
+            if request.get("speed") is not None:
+                provided["speed"] = float(request["speed"])
+            return provided
         speed = float(request.get("speed") or self.settings.get("speed", 1.0))
         voice_hint = str(request.get("voice") or request.get("voice_id") or "").strip()
         language_hint = str(request.get("language") or request.get("lang") or "").strip()

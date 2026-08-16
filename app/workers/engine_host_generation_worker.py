@@ -59,8 +59,16 @@ class EngineHostGenerationWorker(QObject):
                     result = job.get("result", {})
                     payload = dict(result) if isinstance(result, dict) else {}
                     payload.setdefault("audiobook_id", job.get("audiobook_id"))
-                    payload.setdefault("clean_mp3", job.get("clean_mp3_path", ""))
-                    payload.setdefault("mix_mp3", job.get("mix_mp3_path", ""))
+                    clean_audio = job.get("clean_audio_path") or job.get(
+                        "clean_mp3_path", ""
+                    )
+                    mix_audio = job.get("mix_audio_path") or job.get(
+                        "mix_mp3_path", ""
+                    )
+                    payload.setdefault("clean_audio", clean_audio)
+                    payload.setdefault("mix_audio", mix_audio)
+                    payload.setdefault("clean_mp3", clean_audio)
+                    payload.setdefault("mix_mp3", mix_audio)
                     self.finished.emit(payload)
                     return
                 if status == "cancelled":

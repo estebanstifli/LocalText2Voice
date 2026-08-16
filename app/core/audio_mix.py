@@ -11,6 +11,7 @@ from array import array
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from app.core.audio_formats import audio_format_from_path, encoding_arguments
 from app.utils.ffmpeg_utils import FFmpegRunner, find_ffmpeg
 from app.core.waveform_preview import probe_audio_duration
 
@@ -29,6 +30,8 @@ class AudioMixSettings:
     ducking_strength: str = "low"
     loop_background: bool = True
     normalize: bool = False
+    audio_format: str = "mp3"
+    audio_quality: str = "standard"
     mp3_bitrate: str = "128k"
     markup_music_volume_db: float = 0.0
     ambient_volume_db: float = 0.0
@@ -178,14 +181,19 @@ def render_audio_mix(
         target_duration_override=target_duration,
     )
     arguments.extend(["-filter_complex", filter_complex, "-map", f"[{final_label}]"])
-    if output_path.suffix.lower() == ".mp3":
-        arguments.extend(["-codec:a", "libmp3lame", "-b:a", settings.mp3_bitrate])
+    output_spec = audio_format_from_path(output_path)
+    if output_spec is not None:
+        arguments.extend(
+            encoding_arguments(output_spec.id, settings.audio_quality)
+        )
         for key in ("title", "artist", "album"):
             value = str((metadata or {}).get(key, "")).strip()
             if value:
                 arguments.extend(["-metadata", f"{key}={value}"])
-    else:
+    elif output_path.suffix.lower() == ".wav":
         arguments.extend(["-codec:a", "pcm_s16le"])
+    else:
+        raise ValueError(f"Unsupported audio output format: {output_path.suffix}")
     arguments.append(str(output_path))
     try:
         runner.run(arguments)

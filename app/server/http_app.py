@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 
+from app.core.audio_formats import audio_format_from_path
 from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
 from app.server.job_manager import LocalServerJobManager, wait_for_job
@@ -155,6 +156,8 @@ def create_http_app(
         language: str | None = None,
         background_music: str | None = None,
         mix_policy: str = "always",
+        audio_format: str | None = None,
+        audio_quality: str | None = None,
         export_mode: str | None = None,
         split_mode: str | None = None,
         review_policy: str = "default",
@@ -169,6 +172,8 @@ def create_http_app(
             "language": language,
             "background_music": background_music,
             "mix_policy": mix_policy,
+            "audio_format": audio_format,
+            "audio_quality": audio_quality,
             "export_mode": export_mode,
             "split_mode": split_mode,
             "review_policy": review_policy,
@@ -191,6 +196,8 @@ def create_http_app(
         language: str | None = None,
         background_music: str | None = None,
         mix_policy: str = "always",
+        audio_format: str | None = None,
+        audio_quality: str | None = None,
         review_policy: str = "default",
     ) -> dict[str, Any]:
         return create_audiobook(
@@ -201,6 +208,8 @@ def create_http_app(
             language=language,
             background_music=background_music,
             mix_policy=mix_policy,
+            audio_format=audio_format,
+            audio_quality=audio_quality,
             review_policy=review_policy,
         )
 
@@ -552,13 +561,27 @@ def create_http_app(
         job = manager.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
-        path_text = job.mix_mp3_path if kind in {"mix", "mix.mp3"} else job.clean_mp3_path
-        if kind not in {"mix", "mix.mp3", "clean", "clean.mp3", "voice", "voice.mp3"}:
+        mix_kinds = {"mix", "mix.audio", "mix.mp3"}
+        clean_kinds = {
+            "clean",
+            "clean.audio",
+            "clean.mp3",
+            "voice",
+            "voice.audio",
+            "voice.mp3",
+        }
+        path_text = job.mix_audio_path if kind in mix_kinds else job.clean_audio_path
+        if kind not in mix_kinds | clean_kinds:
             raise HTTPException(status_code=404, detail="Unknown file kind.")
         path = Path(path_text)
         if not path.is_file():
             raise HTTPException(status_code=404, detail="File is not ready.")
-        return FileResponse(path, media_type="audio/mpeg", filename=path.name)
+        format_spec = audio_format_from_path(path)
+        return FileResponse(
+            path,
+            media_type=format_spec.mime_type if format_spec is not None else None,
+            filename=path.name,
+        )
 
     app.mount("/mcp", mcp_app)
     return app
@@ -598,9 +621,11 @@ def _job_response(
     token = str(_server_settings(settings_manager).get("auth_token", "") or "").strip()
     suffix = f"?token={token}" if token else ""
     base = base_url or _base_url_from_settings(settings_manager.settings)
-    if payload.get("clean_mp3_path"):
+    if payload.get("clean_audio_path"):
+        payload["clean_audio_url"] = f"{base}/files/jobs/{job.job_id}/clean{suffix}"
         payload["clean_mp3_url"] = f"{base}/files/jobs/{job.job_id}/clean{suffix}"
-    if payload.get("mix_mp3_path"):
+    if payload.get("mix_audio_path"):
+        payload["mix_audio_url"] = f"{base}/files/jobs/{job.job_id}/mix{suffix}"
         payload["mix_mp3_url"] = f"{base}/files/jobs/{job.job_id}/mix{suffix}"
     result = payload.get("result", {})
     if isinstance(result, dict):

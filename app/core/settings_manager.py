@@ -6,6 +6,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from app.core.audio_formats import (
+    AUDIO_FORMATS,
+    legacy_mp3_bitrate_quality,
+    normalize_audio_format,
+    normalize_audio_quality,
+)
 from app.core.text_normalization import (
     DEFAULT_NORMALIZATION_RULES,
     normalization_rule_settings,
@@ -17,7 +23,7 @@ from app.utils.paths import (
     write_assets_location_file,
 )
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 20
+CURRENT_SETTINGS_SCHEMA_VERSION = 21
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -36,7 +42,7 @@ SUPPORTED_UI_LANGUAGES = {
 }
 SUPPORTED_UI_THEMES = {"light", "dark"}
 SUPPORTED_SPLIT_MODES = {"safe_chunks", "chapters"}
-SUPPORTED_EXPORT_MODES = {"single", "chapters"}
+SUPPORTED_EXPORT_MODES = {"single"}
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -58,6 +64,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "speed": 1.0,
     "split_mode": "safe_chunks",
     "export_mode": "single",
+    "audio_format": "mp3",
+    "audio_quality": "standard",
     "piper_path": "engines/piper/piper.exe",
     "ffmpeg_path": "ffmpeg/ffmpeg.exe",
     "chunk_size": 300,
@@ -119,9 +127,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "open_output_on_finish": False,
     "mp3_bitrate": "128k",
     "metadata": {
-        "title": "Course",
+        "title": "Project1",
         "artist": "",
         "album": "LocalText2Voice",
+    },
+    "book_metadata": {
+        "title": "Project1",
+        "title_follows_project": True,
+        "subtitle": "",
+        "author": "",
+        "narrator": "",
+        "series": "",
+        "series_index": "",
+        "language": "",
+        "genre": "",
+        "publisher": "",
+        "publication_date": "",
+        "description": "",
+        "copyright": "",
+        "isbn": "",
+        "cover_mode": "auto",
+        "cover_path": "assets/cover.jpg",
+        "chapter_mode": "markup"
     },
     "kokoro": {
         "voice": "af_heart",
@@ -333,6 +360,18 @@ def _migrate_settings(
                 engine_sizes[engine] = size
         result["engine_chunk_sizes"] = engine_sizes
 
+    if version < 21:
+        # Audio is now always exported as one file. Preserve export_mode as an
+        # internal structure setting so old projects and API clients migrate
+        # without losing a known key.
+        result["export_mode"] = "single"
+        result["audio_format"] = normalize_audio_format(
+            result.get("audio_format", "mp3")
+        )
+        result["audio_quality"] = legacy_mp3_bitrate_quality(
+            result.get("mp3_bitrate", "128k")
+        )
+
     invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
     _sanitize_core_settings(result)
     if (
@@ -379,7 +418,17 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     _sanitize_choice(settings, "ui_theme", SUPPORTED_UI_THEMES)
     _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
     settings["split_mode"] = "safe_chunks"
-    _sanitize_choice(settings, "export_mode", SUPPORTED_EXPORT_MODES)
+    settings["export_mode"] = "single"
+    settings["audio_format"] = normalize_audio_format(
+        settings.get("audio_format", DEFAULT_SETTINGS["audio_format"])
+    )
+    settings["audio_quality"] = normalize_audio_quality(
+        settings["audio_format"],
+        settings.get("audio_quality", DEFAULT_SETTINGS["audio_quality"]),
+    )
+    if settings["audio_format"] == "mp3":
+        quality = AUDIO_FORMATS["mp3"].quality(settings["audio_quality"])
+        settings["mp3_bitrate"] = quality.bitrate or "128k"
 
     gpu_device = str(settings.get("gpu_device_index", "auto")).strip().casefold()
     if gpu_device != "auto":

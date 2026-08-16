@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import json
 import os
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import wave
 from copy import deepcopy
 from dataclasses import replace
@@ -16,7 +18,7 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QSize, QThread, QTimer, Qt
+from PySide6.QtCore import QSize, QThread, QTimer, Qt, Slot
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -69,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import __version__
+from app.core.audio_formats import AUDIO_FORMATS, audio_format_spec
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.asset_storage import (
     AssetStorageCancelled,
@@ -76,8 +79,16 @@ from app.core.asset_storage import (
     AssetTransferResult,
 )
 from app.core.audio_mix import AudioMixSettings
+from app.core.book_metadata import (
+    book_metadata_from_settings,
+    prepare_project_cover,
+    project_cover_path,
+    settings_with_book_metadata,
+    update_m4b_tags_atomic,
+)
 from app.core.audio_library import audio_library_files, library_directory
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.bulk_audiobook_store import BulkAudiobookStore
 from app.core.audio_tail_review import (
     comparison_normalization_is_current,
     parse_review_metrics,
@@ -127,6 +138,7 @@ from app.tts.russian_normalization_manager import RussianNormalizationManager
 from app.tts.piper_engine import PiperTTSEngine
 from app.tts.voice_gallery_manager import (
     DEFAULT_GALLERY_CATALOG_URL,
+    DEFAULT_OMNIVOICE_REFERENCE_VOICE_ID,
     GalleryVoice,
     VoiceGalleryManager,
 )
@@ -161,6 +173,7 @@ from app.workers.chatterbox_worker import (
     ChatterboxInstallWorker,
     ChatterboxPreviewWorker,
 )
+from app.workers.bulk_audiobook_worker import BulkAudiobookWorker
 from app.workers.f5_russian_worker import (
     F5RussianInstallWorker,
     F5RussianPreviewWorker,
@@ -201,6 +214,8 @@ from app.verification.faster_whisper_manager import (
 from mutagen import File as MutagenFile
 
 from .audio_mix_preview_panel import AudioMixPreviewContext, AudioMixPreviewPanel
+from .bulk_audiobooks_page import BulkAudiobooksPage
+from .book_properties_dialog import BookPropertiesDialog
 from .clone_voice_dialog import CloneVoiceDialog
 from .icons import ICON_LIGHT, ui_icon
 from .markup_highlighter import LTVMarkupHighlighter
@@ -844,6 +859,11 @@ class MainWindow(QMainWindow):
         )
         self.voice_gallery_manager.ensure_seed_loaded()
         self.audiobook_store = AudiobookStore()
+        self._draft_project_title = self.audiobook_store.next_project_title()
+        self.bulk_audiobook_store = BulkAudiobookStore()
+        self.bulk_audiobook_worker: BulkAudiobookWorker | None = None
+        self.bulk_audiobook_thread: QThread | None = None
+        self.active_bulk_batch_id: int | None = None
         self.faster_whisper_manager = FasterWhisperManager()
         self.current_audiobook_id = self._stored_project_id()
         self.project_dirty = False
@@ -867,6 +887,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_voice_thread: QThread | None = None
         self.voice_gallery_worker: VoiceGalleryWorker | None = None
         self.voice_gallery_thread: QThread | None = None
+        self.pending_qwen_gallery_voice_id: str | None = None
         self.pending_f5_russian_gallery_voice_id: str | None = None
         self.pending_removed_gallery_voice: tuple[str, GalleryVoice] | None = None
         self.qwen_worker: QwenInstallWorker | None = None
@@ -1070,6 +1091,35 @@ class MainWindow(QMainWindow):
         )
         self.page_stack.addWidget(self.audio_mix_preview_panel)
         self.page_stack.addWidget(self._build_voices_page())
+        self.bulk_audiobooks_page = BulkAudiobooksPage(self.tr)
+        self.bulk_audiobooks_page.createRequested.connect(
+            self._create_bulk_audiobook_task
+        )
+        self.bulk_audiobooks_page.batchSelectionChanged.connect(
+            self._refresh_bulk_audiobook_details
+        )
+        self.bulk_audiobooks_page.startRequested.connect(
+            self._start_bulk_audiobook_task
+        )
+        self.bulk_audiobooks_page.pauseRequested.connect(
+            self._pause_bulk_audiobook_task
+        )
+        self.bulk_audiobooks_page.cancelRequested.connect(
+            self._cancel_bulk_audiobook_task
+        )
+        self.bulk_audiobooks_page.retryRequested.connect(
+            self._retry_bulk_audiobook_task
+        )
+        self.bulk_audiobooks_page.refreshRequested.connect(
+            self._refresh_bulk_audiobooks_page
+        )
+        self.bulk_audiobooks_page.openProjectRequested.connect(
+            self._open_bulk_audiobook_project
+        )
+        self.bulk_audiobooks_page.openFolderRequested.connect(
+            self._open_bulk_audiobook_output
+        )
+        self.page_stack.addWidget(self.bulk_audiobooks_page)
         content_layout.addWidget(self.page_stack, 1)
 
         body_layout.addWidget(content_widget, 1)
@@ -1164,6 +1214,7 @@ class MainWindow(QMainWindow):
         view_menu = self.app_menu_bar.addMenu(self.tr("menu_view", "View"))
         for label_key, default, callback in (
             ("nav_generate", "Generate", self._show_generation),
+            ("nav_bulk_audiobooks", "Bulk Audiobooks", self._show_bulk_audiobooks_page),
             ("nav_voices", "Voices", self._show_voices_page),
             ("nav_music", "Music", self._show_music_page),
             ("nav_review", "Review", self._show_review_page),
@@ -1266,6 +1317,12 @@ class MainWindow(QMainWindow):
         self.nav_buttons: dict[str, QPushButton] = {}
         nav_items = (
             ("generate", "generate", self.tr("nav_generate", "Generate"), self._show_generation),
+            (
+                "bulk",
+                "bulk",
+                self.tr("nav_bulk_audiobooks", "Bulk Audiobooks"),
+                self._show_bulk_audiobooks_page,
+            ),
             ("voices", "voice", self.tr("nav_voices", "Voices"), self._show_voices_page),
             ("music", "music", self.tr("nav_music", "Music"), self._show_music_page),
             ("review", "review", self.tr("nav_review", "Review"), self._show_review_page),
@@ -1601,9 +1658,40 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         header_layout = QHBoxLayout()
-        header = QLabel(self.tr("source_text", "Source text"))
-        header.setObjectName("sectionLabel")
-        header_layout.addWidget(header)
+        self.project_title_edit = QLineEdit(self._current_project_title())
+        self.project_title_edit.setObjectName("projectTitleEdit")
+        self.project_title_edit.setToolTip(
+            self.tr("rename_project_hint", "Click to rename this project")
+        )
+        self.project_title_edit.setMaximumWidth(460)
+        self.project_title_edit.setStyleSheet(
+            "QLineEdit { border: 1px solid transparent; background: transparent; "
+            "font-weight: 600; padding: 3px 5px; } "
+            "QLineEdit:hover, QLineEdit:focus { border-color: #94a3b8; "
+            "border-radius: 4px; background: rgba(148,163,184,0.08); }"
+        )
+        self.project_title_edit.editingFinished.connect(self._commit_project_title)
+        header_layout.addWidget(self.project_title_edit)
+        self.project_rename_button = QPushButton()
+        self.project_rename_button.setFlat(True)
+        self.project_rename_button.setIcon(ui_icon("edit"))
+        self.project_rename_button.setIconSize(QSize(15, 15))
+        self.project_rename_button.setFixedSize(27, 27)
+        self.project_rename_button.setToolTip(
+            self.tr("rename_project", "Rename project")
+        )
+        self.project_rename_button.clicked.connect(self._start_project_title_edit)
+        header_layout.addWidget(self.project_rename_button)
+        self.project_properties_button = QPushButton()
+        self.project_properties_button.setFlat(True)
+        self.project_properties_button.setIcon(ui_icon("settings"))
+        self.project_properties_button.setIconSize(QSize(16, 16))
+        self.project_properties_button.setFixedSize(28, 28)
+        self.project_properties_button.setToolTip(
+            self.tr("book_properties", "M4B book properties")
+        )
+        self.project_properties_button.clicked.connect(self._open_book_properties)
+        header_layout.addWidget(self.project_properties_button)
         header_layout.addStretch(1)
 
         self.import_button = QPushButton(self.tr("import_file", "Import file"))
@@ -3250,7 +3338,13 @@ class MainWindow(QMainWindow):
                 "Search voices, descriptions, styles or tags...",
             )
         )
-        self.voices_filter_edit.textChanged.connect(self._refresh_voices_page)
+        self.voices_filter_timer = QTimer(self)
+        self.voices_filter_timer.setSingleShot(True)
+        self.voices_filter_timer.setInterval(120)
+        self.voices_filter_timer.timeout.connect(self._refresh_voices_page)
+        self.voices_filter_edit.textChanged.connect(
+            lambda _text: self.voices_filter_timer.start()
+        )
         self.voices_filter_field_combo = QComboBox()
         for label, field in (
             (self.tr("all_fields", "All fields"), "all"),
@@ -3613,6 +3707,19 @@ class MainWindow(QMainWindow):
                 "Mix your voice narration with background music.",
             ),
             "generate",
+        )
+
+    def _show_bulk_audiobooks_page(self) -> None:
+        self._refresh_bulk_audiobooks_page()
+        self._show_page(
+            6,
+            "bulk",
+            self.tr("nav_bulk_audiobooks", "Bulk Audiobooks"),
+            self.tr(
+                "bulk_audiobooks_subtitle",
+                "Create and monitor unattended audiobook production tasks.",
+            ),
+            "bulk",
         )
 
     def _show_voices_page(self) -> None:
@@ -5755,6 +5862,8 @@ class MainWindow(QMainWindow):
 
     def _on_qwen_model_changed(self, _index: int = -1) -> None:
         self._refresh_qwen_model_fields()
+        if self._qwen_model_kind() == "voice_clone":
+            self._ensure_default_qwen_reference(allow_sync=False)
         self._refresh_qwen_status()
 
     def _refresh_qwen_model_fields(self) -> None:
@@ -5790,6 +5899,78 @@ class MainWindow(QMainWindow):
                     "one of the built-in voices; it does not clone reference audio.",
                 )
             )
+
+    def _ensure_default_qwen_reference(
+        self,
+        *,
+        allow_sync: bool = False,
+    ) -> bool:
+        """Reuse OmniVoice's default gallery reference for Qwen Base cloning."""
+        if (
+            not hasattr(self, "qwen_reference_picker")
+            or self._qwen_model_kind() != "voice_clone"
+        ):
+            return False
+        current_path = self.qwen_reference_picker.path()
+        current_text = self.qwen_reference_text_edit.toPlainText().strip()
+        if current_path is not None and current_path.is_file():
+            # A custom recording needs its own exact transcript, so never replace it.
+            return bool(current_text)
+
+        omnivoice = self.settings.get("omnivoice", {})
+        if isinstance(omnivoice, dict):
+            shared_path = Path(
+                str(omnivoice.get("reference_audio_path", "") or "")
+            ).expanduser()
+            shared_text = str(omnivoice.get("reference_text", "") or "").strip()
+            if shared_path.is_file() and shared_text:
+                self.qwen_reference_picker.set_path(shared_path)
+                self.qwen_reference_text_edit.setPlainText(shared_text)
+                return True
+
+        voice = self.voice_gallery_manager.get_voice(
+            DEFAULT_OMNIVOICE_REFERENCE_VOICE_ID
+        )
+        if voice is None and allow_sync:
+            try:
+                self.voice_gallery_manager.sync()
+                voice = self.voice_gallery_manager.get_voice(
+                    DEFAULT_OMNIVOICE_REFERENCE_VOICE_ID
+                )
+            except Exception as exc:
+                self.log_view.append_event(
+                    "Could not sync the Qwen Base default reference voice: "
+                    f"{exc}"
+                )
+        if voice is None:
+            return False
+
+        installed_path = Path(str(getattr(voice, "installed_path", "") or ""))
+        if installed_path.is_file():
+            audio_path = installed_path
+        elif not allow_sync:
+            # Browsing settings and restoring a project must not start a network
+            # transfer. Installation/generation may materialize the shared asset.
+            return False
+        else:
+            try:
+                audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+            except Exception as exc:
+                self.log_view.append_event(
+                    "Could not prepare the Qwen Base default reference voice: "
+                    f"{exc}"
+                )
+                return False
+        if audio_path is None or not audio_path.is_file():
+            return False
+
+        self.qwen_reference_picker.set_path(audio_path)
+        self.qwen_reference_text_edit.setPlainText(voice.ref_text)
+        self.log_view.append_event(
+            "Qwen Base default reference voice ready: "
+            f"{voice.name} ({audio_path})"
+        )
+        return True
 
     def _refresh_qwen_hardware_status(self) -> None:
         if not hasattr(self, "qwen_hardware_label"):
@@ -5982,6 +6163,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(
             self.tr("qwen_ready", "Qwen3 TTS ready: {path}", path=path)
         )
+        if self._ensure_default_qwen_reference(allow_sync=True):
+            self._save_settings()
 
     def _on_qwen_failed(self, message: str) -> None:
         self.qwen_progress_bar.setVisible(False)
@@ -6120,6 +6303,8 @@ class MainWindow(QMainWindow):
             )
             return None
         generation_mode = self._qwen_model_kind(model)
+        if generation_mode == "voice_clone":
+            self._ensure_default_qwen_reference(allow_sync=True)
         reference_path = self.qwen_reference_picker.path()
         reference_text = self.qwen_reference_text_edit.toPlainText().strip()
         if generation_mode == "voice_clone":
@@ -6512,7 +6697,7 @@ class MainWindow(QMainWindow):
         if current_path is not None and current_path.is_file():
             return True
 
-        voice_id = "omnivoice_en_harold_storyteller"
+        voice_id = DEFAULT_OMNIVOICE_REFERENCE_VOICE_ID
         voice = self.voice_gallery_manager.get_voice(voice_id)
         if voice is None and allow_sync:
             try:
@@ -7953,6 +8138,9 @@ class MainWindow(QMainWindow):
         custom_engine = self._custom_engine_by_key(engine_id)
         if custom_engine is not None:
             return str(custom_engine.get("name", engine_id) or engine_id)
+        base_engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
+        if base_engine_id == "qwen" and qwen_model_id:
+            return self._qwen_model_display_name(qwen_model_id)
         labels = {
             "piper": self.tr("tts_engine_piper", "Piper"),
             "kokoro": self.tr(
@@ -7971,7 +8159,54 @@ class MainWindow(QMainWindow):
             "gemini": self.tr("tts_engine_gemini", "Google Gemini TTS (API)"),
             "azure": self.tr("tts_engine_azure", "Azure Speech (API)"),
         }
-        return labels.get(engine_id, engine_id)
+        return labels.get(base_engine_id, engine_id)
+
+    @staticmethod
+    def _split_tts_engine_row_id(engine_id: str) -> tuple[str, str | None]:
+        prefix = "qwen:"
+        if engine_id.startswith(prefix):
+            model_id = engine_id[len(prefix) :].strip()
+            return "qwen", model_id or None
+        return engine_id, None
+
+    @staticmethod
+    def _qwen_tts_engine_row_id(model_id: str) -> str:
+        return f"qwen:{model_id}"
+
+    def _active_tts_engine_row_id(self) -> str:
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if engine_id == "qwen":
+            return self._qwen_tts_engine_row_id(self._selected_qwen_model_id())
+        return engine_id
+
+    def _select_qwen_model(self, model_id: str) -> bool:
+        index = self.qwen_model_combo.findData(model_id)
+        if index < 0:
+            return False
+        self.qwen_model_combo.setCurrentIndex(index)
+        return True
+
+    def _qwen_model_display_name(self, model_id: str) -> str:
+        definition_getter = getattr(self.qwen_manager, "model_definition", None)
+        if callable(definition_getter):
+            return str(definition_getter(model_id).display_name)
+        index = self.qwen_model_combo.findData(model_id)
+        return self.qwen_model_combo.itemText(index) if index >= 0 else model_id
+
+    def _qwen_table_models(self) -> list[tuple[str, str]]:
+        list_models = getattr(self.qwen_manager, "list_models", None)
+        if callable(list_models):
+            return [
+                (str(model.model_id), str(model.display_name))
+                for model in list_models()
+            ]
+        return [
+            (
+                str(self.qwen_model_combo.itemData(index)),
+                self.qwen_model_combo.itemText(index),
+            )
+            for index in range(self.qwen_model_combo.count())
+        ]
 
     @staticmethod
     def _manager_model_detected(manager: object) -> bool:
@@ -8014,10 +8249,14 @@ class MainWindow(QMainWindow):
         return self.tr("install", "Install")
 
     def _tts_engine_model_detected(self, engine_id: str) -> bool:
+        engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
+        if engine_id == "qwen":
+            return self._qwen_model_files_detected(
+                qwen_model_id or self._selected_qwen_model_id()
+            )
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
-            "qwen": self.qwen_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -8025,8 +8264,7 @@ class MainWindow(QMainWindow):
             return False
         return self._manager_model_detected(manager)
 
-    def _engine_table_rows(self) -> list[dict[str, str]]:
-        current_engine = str(self.tts_engine_combo.currentData() or "piper")
+    def _engine_table_rows(self) -> list[dict[str, object]]:
         piper_path_edit = getattr(self, "piper_path_edit", None)
         piper_path_value = (
             piper_path_edit.text().strip()
@@ -8047,9 +8285,33 @@ class MainWindow(QMainWindow):
         )
         chatterbox_runtime_ready = self.chatterbox_manager.has_runtime()
         chatterbox_ready = self.chatterbox_manager.is_installed()
-        qwen_model_detected = self._manager_model_detected(self.qwen_manager)
         qwen_runtime_ready = self.qwen_manager.has_runtime()
-        qwen_ready = self.qwen_manager.is_installed()
+        qwen_rows: list[dict[str, object]] = []
+        for qwen_model_id, qwen_model_name in self._qwen_table_models():
+            model_detected = self._qwen_model_files_detected(qwen_model_id)
+            model_ready = model_detected and qwen_runtime_ready
+            qwen_rows.append(
+                {
+                    "engine_id": self._qwen_tts_engine_row_id(qwen_model_id),
+                    "type": self.tr("engine_type_local", "Local"),
+                    "name": qwen_model_name,
+                    "speed": (
+                        self.tr("engine_speed_medium", "Medium")
+                        if qwen_model_id == "custom_voice_0_6b"
+                        else self.tr("engine_speed_slow", "Slow")
+                    ),
+                    "quality": self.tr("engine_quality_high", "High"),
+                    "gpu": self.tr("recommended", "Recommended"),
+                    "installed": self._local_engine_install_status(
+                        model_ready,
+                        model_detected,
+                        qwen_runtime_ready,
+                    ),
+                    "_selectable": model_ready,
+                    "_model_detected": model_detected,
+                    "_runtime_ready": qwen_runtime_ready,
+                }
+            )
         omnivoice_model_detected = self._manager_model_detected(
             self.omnivoice_manager
         )
@@ -8075,6 +8337,7 @@ class MainWindow(QMainWindow):
                 "quality": self.tr("engine_quality_good", "Good"),
                 "gpu": self.tr("no", "No"),
                 "installed": installed if piper_installed else not_installed,
+                "_selectable": piper_runtime_ready,
             },
             {
                 "engine_id": "kokoro",
@@ -8088,6 +8351,9 @@ class MainWindow(QMainWindow):
                     kokoro_model_detected,
                     kokoro_runtime_ready,
                 ),
+                "_selectable": kokoro_installed,
+                "_model_detected": kokoro_model_detected,
+                "_runtime_ready": kokoro_runtime_ready,
             },
             {
                 "engine_id": "chatterbox",
@@ -8101,20 +8367,11 @@ class MainWindow(QMainWindow):
                     chatterbox_model_detected,
                     chatterbox_runtime_ready,
                 ),
+                "_selectable": chatterbox_ready,
+                "_model_detected": chatterbox_model_detected,
+                "_runtime_ready": chatterbox_runtime_ready,
             },
-            {
-                "engine_id": "qwen",
-                "type": local_type,
-                "name": self._tts_engine_label("qwen"),
-                "speed": self.tr("engine_speed_slow", "Slow"),
-                "quality": self.tr("engine_quality_high", "High"),
-                "gpu": self.tr("recommended", "Recommended"),
-                "installed": self._local_engine_install_status(
-                    qwen_ready,
-                    qwen_model_detected,
-                    qwen_runtime_ready,
-                ),
-            },
+            *qwen_rows,
             {
                 "engine_id": "omnivoice",
                 "type": local_type,
@@ -8127,6 +8384,9 @@ class MainWindow(QMainWindow):
                     omnivoice_model_detected,
                     omnivoice_runtime_ready,
                 ),
+                "_selectable": omnivoice_ready,
+                "_model_detected": omnivoice_model_detected,
+                "_runtime_ready": omnivoice_runtime_ready,
             },
             {
                 "engine_id": "f5_russian",
@@ -8140,6 +8400,9 @@ class MainWindow(QMainWindow):
                     f5_russian_model_detected,
                     f5_russian_runtime_ready,
                 ),
+                "_selectable": f5_russian_ready,
+                "_model_detected": f5_russian_model_detected,
+                "_runtime_ready": f5_russian_runtime_ready,
             },
             {
                 "engine_id": "openai",
@@ -8149,6 +8412,7 @@ class MainWindow(QMainWindow):
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": "",
                 "installed": "",
+                "_selectable": True,
             },
             {
                 "engine_id": "elevenlabs",
@@ -8158,6 +8422,7 @@ class MainWindow(QMainWindow):
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": "",
                 "installed": "",
+                "_selectable": True,
             },
             {
                 "engine_id": "gemini",
@@ -8167,6 +8432,7 @@ class MainWindow(QMainWindow):
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": "",
                 "installed": "",
+                "_selectable": True,
             },
             {
                 "engine_id": "azure",
@@ -8176,6 +8442,7 @@ class MainWindow(QMainWindow):
                 "quality": self.tr("engine_quality_high", "High"),
                 "gpu": "",
                 "installed": "",
+                "_selectable": True,
             },
         ]
         for engine in self._custom_tts_engines():
@@ -8190,13 +8457,16 @@ class MainWindow(QMainWindow):
                     "quality": self.tr("engine_quality_custom", "Custom"),
                     "gpu": self.tr("depends", "Depends") if is_local else "",
                     "installed": self.tr("configured", "Configured"),
+                    "_selectable": True,
                 }
             )
+        current_row_id = self._active_tts_engine_row_id()
         for row in rows:
             engine_id = row["engine_id"]
-            if engine_id != current_engine:
+            base_engine_id, _model_id = self._split_tts_engine_row_id(engine_id)
+            if engine_id != current_row_id:
                 row["selected"] = ""
-            elif self.preloading_tts_engine_id == engine_id:
+            elif self.preloading_tts_engine_id == base_engine_id:
                 row["selected"] = self.tr(
                     "selected_loading"
                     if self.preload_memory_action_load
@@ -8206,11 +8476,16 @@ class MainWindow(QMainWindow):
                     else "Selected / unloading",
                 )
             elif (
-                self.preloaded_tts_engine_id == engine_id
-                or engine_id in self.host_loaded_tts_engine_ids
+                self.preloaded_tts_engine_id == base_engine_id
+                or base_engine_id in self.host_loaded_tts_engine_ids
             ):
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
-            elif engine_id in {"chatterbox", "qwen", "omnivoice", "f5_russian"}:
+            elif base_engine_id in {
+                "chatterbox",
+                "qwen",
+                "omnivoice",
+                "f5_russian",
+            }:
                 row["selected"] = self.tr(
                     "selected_not_loaded",
                     "Selected / not loaded",
@@ -8231,14 +8506,14 @@ class MainWindow(QMainWindow):
         previous_scroll_position = scroll_bar.value()
         signals_were_blocked = table.blockSignals(True)
         table.setRowCount(0)
-        current_engine = str(self.tts_engine_combo.currentData() or "piper")
+        current_engine = self._active_tts_engine_row_id()
         selected_item: QTableWidgetItem | None = None
         for row_index, row in enumerate(self._engine_table_rows()):
             table.insertRow(row_index)
             for column, key in enumerate(
                 ("type", "name", "speed", "quality", "gpu", "installed", "selected")
             ):
-                item = QTableWidgetItem(row[key])
+                item = QTableWidgetItem(str(row[key]))
                 item.setData(Qt.ItemDataRole.UserRole, row["engine_id"])
                 if column in (0, 2, 3, 4, 5, 6):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -8248,7 +8523,13 @@ class MainWindow(QMainWindow):
             table.setCellWidget(
                 row_index,
                 7,
-                self._build_tts_engine_action_widget(row["engine_id"]),
+                self._build_tts_engine_action_widget(
+                    str(row["engine_id"]),
+                    selectable=bool(row.get("_selectable", True)),
+                    installed=bool(row.get("_selectable", False)),
+                    model_detected=bool(row.get("_model_detected", False)),
+                    runtime_ready=bool(row.get("_runtime_ready", False)),
+                ),
             )
             if row["engine_id"] == current_engine:
                 table.selectRow(row_index)
@@ -8277,7 +8558,7 @@ class MainWindow(QMainWindow):
     def _ensure_tts_engine_table_row_visible(self, engine_id: str) -> None:
         if not hasattr(self, "tts_engine_table"):
             return
-        if str(self.tts_engine_combo.currentData() or "piper") != engine_id:
+        if self._active_tts_engine_row_id() != engine_id:
             return
         table = self.tts_engine_table
         for row_index in range(table.rowCount()):
@@ -8296,7 +8577,16 @@ class MainWindow(QMainWindow):
             table.blockSignals(signals_were_blocked)
             return
 
-    def _build_tts_engine_action_widget(self, engine_id: str) -> QWidget:
+    def _build_tts_engine_action_widget(
+        self,
+        engine_id: str,
+        *,
+        selectable: bool | None = None,
+        installed: bool | None = None,
+        model_detected: bool | None = None,
+        runtime_ready: bool | None = None,
+    ) -> QWidget:
+        base_engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -8307,7 +8597,11 @@ class MainWindow(QMainWindow):
         select_button.clicked.connect(
             lambda _checked=False, selected=engine_id: self._select_tts_engine(selected)
         )
-        engine_selectable = self._tts_engine_is_installed(engine_id)
+        engine_selectable = (
+            self._tts_engine_is_installed(engine_id)
+            if selectable is None
+            else selectable
+        )
         select_button.setEnabled(engine_selectable)
         if not engine_selectable:
             select_button.setToolTip(
@@ -8324,11 +8618,14 @@ class MainWindow(QMainWindow):
             manage_button.clicked.connect(self._open_voice_manager)
             layout.addWidget(manage_button)
         elif engine_id == "kokoro":
-            model_detected = self._manager_model_detected(
-                self.kokoro_python_manager
-            )
-            runtime_ready = self.kokoro_python_manager.has_runtime()
-            installed = self.kokoro_python_manager.is_installed()
+            if model_detected is None:
+                model_detected = self._manager_model_detected(
+                    self.kokoro_python_manager
+                )
+            if runtime_ready is None:
+                runtime_ready = self.kokoro_python_manager.has_runtime()
+            if installed is None:
+                installed = self.kokoro_python_manager.is_installed()
             if installed:
                 reinstall_button = QPushButton(
                     self._local_engine_install_action(
@@ -8369,9 +8666,12 @@ class MainWindow(QMainWindow):
                 install_button.setEnabled(self.kokoro_python_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "chatterbox":
-            model_detected = self._manager_model_detected(self.chatterbox_manager)
-            runtime_ready = self.chatterbox_manager.has_runtime()
-            installed = self.chatterbox_manager.is_installed()
+            if model_detected is None:
+                model_detected = self._manager_model_detected(self.chatterbox_manager)
+            if runtime_ready is None:
+                runtime_ready = self.chatterbox_manager.has_runtime()
+            if installed is None:
+                installed = self.chatterbox_manager.is_installed()
             if installed:
                 reinstall_button = QPushButton(
                     self._local_engine_install_action(
@@ -8415,10 +8715,13 @@ class MainWindow(QMainWindow):
                 )
                 install_button.setEnabled(self.chatterbox_thread is None)
                 layout.addWidget(install_button)
-        elif engine_id == "qwen":
-            model_detected = self._manager_model_detected(self.qwen_manager)
-            runtime_ready = self.qwen_manager.has_runtime()
-            installed = self.qwen_manager.is_installed()
+        elif base_engine_id == "qwen" and qwen_model_id:
+            if model_detected is None:
+                model_detected = self._qwen_model_files_detected(qwen_model_id)
+            if runtime_ready is None:
+                runtime_ready = self.qwen_manager.has_runtime()
+            if installed is None:
+                installed = self._qwen_model_is_installed(qwen_model_id)
             if installed:
                 reinstall_button = QPushButton(
                     self._local_engine_install_action(
@@ -8429,18 +8732,18 @@ class MainWindow(QMainWindow):
                 )
                 reinstall_button.setIcon(ui_icon("apply"))
                 reinstall_button.clicked.connect(
-                    lambda _checked=False: self._select_and_install_engine("qwen")
+                    lambda _checked=False, selected=engine_id: (
+                        self._select_and_install_engine(selected)
+                    )
                 )
                 reinstall_button.setEnabled(self.qwen_thread is None)
                 layout.addWidget(reinstall_button)
-                remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
-                remove_button.setIcon(ui_icon("delete"))
-                remove_button.clicked.connect(self._remove_qwen)
-                remove_button.setEnabled(self.qwen_thread is None)
-                layout.addWidget(remove_button)
                 load_button = QPushButton()
                 load_button.clicked.connect(
-                    lambda _checked=False: self._toggle_preloaded_tts_engine("qwen")
+                    lambda _checked=False, model_id=qwen_model_id: (
+                        self._select_qwen_model(model_id),
+                        self._toggle_preloaded_tts_engine("qwen"),
+                    )
                 )
                 self._configure_preload_button(load_button, "qwen", True)
                 layout.addWidget(load_button)
@@ -8454,14 +8757,19 @@ class MainWindow(QMainWindow):
                 )
                 install_button.setIcon(ui_icon("apply"))
                 install_button.clicked.connect(
-                    lambda _checked=False: self._select_and_install_engine("qwen")
+                    lambda _checked=False, selected=engine_id: (
+                        self._select_and_install_engine(selected)
+                    )
                 )
                 install_button.setEnabled(self.qwen_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "omnivoice":
-            model_detected = self._manager_model_detected(self.omnivoice_manager)
-            runtime_ready = self.omnivoice_manager.has_runtime()
-            installed = self.omnivoice_manager.is_installed()
+            if model_detected is None:
+                model_detected = self._manager_model_detected(self.omnivoice_manager)
+            if runtime_ready is None:
+                runtime_ready = self.omnivoice_manager.has_runtime()
+            if installed is None:
+                installed = self.omnivoice_manager.is_installed()
             if installed:
                 reinstall_button = QPushButton(
                     self._local_engine_install_action(
@@ -8508,9 +8816,12 @@ class MainWindow(QMainWindow):
                 install_button.setEnabled(self.omnivoice_thread is None)
                 layout.addWidget(install_button)
         elif engine_id == "f5_russian":
-            model_detected = self._manager_model_detected(self.f5_russian_manager)
-            runtime_ready = self.f5_russian_manager.has_runtime()
-            installed = self.f5_russian_manager.is_installed()
+            if model_detected is None:
+                model_detected = self._manager_model_detected(self.f5_russian_manager)
+            if runtime_ready is None:
+                runtime_ready = self.f5_russian_manager.has_runtime()
+            if installed is None:
+                installed = self.f5_russian_manager.is_installed()
             install_button = QPushButton(
                 self._local_engine_install_action(
                     installed, model_detected, runtime_ready
@@ -8568,15 +8879,19 @@ class MainWindow(QMainWindow):
             self._select_tts_engine(engine_id)
 
     def _tts_engine_is_installed(self, engine_id: str) -> bool:
+        engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
         if engine_id == "piper":
             executable = resolve_executable(
                 self.piper_path_edit.text().strip() or "engines/piper/piper.exe"
             )
             return executable.exists()
+        if engine_id == "qwen":
+            return self._qwen_model_is_installed(
+                qwen_model_id or self._selected_qwen_model_id()
+            )
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
-            "qwen": self.qwen_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -8604,6 +8919,9 @@ class MainWindow(QMainWindow):
                 ),
             )
             return False
+        engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
+        if qwen_model_id and not self._select_qwen_model(qwen_model_id):
+            return False
         index = self.tts_engine_combo.findData(engine_id)
         if index < 0:
             return False
@@ -8616,6 +8934,9 @@ class MainWindow(QMainWindow):
         return True
 
     def _select_and_install_engine(self, engine_id: str) -> None:
+        engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
+        if qwen_model_id and not self._select_qwen_model(qwen_model_id):
+            return
         if engine_id == "kokoro":
             self._install_kokoro_python()
         elif engine_id == "chatterbox":
@@ -8651,8 +8972,13 @@ class MainWindow(QMainWindow):
             getattr(manager, "install_dir", app_data_root())
         ).expanduser().resolve()
         free_gb, volume = available_disk_space_gb(install_path)
+        engine_display_name = self._tts_engine_label(engine_id)
+        if engine_id == "qwen":
+            engine_display_name = self._tts_engine_label(
+                self._qwen_tts_engine_row_id(self._selected_qwen_model_id())
+            )
         dialog = EngineInstallDialog(
-            self._tts_engine_label(engine_id),
+            engine_display_name,
             requirement,
             free_gb,
             volume,
@@ -9160,17 +9486,18 @@ class MainWindow(QMainWindow):
             "safe_chunks",
         )
 
-        self.export_combo = QComboBox()
-        self.export_combo.addItem(
-            ui_icon("save"),
-            self.tr("export_single", "Single MP3"),
-            "single",
+        self.audio_format_combo = QComboBox()
+        for format_spec in AUDIO_FORMATS.values():
+            self.audio_format_combo.addItem(
+                ui_icon("save"),
+                format_spec.label,
+                format_spec.id,
+            )
+        self.audio_quality_combo = QComboBox()
+        self.audio_format_combo.currentIndexChanged.connect(
+            self._refresh_audio_quality_choices
         )
-        self.export_combo.addItem(
-            ui_icon("save"),
-            self.tr("export_chapters", "MP3 per chapter/block"),
-            "chapters",
-        )
+        self._refresh_audio_quality_choices()
 
         self.editor_highlighting_checkbox = QCheckBox(
             self.tr("editor_syntax_highlighting", "Highlight markup commands in editor")
@@ -9200,7 +9527,7 @@ class MainWindow(QMainWindow):
         normalize_help = QLabel(
             self.tr(
                 "normalize_clean_audio_help",
-                "Uses FFmpeg loudness normalization (-16 LUFS) when encoding the clean narration MP3. "
+                "Uses FFmpeg loudness normalization (-16 LUFS) when encoding the clean narration. "
                 "It helps segments feel more even in perceived volume, but it is not a full studio compressor.",
             )
         )
@@ -9221,7 +9548,14 @@ class MainWindow(QMainWindow):
         )
 
         narration_form.addRow(self.tr("voice_speed", "Voice speed"), self.speed_spin)
-        narration_form.addRow(self.tr("export_mode", "Output type"), self.export_combo)
+        narration_form.addRow(
+            self.tr("audio_format", "Audio format"),
+            self.audio_format_combo,
+        )
+        narration_form.addRow(
+            self.tr("audio_quality", "Quality"),
+            self.audio_quality_combo,
+        )
         narration_form.addRow(
             self.tr("output_folder", "Output folder"),
             self.output_picker,
@@ -10574,10 +10908,30 @@ class MainWindow(QMainWindow):
         self._refresh_generation_voice_combo()
 
     def _refresh_generation_voice_combo(self) -> None:
+        self._refresh_generation_voice_combo_from_rows()
+
+    def _refresh_generation_voice_combo_from_rows(
+        self,
+        source_rows: list[dict[str, object]] | None = None,
+        *,
+        engine_ready: bool | None = None,
+    ) -> None:
         if not hasattr(self, "generation_voice_combo"):
             return
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
-        rows = self._generation_voice_rows(engine_id)
+        if source_rows is None:
+            rows = self._generation_voice_rows(engine_id)
+        else:
+            ready = (
+                self._voice_engine_is_ready(engine_id)
+                if engine_ready is None
+                else engine_ready
+            )
+            rows = (
+                self._usable_generation_voice_rows(engine_id, source_rows)
+                if ready
+                else []
+            )
         selected_index = 0
         self.generation_voice_combo.blockSignals(True)
         self.generation_voice_combo.clear()
@@ -10604,7 +10958,16 @@ class MainWindow(QMainWindow):
     def _generation_voice_rows(self, engine_id: str) -> list[dict[str, object]]:
         if not self._voice_engine_is_ready(engine_id):
             return []
-        rows = self._voice_page_rows(engine_id)
+        return self._usable_generation_voice_rows(
+            engine_id,
+            self._voice_page_rows(engine_id, engine_ready=True),
+        )
+
+    @staticmethod
+    def _usable_generation_voice_rows(
+        engine_id: str,
+        rows: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
         usable_rows: list[dict[str, object]] = []
         for row in rows:
             gallery_voice = row.get("gallery_voice")
@@ -10634,6 +10997,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "voices_table"):
             return
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        qwen_cloning = (
+            engine_id == "qwen" and self._qwen_model_kind() == "voice_clone"
+        )
         engine_label = self._tts_engine_label(engine_id)
         self.voices_engine_label.setText(
             self.tr(
@@ -10647,23 +11013,29 @@ class MainWindow(QMainWindow):
             ui_icon(
                 "voice"
                 if engine_id in {"chatterbox", "omnivoice", "f5_russian"}
+                or qwen_cloning
                 else "settings"
             )
         )
         self.voices_manage_button.setEnabled(
             engine_id in {"piper", "chatterbox", "omnivoice", "f5_russian"}
+            or qwen_cloning
         )
+        self.voices_external_libraries_button.setVisible(True)
         self.voices_design_button.setVisible(engine_id == "omnivoice")
         self.voices_design_button.setEnabled(
             engine_id == "omnivoice" and self.omnivoice_manager.is_installed()
         )
-        self.voice_page_rows = self._filter_voice_page_rows(
-            self._voice_page_rows(engine_id)
+        engine_ready = self._voice_engine_is_ready(engine_id)
+        source_rows = self._voice_page_rows(
+            engine_id,
+            engine_ready=engine_ready,
         )
+        self.voice_page_rows = self._filter_voice_page_rows(source_rows)
+        self.voices_table.setUpdatesEnabled(False)
         self.voices_table.setSortingEnabled(False)
-        self.voices_table.setRowCount(0)
+        self.voices_table.setRowCount(len(self.voice_page_rows))
         for row_index, row in enumerate(self.voice_page_rows):
-            self.voices_table.insertRow(row_index)
             selected = bool(row.get("selected"))
             values = (
                 self.tr("selected", "Selected") if selected else "",
@@ -10689,14 +11061,19 @@ class MainWindow(QMainWindow):
             self.voices_table.setCellWidget(
                 row_index,
                 9,
-                self._voice_actions_widget(row),
+                self._voice_actions_widget(row, engine_ready=engine_ready),
             )
             self.voices_table.setRowHeight(row_index, 42)
-        self.voices_status_label.setText(self._voices_status_text(engine_id))
+        self.voices_status_label.setText(
+            self._voices_status_text(engine_id, engine_ready=engine_ready)
+        )
         self.voices_table.setSortingEnabled(True)
         self.voices_table.sortItems(1, Qt.SortOrder.AscendingOrder)
-        self.voices_table.resizeRowsToContents()
-        self._refresh_generation_voice_combo()
+        self.voices_table.setUpdatesEnabled(True)
+        self._refresh_generation_voice_combo_from_rows(
+            source_rows,
+            engine_ready=engine_ready,
+        )
 
     def _filter_voice_page_rows(
         self,
@@ -10745,10 +11122,22 @@ class MainWindow(QMainWindow):
             return self.tr("clone_voice", "Clone Voice")
         if engine_id == "f5_russian":
             return self.tr("clone_voice", "Clone Voice")
+        if engine_id == "qwen" and self._qwen_model_kind() == "voice_clone":
+            return self.tr("clone_voice", "Clone Voice")
         return self.tr("manage", "Manage")
 
-    def _voices_status_text(self, engine_id: str) -> str:
-        if not self._voice_engine_is_ready(engine_id):
+    def _voices_status_text(
+        self,
+        engine_id: str,
+        *,
+        engine_ready: bool | None = None,
+    ) -> str:
+        ready = (
+            self._voice_engine_is_ready(engine_id)
+            if engine_ready is None
+            else engine_ready
+        )
+        if not ready:
             return self.tr(
                 "voices_engine_not_installed_help",
                 "This engine is not installed. The listed voices are catalog entries "
@@ -10809,7 +11198,12 @@ class MainWindow(QMainWindow):
         checker = getattr(manager, "is_installed", None)
         return bool(checker()) if callable(checker) else False
 
-    def _voice_page_rows(self, engine_id: str) -> list[dict[str, object]]:
+    def _voice_page_rows(
+        self,
+        engine_id: str,
+        *,
+        engine_ready: bool | None = None,
+    ) -> list[dict[str, object]]:
         if engine_id == "piper":
             selected_id = self.voice_combo.currentData()
             rows = [
@@ -10830,7 +11224,11 @@ class MainWindow(QMainWindow):
             selected_id = self.kokoro_python_voice_combo.currentData()
             status = (
                 self.tr("installed", "Installed")
-                if self.kokoro_python_manager.is_installed()
+                if (
+                    self.kokoro_python_manager.is_installed()
+                    if engine_ready is None
+                    else engine_ready
+                )
                 else self.tr("not_installed", "Not installed")
             )
             rows = [
@@ -10848,11 +11246,48 @@ class MainWindow(QMainWindow):
             ]
             return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "qwen":
+            if self._qwen_model_kind() == "voice_clone":
+                reference_path = self.qwen_reference_picker.path()
+                rows: list[dict[str, object]] = []
+                represented_paths: set[Path] = set()
+                for gallery_voice in self.voice_gallery_manager.list_voices("qwen"):
+                    if not gallery_voice.is_reference_audio:
+                        continue
+                    rows.append(self._gallery_voice_row(engine_id, gallery_voice))
+                    if gallery_voice.installed_path:
+                        represented_paths.add(
+                            Path(gallery_voice.installed_path).resolve()
+                        )
+                if (
+                    reference_path is not None
+                    and reference_path.is_file()
+                    and reference_path.resolve() not in represented_paths
+                ):
+                    rows.append(
+                        {
+                            "engine": "qwen",
+                            "id": str(reference_path),
+                            "name": reference_path.stem,
+                            "language": str(
+                                self.qwen_language_combo.currentData() or ""
+                            ),
+                            "type": self.tr("reference_voice", "Reference voice"),
+                            "status": self.tr("configured", "Configured"),
+                            "selected": True,
+                            "installed": True,
+                            "path": reference_path,
+                        }
+                    )
+                return rows
             selected_speaker = self.qwen_speaker_combo.currentData()
             selected_language = self.qwen_language_combo.currentData()
             status = (
                 self.tr("installed", "Installed")
-                if self.qwen_manager.is_installed()
+                if (
+                    self.qwen_manager.is_installed()
+                    if engine_ready is None
+                    else engine_ready
+                )
                 else self.tr("not_installed", "Not installed")
             )
             rows: list[dict[str, object]] = []
@@ -11113,6 +11548,13 @@ class MainWindow(QMainWindow):
 
     def _is_gallery_voice_selected(self, engine_id: str, voice: GalleryVoice) -> bool:
         if engine_id == "qwen":
+            if self._qwen_model_kind() == "voice_clone":
+                selected = self.qwen_reference_picker.path()
+                return bool(
+                    selected
+                    and voice.installed_path
+                    and Path(voice.installed_path).resolve() == selected.resolve()
+                )
             return (
                 str(self.qwen_speaker_combo.currentData() or "").casefold()
                 == (voice.speaker_id or voice.engine_voice_id).casefold()
@@ -11207,13 +11649,19 @@ class MainWindow(QMainWindow):
             )
         return rows
 
-    def _voice_actions_widget(self, row: dict[str, object]) -> QWidget:
+    def _voice_actions_widget(
+        self,
+        row: dict[str, object],
+        *,
+        engine_ready: bool | None = None,
+    ) -> QWidget:
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         engine_id = str(row.get("engine", ""))
-        engine_ready = self._voice_engine_is_ready(engine_id)
+        if engine_ready is None:
+            engine_ready = self._voice_engine_is_ready(engine_id)
 
         select_button = self._small_icon_button(
             "apply",
@@ -11378,6 +11826,11 @@ class MainWindow(QMainWindow):
                     self.pending_f5_russian_gallery_voice_id = (
                         gallery_voice.voice_id
                     )
+                elif (
+                    engine_id == "qwen"
+                    and self._qwen_model_kind() == "voice_clone"
+                ):
+                    self.pending_qwen_gallery_voice_id = gallery_voice.voice_id
                 self._start_voice_gallery_operation("install", gallery_voice)
                 return
             installed_path = (
@@ -11387,6 +11840,11 @@ class MainWindow(QMainWindow):
             )
             if engine_id == "chatterbox" and installed_path is not None:
                 self.chatterbox_reference_picker.set_path(installed_path)
+            elif (
+                engine_id == "qwen"
+                and self._qwen_model_kind() == "voice_clone"
+            ):
+                self._apply_qwen_gallery_reference(gallery_voice)
             elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(gallery_voice)
             elif engine_id == "f5_russian":
@@ -11405,14 +11863,15 @@ class MainWindow(QMainWindow):
         elif engine_id == "kokoro":
             self._select_combo_data(self.kokoro_python_voice_combo, voice_id)
         elif engine_id == "qwen":
-            self._select_combo_data(
-                self.qwen_language_combo,
-                row.get("language_id", self.qwen_language_combo.currentData()),
-            )
-            self._select_combo_data(
-                self.qwen_speaker_combo,
-                row.get("speaker_id", voice_id),
-            )
+            if self._qwen_model_kind() != "voice_clone":
+                self._select_combo_data(
+                    self.qwen_language_combo,
+                    row.get("language_id", self.qwen_language_combo.currentData()),
+                )
+                self._select_combo_data(
+                    self.qwen_speaker_combo,
+                    row.get("speaker_id", voice_id),
+                )
         elif engine_id == "omnivoice":
             if not isinstance(gallery_voice, GalleryVoice):
                 self._select_combo_data(self.omnivoice_mode_combo, voice_id)
@@ -11436,6 +11895,36 @@ class MainWindow(QMainWindow):
             self._refresh_voices_page()
         else:
             self._refresh_generation_voice_combo()
+
+    def _apply_qwen_gallery_reference(self, voice: GalleryVoice) -> bool:
+        try:
+            audio_path = self.voice_gallery_manager.ensure_voice_audio(voice)
+        except Exception as exc:
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                f"Could not prepare Qwen Base reference voice: {exc}",
+            )
+            return False
+        if audio_path is None or not audio_path.is_file() or not voice.ref_text.strip():
+            self._show_error(
+                self.tr("generation_failed", "Generation failed"),
+                self.tr(
+                    "qwen_reference_text_required",
+                    "Qwen Base requires a reference audio file and its exact transcript.",
+                ),
+            )
+            return False
+        self.qwen_reference_picker.set_path(audio_path)
+        self.qwen_reference_text_edit.setPlainText(voice.ref_text)
+        if voice.language_name:
+            self._select_combo_data(
+                self.qwen_language_combo,
+                voice.language_name,
+            )
+        self.log_view.append_event(
+            f"Selected Qwen Base reference voice: {voice.name}"
+        )
+        return True
 
     def _apply_omnivoice_gallery_reference(self, voice: GalleryVoice) -> bool:
         try:
@@ -11827,6 +12316,17 @@ class MainWindow(QMainWindow):
         )
         pending_f5_voice_id = self.pending_f5_russian_gallery_voice_id
         self.pending_f5_russian_gallery_voice_id = None
+        pending_qwen_voice_id = self.pending_qwen_gallery_voice_id
+        self.pending_qwen_gallery_voice_id = None
+        if pending_qwen_voice_id:
+            pending_voice = self.voice_gallery_manager.get_voice(
+                pending_qwen_voice_id
+            )
+            if (
+                pending_voice is not None
+                and self._apply_qwen_gallery_reference(pending_voice)
+            ):
+                self._save_settings()
         if pending_f5_voice_id:
             pending_voice = self.voice_gallery_manager.get_voice(
                 pending_f5_voice_id
@@ -11843,6 +12343,9 @@ class MainWindow(QMainWindow):
             if engine_id == "omnivoice":
                 self.omnivoice_reference_picker.set_path(None)
                 self.omnivoice_reference_text_edit.clear()
+            elif engine_id == "qwen":
+                self.qwen_reference_picker.set_path(None)
+                self.qwen_reference_text_edit.clear()
             elif engine_id == "f5_russian":
                 self.f5_russian_reference_picker.set_path(None)
                 self.f5_russian_reference_text_edit.clear()
@@ -11854,6 +12357,7 @@ class MainWindow(QMainWindow):
 
     def _on_voice_gallery_failed(self, message: str) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_qwen_gallery_voice_id = None
         self.pending_f5_russian_gallery_voice_id = None
         self.pending_removed_gallery_voice = None
         self.log_view.append_event(message)
@@ -11861,6 +12365,7 @@ class MainWindow(QMainWindow):
 
     def _on_voice_gallery_cancelled(self) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_qwen_gallery_voice_id = None
         self.pending_f5_russian_gallery_voice_id = None
         self.pending_removed_gallery_voice = None
         self.log_view.append_event(
@@ -11886,6 +12391,9 @@ class MainWindow(QMainWindow):
             return
         if engine_id == "omnivoice":
             self._import_gallery_reference_voice("omnivoice")
+            return
+        if engine_id == "qwen" and self._qwen_model_kind() == "voice_clone":
+            self._import_gallery_reference_voice("qwen")
             return
         if engine_id == "f5_russian":
             self._import_gallery_reference_voice("f5_russian")
@@ -11930,12 +12438,15 @@ class MainWindow(QMainWindow):
                 return
             values = dialog.values()
             source = Path(values["source"])
-            if engine_id == "f5_russian" and not str(values["ref_text"]).strip():
+            if (
+                engine_id in {"f5_russian", "qwen"}
+                and not str(values["ref_text"]).strip()
+            ):
                 self._show_error(
                     self.tr("import_failed", "Import failed"),
                     self.tr(
-                        "f5_russian_reference_required",
-                        "F5-TTS Russian requires a reference audio file and its exact transcript.",
+                        "reference_transcript_required",
+                        "This cloning engine requires a reference audio file and its exact transcript.",
                     ),
                 )
                 return
@@ -11958,6 +12469,9 @@ class MainWindow(QMainWindow):
                 self._show_error(self.tr("import_failed", "Import failed"), str(exc))
                 return
         self.log_view.append_event(f"Imported {engine_id} reference voice: {voice.name}")
+        if engine_id == "qwen":
+            self._apply_qwen_gallery_reference(voice)
+            self._save_settings()
         self._refresh_voices_page()
 
     def _open_omnivoice_design_dialog(self) -> None:
@@ -12357,6 +12871,7 @@ class MainWindow(QMainWindow):
             str(qwen.get("reference_text", ""))
         )
         self._refresh_qwen_model_fields()
+        self._ensure_default_qwen_reference(allow_sync=False)
 
         omnivoice = self.settings.get("omnivoice", {})
         if not isinstance(omnivoice, dict):
@@ -12589,8 +13104,11 @@ class MainWindow(QMainWindow):
         self.omnivoice_chunk_size_spin.setValue(chunk_size_for("omnivoice"))
         self.f5_russian_chunk_size_spin.setValue(chunk_size_for("f5_russian"))
         self._select_combo_data(
-            self.export_combo,
-            self.settings.get("export_mode", "single"),
+            self.audio_format_combo,
+            self.settings.get("audio_format", "mp3"),
+        )
+        self._refresh_audio_quality_choices(
+            preferred=self.settings.get("audio_quality", "standard")
         )
         self.normalize_checkbox.setChecked(
             bool(self.settings.get("normalize_audio", False))
@@ -12795,6 +13313,29 @@ class MainWindow(QMainWindow):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def _refresh_audio_quality_choices(
+        self,
+        _index: int = -1,
+        preferred: object | None = None,
+    ) -> None:
+        if not hasattr(self, "audio_quality_combo"):
+            return
+        current = (
+            preferred
+            if preferred is not None
+            else self.audio_quality_combo.currentData()
+        )
+        spec = audio_format_spec(self.audio_format_combo.currentData() or "mp3")
+        self.audio_quality_combo.blockSignals(True)
+        self.audio_quality_combo.clear()
+        for preset in spec.qualities:
+            self.audio_quality_combo.addItem(preset.label, preset.id)
+        selected = self.audio_quality_combo.findData(current)
+        if selected < 0:
+            selected = self.audio_quality_combo.findData(spec.default_quality)
+        self.audio_quality_combo.setCurrentIndex(max(0, selected))
+        self.audio_quality_combo.blockSignals(False)
 
     def _import_document(self) -> None:
         path_text, _ = QFileDialog.getOpenFileName(
@@ -13074,14 +13615,165 @@ class MainWindow(QMainWindow):
         return count, size
 
     def _current_project_title(self) -> str:
-        metadata = self.settings.get("metadata", {})
-        title = ""
-        if isinstance(metadata, dict):
-            title = str(metadata.get("title", "")).strip()
+        audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+        if audiobook is not None and audiobook.title.strip():
+            return audiobook.title.strip()
+        return str(getattr(self, "_draft_project_title", "Project1")).strip() or "Project1"
+
+    def _refresh_project_title_header(self) -> None:
+        if not hasattr(self, "project_title_edit"):
+            return
+        title = self._current_project_title()
+        if self.project_title_edit.text() != title:
+            self.project_title_edit.blockSignals(True)
+            self.project_title_edit.setText(title)
+            self.project_title_edit.blockSignals(False)
+
+    def _start_project_title_edit(self) -> None:
+        self.project_title_edit.setFocus()
+        self.project_title_edit.selectAll()
+
+    def _commit_project_title(self) -> None:
+        if not hasattr(self, "project_title_edit"):
+            return
+        previous = self._current_project_title()
+        title = self.project_title_edit.text().strip()
         if not title:
-            audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
-            title = audiobook.title if audiobook is not None else ""
-        return title or self.tr("untitled_project", "Untitled Audiobook")
+            self.project_title_edit.setText(previous)
+            return
+        if title == previous:
+            return
+        try:
+            book = book_metadata_from_settings(self.settings, previous)
+            if bool(book.get("title_follows_project", True)):
+                book["title"] = title
+            self.settings = settings_with_book_metadata(self.settings, book)
+            self.settings_manager.settings = self.settings
+            if self.current_audiobook_id is not None:
+                audiobook = self.audiobook_store.rename_audiobook(
+                    self.current_audiobook_id, title
+                )
+                stored_settings = json.loads(audiobook.project_settings_json or "{}")
+                if isinstance(stored_settings, dict):
+                    stored_book = book_metadata_from_settings(stored_settings, title)
+                    stored_book, cover = prepare_project_cover(
+                        audiobook.project_dir,
+                        str(stored_book.get("title") or title),
+                        stored_book,
+                    )
+                    stored_settings = settings_with_book_metadata(
+                        stored_settings, stored_book
+                    )
+                    audiobook = self.audiobook_store.update_project_settings(
+                        audiobook.id, stored_settings
+                    )
+                    self.settings = settings_with_book_metadata(
+                        self.settings, stored_book
+                    )
+                    self.settings_manager.settings = self.settings
+                    for value in (
+                        audiobook.clean_audio_path,
+                        audiobook.mix_audio_path,
+                    ):
+                        if value:
+                            update_m4b_tags_atomic(Path(value), stored_book, cover)
+            else:
+                self._draft_project_title = title
+                self.project_dirty = True
+            self.settings_manager.save(self.settings)
+            self._populate_recent_projects_menu()
+            self.log_view.append_event(
+                self.tr("project_renamed", "Project renamed: {title}", title=title)
+            )
+        except Exception as exc:
+            self.project_title_edit.setText(previous)
+            self._show_error(self.tr("rename_project", "Rename project"), str(exc))
+
+    def _open_book_properties(self) -> None:
+        if str(self.audio_format_combo.currentData() or "mp3") != "m4b":
+            choice = QMessageBox.question(
+                self,
+                self.tr("m4b_required", "M4B required"),
+                self.tr(
+                    "m4b_properties_required_message",
+                    "Book properties and covers are embedded when Audio format is M4B. Switch to M4B now?",
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+            index = self.audio_format_combo.findData("m4b")
+            if index >= 0:
+                self.audio_format_combo.setCurrentIndex(index)
+        self.settings["audio_format"] = "m4b"
+
+        audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+        project_settings = self.settings
+        if audiobook is not None:
+            try:
+                stored = json.loads(audiobook.project_settings_json or "{}")
+                if isinstance(stored, dict):
+                    project_settings = stored
+            except json.JSONDecodeError:
+                pass
+        title = self._current_project_title()
+        old_book = book_metadata_from_settings(project_settings, title)
+        dialog = BookPropertiesDialog(
+            old_book,
+            title,
+            self.tr,
+            audiobook.project_dir if audiobook is not None else None,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        book = dialog.metadata()
+        try:
+            if audiobook is not None:
+                book, cover = prepare_project_cover(
+                    audiobook.project_dir, str(book.get("title") or title), book
+                )
+                project_settings = settings_with_book_metadata(project_settings, book)
+                audiobook = self.audiobook_store.update_project_settings(
+                    audiobook.id, project_settings
+                )
+                for value in (audiobook.clean_audio_path, audiobook.mix_audio_path):
+                    if value:
+                        update_m4b_tags_atomic(Path(value), book, cover)
+            else:
+                project_settings = settings_with_book_metadata(project_settings, book)
+                self.project_dirty = True
+            self.settings = settings_with_book_metadata(self.settings, book)
+            self.settings_manager.settings = self.settings
+            self.settings_manager.save(self.settings)
+            self.log_view.append_event(
+                self.tr("book_properties_saved", "M4B book properties saved.")
+            )
+            if (
+                audiobook is not None
+                and old_book.get("chapter_mode") != book.get("chapter_mode")
+            ):
+                segments = self.audiobook_store.list_segments(audiobook.id)
+                if segments and all(
+                    segment.wav_path and Path(segment.wav_path).is_file()
+                    for segment in segments
+                ):
+                    self.log_view.append_event(
+                        self.tr(
+                            "m4b_chapters_rebuild",
+                            "Chapter settings changed. Rebuilding M4B from cached WAV segments without running TTS again.",
+                        )
+                    )
+                    QTimer.singleShot(0, self._start_review_rebuild)
+                elif segments:
+                    self.log_view.append_event(
+                        self.tr(
+                            "m4b_chapters_rebuild_unavailable",
+                            "Chapter settings were saved, but cached WAV segments are missing; regenerate audio to apply them.",
+                        )
+                    )
+        except Exception as exc:
+            self._show_error(self.tr("book_properties", "M4B book properties"), str(exc))
 
     def _project_settings_snapshot(self) -> dict[str, object]:
         self._save_settings()
@@ -13109,9 +13801,542 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _safe_project_folder_name(title: str) -> str:
-        name = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "-", title).strip(" .-")
+        normalized = unicodedata.normalize("NFKC", str(title or ""))
+        normalized = "".join(
+            character
+            for character in normalized
+            if not unicodedata.category(character).startswith("C")
+        )
+        name = re.sub(r"[<>:\"/\\|?*]+", "-", normalized).strip(" .-")
         name = re.sub(r"\s+", " ", name)
-        return name[:80] or "Audiobook"
+        name = name[:80].rstrip(" .-") or "Audiobook"
+        if re.fullmatch(
+            r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?",
+            name,
+        ):
+            name = f"Audiobook - {name}"
+        return name
+
+    def _bulk_generation_settings_snapshot(self) -> dict[str, object]:
+        keys = (
+            "ffmpeg_path",
+            "pause_between_blocks_ms",
+            "pause_between_chapters_ms",
+            "paragraph_pause_min_ms",
+            "paragraph_pause_max_ms",
+            "adaptive_paragraph_pause",
+            "paragraph_length_reference_chars",
+            "paragraph_length_extra_ms",
+            "periodic_pause_every_paragraphs",
+            "periodic_pause_min_ms",
+            "periodic_pause_max_ms",
+            "normalize_audio",
+            "background_loop",
+            "background_volume_percent",
+            "voice_volume_db",
+            "music_volume_db",
+            "voice_start_offset_ms",
+            "music_tail_ms",
+            "music_fade_in_seconds",
+            "music_fade_out_seconds",
+            "podcast_gap_ms",
+            "podcast_normalize",
+            "podcast_ducking",
+            "ducking_strength",
+            "audio_format",
+            "audio_quality",
+            "mp3_bitrate",
+            "text_normalization",
+            "metadata",
+            "review",
+            "piper_path",
+            "markup_music_volume_db",
+            "ambient_volume_db",
+            "sfx_volume_db",
+            "voice_muted",
+            "background_music_muted",
+            "markup_music_muted",
+            "ambient_muted",
+            "sfx_muted",
+            "markup_audio_solo_track",
+        )
+        snapshot = {
+            key: deepcopy(self.settings[key])
+            for key in keys
+            if key in self.settings
+        }
+        snapshot["background_enabled"] = True
+        return snapshot
+
+    @staticmethod
+    def _read_bulk_text_file(path: Path) -> tuple[str, str]:
+        raw = path.read_bytes()
+        if not raw:
+            raise ValueError(f"The source file is empty: {path}")
+        encodings = (
+            ("utf-8-sig",),
+            ("utf-16",) if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else (),
+            ("cp1252",),
+        )
+        last_error: UnicodeDecodeError | None = None
+        for group in encodings:
+            for encoding in group:
+                try:
+                    text = raw.decode(encoding)
+                except UnicodeDecodeError as exc:
+                    last_error = exc
+                    continue
+                if not text.strip():
+                    raise ValueError(f"The source file contains no readable text: {path}")
+                return text, hashlib.sha256(raw).hexdigest()
+        raise ValueError(f"Could not decode text file {path}: {last_error}")
+
+    def _unique_bulk_project_dir(self, parent: Path, title: str) -> Path:
+        base_name = self._safe_project_folder_name(title)
+        candidate = parent / base_name
+        index = 2
+        while candidate.exists():
+            candidate = parent / f"{base_name} ({index})"
+            index += 1
+        return candidate
+
+    def _refresh_bulk_audiobooks_page(self) -> None:
+        if not hasattr(self, "bulk_audiobooks_page"):
+            return
+        music_dir = library_directory(self.settings, "music")
+        music_files = audio_library_files(music_dir)
+        default_music = self._selected_music_path()
+        self.bulk_audiobooks_page.set_music_files(music_files, default_music)
+        self.bulk_audiobooks_page.set_output_parent(self._default_project_parent())
+        review_value = self.settings.get("review", {})
+        review_settings = (
+            dict(review_value) if isinstance(review_value, dict) else {}
+        )
+        self.bulk_audiobooks_page.set_creation_flow_context(
+            review_settings,
+            self.faster_whisper_manager.is_installed(),
+        )
+        engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        voice = str(
+            self.generation_voice_combo.currentText()
+            or self.tr("default", "Default")
+        )
+        self.bulk_audiobooks_page.set_frozen_profile_summary(
+            self.tr(
+                "bulk_profile_summary",
+                "The task will freeze the current production profile when it "
+                "is created: {engine} · {voice} · {export}.",
+                engine=self._tts_engine_label(engine_id),
+                voice=voice,
+                export=self.audio_format_combo.currentText(),
+            )
+        )
+        selected = self.bulk_audiobooks_page.selected_batch_id()
+        self.bulk_audiobooks_page.set_batches(
+            self.bulk_audiobook_store.list_batches(),
+            selected_batch_id=selected or self.active_bulk_batch_id,
+        )
+
+    def _refresh_bulk_audiobook_details(self, batch_id: int) -> None:
+        if not hasattr(self, "bulk_audiobooks_page"):
+            return
+        self.bulk_audiobooks_page.set_batch_details(
+            self.bulk_audiobook_store.get_batch(batch_id),
+            self.bulk_audiobook_store.list_items(batch_id),
+        )
+
+    def _create_bulk_audiobook_task(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        create_only = bool(payload.get("create_only", False))
+        sources_value = payload.get("sources", [])
+        sources = list(sources_value) if isinstance(sources_value, list) else []
+        if not sources:
+            self._show_error(
+                self.tr("bulk_no_sources", "No source books"),
+                self.tr("bulk_no_sources_message", "Add at least one TXT file."),
+            )
+            return
+        if self.bulk_audiobook_thread is not None:
+            self._show_error(
+                self.tr("bulk_already_running", "Bulk task is running"),
+                self.tr(
+                    "bulk_already_running_message",
+                    "Pause or cancel the current bulk task before creating another one.",
+                ),
+            )
+            return
+        if not create_only and self.worker_thread is not None:
+            self._show_error(
+                self.tr("generation_busy", "Generation already in progress"),
+                self.tr(
+                    "bulk_wait_for_generation",
+                    "Finish or cancel the current audiobook before starting a bulk task.",
+                ),
+            )
+            return
+        output_text = str(payload.get("output_parent", "")).strip()
+        if not output_text:
+            self._show_error(
+                self.tr("output_error", "Output folder error"),
+                self.tr("bulk_choose_parent", "Choose a parent folder for the projects."),
+            )
+            return
+        output_parent = Path(output_text).expanduser().resolve()
+        try:
+            output_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._show_error(self.tr("output_error", "Output folder error"), str(exc))
+            return
+
+        prepared: list[dict[str, object]] = []
+        seen_paths: set[Path] = set()
+        try:
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+                source_path = Path(str(source.get("source_path", ""))).expanduser().resolve()
+                if source_path in seen_paths:
+                    continue
+                if not source_path.is_file() or source_path.suffix.casefold() != ".txt":
+                    raise ValueError(f"TXT source file not found: {source_path}")
+                text, source_hash = self._read_bulk_text_file(source_path)
+                title = str(source.get("title", "")).strip() or source_path.stem
+                cover_path = str(source.get("cover_path", "")).strip()
+                if cover_path:
+                    resolved_cover = Path(cover_path).expanduser().resolve()
+                    if not resolved_cover.is_file():
+                        raise ValueError(f"Cover image not found: {resolved_cover}")
+                    cover_path = str(resolved_cover)
+                music_path = str(source.get("music_path", "")).strip()
+                if music_path:
+                    resolved_music = Path(music_path).expanduser().resolve()
+                    if not resolved_music.is_file():
+                        raise ValueError(f"Background music file not found: {resolved_music}")
+                    music_path = str(resolved_music)
+                prepared.append(
+                    {
+                        "source_path": source_path,
+                        "source_sha256": source_hash,
+                        "source_text": text,
+                        "title": title,
+                        "cover_path": cover_path,
+                        "music_path": music_path,
+                    }
+                )
+                seen_paths.add(source_path)
+        except (OSError, ValueError) as exc:
+            self._show_error(self.tr("bulk_validation_failed", "Bulk task validation failed"), str(exc))
+            return
+        if not prepared:
+            return
+
+        self._save_settings()
+        voice_config = self._current_voice_config()
+        if voice_config is None:
+            return
+        engine_id = str(voice_config.get("engine", "piper"))
+        split_mode = str(self.split_combo.currentData() or "safe_chunks")
+        export_mode = "single"
+        chunk_size = self._current_chunk_size(engine_id)
+        generation_settings = self._bulk_generation_settings_snapshot()
+        creation_flow = str(payload.get("creation_flow", "settings") or "settings")
+        if creation_flow not in {
+            "settings",
+            "auto_review",
+            "review_only",
+            "generation_only",
+        }:
+            creation_flow = "settings"
+        review_value = generation_settings.get("review", {})
+        frozen_review = dict(review_value) if isinstance(review_value, dict) else {}
+        review_policy = "default"
+        if creation_flow == "auto_review":
+            frozen_review["enabled"] = True
+            frozen_review["auto_verify_after_generation"] = True
+            frozen_review["max_retries"] = max(
+                1,
+                min(5, int(payload.get("flow_max_retries", 1) or 1)),
+            )
+            review_policy = "on"
+        elif creation_flow == "review_only":
+            frozen_review["enabled"] = True
+            frozen_review["auto_verify_after_generation"] = True
+            frozen_review["max_retries"] = 0
+            review_policy = "on"
+        elif creation_flow == "generation_only":
+            review_policy = "off"
+        generation_settings["review"] = frozen_review
+        settings_review_enabled = bool(frozen_review.get("enabled", False)) and bool(
+            frozen_review.get("auto_verify_after_generation", False)
+        )
+        automatic_review_required = review_policy == "on" or (
+            review_policy == "default" and settings_review_enabled
+        )
+        play_alignment_required = any(
+            any(
+                event.type == "play"
+                for event in LTVMarkupParser.parse(str(entry["source_text"])).events
+            )
+            for entry in prepared
+        )
+        if (
+            not create_only
+            and (automatic_review_required or play_alignment_required)
+            and not self.faster_whisper_manager.is_installed()
+        ):
+            missing_message = (
+                self.tr(
+                    "bulk_play_whisper_required_message",
+                    "At least one source uses PLAY markup, which requires Faster "
+                    "Whisper for word-level alignment in every creation flow. Install "
+                    "it from Settings > Review.",
+                )
+                if play_alignment_required
+                else self.tr(
+                    "bulk_flow_whisper_required_message",
+                    "The selected creation flow requires Faster Whisper. Install it "
+                    "from Settings > Review or choose Generation only.",
+                )
+            )
+            self._show_error(
+                self.tr("whisper_required", "Faster Whisper required"),
+                missing_message,
+            )
+            return
+        project_settings = json.loads(json.dumps(self.settings, default=str))
+        project_settings.pop("current_project_id", None)
+        task_title = str(payload.get("title", "")).strip() or self.tr(
+            "bulk_audiobooks", "Bulk Audiobooks"
+        )
+        item_rows: list[dict[str, object]] = []
+        try:
+            for entry in prepared:
+                title = str(entry["title"])
+                project_dir = self._unique_bulk_project_dir(output_parent, title)
+                output_dir = project_dir / "exports"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                per_project_settings = deepcopy(project_settings)
+                per_project_settings["bulk_task"] = {
+                    "title": task_title,
+                    "source_path": str(entry["source_path"]),
+                }
+                book = book_metadata_from_settings(per_project_settings, title)
+                book["title"] = title
+                book["title_follows_project"] = True
+                if str(entry.get("cover_path", "")):
+                    book["cover_mode"] = "custom"
+                    book["cover_source_path"] = str(entry["cover_path"])
+                book, _cover = prepare_project_cover(
+                    project_dir, str(book.get("title") or title), book
+                )
+                per_project_settings = settings_with_book_metadata(
+                    per_project_settings, book
+                )
+                audiobook = self.audiobook_store.create_audiobook(
+                    str(entry["source_text"]),
+                    dict(voice_config),
+                    output_dir,
+                    split_mode,
+                    export_mode,
+                    title,
+                    per_project_settings,
+                    project_dir,
+                )
+                item_rows.append(
+                    {
+                        "source_path": str(entry["source_path"]),
+                        "source_sha256": str(entry["source_sha256"]),
+                        "title": title,
+                        "music_path": str(entry["music_path"]),
+                        "audiobook_id": audiobook.id,
+                    }
+                )
+            batch = self.bulk_audiobook_store.create_batch(
+                task_title,
+                {
+                    "voice_config": dict(voice_config),
+                    "generation_settings": generation_settings,
+                    "split_mode": split_mode,
+                    "export_mode": export_mode,
+                    "chunk_size": chunk_size,
+                    "output_parent": str(output_parent),
+                    "creation_flow": creation_flow,
+                    "creation_flow_label": str(
+                        payload.get("creation_flow_label", "")
+                    ).strip(),
+                    "creation_flow_summary": str(
+                        payload.get("creation_flow_summary", "")
+                    ).strip(),
+                    "review_policy": review_policy,
+                    "profile_summary": self.tr(
+                        "bulk_profile_compact",
+                        "{engine} · {voice} · {export}",
+                        engine=self._tts_engine_label(engine_id),
+                        voice=str(
+                            self.generation_voice_combo.currentText()
+                            or self.tr("default", "Default")
+                        ),
+                        export=self.audio_format_combo.currentText(),
+                    ),
+                },
+                item_rows,
+                task_type="create_projects" if create_only else "txt_to_audiobooks",
+            )
+        except Exception as exc:
+            self._show_error(self.tr("bulk_creation_failed", "Could not create bulk task"), str(exc))
+            return
+
+        if create_only:
+            for item in self.bulk_audiobook_store.list_items(batch.id):
+                self.bulk_audiobook_store.update_item(
+                    item.id,
+                    status="complete",
+                    progress_current=1,
+                    progress_total=1,
+                    message="Editable project created.",
+                )
+            self.bulk_audiobook_store.set_batch_status(batch.id, "complete")
+        self.bulk_audiobooks_page.clear_sources()
+        self._refresh_bulk_audiobooks_page()
+        self.bulk_audiobooks_page.show_monitor(batch.id)
+        self.log_view.append_event(
+            self.tr(
+                "bulk_created",
+                "Bulk task created: {title} ({count} projects).",
+                title=task_title,
+                count=len(item_rows),
+            )
+        )
+        if not create_only:
+            self._start_bulk_audiobook_task(batch.id)
+
+    def _start_bulk_audiobook_task(self, batch_id: int) -> None:
+        if self.bulk_audiobook_thread is not None:
+            return
+        if self.worker_thread is not None:
+            self._show_error(
+                self.tr("generation_busy", "Generation already in progress"),
+                self.tr(
+                    "bulk_wait_for_generation",
+                    "Finish or cancel the current audiobook before starting a bulk task.",
+                ),
+            )
+            return
+        batch = self.bulk_audiobook_store.get_batch(batch_id)
+        if batch is None or not any(
+            item.status == "queued"
+            for item in self.bulk_audiobook_store.list_items(batch_id)
+        ):
+            return
+        thread = QThread(self)
+        worker = BulkAudiobookWorker(
+            self.bulk_audiobook_store,
+            self.audiobook_store,
+            self.engine_host_client,
+            batch_id,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.batchUpdated.connect(self._on_bulk_audiobook_updated)
+        worker.itemUpdated.connect(self._on_bulk_audiobook_item_updated)
+        worker.progress.connect(self._on_bulk_audiobook_progress)
+        worker.log.connect(self.log_view.append_event)
+        worker.finished.connect(self._on_bulk_audiobook_finished)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_bulk_audiobook_worker)
+        self.bulk_audiobook_worker = worker
+        self.bulk_audiobook_thread = thread
+        self.active_bulk_batch_id = batch_id
+        self._refresh_bulk_audiobooks_page()
+        thread.start()
+
+    def _pause_bulk_audiobook_task(self, batch_id: int) -> None:
+        if self.active_bulk_batch_id != batch_id or self.bulk_audiobook_worker is None:
+            return
+        self.bulk_audiobook_worker.request_pause()
+        self._refresh_bulk_audiobooks_page()
+
+    def _cancel_bulk_audiobook_task(self, batch_id: int) -> None:
+        choice = QMessageBox.question(
+            self,
+            self.tr("cancel_bulk_task", "Cancel bulk task"),
+            self.tr(
+                "cancel_bulk_task_message",
+                "Cancel the current generation and all pending books? Completed "
+                "projects and audio will be kept.",
+            ),
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        if self.active_bulk_batch_id == batch_id and self.bulk_audiobook_worker is not None:
+            self.bulk_audiobook_worker.request_cancel()
+        else:
+            self.bulk_audiobook_store.cancel_pending(batch_id)
+            self.bulk_audiobook_store.set_batch_status(batch_id, "cancelled")
+            self._refresh_bulk_audiobooks_page()
+
+    def _retry_bulk_audiobook_task(self, batch_id: int) -> None:
+        if self.bulk_audiobook_thread is not None:
+            return
+        if self.bulk_audiobook_store.retry_failed(batch_id):
+            self._refresh_bulk_audiobooks_page()
+            self._start_bulk_audiobook_task(batch_id)
+
+    @Slot(int)
+    def _on_bulk_audiobook_updated(self, _batch_id: int) -> None:
+        self._refresh_bulk_audiobooks_page()
+
+    @Slot(int)
+    def _on_bulk_audiobook_item_updated(self, _item_id: int) -> None:
+        self._refresh_selected_bulk_audiobook_details()
+
+    def _refresh_selected_bulk_audiobook_details(self) -> None:
+        if not hasattr(self, "bulk_audiobooks_page"):
+            return
+        selected = self.bulk_audiobooks_page.selected_batch_id()
+        if selected is not None:
+            self._refresh_bulk_audiobook_details(selected)
+
+    @Slot(int, int, str)
+    def _on_bulk_audiobook_progress(
+        self,
+        _current: int,
+        _total: int,
+        message: str,
+    ) -> None:
+        self.statusBar().showMessage(message)
+
+    @Slot(int, str)
+    def _on_bulk_audiobook_finished(self, _batch_id: int, status: str) -> None:
+        self.log_view.append_event(
+            self.tr(
+                "bulk_finished",
+                "Bulk task finished with status: {status}.",
+                status=status,
+            )
+        )
+        self._refresh_bulk_audiobooks_page()
+
+    @Slot()
+    def _clear_bulk_audiobook_worker(self) -> None:
+        self.bulk_audiobook_worker = None
+        self.bulk_audiobook_thread = None
+        self.active_bulk_batch_id = None
+        self._refresh_bulk_audiobooks_page()
+
+    def _open_bulk_audiobook_project(self, audiobook_id: int) -> None:
+        if not self._confirm_project_switch():
+            return
+        self._load_project(audiobook_id)
+
+    def _open_bulk_audiobook_output(self, output_path: str) -> None:
+        path = Path(output_path).expanduser()
+        folder = path if path.is_dir() else path.parent
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
 
     def _prompt_project_location(
         self,
@@ -13184,6 +14409,16 @@ class MainWindow(QMainWindow):
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
+    def _materialize_project_book_assets(self, audiobook, settings: dict[str, object]):
+        book = book_metadata_from_settings(settings, audiobook.title)
+        book, _cover = prepare_project_cover(
+            audiobook.project_dir,
+            str(book.get("title") or audiobook.title),
+            book,
+        )
+        updated = settings_with_book_metadata(settings, book)
+        return self.audiobook_store.update_project_settings(audiobook.id, updated)
+
     def _save_project(self) -> bool:
         try:
             snapshot = self._project_settings_snapshot()
@@ -13207,7 +14442,7 @@ class MainWindow(QMainWindow):
                     voice_config,
                     output_dir,
                     str(self.split_combo.currentData() or "safe_chunks"),
-                    str(self.export_combo.currentData() or "single"),
+                    "single",
                     title,
                     snapshot,
                     project_dir,
@@ -13219,10 +14454,11 @@ class MainWindow(QMainWindow):
                     voice_config,
                     output_dir,
                     str(self.split_combo.currentData() or "safe_chunks"),
-                    str(self.export_combo.currentData() or "single"),
+                    "single",
                     self._current_project_title(),
                     snapshot,
                 )
+            audiobook = self._materialize_project_book_assets(audiobook, snapshot)
             self._set_current_project(audiobook.id)
             self.project_dirty = False
             self.log_view.append_event(
@@ -13260,7 +14496,7 @@ class MainWindow(QMainWindow):
                     voice_config,
                     output_dir,
                     str(self.split_combo.currentData() or "safe_chunks"),
-                    str(self.export_combo.currentData() or "single"),
+                    "single",
                     snapshot,
                     project_dir,
                 )
@@ -13270,11 +14506,12 @@ class MainWindow(QMainWindow):
                     voice_config,
                     output_dir,
                     str(self.split_combo.currentData() or "safe_chunks"),
-                    str(self.export_combo.currentData() or "single"),
+                    "single",
                     title,
                     snapshot,
                     project_dir,
                 )
+            audiobook = self._materialize_project_book_assets(audiobook, snapshot)
             self._set_current_project(audiobook.id)
             self.project_dirty = False
             self.log_view.append_event(
@@ -13293,7 +14530,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_project_switch():
             return
         location = self._prompt_project_location(
-            self.tr("untitled_project", "Untitled Audiobook"),
+            self.audiobook_store.next_project_title(),
             self.tr("file_new_project", "New Project"),
         )
         if location is None:
@@ -13306,10 +14543,13 @@ class MainWindow(QMainWindow):
             {"engine": str(self.settings.get("tts_engine", "piper") or "piper")},
             output_dir,
             str(self.split_combo.currentData() or "safe_chunks"),
-            str(self.export_combo.currentData() or "single"),
+            "single",
             title,
             self._project_settings_snapshot(),
             project_dir,
+        )
+        audiobook = self._materialize_project_book_assets(
+            audiobook, self._project_settings_snapshot()
         )
         self._load_project(audiobook.id)
         self.log_view.append_event(
@@ -13406,7 +14646,7 @@ class MainWindow(QMainWindow):
         )
 
     def _project_status_text(self, audiobook) -> str:
-        if audiobook.clean_mp3_path and Path(audiobook.clean_mp3_path).is_file():
+        if audiobook.clean_audio_path and Path(audiobook.clean_audio_path).is_file():
             return self.tr("completed", "Completed")
         segments = self.audiobook_store.list_segments(audiobook.id)
         if segments:
@@ -13431,13 +14671,14 @@ class MainWindow(QMainWindow):
             self.settings["current_project_id"] = audiobook.id
             self.settings_manager.save(self.settings)
             self._restore_settings()
+        self._refresh_project_title_header()
         self._loading_project = True
         self.text_editor.setPlainText(audiobook.source_text)
         self._loading_project = False
         self._show_original_text_tab()
         self.project_dirty = False
-        if audiobook.clean_mp3_path and Path(audiobook.clean_mp3_path).is_file():
-            self._set_audio_mix_preview_context(Path(audiobook.clean_mp3_path))
+        if audiobook.clean_audio_path and Path(audiobook.clean_audio_path).is_file():
+            self._set_audio_mix_preview_context(Path(audiobook.clean_audio_path))
         else:
             self.audio_mix_preview_panel.clear_context()
         self._refresh_review_page()
@@ -13456,8 +14697,8 @@ class MainWindow(QMainWindow):
         self._loading_project = False
         self._show_original_text_tab()
         self.project_dirty = False
-        if audiobook.clean_mp3_path and Path(audiobook.clean_mp3_path).is_file():
-            self._set_audio_mix_preview_context(Path(audiobook.clean_mp3_path))
+        if audiobook.clean_audio_path and Path(audiobook.clean_audio_path).is_file():
+            self._set_audio_mix_preview_context(Path(audiobook.clean_audio_path))
         else:
             self.audio_mix_preview_panel.clear_context()
 
@@ -13468,6 +14709,9 @@ class MainWindow(QMainWindow):
             self.settings_manager.save(self.settings)
         except OSError as exc:
             self.log_view.append_event(f"Could not save current project id: {exc}")
+        if audiobook_id is None:
+            self._draft_project_title = self.audiobook_store.next_project_title()
+        self._refresh_project_title_header()
 
     def _confirm_project_switch(self) -> bool:
         if not self.project_dirty:
@@ -14289,6 +15533,15 @@ class MainWindow(QMainWindow):
     def _start_generation(self) -> None:
         if self.worker_thread is not None:
             return
+        if self.bulk_audiobook_thread is not None:
+            self._show_error(
+                self.tr("bulk_already_running", "Bulk task is running"),
+                self.tr(
+                    "generation_wait_for_bulk",
+                    "Pause or cancel the bulk task before starting an individual audiobook.",
+                ),
+            )
+            return
 
         text = self.text_editor.toPlainText().strip()
         if not text:
@@ -14344,12 +15597,7 @@ class MainWindow(QMainWindow):
         self._refresh_normalized_preview(
             language_hint=normalization_language_hint
         )
-        metadata = self.settings.get("metadata", {})
-        title = (
-            str(metadata.get("title", "Audiobook"))
-            if isinstance(metadata, dict)
-            else "Audiobook"
-        )
+        title = self._current_project_title()
         request = {
             "text": text,
             "title": title or "Audiobook",
@@ -14364,7 +15612,12 @@ class MainWindow(QMainWindow):
             "speed": float(voice_config.get("speed", self.speed_spin.value())),
             "output_dir": str(output_dir),
             "split_mode": str(self.split_combo.currentData()),
-            "export_mode": str(self.export_combo.currentData()),
+            "export_mode": "single",
+            "audio_format": str(self.audio_format_combo.currentData() or "mp3"),
+            "audio_quality": str(
+                self.audio_quality_combo.currentData() or "standard"
+            ),
+            "generation_settings": self._project_settings_snapshot(),
             "chunk_size": self._current_chunk_size(engine_id),
             "project_audiobook_id": self.current_audiobook_id,
             # The desktop UI owns the interactive Review and Audio Mix transitions.
@@ -14438,9 +15691,13 @@ class MainWindow(QMainWindow):
             else []
         )
         if not outputs:
-            clean_mp3 = str(result.get("clean_mp3", "") or "")
-            mix_mp3 = str(result.get("mix_mp3", "") or "")
-            outputs = [path for path in (clean_mp3, mix_mp3) if path]
+            clean_audio = str(
+                result.get("clean_audio") or result.get("clean_mp3", "") or ""
+            )
+            mix_audio = str(
+                result.get("mix_audio") or result.get("mix_mp3", "") or ""
+            )
+            outputs = [path for path in (clean_audio, mix_audio) if path]
         self._on_finished(outputs)
 
     def _cancel_generation(self) -> None:
@@ -14677,7 +15934,11 @@ class MainWindow(QMainWindow):
         for output_path in output_paths:
             path = Path(output_path)
             stem = path.stem.lower()
-            if not stem.endswith("_mix") and not stem.endswith("_podcast"):
+            if (
+                not stem.endswith("_mix")
+                and not stem.endswith("_podcast")
+                and not stem.startswith("podcast_remix")
+            ):
                 return path
         return Path(output_paths[0]) if output_paths else None
 
@@ -14695,6 +15956,10 @@ class MainWindow(QMainWindow):
             ),
             loop_background=self.background_loop_checkbox.isChecked(),
             normalize=self.podcast_normalize_checkbox.isChecked(),
+            audio_format=str(self.audio_format_combo.currentData() or "mp3"),
+            audio_quality=str(
+                self.audio_quality_combo.currentData() or "standard"
+            ),
             mp3_bitrate=str(self.settings.get("mp3_bitrate", "128k")),
             markup_music_volume_db=float(
                 self.settings.get("markup_music_volume_db", 0.0)
@@ -15866,6 +17131,8 @@ class MainWindow(QMainWindow):
             ffmpeg_path=self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"),
             split_mode="safe_chunks",
             export_mode="single",
+            audio_format=str(self.settings.get("audio_format", "mp3")),
+            audio_quality=str(self.settings.get("audio_quality", "standard")),
             chunk_size=self._current_chunk_size(
                 str(voice_config.get("engine", "piper"))
             ),
@@ -16270,6 +17537,9 @@ class MainWindow(QMainWindow):
         self.text_editor.setReadOnly(running)
         for widget in (
             self.import_button,
+            self.project_title_edit,
+            self.project_rename_button,
+            self.project_properties_button,
             self.generation_voice_combo,
             self.language_combo,
             self.voice_combo,
@@ -16278,7 +17548,8 @@ class MainWindow(QMainWindow):
             self.back_button,
             self.speed_spin,
             self.split_combo,
-            self.export_combo,
+            self.audio_format_combo,
+            self.audio_quality_combo,
             self.ui_language_combo,
             self.theme_button,
             self.gpu_device_combo,
@@ -16484,7 +17755,11 @@ class MainWindow(QMainWindow):
                     self.periodic_pause_max_spin.value() * 1000
                 ),
                 "split_mode": "safe_chunks",
-                "export_mode": self.export_combo.currentData(),
+                "export_mode": "single",
+                "audio_format": self.audio_format_combo.currentData() or "mp3",
+                "audio_quality": (
+                    self.audio_quality_combo.currentData() or "standard"
+                ),
                 "chunk_size": self.chunk_size_spin.value(),
                 "engine_chunk_sizes": {
                     "piper": self.piper_chunk_size_spin.value(),
@@ -16888,6 +18163,43 @@ class MainWindow(QMainWindow):
                     )
                     event.ignore()
                     return
+        if self.bulk_audiobook_worker is not None:
+            choice = QMessageBox.question(
+                self,
+                self.tr("bulk_running", "Bulk Audiobooks is running"),
+                self.tr(
+                    "bulk_close_running_message",
+                    "Stop the current book and preserve the task so it can be "
+                    "resumed next time?",
+                ),
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.bulk_audiobook_worker.request_stop()
+            deadline = time.monotonic() + 10.0
+            while (
+                self.bulk_audiobook_thread is not None
+                and self.bulk_audiobook_thread.isRunning()
+                and time.monotonic() < deadline
+            ):
+                QApplication.processEvents()
+                self.bulk_audiobook_thread.wait(100)
+            if (
+                self.bulk_audiobook_thread is not None
+                and self.bulk_audiobook_thread.isRunning()
+            ):
+                QMessageBox.warning(
+                    self,
+                    self.tr("still_stopping", "Still stopping"),
+                    self.tr(
+                        "bulk_still_stopping_message",
+                        "The current bulk generation is still stopping. Please "
+                        "wait a moment and close the application again.",
+                    ),
+                )
+                event.ignore()
+                return
         if self.update_download_worker is not None:
             self.update_download_worker.request_cancel()
         for update_thread in (

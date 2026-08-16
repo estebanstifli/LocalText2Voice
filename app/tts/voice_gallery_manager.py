@@ -35,6 +35,10 @@ DEFAULT_GALLERY_CATALOG_URL = (
     "LocalText2Voice-VoiceGallery/main/catalog.json"
 )
 
+# Shared default reference for cloning engines. The audio is materialized once in
+# the voice-gallery store and can then be reused by OmniVoice and Qwen Base.
+DEFAULT_OMNIVOICE_REFERENCE_VOICE_ID = "omnivoice_en_harold_storyteller"
+
 
 @dataclass(frozen=True)
 class GalleryVoice:

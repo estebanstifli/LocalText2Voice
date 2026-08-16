@@ -322,6 +322,7 @@ class AudioPipelineTests(unittest.TestCase):
                 ffmpeg_path=Path(shutil.which("ffmpeg") or "ffmpeg"),
                 chunk_size=200,
                 pause_between_blocks_ms=10,
+                metadata={"title": "El gato negro"},
             )
             output_paths = AudioPipeline(FakeTTSEngine()).generate(
                 "First sentence. " * 40,
@@ -329,7 +330,7 @@ class AudioPipelineTests(unittest.TestCase):
             )
 
             self.assertEqual(len(output_paths), 1)
-            self.assertEqual(output_paths[0].name, "podcast1.mp3")
+            self.assertEqual(output_paths[0].name, "El gato negro_voice.mp3")
             self.assertGreater(output_paths[0].stat().st_size, 0)
 
     def test_single_export_uses_next_available_podcast_number(self) -> None:
@@ -364,7 +365,32 @@ class AudioPipelineTests(unittest.TestCase):
 
             self.assertEqual(names, ("podcast2.mp3", "podcast2_mix.mp3"))
 
-    def test_exports_numbered_chapter_mp3_files(self) -> None:
+    def test_project_title_names_voice_and_mix_outputs_without_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            output_dir = Path(temporary_name)
+            first = AudioPipeline._next_single_filenames(
+                output_dir,
+                True,
+                ".m4b",
+                "La máscara: roja?",
+            )
+            self.assertEqual(
+                first,
+                ("La máscara- roja_voice.m4b", "La máscara- roja_mix.m4b"),
+            )
+            (output_dir / first[0]).write_bytes(b"existing")
+            second = AudioPipeline._next_single_filenames(
+                output_dir,
+                True,
+                ".m4b",
+                "La máscara: roja?",
+            )
+            self.assertEqual(
+                second,
+                ("La máscara- roja_2_voice.m4b", "La máscara- roja_2_mix.m4b"),
+            )
+
+    def test_legacy_chapter_export_mode_now_produces_one_audio_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             output_dir = Path(temporary_name) / "output"
             options = AudioGenerationOptions(
@@ -383,7 +409,7 @@ class AudioPipelineTests(unittest.TestCase):
 
             self.assertEqual(
                 [path.name for path in output_paths],
-                ["chapter_001.mp3", "chapter_002.mp3"],
+                ["podcast1.mp3"],
             )
             self.assertTrue(all(path.stat().st_size > 0 for path in output_paths))
 
@@ -520,7 +546,7 @@ class AudioPipelineTests(unittest.TestCase):
             self.assertEqual(engine.voice_configs[1]["speaker"], "Serena")
             self.assertEqual(engine.voice_configs[1]["language"], "Spanish")
 
-    def test_mp3_per_block_still_groups_short_paragraphs(self) -> None:
+    def test_legacy_chapter_export_mode_no_longer_groups_output_blocks(self) -> None:
         options = AudioGenerationOptions(
             output_dir=Path("unused"),
             voice_config={"speed": 1.0},

@@ -31,14 +31,22 @@ class ServerJob:
     progress_total: int = 0
     progress_percent: float = 0.0
     message: str = ""
-    clean_mp3_path: str = ""
-    mix_mp3_path: str = ""
+    clean_audio_path: str = ""
+    mix_audio_path: str = ""
     audiobook_id: int | None = None
     error_message: str = ""
     request_json: str = "{}"
     result_json: str = "{}"
     logs_json: str = "[]"
     cancel_requested: bool = False
+
+    @property
+    def clean_mp3_path(self) -> str:
+        return self.clean_audio_path
+
+    @property
+    def mix_mp3_path(self) -> str:
+        return self.mix_audio_path
 
     def to_dict(self, include_logs: bool = True) -> dict[str, Any]:
         try:
@@ -68,8 +76,10 @@ class ServerJob:
                 "percent": self.progress_percent,
                 "message": self.message,
             },
-            "clean_mp3_path": self.clean_mp3_path,
-            "mix_mp3_path": self.mix_mp3_path,
+            "clean_audio_path": self.clean_audio_path,
+            "mix_audio_path": self.mix_audio_path,
+            "clean_mp3_path": self.clean_audio_path,
+            "mix_mp3_path": self.mix_audio_path,
             "audiobook_id": self.audiobook_id,
             "error_message": self.error_message,
             "cancel_requested": self.cancel_requested,
@@ -82,7 +92,7 @@ class ServerJob:
 
 
 class LocalServerJobManager:
-    DB_SCHEMA_VERSION = 1
+    DB_SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -139,7 +149,7 @@ class LocalServerJobManager:
                 """
                 SELECT job_id, status, title, created_at, updated_at,
                        started_at, finished_at, progress_current, progress_total,
-                       progress_percent, message, clean_mp3_path, mix_mp3_path,
+                       progress_percent, message, clean_audio_path, mix_audio_path,
                        audiobook_id, error_message, request_json, result_json,
                        logs_json, cancel_requested
                 FROM server_jobs
@@ -155,7 +165,7 @@ class LocalServerJobManager:
         query = """
             SELECT job_id, status, title, created_at, updated_at,
                    started_at, finished_at, progress_current, progress_total,
-                   progress_percent, message, clean_mp3_path, mix_mp3_path,
+                   progress_percent, message, clean_audio_path, mix_audio_path,
                    audiobook_id, error_message, request_json, result_json,
                    logs_json, cancel_requested
             FROM server_jobs
@@ -280,8 +290,18 @@ class LocalServerJobManager:
                 finished_at=self._now(),
                 progress_percent=100.0,
                 message="Generation complete.",
-                clean_mp3_path=str(result.get("clean_mp3", "")),
-                mix_mp3_path=str(result.get("mix_mp3", "")),
+                clean_audio_path=str(
+                    result.get("clean_audio") or result.get("clean_mp3", "")
+                ),
+                mix_audio_path=str(
+                    result.get("mix_audio") or result.get("mix_mp3", "")
+                ),
+                clean_mp3_path=str(
+                    result.get("clean_audio") or result.get("clean_mp3", "")
+                ),
+                mix_mp3_path=str(
+                    result.get("mix_audio") or result.get("mix_mp3", "")
+                ),
                 audiobook_id=result.get("audiobook_id"),
                 result_json=json.dumps(result, ensure_ascii=False, default=str),
             )
@@ -389,6 +409,8 @@ class LocalServerJobManager:
                     progress_total INTEGER NOT NULL DEFAULT 0,
                     progress_percent REAL NOT NULL DEFAULT 0,
                     message TEXT NOT NULL DEFAULT '',
+                    clean_audio_path TEXT NOT NULL DEFAULT '',
+                    mix_audio_path TEXT NOT NULL DEFAULT '',
                     clean_mp3_path TEXT NOT NULL DEFAULT '',
                     mix_mp3_path TEXT NOT NULL DEFAULT '',
                     audiobook_id INTEGER,
@@ -398,6 +420,34 @@ class LocalServerJobManager:
                     logs_json TEXT NOT NULL DEFAULT '[]',
                     cancel_requested INTEGER NOT NULL DEFAULT 0
                 )
+                """
+            )
+            existing = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(server_jobs)")
+            }
+            for name in (
+                "clean_audio_path",
+                "mix_audio_path",
+                "clean_mp3_path",
+                "mix_mp3_path",
+            ):
+                if name not in existing:
+                    connection.execute(
+                        f"ALTER TABLE server_jobs ADD COLUMN {name} "
+                        "TEXT NOT NULL DEFAULT ''"
+                    )
+            connection.execute(
+                """
+                UPDATE server_jobs
+                SET clean_audio_path = CASE
+                        WHEN clean_audio_path = '' THEN clean_mp3_path
+                        ELSE clean_audio_path
+                    END,
+                    mix_audio_path = CASE
+                        WHEN mix_audio_path = '' THEN mix_mp3_path
+                        ELSE mix_audio_path
+                    END
                 """
             )
             connection.execute(
@@ -438,8 +488,8 @@ class LocalServerJobManager:
             progress_total=int(row["progress_total"]),
             progress_percent=float(row["progress_percent"]),
             message=str(row["message"]),
-            clean_mp3_path=str(row["clean_mp3_path"]),
-            mix_mp3_path=str(row["mix_mp3_path"]),
+            clean_audio_path=str(row["clean_audio_path"]),
+            mix_audio_path=str(row["mix_audio_path"]),
             audiobook_id=int(row["audiobook_id"]) if row["audiobook_id"] is not None else None,
             error_message=str(row["error_message"]),
             request_json=str(row["request_json"]),

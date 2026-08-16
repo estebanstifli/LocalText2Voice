@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.audiobook_store import (
     PROJECT_MANIFEST_NAME,
@@ -16,6 +17,96 @@ from app.core.transcript_similarity import similarity_metrics, verification_stat
 
 
 class AudiobookStoreTests(unittest.TestCase):
+    def test_project_manifest_retries_transient_windows_lock_with_unicode_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            store = AudiobookStore(root / "projects.sqlite3")
+            project_dir = root / "La máscara de la muerte roja"
+            audiobook = store.create_audiobook(
+                "Texto con acentos.",
+                {"engine": "piper"},
+                project_dir / "exports",
+                "safe_chunks",
+                "single",
+                "La máscara de la muerte roja",
+                {},
+                project_dir,
+            )
+            from app.core import audiobook_store as store_module
+
+            real_replace = store_module.os.replace
+            attempts = 0
+
+            def transient_lock(source, destination):
+                nonlocal attempts
+                if Path(destination).name == "project.json" and attempts < 2:
+                    attempts += 1
+                    raise PermissionError(5, "Access is denied")
+                return real_replace(source, destination)
+
+            with patch.object(store_module.os, "replace", side_effect=transient_lock):
+                saved = store.save_audiobook_project(
+                    audiobook.id,
+                    audiobook.source_text,
+                    {"engine": "piper"},
+                    audiobook.output_dir,
+                    audiobook.split_mode,
+                    audiobook.export_mode,
+                    audiobook.title,
+                    {},
+                )
+
+            self.assertEqual(attempts, 2)
+            self.assertTrue((saved.project_dir / "project.json").is_file())
+            self.assertFalse(any(saved.project_dir.glob(".*.tmp")))
+
+    def test_locked_legacy_manifest_does_not_fail_the_canonical_project_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            store = AudiobookStore(root / "projects.sqlite3")
+            project_dir = root / "Edición íntegra"
+            audiobook = store.create_audiobook(
+                "Texto.",
+                {"engine": "piper"},
+                project_dir / "exports",
+                "safe_chunks",
+                "single",
+                "Edición íntegra",
+                {},
+                project_dir,
+            )
+            from app.core import audiobook_store as store_module
+
+            real_replace = store_module.os.replace
+
+            def locked_legacy(source, destination):
+                if Path(destination).name == "project.json":
+                    raise PermissionError(5, "Access is denied")
+                return real_replace(source, destination)
+
+            with (
+                patch.object(store_module.os, "replace", side_effect=locked_legacy),
+                patch.object(store_module.time, "sleep"),
+            ):
+                saved = store.save_audiobook_project(
+                    audiobook.id,
+                    "Texto actualizado.",
+                    {"engine": "piper"},
+                    audiobook.output_dir,
+                    audiobook.split_mode,
+                    audiobook.export_mode,
+                    audiobook.title,
+                    {},
+                )
+
+            canonical = saved.project_dir / PROJECT_MANIFEST_NAME
+            self.assertTrue(canonical.is_file())
+            self.assertEqual(
+                json.loads(canonical.read_text(encoding="utf-8"))["source_text"],
+                "Texto actualizado.",
+            )
+            self.assertFalse(any(saved.project_dir.glob(".*.tmp")))
+
     def test_play_asset_uses_configured_recursive_sfx_library(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
@@ -297,6 +388,53 @@ class AudiobookStoreTests(unittest.TestCase):
                 json.loads(imported_segments[0].review_metrics_json),
                 review_metrics,
             )
+
+    def test_rename_persists_title_without_moving_project_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            store = AudiobookStore(root / "projects.sqlite3")
+            project_dir = root / "physical-folder-stays-put"
+            project = store.create_audiobook(
+                "Text",
+                {"engine": "piper"},
+                project_dir / "exports",
+                "safe_chunks",
+                "single",
+                "Project1",
+                {
+                    "book_metadata": {
+                        "title": "Project1",
+                        "title_follows_project": True,
+                    }
+                },
+                project_dir,
+            )
+
+            renamed = store.rename_audiobook(project.id, "My Book")
+
+            self.assertEqual(renamed.title, "My Book")
+            self.assertEqual(renamed.project_dir, project_dir)
+            settings = json.loads(renamed.project_settings_json)
+            self.assertEqual(settings["book_metadata"]["title"], "My Book")
+            manifest = json.loads(
+                (project_dir / PROJECT_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["title"], "My Book")
+
+    def test_next_project_title_fills_the_first_available_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            store = AudiobookStore(root / "projects.sqlite3")
+            for title in ("Project1", "Project3", "A named book"):
+                store.create_audiobook(
+                    "",
+                    {"engine": "piper"},
+                    root / title / "exports",
+                    "safe_chunks",
+                    "single",
+                    title,
+                )
+            self.assertEqual(store.next_project_title(), "Project2")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 20,
+  "settings_schema_version": 21,
   "storage": {
     "base_dir": ".",
     "previous_roots": []
@@ -14,6 +14,8 @@
   "speed": 1.0,
   "split_mode": "safe_chunks",
   "export_mode": "single",
+  "audio_format": "mp3",
+  "audio_quality": "standard",
   "piper_path": "engines/piper/piper.exe",
   "ffmpeg_path": "ffmpeg/ffmpeg.exe",
   "chunk_size": 300,
@@ -75,7 +77,7 @@
   "open_output_on_finish": false,
   "mp3_bitrate": "128k",
   "metadata": {
-    "title": "Course",
+    "title": "Project1",
     "artist": "",
     "album": "LocalText2Voice"
   },

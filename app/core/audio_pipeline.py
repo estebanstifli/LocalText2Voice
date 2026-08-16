@@ -17,7 +17,23 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.audiobook_store import AudiobookStore, StoredAudiobook
+from app.core.audio_formats import (
+    AUDIO_FORMATS,
+    audio_format_spec,
+    encoding_arguments,
+    normalize_audio_format,
+    normalize_audio_quality,
+)
 from app.core.audio_mix import ducking_filter
+from app.core.book_metadata import (
+    apply_m4b_tags,
+    book_metadata_from_settings,
+    chapter_ranges,
+    prepare_project_cover,
+    project_cover_path,
+    settings_with_book_metadata,
+    write_ffmetadata,
+)
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from app.utils.ffmpeg_utils import (
     FFmpegCancelled,
@@ -61,6 +77,8 @@ class AudioGenerationOptions:
     ffmpeg_path: str | Path
     split_mode: str = "safe_chunks"
     export_mode: str = "single"
+    audio_format: str = "mp3"
+    audio_quality: str = "standard"
     chunk_size: int = 2500
     pause_between_blocks_ms: int = 350
     pause_between_chapters_ms: int = 900
@@ -109,9 +127,15 @@ class AudioGroup:
 @dataclass(frozen=True)
 class NarrationArtifact:
     wav_path: Path
-    mp3_path: Path
+    audio_path: Path
     title: str
     podcast_filename: str
+
+    @property
+    def mp3_path(self) -> Path:
+        """Deprecated compatibility alias; the file may not be MP3."""
+
+        return self.audio_path
 
 
 @dataclass(frozen=True)
@@ -200,6 +224,21 @@ class AudioPipeline:
                         title=project_title,
                         project_settings=options.project_settings,
                     )
+                if audio_format_spec(options.audio_format).id == "m4b":
+                    book = book_metadata_from_settings(
+                        options.project_settings, self._active_audiobook.title
+                    )
+                    book, _cover = prepare_project_cover(
+                        self._active_audiobook.project_dir,
+                        str(book.get("title") or self._active_audiobook.title),
+                        book,
+                    )
+                    options.project_settings = settings_with_book_metadata(
+                        options.project_settings, book
+                    )
+                    self._active_audiobook = self.audiobook_store.update_project_settings(
+                        self._active_audiobook.id, options.project_settings
+                    )
                 self._segment_ids = self.audiobook_store.replace_segments(
                     self._active_audiobook,
                     groups,
@@ -241,7 +280,8 @@ class AudioPipeline:
                 f"{options.paragraph_pause_min_ms}-"
                 f"{options.paragraph_pause_max_ms} ms"
             )
-            export_steps = len(groups) if options.export_mode == "chapters" else 1
+            output_spec = audio_format_spec(options.audio_format)
+            export_steps = 1
             podcast_steps = export_steps if options.podcast_enabled else 0
             total_steps = total_chunks + export_steps + podcast_steps
 
@@ -260,10 +300,10 @@ class AudioPipeline:
                 self.progress_callback(
                     total_chunks,
                     total_steps,
-                    "Encoding MP3 output...",
+                    f"Encoding {output_spec.label} output...",
                 )
-                if options.export_mode == "chapters":
-                    artifacts = self._export_chapters(
+                artifacts = [
+                    self._export_single(
                         groups,
                         rendered_groups,
                         options,
@@ -271,24 +311,14 @@ class AudioPipeline:
                         runner,
                         pause_random,
                     )
-                else:
-                    artifacts = [
-                        self._export_single(
-                            groups,
-                            rendered_groups,
-                            options,
-                            temp_dir,
-                            runner,
-                            pause_random,
-                        )
-                    ]
+                ]
                 completed_steps = total_chunks + export_steps
                 self.progress_callback(
                     completed_steps,
                     total_steps,
-                    "MP3 narration created.",
+                    f"{output_spec.label} narration created.",
                 )
-                outputs = [artifact.mp3_path for artifact in artifacts]
+                outputs = [artifact.audio_path for artifact in artifacts]
                 if options.podcast_enabled:
                     for artifact in artifacts:
                         self._check_cancelled()
@@ -458,7 +488,16 @@ class AudioPipeline:
             )
             for warning in markup.warnings:
                 self.log_callback(f"LTV Markup warning: {warning}")
-            return self._prepare_markup_groups(markup.sections, options)
+            groups = self._prepare_markup_groups(markup.sections, options)
+            book = book_metadata_from_settings(
+                options.project_settings,
+                str(options.metadata.get("title", "Audiobook")),
+            )
+            if len(groups) == 1 and groups[0].title == "Course":
+                groups[0] = replace(
+                    groups[0], title=str(book.get("title") or "Audiobook")
+                )
+            return groups
 
         short_policy = self._short_chunk_policy(options)
         if short_policy:
@@ -467,7 +506,14 @@ class AudioPipeline:
                 "Short sentence chunk policy enabled "
                 f"(target {target_chars} chars, max {max_chars}, min {min_chars})."
             )
-        if options.split_mode == "chapters":
+        book = book_metadata_from_settings(
+            options.project_settings,
+            str(options.metadata.get("title", "Audiobook")),
+        )
+        if options.split_mode == "chapters" or (
+            audio_format_spec(options.audio_format).id == "m4b"
+            and book.get("chapter_mode") == "headings"
+        ):
             sections = TextProcessor.split_by_headings(text)
             return [
                 AudioGroup(
@@ -479,15 +525,12 @@ class AudioPipeline:
             ]
 
         chunks = self._split_tts_chunks(text, options)
-        if options.export_mode == "chapters":
-            return [
-                AudioGroup(title=f"Block {index}", chunks=tuple(group_chunks))
-                for index, group_chunks in enumerate(
-                    self._group_safe_chunks(chunks, options.chunk_size),
-                    start=1,
-                )
-            ]
-        return [AudioGroup(title="Course", chunks=tuple(chunks))]
+        return [
+            AudioGroup(
+                title=str(book.get("title") or options.metadata.get("title") or "Audiobook"),
+                chunks=tuple(chunks),
+            )
+        ]
 
     def _normalize_text_for_tts(
         self,
@@ -589,18 +632,6 @@ class AudioPipeline:
             if chunks:
                 groups.append(AudioGroup(title=section.title, chunks=tuple(chunks)))
 
-        if (
-            options.export_mode == "chapters"
-            and len(groups) == 1
-            and groups[0].title == "Course"
-        ):
-            return [
-                AudioGroup(title=f"Block {index}", chunks=tuple(group_chunks))
-                for index, group_chunks in enumerate(
-                    self._group_safe_chunks(list(groups[0].chunks), options.chunk_size),
-                    start=1,
-                )
-            ]
         return groups
 
     @staticmethod
@@ -1923,8 +1954,11 @@ class AudioPipeline:
         timeline: list[Path] = []
         pause_index = 0
         total_pause_ms = 0
+        timeline_ms = 0
+        chapter_ranges: list[tuple[str, int, int]] = []
 
         for group_index, rendered_chunks in enumerate(rendered_groups):
+            chapter_start_ms = timeline_ms
             for chunk_index, wav_path in enumerate(rendered_chunks):
                 chunk = groups[group_index].chunks[chunk_index]
                 segment_id = self._segment_ids.get((group_index + 1, chunk_index + 1))
@@ -1939,7 +1973,9 @@ class AudioPipeline:
                         chunk.markup_pause_before_ms,
                     )
                     timeline.append(silence)
+                    timeline_ms += chunk.markup_pause_before_ms
                 timeline.append(wav_path)
+                timeline_ms += max(1, round(self._wav_duration_seconds(wav_path) * 1000))
                 is_last_chunk = chunk_index == len(rendered_chunks) - 1
                 is_last_group = group_index == len(rendered_groups) - 1
                 if chunk.markup_pause_after_ms is not None:
@@ -1959,16 +1995,22 @@ class AudioPipeline:
                     silence = temp_dir / f"pause_{pause_index:04d}.wav"
                     self._create_silence(wav_path, silence, duration)
                     timeline.append(silence)
+                    timeline_ms += duration
                 if segment_id is not None and self.audiobook_store is not None:
                     self.audiobook_store.update_segment_pause(
                         segment_id,
                         before_duration,
                         duration,
                     )
+            chapter_ranges.append(
+                (groups[group_index].title, chapter_start_ms, max(chapter_start_ms + 1, timeline_ms))
+            )
 
         filename, podcast_filename = self._next_single_filenames(
             options.output_dir,
             options.podcast_enabled,
+            audio_format_spec(options.audio_format).extension,
+            self._project_output_title(options),
         )
         self.log_callback(
             f"Prepared narration timeline with {len(timeline)} segment(s), "
@@ -1982,28 +2024,44 @@ class AudioPipeline:
             f"{self._format_duration(time.perf_counter() - join_started)} "
             f"({self._format_file_size(joined_wav)})."
         )
-        temporary_mp3 = temp_dir / filename
+        temporary_audio = temp_dir / filename
         self.log_callback(f"Encoding {filename}")
         encode_started = time.perf_counter()
-        self._encode_mp3(
+        output_spec = audio_format_spec(options.audio_format)
+        book = book_metadata_from_settings(
+            options.project_settings,
+            str(options.metadata.get("title", "Audiobook")),
+        )
+        chapter_metadata = None
+        if output_spec.id == "m4b" and book.get("chapter_mode") != "none":
+            chapter_metadata = write_ffmetadata(temp_dir / "chapters.ffmetadata", chapter_ranges)
+        self._encode_audio(
             joined_wav,
-            temporary_mp3,
+            temporary_audio,
             options,
             runner,
             options.metadata,
+            chapter_metadata,
         )
+        if output_spec.id == "m4b":
+            cover = (
+                project_cover_path(self._active_audiobook.project_dir, book)
+                if self._active_audiobook is not None
+                else None
+            )
+            apply_m4b_tags(temporary_audio, book, cover)
         self.log_callback(
             f"Encoded {filename} in "
             f"{self._format_duration(time.perf_counter() - encode_started)} "
-            f"({self._format_file_size(temporary_mp3)})."
+            f"({self._format_file_size(temporary_audio)})."
         )
         final_path = options.output_dir / filename
-        _move_file(temporary_mp3, final_path)
+        _move_file(temporary_audio, final_path)
         self.log_callback(f"Saved: {final_path}")
         return NarrationArtifact(
             wav_path=joined_wav,
-            mp3_path=final_path,
-            title=str(options.metadata.get("title", "Course")),
+            audio_path=final_path,
+            title=str(options.metadata.get("title", "Audiobook")),
             podcast_filename=podcast_filename,
         )
 
@@ -2092,15 +2150,17 @@ class AudioPipeline:
                 options.output_dir,
                 group_index,
                 options.podcast_enabled,
+                audio_format_spec(options.audio_format).extension,
+                self._project_output_title(options),
             )
-            temporary_mp3 = temp_dir / filename
+            temporary_audio = temp_dir / filename
             metadata = dict(options.metadata)
             metadata["title"] = group.title
             self.log_callback(f"Encoding {filename}: {group.title}")
             encode_started = time.perf_counter()
-            self._encode_mp3(
+            self._encode_audio(
                 joined_wav,
-                temporary_mp3,
+                temporary_audio,
                 options,
                 runner,
                 metadata,
@@ -2108,14 +2168,14 @@ class AudioPipeline:
             self.log_callback(
                 f"Encoded {filename} in "
                 f"{self._format_duration(time.perf_counter() - encode_started)} "
-                f"({self._format_file_size(temporary_mp3)})."
+                f"({self._format_file_size(temporary_audio)})."
             )
             final_path = options.output_dir / filename
-            _move_file(temporary_mp3, final_path)
+            _move_file(temporary_audio, final_path)
             outputs.append(
                 NarrationArtifact(
                     wav_path=joined_wav,
-                    mp3_path=final_path,
+                    audio_path=final_path,
                     title=group.title,
                     podcast_filename=podcast_filename,
                 )
@@ -2123,15 +2183,49 @@ class AudioPipeline:
             self.log_callback(f"Saved: {final_path}")
         return outputs
 
+    def _project_output_title(self, options: AudioGenerationOptions) -> str:
+        if self._active_audiobook is not None:
+            return self._safe_output_filename_stem(self._active_audiobook.title)
+        return self._safe_output_filename_stem(
+            str(options.metadata.get("title", "") or "")
+        )
+
+    @staticmethod
+    def _safe_output_filename_stem(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        normalized = "".join(
+            character
+            for character in normalized
+            if not unicodedata.category(character).startswith("C")
+        )
+        stem = re.sub(r'[<>:"/\\|?*]+', "-", normalized)
+        stem = re.sub(r"\s+", " ", stem).strip(" .-")
+        return stem[:100].rstrip(" .-")
+
     @staticmethod
     def _next_single_filenames(
         output_dir: Path,
         include_podcast_mix: bool,
+        extension: str = ".mp3",
+        project_title: str = "",
     ) -> tuple[str, str]:
+        stem = AudioPipeline._safe_output_filename_stem(project_title)
+        if stem:
+            index = 0
+            while True:
+                numbered_stem = f"{stem}_{index + 1}" if index else stem
+                narration = f"{numbered_stem}_voice{extension}"
+                podcast_mix = f"{numbered_stem}_mix{extension}"
+                if not (output_dir / narration).exists() and (
+                    not include_podcast_mix
+                    or not (output_dir / podcast_mix).exists()
+                ):
+                    return narration, podcast_mix
+                index += 1
         index = 1
         while True:
-            narration = f"podcast{index}.mp3"
-            podcast_mix = f"podcast{index}_mix.mp3"
+            narration = f"podcast{index}{extension}"
+            podcast_mix = f"podcast{index}_mix{extension}"
             if not (output_dir / narration).exists() and (
                 not include_podcast_mix
                 or not (output_dir / podcast_mix).exists()
@@ -2144,13 +2238,27 @@ class AudioPipeline:
         output_dir: Path,
         group_index: int,
         include_podcast_mix: bool,
+        extension: str = ".mp3",
+        project_title: str = "",
     ) -> tuple[str, str]:
+        project_stem = AudioPipeline._safe_output_filename_stem(project_title)
         suffix = 0
         while True:
             numbered_suffix = f"_{suffix}" if suffix else ""
-            stem = f"chapter_{group_index:03d}{numbered_suffix}"
-            narration = f"{stem}.mp3"
-            podcast_mix = f"{stem}_podcast.mp3"
+            chapter_stem = f"chapter_{group_index:03d}{numbered_suffix}"
+            stem = (
+                f"{project_stem}_{chapter_stem}"
+                if project_stem
+                else chapter_stem
+            )
+            narration = (
+                f"{stem}_voice{extension}" if project_stem else f"{stem}{extension}"
+            )
+            podcast_mix = (
+                f"{stem}_mix{extension}"
+                if project_stem
+                else f"{stem}_podcast{extension}"
+            )
             if not (output_dir / narration).exists() and (
                 not include_podcast_mix
                 or not (output_dir / podcast_mix).exists()
@@ -2195,6 +2303,34 @@ class AudioPipeline:
             arguments.extend(["-i", str(options.background_path)])
             input_indexes["background"] = next_index
             next_index += 1
+
+        output_spec = audio_format_spec(options.audio_format)
+        book = book_metadata_from_settings(
+            options.project_settings,
+            str(options.metadata.get("title", "Audiobook")),
+        )
+        chapter_metadata_index: int | None = None
+        if (
+            output_spec.id == "m4b"
+            and book.get("chapter_mode") != "none"
+            and self.audiobook_store is not None
+            and self._active_audiobook is not None
+        ):
+            offset = int(options.voice_start_offset_ms)
+            ranges = [
+                (title, max(0, start + offset), max(1, end + offset))
+                for title, start, end in chapter_ranges(
+                    self.audiobook_store.list_segments(self._active_audiobook.id)
+                )
+                if end + offset > 0
+            ]
+            if ranges:
+                chapter_file = write_ffmetadata(
+                    temp_dir / "podcast_mix_chapters.ffmetadata", ranges
+                )
+                arguments.extend(["-i", str(chapter_file)])
+                chapter_metadata_index = next_index
+                next_index += 1
 
         narration_duration = self._wav_duration_seconds(artifact.wav_path)
         voice_offset_seconds = options.voice_start_offset_ms / 1000
@@ -2349,12 +2485,20 @@ class AudioPipeline:
                 ";".join(filters),
                 "-map",
                 f"[{final_label}]",
-                "-codec:a",
-                "libmp3lame",
-                "-b:a",
-                options.mp3_bitrate,
             ]
         )
+        arguments.extend(
+            encoding_arguments(options.audio_format, options.audio_quality)
+        )
+        if chapter_metadata_index is not None:
+            arguments.extend(
+                [
+                    "-map_metadata",
+                    str(chapter_metadata_index),
+                    "-map_chapters",
+                    str(chapter_metadata_index),
+                ]
+            )
         podcast_metadata = dict(options.metadata)
         podcast_metadata["title"] = artifact.title
         for key in ("title", "artist", "album"):
@@ -2364,6 +2508,13 @@ class AudioPipeline:
         arguments.append(str(temporary_output))
         encode_started = time.perf_counter()
         runner.run(arguments)
+        if output_spec.id == "m4b":
+            cover = (
+                project_cover_path(self._active_audiobook.project_dir, book)
+                if self._active_audiobook is not None
+                else None
+            )
+            apply_m4b_tags(temporary_output, book, cover)
         self.log_callback(
             f"Podcast mix FFmpeg render completed in "
             f"{self._format_duration(time.perf_counter() - encode_started)} "
@@ -2449,12 +2600,13 @@ class AudioPipeline:
             target.writeframes(b"")
 
     @staticmethod
-    def _encode_mp3(
+    def _encode_audio(
         input_wav: Path,
-        output_mp3: Path,
+        output_audio: Path,
         options: AudioGenerationOptions,
         runner: FFmpegRunner,
         metadata: dict[str, str],
+        chapter_metadata: Path | None = None,
     ) -> None:
         arguments = [
             "-y",
@@ -2464,15 +2616,24 @@ class AudioPipeline:
             "-i",
             str(input_wav),
         ]
+        if chapter_metadata is not None:
+            arguments.extend(
+                ["-i", str(chapter_metadata), "-map", "0:a:0", "-map_metadata", "1", "-map_chapters", "1"]
+            )
         if options.normalize_audio:
             arguments.extend(["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"])
-        arguments.extend(["-codec:a", "libmp3lame", "-b:a", options.mp3_bitrate])
+        arguments.extend(
+            encoding_arguments(options.audio_format, options.audio_quality)
+        )
         for key in ("title", "artist", "album"):
             value = str(metadata.get(key, "")).strip()
             if value:
                 arguments.extend(["-metadata", f"{key}={value}"])
-        arguments.append(str(output_mp3))
+        arguments.append(str(output_audio))
         runner.run(arguments)
+
+    # Kept for integrations that called the previous private helper directly.
+    _encode_mp3 = _encode_audio
 
     @staticmethod
     def _chunk_pause_ms(
@@ -2539,6 +2700,17 @@ class AudioPipeline:
             raise AudioPipelineError(f"Unknown split mode: {options.split_mode}")
         if options.export_mode not in {"single", "chapters"}:
             raise AudioPipelineError(f"Unknown export mode: {options.export_mode}")
+        normalized_format = normalize_audio_format(options.audio_format)
+        if str(options.audio_format).strip().casefold().lstrip(".") not in AUDIO_FORMATS:
+            raise AudioPipelineError(f"Unknown audio format: {options.audio_format}")
+        normalized_quality = normalize_audio_quality(
+            normalized_format,
+            options.audio_quality,
+        )
+        if normalized_quality != str(options.audio_quality).strip().casefold():
+            raise AudioPipelineError(
+                f"Unknown {normalized_format} quality: {options.audio_quality}"
+            )
         if options.chunk_size < 1:
             raise AudioPipelineError("Chunk size must be at least 1 character.")
         if options.paragraph_pause_min_ms < 0:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from app.core.audio_formats import supported_audio_extensions
 
 _CHAPTER_STEM_RE = re.compile(
     r"^chapter_(?P<chapter>\d{3})(?:_\d+)?(?:_podcast)?$",
@@ -53,7 +54,7 @@ def export_audiobook_subtitles(
     audiobook_id: int,
     output_paths: Iterable[Path] | None = None,
 ) -> SubtitleExportResult:
-    """Create SRT and word-karaoke ASS sidecars for an audiobook's MP3 files."""
+    """Create SRT and word-karaoke ASS sidecars for audiobook audio files."""
     audiobook = store.get_audiobook(audiobook_id)
     if audiobook is None:
         return SubtitleExportResult(skipped_reason="audiobook_not_found")
@@ -68,17 +69,17 @@ def export_audiobook_subtitles(
     if not candidates:
         clean_path, mix_path = store.audiobook_output_paths(audiobook_id)
         candidates = [Path(value) for value in (clean_path, mix_path) if value]
-    mp3_paths = _unique_existing_mp3_paths(candidates)
-    if not mp3_paths:
-        return SubtitleExportResult(skipped_reason="no_mp3_outputs")
+    audio_paths = _unique_existing_audio_paths(candidates)
+    if not audio_paths:
+        return SubtitleExportResult(skipped_reason="no_audio_outputs")
 
     settings = _json_dict(audiobook.project_settings_json)
     voice_offset_ms = _integer(settings.get("voice_start_offset_ms"), 2000)
     created: list[Path] = []
     found_timestamps = False
 
-    for mp3_path in mp3_paths:
-        chapter_index = _chapter_index_for_path(mp3_path)
+    for audio_path in audio_paths:
+        chapter_index = _chapter_index_for_path(audio_path)
         selected_segments = [
             segment
             for segment in segments
@@ -87,15 +88,15 @@ def export_audiobook_subtitles(
         words = _timed_words(selected_segments)
         if words:
             found_timestamps = True
-        if _is_mix_path(mp3_path):
+        if _is_mix_path(audio_path):
             words = _offset_words(words, voice_offset_ms)
         cues = _group_words(words)
         if not cues:
-            _remove_sidecars(mp3_path)
+            _remove_sidecars(audio_path)
             continue
 
-        srt_path = mp3_path.with_suffix(".srt")
-        ass_path = mp3_path.with_suffix(".ass")
+        srt_path = audio_path.with_suffix(".srt")
+        ass_path = audio_path.with_suffix(".ass")
         _write_atomic(srt_path, _render_srt(cues))
         _write_atomic(ass_path, _render_ass(cues))
         created.extend((srt_path, ass_path))
@@ -106,13 +107,17 @@ def export_audiobook_subtitles(
     return SubtitleExportResult(skipped_reason=reason)
 
 
-def _unique_existing_mp3_paths(paths: Iterable[Path]) -> list[Path]:
+def _unique_existing_audio_paths(paths: Iterable[Path]) -> list[Path]:
     result: list[Path] = []
     seen: set[str] = set()
     for value in paths:
         path = Path(value)
         key = str(path.resolve()).casefold()
-        if path.suffix.casefold() != ".mp3" or key in seen or not path.is_file():
+        if (
+            path.suffix.casefold() not in supported_audio_extensions()
+            or key in seen
+            or not path.is_file()
+        ):
             continue
         seen.add(key)
         result.append(path)
@@ -128,7 +133,11 @@ def _chapter_index_for_path(path: Path) -> int | None:
 
 def _is_mix_path(path: Path) -> bool:
     stem = path.stem.casefold()
-    return stem.endswith("_mix") or stem.endswith("_podcast")
+    return (
+        stem.endswith("_mix")
+        or stem.endswith("_podcast")
+        or stem.startswith("podcast_remix")
+    )
 
 
 def _timed_words(segments: list[Any]) -> list[TimedWord]:
@@ -326,9 +335,13 @@ def _write_atomic(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
-def _remove_sidecars(mp3_path: Path) -> None:
+def _remove_sidecars(audio_path: Path) -> None:
     for suffix in (".srt", ".ass"):
-        mp3_path.with_suffix(suffix).unlink(missing_ok=True)
+        audio_path.with_suffix(suffix).unlink(missing_ok=True)
+
+
+# Compatibility alias for integrations importing the former private helper.
+_unique_existing_mp3_paths = _unique_existing_audio_paths
 
 
 def _json_dict(value: Any) -> dict[str, Any]:

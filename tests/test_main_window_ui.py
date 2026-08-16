@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread, Qt, QUrl
+from PySide6.QtCore import QThread, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from app.core.audio_mix import AudioMixSettings
 from app.core.audiobook_store import AudiobookStore, StoredAudioEvent, StoredSegment
+from app.core.bulk_audiobook_store import BulkAudiobookStore
 from app.core.settings_manager import DEFAULT_SETTINGS, SettingsManager
 from app.core.text_normalization import TextNormalizationStore
 from app.tts.voice_gallery_manager import GalleryVoice
@@ -199,6 +200,328 @@ class MainWindowUITests(unittest.TestCase):
         self.assertEqual(str(window.tts_engine_combo.currentData()), original_engine)
         error.assert_called_once()
 
+    def test_qwen_models_have_separate_engine_table_rows_and_status(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        with (
+            patch.object(window.qwen_manager, "has_runtime", return_value=False),
+            patch.object(
+                window.qwen_manager,
+                "has_model_files",
+                side_effect=lambda model_id=None: model_id == "custom_voice_0_6b",
+            ),
+            patch.object(window.qwen_manager, "is_installed", return_value=False),
+        ):
+            rows = {
+                row["engine_id"]: row
+                for row in window._engine_table_rows()
+                if row["engine_id"].startswith("qwen:")
+            }
+
+        self.assertEqual(
+            set(rows),
+            {"qwen:custom_voice_0_6b", "qwen:base_1_7b"},
+        )
+        self.assertIn("CustomVoice 0.6B", rows["qwen:custom_voice_0_6b"]["name"])
+        self.assertIn("Base 1.7B", rows["qwen:base_1_7b"]["name"])
+        self.assertIn("Model detected", rows["qwen:custom_voice_0_6b"]["installed"])
+        self.assertEqual(rows["qwen:base_1_7b"]["installed"], "Not installed")
+
+    def test_qwen_table_install_action_selects_the_requested_model(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        with patch.object(window, "_install_qwen") as install:
+            window._select_and_install_engine("qwen:base_1_7b")
+
+        self.assertEqual(window.qwen_model_combo.currentData(), "base_1_7b")
+        install.assert_called_once_with()
+
+    def test_qwen_base_reuses_omnivoice_default_reference(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        reference = Path(temporary.name) / "harold.wav"
+        reference.write_bytes(b"RIFF")
+        transcript = (
+            "Sit by the fire, and I will tell you how the old road was found."
+        )
+        requested_voice_ids: list[str] = []
+        voice = SimpleNamespace(name="Harold", ref_text=transcript)
+        window.voice_gallery_manager = SimpleNamespace(
+            get_voice=lambda voice_id: (
+                requested_voice_ids.append(voice_id) or voice
+            ),
+            ensure_voice_audio=lambda selected: (
+                reference if selected is voice else None
+            ),
+        )
+        window.settings["omnivoice"] = {
+            "reference_audio_path": "",
+            "reference_text": "",
+        }
+        window.qwen_reference_picker.set_path(None)
+        window.qwen_reference_text_edit.clear()
+
+        base_index = window.qwen_model_combo.findData("base_1_7b")
+        window.qwen_model_combo.setCurrentIndex(base_index)
+        requested_voice_ids.clear()
+        self.assertTrue(
+            window._ensure_default_qwen_reference(allow_sync=True)
+        )
+
+        self.assertEqual(
+            requested_voice_ids,
+            ["omnivoice_en_harold_storyteller"],
+        )
+        self.assertEqual(window.qwen_reference_picker.path(), reference)
+        self.assertEqual(
+            window.qwen_reference_text_edit.toPlainText(),
+            transcript,
+        )
+
+        requested_voice_ids.clear()
+        custom_index = window.qwen_model_combo.findData("custom_voice_0_6b")
+        window.qwen_model_combo.setCurrentIndex(custom_index)
+        self.assertFalse(window._ensure_default_qwen_reference(allow_sync=False))
+        self.assertEqual(requested_voice_ids, [])
+
+        window.qwen_reference_picker.set_path(None)
+        window.qwen_reference_text_edit.clear()
+        window.settings["omnivoice"] = {
+            "reference_audio_path": str(reference),
+            "reference_text": transcript,
+        }
+        window.voice_gallery_manager = SimpleNamespace(
+            get_voice=lambda _voice_id: self.fail(
+                "The installed OmniVoice reference should be reused directly."
+            )
+        )
+        window.qwen_model_combo.setCurrentIndex(base_index)
+        self.assertEqual(window.qwen_reference_picker.path(), reference)
+        self.assertEqual(
+            window.qwen_reference_text_edit.toPlainText(),
+            transcript,
+        )
+
+    def test_qwen_voices_refresh_checks_engine_readiness_only_once(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        custom_index = window.qwen_model_combo.findData("custom_voice_0_6b")
+        window.qwen_model_combo.setCurrentIndex(custom_index)
+        qwen_index = window.tts_engine_combo.findData("qwen")
+        window.tts_engine_combo.blockSignals(True)
+        window.tts_engine_combo.setCurrentIndex(qwen_index)
+        window.tts_engine_combo.blockSignals(False)
+
+        with patch.object(
+            window.qwen_manager,
+            "is_installed",
+            return_value=True,
+        ) as is_installed:
+            window._refresh_voices_page()
+
+        self.assertEqual(window.voices_table.rowCount(), 90)
+        self.assertEqual(is_installed.call_count, 1)
+
+    def test_qwen_base_voices_page_exposes_cloning_actions(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        base_index = window.qwen_model_combo.findData("base_1_7b")
+        window.qwen_model_combo.setCurrentIndex(base_index)
+        qwen_index = window.tts_engine_combo.findData("qwen")
+        window.tts_engine_combo.blockSignals(True)
+        window.tts_engine_combo.setCurrentIndex(qwen_index)
+        window.tts_engine_combo.blockSignals(False)
+
+        with patch.object(window.qwen_manager, "is_installed", return_value=True):
+            window._refresh_voices_page()
+
+        self.assertEqual(window.voices_manage_button.text(), "Clone Voice")
+        self.assertTrue(window.voices_manage_button.isEnabled())
+        self.assertFalse(window.voices_external_libraries_button.isHidden())
+        self.assertNotIn(
+            "Model speaker",
+            {
+                str(row.get("type", ""))
+                for row in window.voice_page_rows
+            },
+        )
+        with patch.object(window, "_import_gallery_reference_voice") as clone:
+            window._voices_primary_manage_action()
+        clone.assert_called_once_with("qwen")
+
+    def test_bulk_create_only_makes_independent_editable_projects(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "First Book.txt"
+        source.write_text("Chapter one.\n\nChapter two.", encoding="utf-8")
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.audiobook_store = AudiobookStore(root / "projects.sqlite3")
+        window.bulk_audiobook_store = BulkAudiobookStore(root / "bulk.sqlite3")
+
+        with (
+            patch.object(window, "_save_settings"),
+            patch.object(
+                window,
+                "_current_voice_config",
+                return_value={"engine": "piper", "voice": "test", "speed": 1.0},
+            ),
+        ):
+            window._create_bulk_audiobook_task(
+                {
+                    "title": "Test collection",
+                    "output_parent": str(root / "collection"),
+                    "create_only": True,
+                    "sources": [
+                        {
+                            "source_path": str(source),
+                            "title": "First Book",
+                            "music_path": "",
+                        }
+                    ],
+                }
+            )
+
+        batches = window.bulk_audiobook_store.list_batches()
+        self.assertEqual(len(batches), 1)
+        items = window.bulk_audiobook_store.list_items(batches[0].id)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].status, "complete")
+        project = window.audiobook_store.get_audiobook(items[0].audiobook_id)
+        self.assertIsNotNone(project)
+        self.assertEqual(
+            project.source_text.replace("\r\n", "\n"),  # type: ignore[union-attr]
+            "Chapter one.\n\nChapter two.",
+        )
+        self.assertTrue(project.project_dir.is_dir())  # type: ignore[union-attr]
+
+        with (
+            patch.object(window, "_save_settings"),
+            patch.object(
+                window,
+                "_current_voice_config",
+                return_value={"engine": "piper", "voice": "test", "speed": 1.0},
+            ),
+            patch.object(window.faster_whisper_manager, "is_installed", return_value=True),
+            patch.object(window, "_start_bulk_audiobook_task") as start_bulk,
+        ):
+            window._create_bulk_audiobook_task(
+                {
+                    "title": "Reviewed collection",
+                    "output_parent": str(root / "collection"),
+                    "create_only": False,
+                    "creation_flow": "auto_review",
+                    "creation_flow_label": (
+                        "Generation → Review → Retry failed segments (Auto)"
+                    ),
+                    "flow_max_retries": 3,
+                    "sources": [
+                        {
+                            "source_path": str(source),
+                            "title": "First Book reviewed",
+                            "music_path": "",
+                        }
+                    ],
+                }
+            )
+
+        reviewed_batch = window.bulk_audiobook_store.list_batches()[0]
+        reviewed_config = reviewed_batch.config()
+        self.assertEqual(reviewed_config["review_policy"], "on")
+        self.assertEqual(reviewed_config["creation_flow"], "auto_review")
+        self.assertEqual(
+            reviewed_config["generation_settings"]["review"]["max_retries"],
+            3,
+        )
+        start_bulk.assert_called_once_with(reviewed_batch.id)
+
+    def test_bulk_project_folder_names_are_windows_safe_and_unicode_normalized(self) -> None:
+        self.assertEqual(
+            MainWindow._safe_project_folder_name("La ma\u0301scara: roja?.txt"),
+            "La máscara- roja-.txt",
+        )
+        self.assertEqual(
+            MainWindow._safe_project_folder_name("CON"),
+            "Audiobook - CON",
+        )
+        self.assertEqual(
+            MainWindow._safe_project_folder_name("  ...  "),
+            "Audiobook",
+        )
+
+    def test_bulk_worker_never_updates_qt_widgets_from_its_thread(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.audiobook_store = AudiobookStore(root / "projects.sqlite3")
+        window.bulk_audiobook_store = BulkAudiobookStore(root / "bulk.sqlite3")
+        project = window.audiobook_store.create_audiobook(
+            "Thread-safe text",
+            {"engine": "piper", "voice": "test"},
+            root / "Book" / "exports",
+            "safe_chunks",
+            "single",
+            "Book",
+            {},
+            root / "Book",
+        )
+        batch = window.bulk_audiobook_store.create_batch(
+            "Thread safety",
+            {"voice_config": {"engine": "piper", "voice": "test"}},
+            [
+                {
+                    "source_path": str(root / "Book.txt"),
+                    "title": "Book",
+                    "audiobook_id": project.id,
+                }
+            ],
+        )
+        window.engine_host_client = SimpleNamespace(
+            health=lambda timeout=0.75: False,
+            submit_job=lambda _request: {"job_id": "thread-safe-job"},
+            get_job=lambda _job_id: {
+                "status": "complete",
+                "result": {"audiobook_id": project.id, "clean_mp3": "book.mp3"},
+                "progress": {"current": 1, "total": 1, "message": "Done"},
+                "logs": [],
+            },
+            cancel_job=lambda _job_id: {"status": "cancelled"},
+        )
+        qt_messages: list[str] = []
+
+        def capture_qt_message(_mode, _context, message: str) -> None:
+            qt_messages.append(message)
+
+        previous_handler = qInstallMessageHandler(capture_qt_message)
+        try:
+            window._start_bulk_audiobook_task(batch.id)
+            deadline = time.monotonic() + 5.0
+            while window.bulk_audiobook_thread is not None and time.monotonic() < deadline:
+                self.application.processEvents()
+                QTest.qWait(10)
+            self.application.processEvents()
+        finally:
+            qInstallMessageHandler(previous_handler)
+
+        self.assertIsNone(window.bulk_audiobook_thread)
+        self.assertEqual(
+            window.bulk_audiobook_store.list_items(batch.id)[0].status,
+            "complete",
+        )
+        cross_thread_messages = [
+            message
+            for message in qt_messages
+            if "different thread" in message.casefold()
+        ]
+        self.assertEqual(cross_thread_messages, [], qt_messages)
+
     def test_generation_and_settings_views_are_separate(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -210,7 +533,7 @@ class MainWindowUITests(unittest.TestCase):
             window = MainWindow()
         self.addCleanup(window.deleteLater)
 
-        self.assertEqual(window.page_stack.count(), 6)
+        self.assertEqual(window.page_stack.count(), 7)
         window._select_tts_engine("piper")
         self.assertEqual(window.page_stack.currentIndex(), 0)
         self.assertEqual(window.ui_language_combo.count(), 11)
@@ -436,6 +759,13 @@ class MainWindowUITests(unittest.TestCase):
         self.assertGreaterEqual(window.tts_engine_combo.count(), 9)
         self.assertEqual(window.tts_engine_combo.currentData(), "piper")
         self.assertTrue(hasattr(window, "tts_engine_table"))
+        self.assertTrue(hasattr(window, "bulk_audiobooks_page"))
+        self.assertIn("bulk", window.nav_buttons)
+        self.assertEqual(
+            window.bulk_audiobooks_page.creation_flow_combo.currentData(),
+            "settings",
+        )
+        self.assertEqual(window.bulk_audiobooks_page.creation_flow_combo.count(), 4)
         self.assertGreaterEqual(window.tts_engine_table.rowCount(), 9)
         self.assertEqual(window.tts_engine_table.columnCount(), 8)
         self.assertIn("Piper", window.tts_engine_table.item(0, 1).text())

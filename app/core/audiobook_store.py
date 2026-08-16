@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shutil
 import sqlite3
+import stat
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -17,9 +21,11 @@ from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
 from .text_processor import TextChunk
 
 
-CURRENT_DB_SCHEMA_VERSION = 4
+CURRENT_DB_SCHEMA_VERSION = 5
 PROJECT_MANIFEST_NAME = "project.localtext2voice.json"
 LEGACY_PROJECT_MANIFEST_NAME = "project.json"
+_PROJECT_MANIFEST_WRITE_LOCK = threading.RLock()
+_LOCKED_LEGACY_MANIFESTS: set[Path] = set()
 
 
 @dataclass(frozen=True)
@@ -34,8 +40,20 @@ class StoredAudiobook:
     export_mode: str = ""
     engine_config_json: str = "{}"
     project_settings_json: str = "{}"
-    clean_mp3_path: str = ""
-    mix_mp3_path: str = ""
+    clean_audio_path: str = ""
+    mix_audio_path: str = ""
+
+    @property
+    def clean_mp3_path(self) -> str:
+        """Deprecated compatibility alias; the file may not be MP3."""
+
+        return self.clean_audio_path
+
+    @property
+    def mix_mp3_path(self) -> str:
+        """Deprecated compatibility alias; the file may not be MP3."""
+
+        return self.mix_audio_path
 
 
 @dataclass(frozen=True)
@@ -178,7 +196,7 @@ class AudiobookStore:
                 """
                 SELECT id, uuid, title, source_text, project_dir, output_dir,
                        split_mode, export_mode, engine_config_json,
-                       project_settings_json, clean_mp3_path, mix_mp3_path
+                       project_settings_json, clean_audio_path, mix_audio_path
                 FROM audiobooks
                 WHERE id = ?
                 """,
@@ -192,7 +210,7 @@ class AudiobookStore:
                 """
                 SELECT id, uuid, title, source_text, project_dir, output_dir,
                        split_mode, export_mode, engine_config_json,
-                       project_settings_json, clean_mp3_path, mix_mp3_path
+                       project_settings_json, clean_audio_path, mix_audio_path
                 FROM audiobooks
                 WHERE uuid = ?
                 """,
@@ -206,7 +224,7 @@ class AudiobookStore:
                 """
                 SELECT id, uuid, title, source_text, project_dir, output_dir,
                        split_mode, export_mode, engine_config_json,
-                       project_settings_json, clean_mp3_path, mix_mp3_path
+                       project_settings_json, clean_audio_path, mix_audio_path
                 FROM audiobooks
                 ORDER BY updated_at DESC, id DESC
                 """
@@ -254,6 +272,56 @@ class AudiobookStore:
             raise ValueError(f"Audiobook project not found: {audiobook_id}")
         self._write_project_manifest(audiobook)
         return audiobook
+
+    def rename_audiobook(self, audiobook_id: int, title: str) -> StoredAudiobook:
+        title = str(title).strip()
+        if not title:
+            raise ValueError("Project name cannot be empty.")
+        audiobook = self.get_audiobook(audiobook_id)
+        if audiobook is None:
+            raise ValueError(f"Audiobook project not found: {audiobook_id}")
+        settings = self._json_to_dict(audiobook.project_settings_json)
+        book = settings.get("book_metadata", {})
+        if isinstance(book, dict) and bool(book.get("title_follows_project", True)):
+            book = dict(book)
+            book["title"] = title
+            settings["book_metadata"] = book
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE audiobooks SET title = ?, project_settings_json = ?, updated_at = ? WHERE id = ?",
+                (title, json.dumps(settings, ensure_ascii=False), self._now(), audiobook_id),
+            )
+        result = self.get_audiobook(audiobook_id)
+        assert result is not None
+        self._write_project_manifest(result)
+        return result
+
+    def update_project_settings(
+        self, audiobook_id: int, project_settings: dict[str, Any]
+    ) -> StoredAudiobook:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE audiobooks SET project_settings_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(project_settings, ensure_ascii=False), self._now(), audiobook_id),
+            )
+        result = self.get_audiobook(audiobook_id)
+        if result is None:
+            raise ValueError(f"Audiobook project not found: {audiobook_id}")
+        self._write_project_manifest(result)
+        return result
+
+    def next_project_title(self) -> str:
+        used: set[int] = set()
+        for audiobook in self.list_audiobooks():
+            match = re.fullmatch(
+                r"Project\s*(\d+)", audiobook.title.strip(), re.IGNORECASE
+            )
+            if match:
+                used.add(int(match.group(1)))
+        index = 1
+        while index in used:
+            index += 1
+        return f"Project{index}"
 
     def update_audiobook_source(
         self,
@@ -476,8 +544,14 @@ class AudiobookStore:
         output_dir = self._path_from_manifest(data.get("output_dir"), project_dir)
         if not str(output_dir) or str(output_dir) == ".":
             output_dir = project_dir / "exports"
-        clean_mp3_path = self._path_from_manifest(data.get("clean_mp3_path"), project_dir)
-        mix_mp3_path = self._path_from_manifest(data.get("mix_mp3_path"), project_dir)
+        clean_audio_path = self._path_from_manifest(
+            data.get("clean_audio_path") or data.get("clean_mp3_path"),
+            project_dir,
+        )
+        mix_audio_path = self._path_from_manifest(
+            data.get("mix_audio_path") or data.get("mix_mp3_path"),
+            project_dir,
+        )
         now = self._now()
 
         existing = self.get_audiobook_by_uuid(audiobook_uuid)
@@ -489,9 +563,10 @@ class AudiobookStore:
                         uuid, title, source_text, source_hash, status,
                         tts_engine, engine_config_json, split_mode, export_mode,
                         output_dir, project_dir, project_settings_json,
+                        clean_audio_path, mix_audio_path,
                         clean_mp3_path, mix_mp3_path, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         audiobook_uuid,
@@ -506,8 +581,10 @@ class AudiobookStore:
                         str(output_dir),
                         str(project_dir),
                         json.dumps(project_settings, ensure_ascii=False),
-                        str(clean_mp3_path) if str(clean_mp3_path) != "." else "",
-                        str(mix_mp3_path) if str(mix_mp3_path) != "." else "",
+                        str(clean_audio_path) if str(clean_audio_path) != "." else "",
+                        str(mix_audio_path) if str(mix_audio_path) != "." else "",
+                        str(clean_audio_path) if str(clean_audio_path) != "." else "",
+                        str(mix_audio_path) if str(mix_audio_path) != "." else "",
                         now,
                         now,
                     ),
@@ -522,6 +599,7 @@ class AudiobookStore:
                         status = ?, tts_engine = ?, engine_config_json = ?,
                         split_mode = ?, export_mode = ?, output_dir = ?,
                         project_dir = ?, project_settings_json = ?,
+                        clean_audio_path = ?, mix_audio_path = ?,
                         clean_mp3_path = ?, mix_mp3_path = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -537,8 +615,10 @@ class AudiobookStore:
                         str(output_dir),
                         str(project_dir),
                         json.dumps(project_settings, ensure_ascii=False),
-                        str(clean_mp3_path) if str(clean_mp3_path) != "." else "",
-                        str(mix_mp3_path) if str(mix_mp3_path) != "." else "",
+                        str(clean_audio_path) if str(clean_audio_path) != "." else "",
+                        str(mix_audio_path) if str(mix_audio_path) != "." else "",
+                        str(clean_audio_path) if str(clean_audio_path) != "." else "",
+                        str(mix_audio_path) if str(mix_audio_path) != "." else "",
                         now,
                         audiobook_id,
                     ),
@@ -742,7 +822,8 @@ class AudiobookStore:
                             now,
                         )
             connection.execute(
-                "UPDATE audiobooks SET status = ?, mix_mp3_path = '', "
+                "UPDATE audiobooks SET status = ?, mix_audio_path = '', "
+                "mix_mp3_path = '', "
                 "updated_at = ? WHERE id = ?",
                 ("rendering", now, audiobook.id),
             )
@@ -1075,7 +1156,8 @@ class AudiobookStore:
             ),
         )
         connection.execute(
-            "UPDATE audiobooks SET mix_mp3_path = '', updated_at = ? WHERE id = ?",
+            "UPDATE audiobooks SET mix_audio_path = '', mix_mp3_path = '', "
+            "updated_at = ? WHERE id = ?",
             (AudiobookStore._now(), int(row["audiobook_id"])),
         )
 
@@ -1112,21 +1194,35 @@ class AudiobookStore:
             )
 
     def complete_audiobook(self, audiobook_id: int, output_paths: list[Path]) -> None:
-        clean_mp3 = ""
-        mix_mp3 = ""
+        clean_audio = ""
+        mix_audio = ""
         for output_path in output_paths:
-            if output_path.stem.lower().endswith("_mix"):
-                mix_mp3 = str(output_path)
-            elif not clean_mp3:
-                clean_mp3 = str(output_path)
+            stem = output_path.stem.casefold()
+            if (
+                stem.endswith("_mix")
+                or stem.endswith("_podcast")
+                or stem.startswith("podcast_remix")
+            ):
+                mix_audio = str(output_path)
+            elif not clean_audio:
+                clean_audio = str(output_path)
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE audiobooks
-                SET status = ?, clean_mp3_path = ?, mix_mp3_path = ?, updated_at = ?
+                SET status = ?, clean_audio_path = ?, mix_audio_path = ?,
+                    clean_mp3_path = ?, mix_mp3_path = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                ("completed", clean_mp3, mix_mp3, self._now(), audiobook_id),
+                (
+                    "completed",
+                    clean_audio,
+                    mix_audio,
+                    clean_audio,
+                    mix_audio,
+                    self._now(),
+                    audiobook_id,
+                ),
             )
             connection.execute(
                 """
@@ -1160,7 +1256,7 @@ class AudiobookStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT clean_mp3_path, mix_mp3_path
+                SELECT clean_audio_path, mix_audio_path
                 FROM audiobooks
                 WHERE id = ?
                 """,
@@ -1168,7 +1264,7 @@ class AudiobookStore:
             ).fetchone()
         if row is None:
             return "", ""
-        return str(row["clean_mp3_path"] or ""), str(row["mix_mp3_path"] or "")
+        return str(row["clean_audio_path"] or ""), str(row["mix_audio_path"] or "")
 
     def list_audiobook_output_paths(self, audiobook_id: int) -> list[Path]:
         with self._connect() as connection:
@@ -1196,7 +1292,7 @@ class AudiobookStore:
                 """
                 SELECT id, uuid, title, source_text, project_dir, output_dir,
                        split_mode, export_mode, engine_config_json,
-                       project_settings_json, clean_mp3_path, mix_mp3_path
+                       project_settings_json, clean_audio_path, mix_audio_path
                 FROM audiobooks
                 ORDER BY id DESC
                 LIMIT 1
@@ -1273,7 +1369,8 @@ class AudiobookStore:
                 )
             if resolutions:
                 connection.execute(
-                    "UPDATE audiobooks SET mix_mp3_path = '', updated_at = ? WHERE id = ?",
+                    "UPDATE audiobooks SET mix_audio_path = '', mix_mp3_path = '', "
+                    "updated_at = ? WHERE id = ?",
                     (now, audiobook_id),
                 )
         audiobook = self.get_audiobook(audiobook_id)
@@ -1450,6 +1547,8 @@ class AudiobookStore:
                     output_dir TEXT NOT NULL,
                     project_dir TEXT NOT NULL,
                     project_settings_json TEXT DEFAULT '{}',
+                    clean_audio_path TEXT DEFAULT '',
+                    mix_audio_path TEXT DEFAULT '',
                     clean_mp3_path TEXT DEFAULT '',
                     mix_mp3_path TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
@@ -1609,12 +1708,40 @@ class AudiobookStore:
         }
         columns: dict[str, str] = {
             "project_settings_json": "TEXT DEFAULT '{}'",
+            "clean_audio_path": "TEXT DEFAULT ''",
+            "mix_audio_path": "TEXT DEFAULT ''",
+            "clean_mp3_path": "TEXT DEFAULT ''",
+            "mix_mp3_path": "TEXT DEFAULT ''",
         }
         for name, definition in columns.items():
             if name not in existing:
                 connection.execute(
                     f"ALTER TABLE audiobooks ADD COLUMN {name} {definition}"
                 )
+        # Make the migration bidirectional so a database opened by an older
+        # build still has useful legacy values, while new code reads the
+        # format-neutral columns.
+        connection.execute(
+            """
+            UPDATE audiobooks
+            SET clean_audio_path = CASE
+                    WHEN clean_audio_path = '' THEN clean_mp3_path
+                    ELSE clean_audio_path
+                END,
+                mix_audio_path = CASE
+                    WHEN mix_audio_path = '' THEN mix_mp3_path
+                    ELSE mix_audio_path
+                END,
+                clean_mp3_path = CASE
+                    WHEN clean_mp3_path = '' THEN clean_audio_path
+                    ELSE clean_mp3_path
+                END,
+                mix_mp3_path = CASE
+                    WHEN mix_mp3_path = '' THEN mix_audio_path
+                    ELSE mix_mp3_path
+                END
+            """
+        )
 
     def _ensure_audio_event_columns(self, connection: sqlite3.Connection) -> None:
         existing = {
@@ -1734,8 +1861,8 @@ class AudiobookStore:
             export_mode=str(row["export_mode"] or ""),
             engine_config_json=str(row["engine_config_json"] or "{}"),
             project_settings_json=str(row["project_settings_json"] or "{}"),
-            clean_mp3_path=str(row["clean_mp3_path"] or ""),
-            mix_mp3_path=str(row["mix_mp3_path"] or ""),
+            clean_audio_path=str(row["clean_audio_path"] or ""),
+            mix_audio_path=str(row["mix_audio_path"] or ""),
         )
 
     @staticmethod
@@ -1893,12 +2020,21 @@ class AudiobookStore:
             "export_mode": audiobook.export_mode,
             "engine_config": self._json_to_dict(audiobook.engine_config_json),
             "project_settings": project_settings,
+            "clean_audio_path": self._path_for_manifest(
+                audiobook.clean_audio_path,
+                project_dir,
+            ),
+            "mix_audio_path": self._path_for_manifest(
+                audiobook.mix_audio_path,
+                project_dir,
+            ),
+            # Deprecated mirrors kept so older versions can open the project.
             "clean_mp3_path": self._path_for_manifest(
-                audiobook.clean_mp3_path,
+                audiobook.clean_audio_path,
                 project_dir,
             ),
             "mix_mp3_path": self._path_for_manifest(
-                audiobook.mix_mp3_path,
+                audiobook.mix_audio_path,
                 project_dir,
             ),
             "segments": segments,
@@ -1906,14 +2042,74 @@ class AudiobookStore:
             "updated_at": self._now(),
         }
         project_dir.mkdir(parents=True, exist_ok=True)
-        source_tmp = project_dir / "source.txt.tmp"
-        source_tmp.write_text(audiobook.source_text, encoding="utf-8")
-        source_tmp.replace(project_dir / "source.txt")
         manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
-        for filename in (PROJECT_MANIFEST_NAME, LEGACY_PROJECT_MANIFEST_NAME):
-            temporary_path = project_dir / f"{filename}.tmp"
-            temporary_path.write_text(manifest_text, encoding="utf-8")
-            temporary_path.replace(project_dir / filename)
+        # Segment generation and Whisper review can write the same project from
+        # different AudiobookStore instances.  A unique temporary file avoids
+        # collisions, while retries tolerate short Windows locks from indexers,
+        # antivirus software, or a reader opening project.json.
+        with _PROJECT_MANIFEST_WRITE_LOCK:
+            source_path = project_dir / "source.txt"
+            try:
+                source_is_current = (
+                    source_path.is_file()
+                    and source_path.read_text(encoding="utf-8")
+                    == audiobook.source_text
+                )
+            except OSError:
+                source_is_current = False
+            if not source_is_current:
+                self._write_text_atomic(source_path, audiobook.source_text)
+            self._write_text_atomic(
+                project_dir / PROJECT_MANIFEST_NAME,
+                manifest_text,
+            )
+            legacy_path = project_dir / LEGACY_PROJECT_MANIFEST_NAME
+            legacy_key = legacy_path.resolve()
+            if legacy_key not in _LOCKED_LEGACY_MANIFESTS:
+                try:
+                    self._write_text_atomic(legacy_path, manifest_text)
+                except OSError as exc:
+                    # project.json is only the legacy compatibility mirror.  The
+                    # canonical project.localtext2voice.json is already safe, so a
+                    # reader holding the old file open must not fail a 97%-complete
+                    # audiobook job. Skip repeated slow retries until next launch.
+                    if not self._retryable_replace_error(exc):
+                        raise
+                    _LOCKED_LEGACY_MANIFESTS.add(legacy_key)
+
+    @staticmethod
+    def _write_text_atomic(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(content, encoding="utf-8")
+        try:
+            for attempt in range(8):
+                try:
+                    os.replace(temporary, path)
+                    return
+                except OSError as exc:
+                    retryable = AudiobookStore._retryable_replace_error(exc)
+                    if not retryable or attempt >= 7:
+                        raise
+                    if path.exists():
+                        try:
+                            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+                        except OSError:
+                            pass
+                    time.sleep(min(0.40, 0.025 * (2**attempt)))
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _retryable_replace_error(exc: OSError) -> bool:
+        return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {
+            5,
+            32,
+            33,
+        }
 
     @staticmethod
     def _json_to_dict(value: Any) -> dict[str, Any]:

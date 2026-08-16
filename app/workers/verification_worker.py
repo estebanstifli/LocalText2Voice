@@ -10,8 +10,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from app.core.audio_formats import audio_format_spec, encoding_arguments
 from app.core.audio_pipeline import AudioGenerationOptions
 from app.core.audiobook_store import AudiobookStore, StoredSegment
+from app.core.book_metadata import (
+    apply_m4b_tags,
+    book_metadata_from_settings,
+    chapter_ranges,
+    prepare_project_cover,
+    write_ffmetadata,
+)
 from app.core.audio_tail_review import (
     analyze_audio_tail,
     candidate_is_better,
@@ -273,7 +281,7 @@ class SegmentVerificationWorker(QObject):
         result = export_audiobook_subtitles(self.store, self.audiobook_id)
         if result.files:
             self.log.emit(
-                f"Created {len(result.files)} subtitle file(s) next to the MP3 output(s)."
+                f"Created {len(result.files)} subtitle file(s) next to the audio output(s)."
             )
         elif result.skipped_reason == "needs_rebuild":
             self.log.emit(
@@ -1101,21 +1109,45 @@ class AudiobookRebuildWorker(QObject):
                 self._check_cancelled()
                 joined_wav = self._join_wavs(timeline, temp_dir / "review_rebuild.wav", runner)
                 self._check_cancelled()
-                output_mp3 = self._next_review_filename(self.output_dir)
-                self._encode_mp3(joined_wav, output_mp3, runner)
-                self.store.complete_audiobook(self.audiobook_id, [output_mp3])
+                output_audio = self._next_review_filename(
+                    self.output_dir,
+                    audio_format_spec(self.options.audio_format).extension,
+                )
+                audiobook = self.store.get_audiobook(self.audiobook_id)
+                book: dict[str, object] = {}
+                chapter_metadata = None
+                cover = None
+                if audio_format_spec(self.options.audio_format).id == "m4b" and audiobook:
+                    try:
+                        settings = json.loads(audiobook.project_settings_json or "{}")
+                    except json.JSONDecodeError:
+                        settings = {}
+                    book = book_metadata_from_settings(settings, audiobook.title)
+                    book, cover = prepare_project_cover(
+                        audiobook.project_dir,
+                        str(book.get("title") or audiobook.title),
+                        book,
+                    )
+                    if book.get("chapter_mode") != "none":
+                        chapter_metadata = write_ffmetadata(
+                            temp_dir / "chapters.ffmetadata", chapter_ranges(segments)
+                        )
+                self._encode_audio(joined_wav, output_audio, runner, chapter_metadata)
+                if audio_format_spec(self.options.audio_format).id == "m4b":
+                    apply_m4b_tags(output_audio, book, cover)
+                self.store.complete_audiobook(self.audiobook_id, [output_audio])
                 subtitle_result = export_audiobook_subtitles(
                     self.store,
                     self.audiobook_id,
-                    [output_mp3],
+                    [output_audio],
                 )
             self.progress.emit(1, 1, "Audiobook rebuilt.")
-            self.log.emit(f"Rebuilt audiobook: {output_mp3}")
+            self.log.emit(f"Rebuilt audiobook: {output_audio}")
             if subtitle_result.files:
                 self.log.emit(
                     f"Created {len(subtitle_result.files)} subtitle file(s)."
                 )
-            self.finished.emit(str(output_mp3))
+            self.finished.emit(str(output_audio))
         except (FFmpegCancelled, TTSCancelled):
             self.cancelled.emit()
         except (FFmpegError, OSError, wave.Error) as exc:
@@ -1243,7 +1275,13 @@ class AudiobookRebuildWorker(QObject):
         )
         return output_wav
 
-    def _encode_mp3(self, input_wav: Path, output_mp3: Path, runner: FFmpegRunner) -> None:
+    def _encode_audio(
+        self,
+        input_wav: Path,
+        output_audio: Path,
+        runner: FFmpegRunner,
+        chapter_metadata: Path | None = None,
+    ) -> None:
         arguments = [
             "-y",
             "-hide_banner",
@@ -1252,24 +1290,31 @@ class AudiobookRebuildWorker(QObject):
             "-i",
             str(input_wav),
         ]
+        if chapter_metadata is not None:
+            arguments.extend(
+                ["-i", str(chapter_metadata), "-map", "0:a:0", "-map_metadata", "1", "-map_chapters", "1"]
+            )
         if self.options.normalize_audio:
             arguments.extend(["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"])
         arguments.extend(
-            [
-                "-codec:a",
-                "libmp3lame",
-                "-b:a",
-                self.options.mp3_bitrate,
-                str(output_mp3),
-            ]
+            encoding_arguments(
+                self.options.audio_format,
+                self.options.audio_quality,
+            )
         )
+        arguments.append(str(output_audio))
         runner.run(arguments)
 
+    _encode_mp3 = _encode_audio
+
     @staticmethod
-    def _next_review_filename(output_dir: Path) -> Path:
+    def _next_review_filename(
+        output_dir: Path,
+        extension: str = ".mp3",
+    ) -> Path:
         index = 1
         while True:
-            candidate = output_dir / f"podcast_review{index}.mp3"
+            candidate = output_dir / f"podcast_review{index}{extension}"
             if not candidate.exists():
                 return candidate
             index += 1

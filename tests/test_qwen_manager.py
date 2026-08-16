@@ -54,6 +54,14 @@ class QwenManagerTests(unittest.TestCase):
         )
         self.assertIn("Serena", {voice.voice_id for voice in manager.list_voices()})
 
+    def test_model_cache_requires_complete_nested_speech_tokenizer(self) -> None:
+        required = QwenManager.MODEL_REQUIRED_FILES
+
+        self.assertIn("preprocessor_config.json", required)
+        self.assertIn("speech_tokenizer/configuration.json", required)
+        self.assertIn("speech_tokenizer/preprocessor_config.json", required)
+        self.assertIn("speech_tokenizer/model.safetensors", required)
+
     def test_default_settings_include_qwen(self) -> None:
         settings = DEFAULT_SETTINGS["qwen"]
         self.assertEqual(settings["model"], "custom_voice_0_6b")
@@ -671,6 +679,15 @@ class QwenManagerTests(unittest.TestCase):
         self.assertEqual(QwenManager._clean_runtime_stderr(stderr), "")
 
     def test_worker_writes_pcm_wav_for_pipeline_compatibility(self) -> None:
+        self.assertIn("from huggingface_hub import snapshot_download", QWEN_PYTHON_CLI)
+        self.assertIn("local_files_only=not allow_download", QWEN_PYTHON_CLI)
+        self.assertIn("HF_HUB_OFFLINE", QWEN_PYTHON_CLI)
+        self.assertIn("TRANSFORMERS_OFFLINE", QWEN_PYTHON_CLI)
+        self.assertIn(
+            "configure_model_network_access(allow_download=bool(args.warmup))",
+            QWEN_PYTHON_CLI,
+        )
+        self.assertIn("load_model(model_source", QWEN_PYTHON_CLI)
         self.assertIn("FasterQwen3TTS", QWEN_PYTHON_CLI)
         self.assertIn("generate_custom_voice", QWEN_PYTHON_CLI)
         self.assertIn("generate_voice_clone", QWEN_PYTHON_CLI)

@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Free, open-source AI voice and audio production for long-form text.</strong><br>
-  Turn books, lessons, articles, notes, and courses into MP3 audiobooks and podcast-style audio on Windows and Linux.
+  Turn books, lessons, articles, notes, and courses into audiobooks and podcast-style audio on Windows and Linux.
 </p>
 
 <p align="center">
@@ -62,21 +62,25 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.4.4
+## What's New In 1.5.0
 
-- Clone compatible voices from an uploaded recording, a selected microphone,
-  or Windows system-audio loopback directly from the Voice Library.
-- Preview samples, watch live recording levels, and validate the recommended
-  3-20 second reference-audio range before saving a voice.
-- Optionally transcribe a new reference sample locally with Faster Whisper or
-  enter and correct the exact transcript manually.
-- Import WAV, MP3, FLAC, M4A, OGG, OPUS, AAC, and WEBM reference recordings;
-  LocalText2Voice normalizes them to engine-compatible WAV audio.
-- Use the complete cloning workflow in all eleven supported interface languages.
+- Export one clean audiobook as M4B, MP3, M4A, Opus, FLAC, or OGG with
+  format-specific quality presets.
+- Create polished M4B audiobooks with embedded metadata, cover art, and named
+  chapters from LTV markup or detected headings.
+- Rename projects inline and update book properties or covers without running
+  the TTS engine again.
+- Build a queue in **Bulk Audiobooks**: import multiple TXT books, create
+  independent editable projects, and generate them sequentially with pause,
+  resume, cancellation, retry, and recovery.
+- Assign individual covers and music to bulk books, preserve optional Whisper
+  review metrics, or create the projects first and generate them later.
+- Use both Qwen models as distinct engines, with more reliable fully local
+  snapshot loading and a ready-to-use cloning reference for Base 1.7B.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 
-> **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts MP3 usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
+> **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts M4B, MP3, M4A, Opus, FLAC u OGG usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
 
 ## Why It Matters
 
@@ -121,12 +125,12 @@ flowchart TD
     B --> C["3. Smart text processing<br>Paragraphs, chapters, safe chunks"]
     C --> D["4. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
     D --> E["5. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, F5, or API"]
-    E --> F["6. Clean WAV/MP3 narration<br>Non-destructive audio output"]
+    E --> F["6. Clean narration<br>M4B, MP3, M4A, Opus, FLAC, or OGG"]
     F --> G["7. Optional Whisper review<br>Transcript, similarity, tail analysis, retries"]
     G --> H["8. Manual or automatic fixes<br>Edit, regenerate, trim, approve, rebuild"]
     H --> I["9. Timed subtitles<br>SRT and karaoke-style ASS"]
     I --> J["10. Audio Mix<br>Music, volume, fades, ducking, normalization"]
-    J --> K["11. Export<br>Clean MP3, podcast mix, subtitles, project data"]
+    J --> K["11. Export<br>One audio file, optional mix, subtitles, project data"]
 ```
 
 ## Main Features
@@ -257,12 +261,12 @@ This makes LocalText2Voice useful not only for quick TTS, but also for quality-c
 
 ### Subtitles
 
-When Faster Whisper word timestamps are available, LocalText2Voice creates subtitle sidecars next to each finished MP3:
+When Faster Whisper word timestamps are available, LocalText2Voice creates subtitle sidecars next to each finished audio file:
 
 - Standard `.srt` subtitles grouped into readable cues.
 - Karaoke-style `.ass` subtitles with word-level timing.
 - Correct offsets for podcast mixes whose narration starts after a music intro.
-- Chapter-aware subtitle files when exporting one MP3 per chapter.
+- Sidecars that follow the selected M4B, MP3, M4A, Opus, FLAC, or OGG output.
 
 Subtitle export is refreshed after verification, segment regeneration, tail correction, and audiobook rebuilds.
 
@@ -270,7 +274,7 @@ Subtitle export is refreshed after verification, segment regeneration, tail corr
 
 After generating clean narration, the Audio Mix page lets you produce a podcast-style version:
 
-- Keep the clean narration MP3 untouched.
+- Keep the clean narration file untouched.
 - Choose default background music from the Music Library.
 - Preview voice, music, and mix waveforms.
 - Play the mixed preview from the cursor or from the start.
@@ -295,6 +299,9 @@ After generating clean narration, the Audio Mix page lets you produce a podcast-
 LocalText2Voice stores project data in SQLite and a portable project manifest:
 
 - Audiobook/project metadata.
+- Inline, persistent project names (`Project1`, `Project2`, ... by default) without renaming the physical project folder.
+- M4B book metadata, cover art, and named chapter markers; metadata/cover changes can be applied without rerunning TTS.
+- Automatic generated covers or normalized custom cover images, including per-book cover selection in Bulk Audiobooks.
 - Source text.
 - Segment list.
 - Segment WAV paths.
@@ -399,7 +406,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 - Custom markup language for voice, language, pauses, speed, volume, and model instructions.
 - Faster Whisper verification pipeline with similarity scoring and retry logic.
 - SQLite persistence for projects, segments, transcripts, review status, and word timestamps.
-- FFmpeg audio DSP pipeline for joining, MP3 encoding, speed/volume postprocessing, loudnorm, fades, ducking, and podcast mixing.
+- FFmpeg audio DSP pipeline for joining, multi-format encoding, speed/volume postprocessing, loudnorm, fades, ducking, and podcast mixing.
 - Optional local MCP/HTTP server for automation from local AI clients and agent tools.
 - PySide6 desktop UI with background workers, progress, cancellation, logs, translation files, and portable packaging.
 
@@ -419,9 +426,9 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 | Faster Whisper | Optional transcription and generation review |
 | FastAPI + MCP SDK | Optional local automation server |
 | Uvicorn | Local ASGI server for HTTP/MCP |
-| FFmpeg | Audio conversion, MP3 export, mixing, filters |
+| FFmpeg | M4B/MP3/M4A/Opus/FLAC/OGG export, chapters, conversion, mixing, filters |
 | SQLite | Project, segment, transcript, and review data |
-| Mutagen | Fast music metadata/duration reading |
+| Mutagen | Audio metadata reading plus M4B tags and embedded cover writing |
 | PyInstaller | Windows portable build |
 | python-docx | DOCX import |
 
@@ -563,7 +570,7 @@ Useful endpoints:
 
 The MCP tools include generation, job status, and paginated project-source
 reading, searching, insertion, deletion, replacement, and full-document writes.
-Generated jobs return paths and local URLs for the clean narration MP3 and the podcast mix MP3 when available.
+Generated jobs return paths, MIME information, and local URLs for the clean narration and optional mix. Legacy `clean_mp3` and `mix_mp3` aliases remain available for existing clients.
 Use the generated access token as a Bearer token for clients that support headers.
 
 ## Run From Source

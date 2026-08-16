@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.audio_library import resolve_audio_reference
+from app.core.audio_formats import audio_format_spec
 from app.core.audio_mix import (
     AudioMixSettings,
     render_audio_mix,
@@ -2128,6 +2129,8 @@ class AudioMixPreviewPanel(QWidget):
             ),
             loop_background=current.loop_background,
             normalize=current.normalize,
+            audio_format=current.audio_format,
+            audio_quality=current.audio_quality,
             mp3_bitrate=current.mp3_bitrate,
             markup_music_volume_db=self.track_volume_spins["music"].value(),
             ambient_volume_db=self.track_volume_spins["ambient"].value(),
@@ -3099,6 +3102,8 @@ class AudioMixPreviewPanel(QWidget):
             settings.ducking_strength,
             settings.loop_background,
             settings.normalize,
+            settings.audio_format,
+            settings.audio_quality,
             settings.mp3_bitrate,
             round(settings.markup_music_volume_db, 3),
             round(settings.ambient_volume_db, 3),
@@ -3222,7 +3227,10 @@ class AudioMixPreviewPanel(QWidget):
     def _render_full_mix(self) -> None:
         if self.context is None or self.voice_envelope is None:
             return
-        output_path = self._next_mix_filename(self.context.output_dir)
+        output_path = self._next_mix_filename(
+            self.context.output_dir,
+            audio_format_spec(self.context.settings.audio_format).extension,
+        )
         self._show_full_mix_dialog(output_path)
         self._start_render_worker(
             FinalMixRenderWorker(
@@ -3461,10 +3469,13 @@ class AudioMixPreviewPanel(QWidget):
             button.setEnabled(enabled)
 
     @staticmethod
-    def _next_mix_filename(output_dir: Path) -> Path:
+    def _next_mix_filename(
+        output_dir: Path,
+        extension: str = ".mp3",
+    ) -> Path:
         index = 1
         while True:
-            candidate = output_dir / f"podcast_remix{index}.mp3"
+            candidate = output_dir / f"podcast_remix{index}{extension}"
             if not candidate.exists():
                 return candidate
             index += 1

@@ -313,6 +313,130 @@ def test_generation_options_use_explicit_normalization_language_hint(tmp_path):
     assert options.text_normalization_language_hint == "Spanish"
 
 
+def test_bulk_request_overrides_use_a_frozen_generation_and_voice_profile(tmp_path):
+    settings = _settings(tmp_path)
+    settings.settings["music_volume_db"] = -7.0
+    settings.settings["paragraph_pause_min_ms"] = 450
+    service = LocalText2VoiceService(settings)
+
+    voice = service._voice_config(
+        "qwen",
+        {
+            "speed": 1.15,
+            "voice_config": {
+                "engine": "qwen",
+                "model": "base_1_7b",
+                "language": "Spanish",
+                "device": "cpu",
+            },
+        },
+    )
+    options = service._generation_options(
+        {
+            "title": "Frozen",
+            "output_dir": str(tmp_path / "output"),
+            "mix_policy": "clean_only",
+            "generation_settings": {
+                "music_volume_db": -12.0,
+                "paragraph_pause_min_ms": 900,
+            },
+        },
+        voice,
+    )
+
+    assert voice["model"] == "base_1_7b"
+    assert voice["speed"] == 1.15
+    assert options.music_volume_db == -12.0
+    assert options.paragraph_pause_min_ms == 900
+    assert options.project_settings["music_volume_db"] == -12.0
+
+
+def test_bulk_review_flow_uses_the_frozen_review_settings(tmp_path):
+    settings = _settings(tmp_path)
+    settings.settings["review"]["enabled"] = False
+    settings.settings["review"]["auto_verify_after_generation"] = False
+    settings.settings["review"]["max_retries"] = 0
+    service = LocalText2VoiceService(settings)
+    service.faster_whisper_manager.is_installed = MagicMock(return_value=True)
+    request = {
+        "review_policy": "default",
+        "generation_settings": {
+            "review": {
+                "enabled": True,
+                "auto_verify_after_generation": True,
+                "max_retries": 3,
+                "approve_threshold": 94.0,
+            }
+        },
+    }
+
+    effective = service._effective_settings(request)
+
+    assert service._review_enabled(request, effective) is True
+    assert effective["review"]["max_retries"] == 3
+    assert effective["review"]["approve_threshold"] == 94.0
+    assert service.settings["review"]["enabled"] is False
+
+
+def test_generation_runs_review_from_frozen_bulk_flow_when_live_settings_are_off(
+    tmp_path,
+):
+    settings = SettingsManager(tmp_path / "config.json")
+    settings.settings["output_dir"] = str(tmp_path / "output")
+    settings.settings["review"]["enabled"] = False
+    settings.settings["review"]["auto_verify_after_generation"] = False
+    settings.save()
+    service = LocalText2VoiceService(settings)
+    service.faster_whisper_manager.is_installed = MagicMock(return_value=True)
+    clean = tmp_path / "output" / "podcast1.mp3"
+    pipeline = MagicMock()
+    pipeline.generate.return_value = [clean]
+    pipeline._active_audiobook = SimpleNamespace(
+        id=9,
+        uuid="bulk-review",
+        title="Bulk review",
+        project_dir=tmp_path / "project",
+    )
+
+    with (
+        patch("app.server.ltv_service.AudioPipeline", return_value=pipeline),
+        patch.object(service, "_get_tts_engine", return_value=MagicMock()),
+        patch.object(
+            service,
+            "_run_automatic_review",
+            return_value=(
+                {
+                    "enabled": True,
+                    "segments": 4,
+                    "reviewed": 4,
+                    "approved": 3,
+                    "needs_attention": 1,
+                },
+                None,
+            ),
+        ) as review,
+    ):
+        result = service.generate_audio(
+            {
+                "text": "Review this audiobook.",
+                "review_policy": "default",
+                "mix_policy": "clean_only",
+                "generation_settings": {
+                    "review": {
+                        "enabled": True,
+                        "auto_verify_after_generation": True,
+                        "max_retries": 2,
+                    }
+                },
+            }
+        )
+
+    review.assert_called_once()
+    effective_settings = review.call_args.args[-1]
+    assert effective_settings["review"]["max_retries"] == 2
+    assert result["review"]["reviewed"] == 4
+
+
 def test_generation_options_enable_shared_russian_silero_when_configured(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["text_normalization"] = {

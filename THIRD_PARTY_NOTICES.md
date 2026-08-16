@@ -228,6 +228,18 @@ Review the installed versions before distributing a modified build.
 
 ## Music and User Content
 
-LocalText2Voice does not bundle intro, background, or outro music. Users are
-responsible for having the rights required to process and publish their text,
-music, generated speech, and final audio.
+LocalText2Voice includes a small starter library of background music and sound
+effects and also lets users import their own media. One bundled track added in
+version 1.5.0 has the following documented provenance:
+
+- Track: `Universo` by Da-Roz
+- Bundled file: `music/background/da-roz-universo-141508.mp3`
+- Source: https://pixabay.com/music/ambient-universo-141508/
+- License: Pixabay Content License,
+  https://pixabay.com/service/license-summary/
+
+The track is distributed as an application background-music asset, not as a
+standalone media product. Review the current source and license terms before
+redistribution. Users remain responsible for having the rights required to
+process and publish their text, imported music, generated speech, and final
+audio.

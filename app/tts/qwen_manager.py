@@ -254,6 +254,31 @@ def configure_torch_runtime(torch, selected_device: str) -> None:
         emit_info(f"Could not enable CUDA optimizations: {exc}")
 
 
+def resolve_model_source(model_repo: str, cache_dir: str, allow_download: bool) -> str:
+    """Materialize the complete Hub snapshot, including nested tokenizer assets."""
+    from huggingface_hub import snapshot_download
+
+    download_started = time.perf_counter()
+    snapshot_path = snapshot_download(
+        repo_id=model_repo,
+        cache_dir=str(Path(cache_dir) / "hub"),
+        local_files_only=not allow_download,
+    )
+    emit_timing("model snapshot", download_started)
+    return str(Path(snapshot_path).resolve())
+
+
+def configure_model_network_access(allow_download: bool) -> None:
+    """Keep synthesis workers strictly local once a model is installed."""
+    offline_variables = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    if allow_download:
+        for variable in offline_variables:
+            os.environ.pop(variable, None)
+        return
+    for variable in offline_variables:
+        os.environ[variable] = "1"
+
+
 def load_model(model_repo: str, selected_device: str, dtype_name: str):
     import torch
 
@@ -347,6 +372,7 @@ def main() -> int:
     args = parser.parse_args()
 
     configure_environment(args.cache_dir, args.deps_dir)
+    configure_model_network_access(allow_download=bool(args.warmup))
 
     try:
         import_started = time.perf_counter()
@@ -386,13 +412,18 @@ def main() -> int:
     emit_info(f"Qwen device selected: {selected_device}")
 
     try:
+        model_source = resolve_model_source(
+            args.model_repo,
+            args.cache_dir,
+            allow_download=bool(args.warmup),
+        )
         try:
-            model, resolved_dtype, backend_used = load_model(args.model_repo, selected_device, args.dtype)
+            model, resolved_dtype, backend_used = load_model(model_source, selected_device, args.dtype)
         except Exception as exc:
             if args.device == "auto" and selected_device != "cpu":
                 emit_info(f"CUDA model load failed; retrying CPU: {exc}")
                 selected_device = "cpu"
-                model, resolved_dtype, backend_used = load_model(args.model_repo, selected_device, "float32")
+                model, resolved_dtype, backend_used = load_model(model_source, selected_device, "float32")
             else:
                 raise
     except Exception as exc:
@@ -554,8 +585,11 @@ class QwenManager:
     MODEL_REQUIRED_FILES = {
         "config.json": 1_000,
         "model.safetensors": 100 * 1024 * 1024,
+        "preprocessor_config.json": 100,
         "speech_tokenizer/config.json": 1_000,
+        "speech_tokenizer/configuration.json": 50,
         "speech_tokenizer/model.safetensors": 100 * 1024 * 1024,
+        "speech_tokenizer/preprocessor_config.json": 100,
     }
 
     MODELS: tuple[QwenModel, ...] = (
