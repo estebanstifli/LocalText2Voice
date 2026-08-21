@@ -62,21 +62,18 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 1.5.0
+## What's New In 1.5.1
 
-- Export one clean audiobook as M4B, MP3, M4A, Opus, FLAC, or OGG with
-  format-specific quality presets.
-- Create polished M4B audiobooks with embedded metadata, cover art, and named
-  chapters from LTV markup or detected headings.
-- Rename projects inline and update book properties or covers without running
-  the TTS engine again.
-- Build a queue in **Bulk Audiobooks**: import multiple TXT books, create
-  independent editable projects, and generate them sequentially with pause,
-  resume, cancellation, retry, and recovery.
-- Assign individual covers and music to bulk books, preserve optional Whisper
-  review metrics, or create the projects first and generate them later.
-- Use both Qwen models as distinct engines, with more reliable fully local
-  snapshot loading and a ready-to-use cloning reference for Base 1.7B.
+- Keep non-looping background music from extending the final mix beyond the
+  narration and configured music tail.
+- Name rendered mixes from the audiobook project, with filesystem-safe names
+  and automatic numbering that prevents overwrites.
+- Match exact voice IDs and names before generic tags, avoiding ambiguous
+  selections such as a voice tagged `teacher` winning over the voice named
+  `Teacher`.
+- Use Hindi or enter any language name or ISO code supported by OmniVoice.
+- Start with one more bundled ambient track: `To the gates of Eleusis` by
+  SamuelFJohanns.
 
 See the complete release history in the [changelog](CHANGELOG.md).
 

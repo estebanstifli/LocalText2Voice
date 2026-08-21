@@ -423,6 +423,7 @@
   "omnivoice_mode": "Voice mode",
   "omnivoice_device": "Compute device",
   "omnivoice_dtype": "Precision",
+  "omnivoice_language_placeholder": "Digita un nome di lingua o un codice ISO",
   "omnivoice_instruct": "Attributi di progettazione vocale",
   "omnivoice_instruct_placeholder": "Esempio: female, young adult, moderate pitch",
   "omnivoice_reference_audio": "Reference audio",

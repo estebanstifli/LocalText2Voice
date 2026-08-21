@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -82,6 +84,7 @@ class AudioMixPreviewContext:
     timeline_clips: tuple[ResolvedAudioClip, ...] = ()
     speech_intervals: tuple[SpeechInterval, ...] = ()
     stem_cache_dir: Path | None = None
+    project_title: str = ""
 
 
 class WaveformLoadWorker(QObject):
@@ -2671,8 +2674,6 @@ class AudioMixPreviewPanel(QWidget):
         duration = voice_delay + effective_voice_duration
         if self.music_envelope is not None:
             duration += max(0.0, settings.music_tail_ms / 1000)
-            if not settings.loop_background:
-                duration = max(duration, self.music_envelope.duration_seconds)
         self.total_duration_seconds = max(
             0.01,
             min(MIX_PREVIEW_DURATION_SECONDS, duration),
@@ -3230,6 +3231,7 @@ class AudioMixPreviewPanel(QWidget):
         output_path = self._next_mix_filename(
             self.context.output_dir,
             audio_format_spec(self.context.settings.audio_format).extension,
+            self.context.project_title,
         )
         self._show_full_mix_dialog(output_path)
         self._start_render_worker(
@@ -3472,7 +3474,25 @@ class AudioMixPreviewPanel(QWidget):
     def _next_mix_filename(
         output_dir: Path,
         extension: str = ".mp3",
+        project_title: str = "",
     ) -> Path:
+        normalized = unicodedata.normalize("NFKC", str(project_title or ""))
+        normalized = "".join(
+            character
+            for character in normalized
+            if not unicodedata.category(character).startswith("C")
+        )
+        project_stem = re.sub(r'[<>:"/\\|?*]+', "-", normalized)
+        project_stem = re.sub(r"\s+", " ", project_stem).strip(" .-")
+        project_stem = project_stem[:100].rstrip(" .-")
+        if project_stem:
+            index = 0
+            while True:
+                numbered = f"{project_stem}_{index + 1}" if index else project_stem
+                candidate = output_dir / f"{numbered}_mix{extension}"
+                if not candidate.exists():
+                    return candidate
+                index += 1
         index = 1
         while True:
             candidate = output_dir / f"podcast_remix{index}{extension}"

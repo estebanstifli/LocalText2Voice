@@ -466,6 +466,7 @@
   "omnivoice_mode": "Режим",
   "omnivoice_device": "Устройство",
   "omnivoice_dtype": "Точность",
+  "omnivoice_language_placeholder": "Введите название языка или код ISO",
   "omnivoice_instruct": "Атрибуты голосового оформления",
   "omnivoice_instruct_placeholder": "Пример: женщина, молодой человек, средний тон.",
   "omnivoice_reference_audio": "Референсное аудио",

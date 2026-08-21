@@ -7,6 +7,33 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-21
+
+### Added
+
+- Added Hindi and free-form language selection for OmniVoice. Users can now
+  enter any language name or ISO code supported by the engine.
+- Added the `To the gates of Eleusis` background track by SamuelFJohanns, with
+  its Pixabay source and license documented in the third-party notices.
+
+### Changed
+
+- Final Audio Mix filenames now use the current project title and the `_mix`
+  suffix, with safe numbering when a file already exists.
+- Voice lookup now gives exact IDs and display names priority over generic
+  descriptions, styles, and tags before applying fuzzy matching.
+- Added the OmniVoice language-field guidance to all eleven supported UI
+  languages.
+
+### Fixed
+
+- Fixed non-looping background tracks that were longer than the narration
+  extending the final mix with unwanted music-only audio.
+- Fixed preview duration calculations for long non-looping music so the
+  timeline ends with the intended narration and configured music tail.
+- Fixed OmniVoice language markup rejecting supported languages outside the
+  small built-in alias list.
+
 ## [1.5.0] - 2026-08-16
 
 ### Added

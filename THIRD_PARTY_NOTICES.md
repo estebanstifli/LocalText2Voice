@@ -243,3 +243,16 @@ standalone media product. Review the current source and license terms before
 redistribution. Users remain responsible for having the rights required to
 process and publish their text, imported music, generated speech, and final
 audio.
+
+One bundled track added in version 1.5.1 has the following documented
+provenance:
+
+- Track: `To the gates of Eleusis` by SamuelFJohanns
+- Bundled file:
+  `music/background/samuelfjohanns-to-the-gates-of-eleusis-245492.mp3`
+- Source: https://pixabay.com/music/world-to-the-gates-of-eleusis-245492/
+- License: Pixabay Content License,
+  https://pixabay.com/service/license-summary/
+
+This track is also distributed as an application background-music asset, not
+as a standalone media product.

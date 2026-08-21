@@ -1642,14 +1642,27 @@ class AudioPipeline:
         requested_key = cls._lookup_key(requested)
         if not requested_key:
             return None
+        names_by_item: list[tuple[Any, tuple[str, ...]]] = [
+            (item, tuple(names_callback(item))) for item in items
+        ]
+        # Search each name field across the complete collection before moving
+        # to the next field. IDs and display names therefore take precedence
+        # over generic descriptions, styles and tags such as "teacher".
+        max_names = max((len(names) for _item, names in names_by_item), default=0)
+        for name_index in range(max_names):
+            for item, names in names_by_item:
+                if name_index >= len(names):
+                    continue
+                name = names[name_index]
+                if requested_key == cls._lookup_key(name):
+                    return VoiceMatch(item, str(name), True)
+
         candidates: list[tuple[Any, str, str]] = []
-        for item in items:
-            for name in names_callback(item):
+        for item, names in names_by_item:
+            for name in names:
                 candidate_key = cls._lookup_key(name)
                 if not candidate_key:
                     continue
-                if requested_key == candidate_key:
-                    return VoiceMatch(item, str(name), True)
                 candidates.append((item, str(name), candidate_key))
 
         if not allow_fuzzy:
@@ -1746,6 +1759,9 @@ class AudioPipeline:
             "ru": "ru",
             "russian": "ru",
             "ruso": "ru",
+            "hi": "hi",
+            "hin": "hi",
+            "hindi": "hi",
         }
         key = cls._lookup_key(value)
         if key in aliases:
@@ -1828,6 +1844,9 @@ class AudioPipeline:
             "it": "Italian",
             "italian": "Italian",
             "italiano": "Italian",
+            "hi": "Hindi",
+            "hin": "Hindi",
+            "hindi": "Hindi",
         }
         return aliases.get(key) or aliases.get(code, "")
 
@@ -1866,8 +1885,14 @@ class AudioPipeline:
             "it": "Italian",
             "italian": "Italian",
             "italiano": "Italian",
+            "hi": "Hindi",
+            "hin": "Hindi",
+            "hindi": "Hindi",
         }
-        return aliases.get(key) or aliases.get(code, "")
+        # OmniVoice accepts both a language name and an ISO language ID and
+        # ships its own 600+ language registry. Keep common aliases friendly,
+        # then let OmniVoice validate every other non-empty value itself.
+        return aliases.get(key) or aliases.get(code) or value.strip()
 
     @staticmethod
     def _is_default_marker(value: str) -> bool:

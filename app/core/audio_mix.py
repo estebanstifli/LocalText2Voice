@@ -194,6 +194,8 @@ def render_audio_mix(
         arguments.extend(["-codec:a", "pcm_s16le"])
     else:
         raise ValueError(f"Unsupported audio output format: {output_path.suffix}")
+    if target_duration is not None and duration_seconds is None:
+        arguments.extend(["-t", f"{target_duration:.3f}"])
     arguments.append(str(output_path))
     try:
         runner.run(arguments)

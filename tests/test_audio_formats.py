@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import wave
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from app.core.audio_formats import (
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
 from app.core.audio_mix import AudioMixSettings, render_audio_mix
 from app.core.audiobook_store import AudiobookStore, PROJECT_MANIFEST_NAME
+from app.core.waveform_preview import probe_audio_duration
 from app.server.job_manager import ServerJob
 from tests.test_audio_pipeline import FakeTTSEngine
 
@@ -137,6 +139,38 @@ def test_audio_mix_renders_in_selected_format(
 
     assert output_path.is_file()
     assert output_path.stat().st_size > 0
+
+
+def test_audio_mix_is_trimmed_to_dialogue_when_background_is_longer(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("FFmpeg is not available")
+    voice_path = tmp_path / "voice.wav"
+    music_path = tmp_path / "long_music.wav"
+    FakeTTSEngine().synthesize_to_wav("Voice", voice_path, {"speed": 1.0})
+    with wave.open(str(music_path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\0\0" * (16000 * 3))
+    output_path = tmp_path / "short_dialogue_mix.mp3"
+
+    render_audio_mix(
+        voice_path,
+        output_path,
+        ffmpeg,
+        AudioMixSettings(
+            voice_start_offset_ms=0,
+            music_tail_ms=0,
+            loop_background=False,
+        ),
+        music_path=music_path,
+        voice_duration_seconds=0.08,
+    )
+
+    assert probe_audio_duration(output_path, ffmpeg) < 0.25
 
 
 def test_server_job_exposes_generic_paths_and_legacy_api_aliases() -> None:

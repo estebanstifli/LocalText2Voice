@@ -2136,11 +2136,12 @@ class MainWindow(QMainWindow):
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
         if engine_id == "f5_russian":
             return "ru"
+        if engine_id == "omnivoice":
+            return self._omnivoice_language_value()
         combo_by_engine = {
             "piper": self.language_combo,
             "chatterbox": self.chatterbox_language_combo,
             "qwen": self.qwen_language_combo,
-            "omnivoice": self.omnivoice_language_combo,
         }
         combo = combo_by_engine.get(engine_id)
         if combo is not None:
@@ -6420,6 +6421,8 @@ class MainWindow(QMainWindow):
             )
         )
         self.omnivoice_language_combo = QComboBox()
+        self.omnivoice_language_combo.setEditable(True)
+        self.omnivoice_language_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         for label, value in (
             ("Auto", "auto"),
             ("English", "English"),
@@ -6431,8 +6434,16 @@ class MainWindow(QMainWindow):
             ("Chinese", "Chinese"),
             ("Japanese", "Japanese"),
             ("Korean", "Korean"),
+            ("Hindi", "Hindi"),
         ):
             self.omnivoice_language_combo.addItem(label, value)
+        if self.omnivoice_language_combo.lineEdit() is not None:
+            self.omnivoice_language_combo.lineEdit().setPlaceholderText(
+                self.tr(
+                    "omnivoice_language_placeholder",
+                    "Type any language name or ISO code",
+                )
+            )
         self.omnivoice_device_combo = QComboBox()
         self.omnivoice_device_combo.addItem("Auto (recommended)", "auto")
         self.omnivoice_device_combo.addItem("CUDA / NVIDIA GPU", "cuda")
@@ -6976,7 +6987,7 @@ class MainWindow(QMainWindow):
             "model": model,
             "model_repo": self.omnivoice_manager.model_repo(model),
             "mode": mode,
-            "language": self.omnivoice_language_combo.currentData() or "auto",
+            "language": self._omnivoice_language_value(),
             "device": self.omnivoice_device_combo.currentData() or "auto",
             "dtype": self.omnivoice_dtype_combo.currentData() or "auto",
             "instruct": "",
@@ -13313,6 +13324,12 @@ class MainWindow(QMainWindow):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+        elif combo.isEditable() and str(value or "").strip():
+            combo.setEditText(str(value).strip())
+
+    def _omnivoice_language_value(self) -> str:
+        value = self.omnivoice_language_combo.currentText().strip()
+        return "auto" if value.casefold() in {"", "auto", "default"} else value
 
     def _refresh_audio_quality_choices(
         self,
@@ -15926,6 +15943,11 @@ class MainWindow(QMainWindow):
             timeline_clips=timeline_clips,
             speech_intervals=speech_intervals,
             stem_cache_dir=stem_cache_dir,
+            project_title=(
+                audiobook.title
+                if audiobook is not None
+                else self._current_project_title()
+            ),
         )
         self.audio_mix_preview_panel.set_context(context)
 
@@ -17869,7 +17891,7 @@ class MainWindow(QMainWindow):
                         or "omnivoice"
                     ),
                     "mode": "clone",
-                    "language": self.omnivoice_language_combo.currentData() or "auto",
+                    "language": self._omnivoice_language_value(),
                     "device": self.omnivoice_device_combo.currentData() or "auto",
                     "dtype": self.omnivoice_dtype_combo.currentData() or "auto",
                     "instruct": "",

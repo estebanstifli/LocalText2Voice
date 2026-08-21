@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 from app.core.audio_pipeline import AudioGenerationOptions, AudioPipeline
+from app.core.waveform_preview import probe_audio_duration
 from app.tts.base import BaseTTSEngine
 from app.tts.voice_gallery_manager import GalleryVoice
 
@@ -164,6 +165,72 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
         self.assertEqual(config["reference_audio_path"], str(spanish_path))
         self.assertEqual(config["reference_text"], "Referencia espanola.")
         self.assertEqual(config["language"], "Spanish")
+
+    def test_omnivoice_hindi_markup_uses_the_model_language_name(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        logs: list[str] = []
+        pipeline = AudioPipeline(FakeTTSEngine(), log_callback=logs.append)
+        config = pipeline._voice_config_for_chunk(
+            {
+                "engine": "omnivoice",
+                "mode": "clone",
+                "language": "auto",
+                "reference_audio_path": "reference.wav",
+                "reference_text": "Reference transcript.",
+            },
+            TextChunk(
+                text="नमस्ते, यह हिंदी में एक छोटा परीक्षण है।",
+                ends_paragraph=True,
+                markup_state={"language": "hi"},
+            ),
+        )
+
+        self.assertEqual(config["language"], "Hindi")
+        self.assertFalse(any("language not recognized" in log for log in logs))
+        self.assertEqual(AudioPipeline._omnivoice_language_name("Hindi"), "Hindi")
+
+    def test_omnivoice_markup_passes_other_supported_language_ids_to_engine(self) -> None:
+        from app.core.text_processor import TextChunk
+
+        pipeline = AudioPipeline(FakeTTSEngine())
+        config = pipeline._voice_config_for_chunk(
+            {"engine": "omnivoice", "language": "auto"},
+            TextChunk(
+                text="বাংলা ভাষার পরীক্ষা।",
+                ends_paragraph=True,
+                markup_state={"language": "bn"},
+            ),
+        )
+
+        self.assertEqual(config["language"], "bn")
+        self.assertEqual(
+            AudioPipeline._omnivoice_language_name("Bengali"),
+            "Bengali",
+        )
+
+    def test_exact_voice_name_wins_over_an_earlier_matching_tag(self) -> None:
+        carmen = SimpleNamespace(
+            voice_id="omnivoice_es_carmen_profesora",
+            name="Carmen",
+            tags=("teacher",),
+        )
+        teacher = SimpleNamespace(
+            voice_id="omnivoice_en_teacher_kids",
+            name="Teacher",
+            tags=("teacher",),
+        )
+
+        match = AudioPipeline._match_named_item(
+            "Teacher",
+            [carmen, teacher],
+            lambda voice: (voice.voice_id, voice.name, *voice.tags),
+        )
+
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertIs(match.item, teacher)
+        self.assertTrue(match.exact)
 
     def test_chatterbox_voice_markup_uses_compatible_gallery_voice_fuzzy_match(self) -> None:
         from app.core.text_processor import TextChunk
@@ -628,16 +695,19 @@ class AudioPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
             background = root / "background.wav"
-            create_tone(background, 0.12, 110)
+            create_tone(background, 3.0, 110)
+            ffmpeg = Path(shutil.which("ffmpeg") or "ffmpeg")
             options = AudioGenerationOptions(
                 output_dir=root / "output",
                 voice_config={"speed": 1.0},
-                ffmpeg_path=Path(shutil.which("ffmpeg") or "ffmpeg"),
+                ffmpeg_path=ffmpeg,
                 podcast_enabled=True,
                 background_enabled=True,
                 background_path=background,
-                background_loop=True,
+                background_loop=False,
                 background_volume_percent=12,
+                voice_start_offset_ms=0,
+                music_tail_ms=0,
                 podcast_gap_ms=100,
                 podcast_normalize=True,
                 podcast_ducking=True,
@@ -652,3 +722,6 @@ class AudioPipelineTests(unittest.TestCase):
                 ["podcast1.mp3", "podcast1_mix.mp3"],
             )
             self.assertTrue(all(path.stat().st_size > 0 for path in outputs))
+            self.assertTrue(
+                all(probe_audio_duration(path, ffmpeg) < 0.25 for path in outputs)
+            )

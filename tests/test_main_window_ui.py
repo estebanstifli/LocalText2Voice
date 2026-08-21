@@ -1579,6 +1579,35 @@ class MainWindowUITests(unittest.TestCase):
         load_project.assert_called_once_with(recent.id)
         self.assertNotEqual(older.id, recent.id)
 
+    def test_final_mix_filename_uses_project_title_and_mix_suffix(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        panel = window.audio_mix_preview_panel
+        with tempfile.TemporaryDirectory() as temporary_name:
+            output_dir = Path(temporary_name)
+            first = panel._next_mix_filename(
+                output_dir,
+                ".m4a",
+                "La máscara: roja?",
+            )
+            self.assertEqual(first.name, "La máscara- roja_mix.m4a")
+            first.write_bytes(b"existing")
+            second = panel._next_mix_filename(
+                output_dir,
+                ".m4a",
+                "La máscara: roja?",
+            )
+            self.assertEqual(second.name, "La máscara- roja_2_mix.m4a")
+
+    def test_omnivoice_language_selector_accepts_any_iso_code(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+
+        window._select_combo_data(window.tts_engine_combo, "omnivoice")
+        window.omnivoice_language_combo.setEditText("bn")
+
+        self.assertEqual(window._omnivoice_language_value(), "bn")
+
     def test_advanced_mix_groups_tracks_and_preserves_render_play_position(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
