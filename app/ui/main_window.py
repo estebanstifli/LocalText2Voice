@@ -26,6 +26,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QIcon,
+    QImageReader,
     QPixmap,
     QTextCursor,
 )
@@ -111,6 +112,19 @@ from app.core.settings_manager import (
 )
 from app.core.subtitle_export import export_audiobook_subtitles
 from app.core.text_normalization import TextNormalizer, normalize_text_for_speech
+from app.core.video_storyboard_source import (
+    build_storyboard_narration_timeline,
+)
+from app.core.video_storyboard_project import (
+    append_storyboard_analysis_request,
+    append_storyboard_analysis_result,
+    create_storyboard_analysis_request_log,
+    finish_storyboard_analysis_request_log,
+    load_storyboard_state,
+    save_storyboard_state,
+    storyboard_matches_source,
+)
+from app.core.video_storyboard_styles import normalize_storyboard_style_id
 from app.core.update_manager import (
     CHECK_INTERVAL_SECONDS,
     UpdateError,
@@ -149,6 +163,20 @@ from app.ui.engine_install_dialog import (
     available_disk_space_gb,
 )
 from app.ui.text_normalization_settings import TextNormalizationSettingsWidget
+from app.ui.video_storyboard_page import VideoStoryboardPage
+from app.ui.video_storyboard_analysis_dialog import (
+    VideoStoryboardAnalysisDialog,
+)
+from app.ui.video_storyboard_settings import VideoStoryboardSettingsWidget
+from app.workers.video_storyboard_planner_worker import (
+    VideoStoryboardPlannerWorker,
+)
+from app.workers.video_storyboard_frame_worker import (
+    VideoStoryboardFrameWorker,
+)
+from app.workers.video_storyboard_render_worker import (
+    VideoStoryboardRenderWorker,
+)
 from app.ui.audio_tail_cut_dialog import AudioTailCutDialog
 from app.utils.i18n import Translator
 from app.utils.paths import (
@@ -961,6 +989,19 @@ class MainWindow(QMainWindow):
         self.asset_storage_worker: AssetStorageMoveWorker | None = None
         self.asset_storage_thread: QThread | None = None
         self.asset_storage_progress_dialog: QProgressDialog | None = None
+        self.video_storyboard_planner_worker: VideoStoryboardPlannerWorker | None = None
+        self.video_storyboard_planner_thread: QThread | None = None
+        self.video_storyboard_analysis_dialog: VideoStoryboardAnalysisDialog | None = None
+        self.video_storyboard_analysis_request_log_path: Path | None = None
+        self.video_storyboard_analysis_request_count = 0
+        self.video_storyboard_analysis_request_log_finished = False
+        self.video_storyboard_frame_worker: VideoStoryboardFrameWorker | None = None
+        self.video_storyboard_frame_thread: QThread | None = None
+        self.video_storyboard_frame_mode = ""
+        self.video_storyboard_frame_scene_id = ""
+        self.video_storyboard_render_worker: VideoStoryboardRenderWorker | None = None
+        self.video_storyboard_render_thread: QThread | None = None
+        self.video_storyboard_analysis_status = "ready"
         self.update_download_thread: QThread | None = None
         self.update_progress_dialog: QProgressDialog | None = None
         self.theme_progress_dialog: QProgressDialog | None = None
@@ -1120,6 +1161,38 @@ class MainWindow(QMainWindow):
             self._open_bulk_audiobook_output
         )
         self.page_stack.addWidget(self.bulk_audiobooks_page)
+        self.video_storyboard_page = VideoStoryboardPage(self.tr)
+        self.video_storyboard_page.analyzeRequested.connect(
+            self._start_video_storyboard_analysis
+        )
+        self.video_storyboard_page.generateFramesRequested.connect(
+            self._start_video_storyboard_frame_generation
+        )
+        self.video_storyboard_page.regenerateRequested.connect(
+            self._start_video_storyboard_regeneration
+        )
+        self.video_storyboard_page.regenerationAccepted.connect(
+            self._accept_video_storyboard_candidate
+        )
+        self.video_storyboard_page.regenerationRejected.connect(
+            self._reject_video_storyboard_candidate
+        )
+        self.video_storyboard_page.replaceFrameRequested.connect(
+            self._replace_video_storyboard_frame
+        )
+        self.video_storyboard_page.renderRequested.connect(
+            self._start_video_storyboard_render
+        )
+        self.video_storyboard_page.openOutputFolderRequested.connect(
+            self._open_video_storyboard_output_folder
+        )
+        self.video_storyboard_page.scenesChanged.connect(
+            self._persist_video_storyboard_state
+        )
+        self.video_storyboard_page.projectChanged.connect(
+            self._persist_video_storyboard_state
+        )
+        self.page_stack.addWidget(self.video_storyboard_page)
         content_layout.addWidget(self.page_stack, 1)
 
         body_layout.addWidget(content_widget, 1)
@@ -1331,6 +1404,12 @@ class MainWindow(QMainWindow):
                 "waveform",
                 self.tr("audio_mix_preview", "Audio Mix"),
                 self._show_mix_preview_page,
+            ),
+            (
+                "video_storyboard",
+                "storyboard",
+                self.tr("nav_video_storyboard", "Video Storyboard"),
+                self._show_video_storyboard_page,
             ),
         )
         for key, icon_name, text, callback in nav_items:
@@ -3519,6 +3598,15 @@ class MainWindow(QMainWindow):
             ui_icon("settings"),
             self.tr("advanced_settings", "Advanced"),
         )
+        self.video_storyboard_settings = VideoStoryboardSettingsWidget(self.tr)
+        self.video_storyboard_settings.settingsChanged.connect(
+            self._on_video_storyboard_settings_changed
+        )
+        self.settings_tabs.addTab(
+            self.video_storyboard_settings,
+            ui_icon("storyboard"),
+            self.tr("video_storyboard_settings", "Video Storyboard"),
+        )
         layout.addWidget(self.settings_tabs, 1)
         return widget
 
@@ -3762,6 +3850,1016 @@ class MainWindow(QMainWindow):
         )
         self._refresh_music_library()
 
+    def _show_video_storyboard_page(self) -> None:
+        self.video_storyboard_page.set_configuration(
+            self.settings.get("video_storyboard", {})
+        )
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        segments = (
+            self.audiobook_store.list_segments(audiobook.id)
+            if audiobook is not None
+            else []
+        )
+        voice_start_offset_seconds = max(
+            0.0,
+            float(self.settings.get("voice_start_offset_ms", 2000)) / 1000.0,
+        )
+        narration_cues, duration_seconds = (
+            build_storyboard_narration_timeline(
+                segments,
+                round(voice_start_offset_seconds * 1000),
+            )
+        )
+        if audiobook is not None and audiobook.clean_audio_path:
+            narration_path = Path(audiobook.clean_audio_path)
+            if narration_path.is_file():
+                duration_seconds = max(
+                    duration_seconds,
+                    (self._probe_audio_duration(narration_path) or 0.0)
+                    + voice_start_offset_seconds,
+                )
+        preview_audio_path = next(
+            (
+                str(path)
+                for value in (
+                    audiobook.mix_audio_path if audiobook is not None else "",
+                    audiobook.clean_audio_path if audiobook is not None else "",
+                )
+                if value and (path := Path(value)).is_file()
+            ),
+            "",
+        )
+        self.video_storyboard_page.set_audiobook_source(
+            audiobook.id if audiobook is not None else None,
+            audiobook.title if audiobook is not None else self._current_project_title(),
+            self.text_editor.toPlainText(),
+            [cue.as_dict() for cue in narration_cues],
+            duration_seconds,
+            preview_audio_path,
+            voice_start_offset_seconds,
+        )
+        if audiobook is not None:
+            self._restore_video_storyboard_state(audiobook)
+        self._show_page(
+            7,
+            "video_storyboard",
+            self.tr("video_storyboard_title", "Video Storyboard"),
+            self.tr(
+                "video_storyboard_page_subtitle",
+                "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.",
+            ),
+            "storyboard",
+        )
+
+    def _show_video_storyboard_settings(self) -> None:
+        self._show_settings_page()
+        self.settings_tabs.setCurrentWidget(self.video_storyboard_settings)
+
+    def _start_video_storyboard_analysis(self, source: object) -> None:
+        if self.video_storyboard_planner_thread is not None:
+            return
+        if not isinstance(source, dict):
+            self.video_storyboard_page.set_analysis_failed(
+                self.tr(
+                    "video_storyboard_invalid_source",
+                    "The audiobook data is invalid.",
+                )
+            )
+            return
+        configuration = deepcopy(
+            self.settings.get("video_storyboard", {})
+        )
+        overrides = source.get("storyboard_overrides", {})
+        if isinstance(overrides, dict):
+            style_mode = normalize_storyboard_style_id(
+                overrides.get("style_mode")
+                or configuration.get("image", {}).get("style_mode")
+            )
+            configuration.setdefault("image", {})["style_mode"] = style_mode
+            try:
+                seed_override = int(overrides.get("seed"))
+            except (TypeError, ValueError):
+                seed_override = -1
+            if seed_override >= 0:
+                configuration["seed_override"] = min(
+                    seed_override,
+                    2**63 - 1,
+                )
+            style_override = overrides.get("style", {})
+            narrative_override = overrides.get("narrative", {})
+            video_override = overrides.get("video", {})
+            if isinstance(style_override, dict) and any(
+                str(value).strip()
+                for key, value in style_override.items()
+                if key != "characters"
+            ):
+                # Character lines in a saved storyboard are a generated legacy
+                # projection of the continuity ledger. A fresh analysis must
+                # rebuild that ledger instead of promoting old/generated states
+                # to user-authored characters.
+                clean_style_override = deepcopy(style_override)
+                clean_style_override.pop("characters", None)
+                configuration["style_override"] = clean_style_override
+            if style_mode == "custom" and isinstance(style_override, dict):
+                configuration.setdefault("image", {})["style_prompt"] = str(
+                    style_override.get("medium") or ""
+                ).strip()
+            if (
+                isinstance(narrative_override, dict)
+                and narrative_override.get("era_source") != "detected"
+            ):
+                configuration["narrative_context"] = {
+                    "era": str(narrative_override.get("era") or "").strip(),
+                }
+            if isinstance(video_override, dict):
+                configuration.setdefault("video", {}).update(
+                    {
+                        key: value
+                        for key, value in video_override.items()
+                        if key in {"zoom_percent", "transition_seconds"}
+                    }
+                )
+        if str(configuration.get("llm_provider") or "ollama") == "ollama":
+            self._release_storyboard_local_vram("audiobook analysis")
+        self.video_storyboard_analysis_status = "analyzing"
+        self._persist_video_storyboard_state()
+        self._create_video_storyboard_analysis_request_log(source, configuration)
+        thread = QThread(self)
+        worker = VideoStoryboardPlannerWorker(source, configuration)
+        if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.close()
+            self.video_storyboard_analysis_dialog.deleteLater()
+        dialog = VideoStoryboardAnalysisDialog(
+            self.tr,
+            self,
+            request_log_path=str(
+                self.video_storyboard_analysis_request_log_path or ""
+            ),
+        )
+        self.video_storyboard_analysis_dialog = dialog
+        dialog.cancelRequested.connect(lambda: worker.cancel())
+
+        def clear_dialog_reference(
+            _object: object | None = None,
+            closed_dialog: VideoStoryboardAnalysisDialog = dialog,
+        ) -> None:
+            self._clear_video_storyboard_analysis_dialog(closed_dialog)
+
+        dialog.destroyed.connect(clear_dialog_reference)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.status.connect(self._on_video_storyboard_analysis_status)
+        worker.progress.connect(self._on_video_storyboard_analysis_progress)
+        worker.trace.connect(self._on_video_storyboard_analysis_trace)
+        worker.partial.connect(self._on_video_storyboard_analysis_partial)
+        worker.finished.connect(self._on_video_storyboard_analysis_finished)
+        worker.failed.connect(self._on_video_storyboard_analysis_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_video_storyboard_planner)
+        self.video_storyboard_planner_worker = worker
+        self.video_storyboard_planner_thread = thread
+        dialog.open()
+        thread.start()
+
+    def _on_video_storyboard_analysis_status(self, stage: str) -> None:
+        if stage != "release_comfyui":
+            return
+        message = self.tr(
+            "video_storyboard_unloading_comfyui",
+            "Freeing ComfyUI GPU memory before analysis...",
+        )
+        self.video_storyboard_page.set_operation(message, 0)
+        self.video_storyboard_page.append_activity(message)
+
+    def _on_video_storyboard_analysis_progress(
+        self,
+        current: int,
+        total: int,
+    ) -> None:
+        storyboard = self.settings.get("video_storyboard", {})
+        provider = str(storyboard.get("llm_provider") or "ollama")
+        model = str(storyboard.get(provider, {}).get("model", ""))
+        message = self.tr(
+            "video_storyboard_planning_block",
+            "Planning block {current}/{total} with {model}...",
+            current=current,
+            total=total,
+            model=model or self.tr("unknown", "Unknown"),
+        )
+        progress = round((current - 1) / max(1, total) * 100)
+        self.video_storyboard_page.set_operation(message, progress)
+        self.video_storyboard_page.append_activity(message)
+        if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.set_progress(
+                current,
+                total,
+                message,
+            )
+
+    def _on_video_storyboard_analysis_trace(self, event: object) -> None:
+        if isinstance(event, dict) and event.get("kind") == "request":
+            target = self.video_storyboard_analysis_request_log_path
+            if target is not None:
+                self.video_storyboard_analysis_request_count += 1
+                try:
+                    append_storyboard_analysis_request(
+                        target,
+                        event,
+                        self.video_storyboard_analysis_request_count,
+                    )
+                except OSError as exc:
+                    self.log_view.append_event(
+                        f"Could not write Video Storyboard request log: {exc}"
+                    )
+        elif (
+            isinstance(event, dict)
+            and event.get("kind") in {"raw_response", "error"}
+        ):
+            target = self.video_storyboard_analysis_request_log_path
+            if target is not None:
+                try:
+                    append_storyboard_analysis_result(
+                        target,
+                        event,
+                        max(1, self.video_storyboard_analysis_request_count),
+                    )
+                except OSError as exc:
+                    self.log_view.append_event(
+                        f"Could not write Video Storyboard response log: {exc}"
+                    )
+        if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.append_trace(event)
+
+    def _on_video_storyboard_analysis_finished(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self._on_video_storyboard_analysis_failed(
+                self.tr(
+                    "video_storyboard_invalid_plan",
+                    "The LLM returned an invalid storyboard plan.",
+                )
+            )
+            return
+        self.video_storyboard_page.set_analysis_result(result)
+        self.video_storyboard_analysis_status = "ready"
+        self._persist_video_storyboard_state()
+        scene_count = len(result.get("scenes", []))
+        self._finish_video_storyboard_analysis_request_log(
+            "completed",
+            f"{scene_count} frames planned and saved.",
+        )
+        if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.set_finished(
+                True,
+                self.tr(
+                    "video_storyboard_analysis_dialog_complete",
+                    "Analysis complete: {count} frames planned and saved.",
+                    count=scene_count,
+                ),
+            )
+        self.log_view.append_event(
+            self.tr(
+                "video_storyboard_plan_created",
+                "Video Storyboard created a plan with {count} scenes.",
+                count=scene_count,
+            )
+        )
+
+    def _on_video_storyboard_analysis_failed(self, error: str) -> None:
+        self.video_storyboard_page.set_analysis_failed(error)
+        self.video_storyboard_analysis_status = "failed"
+        self._persist_video_storyboard_state(error=error)
+        self._finish_video_storyboard_analysis_request_log("failed", error)
+        if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.set_finished(False, error)
+        self.log_view.append_event(
+            self.tr(
+                "video_storyboard_plan_failed_log",
+                "Video Storyboard analysis failed: {error}",
+                error=error,
+            )
+        )
+
+    def _clear_video_storyboard_planner(self) -> None:
+        self.video_storyboard_planner_worker = None
+        self.video_storyboard_planner_thread = None
+
+    def _create_video_storyboard_analysis_request_log(
+        self,
+        source: dict[str, object],
+        configuration: dict[str, object],
+    ) -> None:
+        self.video_storyboard_analysis_request_log_path = None
+        self.video_storyboard_analysis_request_count = 0
+        self.video_storyboard_analysis_request_log_finished = False
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        if audiobook is None:
+            return
+        provider = str(configuration.get("llm_provider") or "ollama")
+        provider_settings = configuration.get(provider, {})
+        model = (
+            str(provider_settings.get("model") or "")
+            if isinstance(provider_settings, dict)
+            else ""
+        )
+        try:
+            self.video_storyboard_analysis_request_log_path = (
+                create_storyboard_analysis_request_log(
+                    audiobook.project_dir,
+                    title=str(source.get("title") or audiobook.title),
+                    provider=provider,
+                    model=model,
+                )
+            )
+        except OSError as exc:
+            self.log_view.append_event(
+                f"Could not create Video Storyboard request log: {exc}"
+            )
+
+    def _finish_video_storyboard_analysis_request_log(
+        self,
+        status: str,
+        detail: str,
+    ) -> None:
+        target = self.video_storyboard_analysis_request_log_path
+        if target is None or self.video_storyboard_analysis_request_log_finished:
+            return
+        try:
+            finish_storyboard_analysis_request_log(
+                target,
+                status=status,
+                detail=detail,
+            )
+            self.video_storyboard_analysis_request_log_finished = True
+        except OSError as exc:
+            self.log_view.append_event(
+                f"Could not finalize Video Storyboard request log: {exc}"
+            )
+
+    def _clear_video_storyboard_analysis_dialog(
+        self,
+        closed_dialog: VideoStoryboardAnalysisDialog,
+    ) -> None:
+        if self.video_storyboard_analysis_dialog is closed_dialog:
+            self.video_storyboard_analysis_dialog = None
+
+    def _on_video_storyboard_analysis_partial(self, result: object) -> None:
+        if not isinstance(result, dict):
+            return
+        self.video_storyboard_page.set_analysis_partial_result(result)
+        self.video_storyboard_analysis_status = "analyzing"
+        self._persist_video_storyboard_state()
+        if self.video_storyboard_analysis_dialog is not None:
+            completed = max(0, int(result.get("completed_blocks") or 0))
+            total = max(completed, int(result.get("total_blocks") or completed or 1))
+            scenes = result.get("scenes", [])
+            continuity = result.get("continuity", {})
+            characters = (
+                continuity.get("characters", [])
+                if isinstance(continuity, dict)
+                else []
+            )
+            locations = (
+                continuity.get("locations", [])
+                if isinstance(continuity, dict)
+                else []
+            )
+            self.video_storyboard_analysis_dialog.mark_partial_saved(
+                completed,
+                total,
+                len(scenes) if isinstance(scenes, list) else 0,
+                phase=str(result.get("analysis_phase") or "scenes"),
+                characters=(
+                    len(characters) if isinstance(characters, list) else 0
+                ),
+                locations=len(locations) if isinstance(locations, list) else 0,
+            )
+
+    def _persist_video_storyboard_state(
+        self,
+        _scenes: object | None = None,
+        *,
+        error: str = "",
+    ) -> None:
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        if audiobook is None or not hasattr(self, "video_storyboard_page"):
+            return
+        try:
+            save_storyboard_state(
+                audiobook.project_dir,
+                self.video_storyboard_page.project_state(),
+                analysis_status=self.video_storyboard_analysis_status,
+                error=error,
+            )
+        except OSError as exc:
+            self.log_view.append_event(
+                f"Could not save Video Storyboard progress: {exc}"
+            )
+
+    def _restore_video_storyboard_state(self, audiobook) -> None:
+        state = load_storyboard_state(audiobook.project_dir)
+        if state is None or not storyboard_matches_source(
+            state,
+            self.text_editor.toPlainText(),
+        ):
+            return
+        self.video_storyboard_analysis_status = str(
+            state.get("analysis_status") or "ready"
+        )
+        self.video_storyboard_page.restore_project_state(state)
+        output_dir = audiobook.output_dir
+        if not str(output_dir).strip() or output_dir == Path():
+            output_dir = audiobook.project_dir / "exports"
+        existing_video = output_dir / (
+            f"{self._safe_project_folder_name(audiobook.title)}-storyboard.mp4"
+        )
+        self.video_storyboard_page.set_existing_render_output(
+            str(existing_video) if existing_video.is_file() else ""
+        )
+        if self.video_storyboard_planner_thread is not None:
+            self.video_storyboard_page.analyze_button.setEnabled(False)
+            self.video_storyboard_page.generate_frames_button.setEnabled(False)
+            self.video_storyboard_page.render_button.setEnabled(False)
+
+    def _start_video_storyboard_frame_generation(self, payload: object) -> None:
+        if self.video_storyboard_frame_thread is not None:
+            return
+        if not isinstance(payload, dict):
+            self.video_storyboard_page.set_frame_generation_failed(
+                self.tr(
+                    "video_storyboard_invalid_plan",
+                    "The storyboard plan is invalid.",
+                )
+            )
+            return
+        self._start_video_storyboard_frame_worker(
+            payload,
+            self._video_storyboard_output_dir(candidate=False),
+            candidate=False,
+        )
+
+    def _start_video_storyboard_regeneration(
+        self,
+        request: object,
+    ) -> None:
+        if not isinstance(request, dict):
+            return
+        scene_id = str(request.get("scene_id") or "")
+        prompt = str(request.get("prompt") or "")
+        shot = str(request.get("shot") or "")
+        overrides = request.get("overrides", {})
+        if self.video_storyboard_frame_thread is not None:
+            self.video_storyboard_page.set_regeneration_failed(
+                scene_id,
+                self.tr(
+                    "video_storyboard_generation_busy",
+                    "Another frame is currently being generated.",
+                ),
+            )
+            return
+        payload = self.video_storyboard_page.regeneration_payload(
+            scene_id,
+            prompt,
+            overrides if isinstance(overrides, dict) else {},
+            shot,
+        )
+        if payload is None:
+            self.video_storyboard_page.set_regeneration_failed(
+                scene_id,
+                self.tr(
+                    "video_storyboard_scene_missing",
+                    "The selected scene no longer exists.",
+                ),
+            )
+            return
+        self._start_video_storyboard_frame_worker(
+            payload,
+            self._video_storyboard_output_dir(candidate=True),
+            candidate=True,
+        )
+
+    def _start_video_storyboard_frame_worker(
+        self,
+        payload: dict[str, object],
+        output_dir: Path,
+        *,
+        candidate: bool,
+    ) -> None:
+        configuration = deepcopy(self.settings.get("video_storyboard", {}))
+        if str(configuration.get("image_provider") or "comfyui") == "comfyui":
+            self._release_storyboard_local_vram("frame generation")
+        thread = QThread(self)
+        worker = VideoStoryboardFrameWorker(
+            payload,
+            configuration,
+            output_dir,
+            candidate=candidate,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_video_storyboard_frame_progress)
+        worker.frameReady.connect(self._on_video_storyboard_frame_ready)
+        worker.finished.connect(self._on_video_storyboard_frames_finished)
+        worker.failed.connect(self._on_video_storyboard_frames_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_video_storyboard_frame_worker)
+        self.video_storyboard_frame_mode = "candidate" if candidate else "batch"
+        scenes = payload.get("scenes", [])
+        self.video_storyboard_frame_scene_id = (
+            str(scenes[0].get("scene_id") or scenes[0].get("id") or "")
+            if candidate
+            and isinstance(scenes, list)
+            and scenes
+            and isinstance(scenes[0], dict)
+            else ""
+        )
+        self.video_storyboard_frame_worker = worker
+        self.video_storyboard_frame_thread = thread
+        thread.start()
+
+    def _on_video_storyboard_frame_progress(
+        self,
+        current: int,
+        total: int,
+        scene_id: str,
+        stage: str,
+    ) -> None:
+        stage_messages = {
+            "unload_ollama": self.tr(
+                "video_storyboard_unloading_ollama",
+                "Freeing Ollama GPU memory...",
+            ),
+            "check_comfyui": self.tr(
+                "video_storyboard_checking_comfyui",
+                "Checking ComfyUI nodes and models...",
+            ),
+            "preparing": self.tr(
+                "video_storyboard_preparing_scene",
+                "Preparing scene {scene} ({current}/{total})...",
+                scene=scene_id,
+                current=current,
+                total=total,
+            ),
+            "queue": self.tr(
+                "video_storyboard_queueing_scene",
+                "Sending scene {scene} to ComfyUI ({current}/{total})...",
+                scene=scene_id,
+                current=current,
+                total=total,
+            ),
+            "generating": self.tr(
+                "video_storyboard_comfy_generating_scene",
+                "ComfyUI is generating scene {scene} ({current}/{total})...",
+                scene=scene_id,
+                current=current,
+                total=total,
+            ),
+            "downloading": self.tr(
+                "video_storyboard_downloading_scene",
+                "Saving scene {scene} ({current}/{total})...",
+                scene=scene_id,
+                current=current,
+                total=total,
+            ),
+            "existing": self.tr(
+                "video_storyboard_reusing_scene",
+                "Keeping existing frame for scene {scene} ({current}/{total})...",
+                scene=scene_id,
+                current=current,
+                total=total,
+            ),
+        }
+        message = stage_messages.get(stage, stage)
+        progress = (
+            round((current - 1) / max(1, total) * 100)
+            if current and total
+            else 0
+        )
+        if self.video_storyboard_frame_mode == "candidate":
+            progress = {
+                "unload_ollama": 5,
+                "check_comfyui": 12,
+                "preparing": 18,
+                "queue": 28,
+                "generating": 45,
+                "downloading": 92,
+            }.get(stage, progress)
+        self.video_storyboard_page.set_operation(message, progress)
+        if self.video_storyboard_frame_mode == "candidate":
+            self.video_storyboard_page.set_regeneration_progress(
+                scene_id or self.video_storyboard_frame_scene_id,
+                message,
+                progress,
+            )
+        if stage in {
+            "unload_ollama",
+            "check_comfyui",
+            "preparing",
+            "generating",
+            "existing",
+        }:
+            self.video_storyboard_page.append_activity(message)
+
+    def _on_video_storyboard_frame_ready(self, raw_result: object) -> None:
+        if not isinstance(raw_result, dict):
+            return
+        scene_id = str(raw_result.get("scene_id") or "")
+        image_path = str(raw_result.get("image_path") or "")
+        if self.video_storyboard_frame_mode == "candidate":
+            self.video_storyboard_page.set_regeneration_preview(
+                scene_id,
+                image_path,
+                str(raw_result.get("compiled_prompt") or ""),
+            )
+        else:
+            self.video_storyboard_page.set_frame_generated(
+                scene_id,
+                image_path,
+            )
+
+    def _on_video_storyboard_frames_finished(self, _results: object) -> None:
+        if self.video_storyboard_frame_mode == "batch":
+            self.video_storyboard_page.set_frame_generation_finished()
+            self.log_view.append_event(
+                self.tr(
+                    "video_storyboard_frames_complete",
+                    "All storyboard frames have been generated.",
+                )
+            )
+
+    def _on_video_storyboard_frames_failed(self, error: str) -> None:
+        if self.video_storyboard_frame_mode == "candidate":
+            self.video_storyboard_page.set_regeneration_failed(
+                self.video_storyboard_frame_scene_id or "?",
+                error,
+            )
+        else:
+            self.video_storyboard_page.set_frame_generation_failed(error)
+        self.log_view.append_event(
+            self.tr(
+                "video_storyboard_comfy_failed_log",
+                "ComfyUI frame generation failed: {error}",
+                error=error,
+            )
+        )
+
+    def _clear_video_storyboard_frame_worker(self) -> None:
+        self.video_storyboard_frame_worker = None
+        self.video_storyboard_frame_thread = None
+        self.video_storyboard_frame_mode = ""
+        self.video_storyboard_frame_scene_id = ""
+
+    def _video_storyboard_output_dir(self, *, candidate: bool) -> Path:
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        root = (
+            audiobook.project_dir / "storyboard"
+            if audiobook is not None
+            else app_data_root() / "storyboards" / "draft"
+        )
+        return root / ("candidates" if candidate else "frames")
+
+    def _open_video_storyboard_output_folder(self) -> None:
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        if audiobook is not None:
+            output_dir = audiobook.output_dir
+            if not str(output_dir).strip() or output_dir == Path():
+                output_dir = audiobook.project_dir / "exports"
+        else:
+            output_dir = self._video_storyboard_output_dir(candidate=False).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir.resolve())))
+
+    def _replace_video_storyboard_frame(
+        self,
+        scene_id: str,
+        source_path: str,
+    ) -> None:
+        source = Path(source_path)
+        supported_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        if (
+            not source.is_file()
+            or source.suffix.casefold() not in supported_suffixes
+            or not QImageReader(str(source)).canRead()
+        ):
+            self.video_storyboard_page.set_frame_replacement_failed(
+                self.tr(
+                    "video_storyboard_invalid_replacement_image",
+                    "The selected file is not a readable image.",
+                )
+            )
+            return
+        scenes = self.video_storyboard_page.scenes()
+        index = next(
+            (
+                position
+                for position, scene in enumerate(scenes, start=1)
+                if str(scene.get("scene_id") or "") == scene_id
+            ),
+            1,
+        )
+        safe_scene_id = re.sub(r"[^A-Za-z0-9._-]+", "-", scene_id).strip("-.")
+        safe_scene_id = safe_scene_id or f"{index:03d}"
+        suffix = source.suffix.casefold() or ".png"
+        target_dir = self._video_storyboard_output_dir(candidate=False)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / (
+            f"scene-{index:03d}-{safe_scene_id}-manual-{time.time_ns()}{suffix}"
+        )
+        temporary = target.with_name(f".{target.name}.part")
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            self.video_storyboard_page.set_frame_replacement_failed(str(exc))
+            return
+        self.video_storyboard_page.set_frame_replaced(scene_id, str(target))
+
+    def _release_storyboard_local_vram(self, operation: str) -> None:
+        """Best-effort release of app-owned speech models before local AI work."""
+        has_loaded_models = bool(
+            self.preloaded_whisper_verifier is not None
+            or self.whisper_model_loaded
+            or self.preloaded_tts_engine_id
+            or self.host_loaded_tts_engine_ids
+        )
+        if not has_loaded_models:
+            return
+        self.video_storyboard_page.append_activity(
+            f"Releasing TTS and Whisper VRAM before {operation}..."
+        )
+        released: list[str] = []
+        if self.preloaded_whisper_verifier is not None or self.whisper_model_loaded:
+            self._unload_faster_whisper()
+            released.append("Faster Whisper")
+
+        engine_id = self.preloaded_tts_engine_id
+        self._unload_preloaded_tts_engine(log_message=False)
+        if engine_id:
+            released.append(self._tts_engine_label(engine_id))
+
+        host_is_running = bool(
+            self.host_loaded_tts_engine_ids
+            and self.engine_host_client.health(timeout=0.25)
+        )
+        stale_host_engines: tuple[str, ...] = ()
+        if self.host_loaded_tts_engine_ids and not host_is_running:
+            stale_host_engines = tuple(self.host_loaded_tts_engine_ids)
+            self.host_loaded_tts_engine_ids.clear()
+            self.loaded_tts_engine_id = None
+        for host_engine_id in (
+            tuple(self.host_loaded_tts_engine_ids) if host_is_running else ()
+        ):
+            try:
+                self.engine_host_client.request_json(
+                    "POST",
+                    f"/engines/{host_engine_id}/unload",
+                    {},
+                    timeout=30.0,
+                )
+            except Exception as exc:
+                self.log_view.append_event(
+                    f"TTS engine unload warning ({host_engine_id}): {exc}"
+                )
+                continue
+            self.host_loaded_tts_engine_ids.discard(host_engine_id)
+            if self.loaded_tts_engine_id == host_engine_id:
+                self.loaded_tts_engine_id = None
+            released.append(self._tts_engine_label(host_engine_id))
+
+        if stale_host_engines:
+            self._refresh_all_engine_status()
+
+        if released:
+            self._refresh_all_engine_status()
+            message = (
+                f"Released local VRAM before {operation}: "
+                + ", ".join(dict.fromkeys(released))
+                + "."
+            )
+            self.log_view.append_event(message)
+            self.video_storyboard_page.append_activity(message)
+
+    def _start_video_storyboard_render(self, raw_scenes: object) -> None:
+        if self.video_storyboard_render_thread is not None:
+            return
+        scenes = raw_scenes if isinstance(raw_scenes, list) else []
+        audiobook = (
+            self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if self.current_audiobook_id is not None
+            else None
+        )
+        if audiobook is None:
+            self.video_storyboard_page.set_render_failed(
+                self.tr(
+                    "video_storyboard_render_project_required",
+                    "Save or open the audiobook project before rendering the video.",
+                )
+            )
+            return
+
+        audio_path = next(
+            (
+                path
+                for value in (audiobook.mix_audio_path, audiobook.clean_audio_path)
+                if value and (path := Path(value)).is_file()
+            ),
+            None,
+        )
+        if audio_path is None:
+            self.video_storyboard_page.set_render_failed(
+                self.tr(
+                    "video_storyboard_render_audio_required",
+                    "Generate the audiobook audio before rendering the video.",
+                )
+            )
+            return
+
+        output_dir = audiobook.output_dir
+        if not str(output_dir).strip() or output_dir == Path():
+            output_dir = audiobook.project_dir / "exports"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{self._safe_project_folder_name(audiobook.title)}-storyboard.mp4"
+        output_path = output_dir / filename
+        render_settings = deepcopy(self.settings.get("video_storyboard", {}))
+        render_settings.setdefault("video", {}).update(
+            {
+                key: value
+                for key, value in self.video_storyboard_page.render_overrides().items()
+                if key in {"zoom_percent", "transition_seconds"}
+            }
+        )
+        render_settings["ffmpeg_path"] = self.settings.get(
+            "ffmpeg_path", "ffmpeg/ffmpeg.exe"
+        )
+
+        thread = QThread(self)
+        worker = VideoStoryboardRenderWorker(
+            scenes,
+            audio_path,
+            output_path,
+            render_settings,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_video_storyboard_render_progress)
+        worker.finished.connect(self._on_video_storyboard_render_finished)
+        worker.failed.connect(self._on_video_storyboard_render_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_video_storyboard_render_worker)
+        self.video_storyboard_render_worker = worker
+        self.video_storyboard_render_thread = thread
+        self.video_storyboard_page.append_activity(
+            self.tr(
+                "video_storyboard_render_started",
+                "FFmpeg started. Encoding {count} scenes with audiobook audio...",
+                count=len(scenes),
+            )
+        )
+        thread.start()
+
+    def _on_video_storyboard_render_progress(
+        self,
+        stage: str,
+        percentage: int,
+    ) -> None:
+        messages = {
+            "validating": self.tr(
+                "video_storyboard_render_validating",
+                "Checking frames and audiobook audio...",
+            ),
+            "preparing": self.tr(
+                "video_storyboard_render_preparing",
+                "Preparing animated scene clips...",
+            ),
+            "rendering": self.tr(
+                "video_storyboard_render_encoding",
+                "FFmpeg is encoding the final video...",
+            ),
+            "finalizing": self.tr(
+                "video_storyboard_render_finalizing",
+                "Finalizing the MP4 file...",
+            ),
+            "complete": self.tr(
+                "video_storyboard_render_done",
+                "Final video render complete.",
+            ),
+        }
+        self.video_storyboard_page.set_operation(
+            messages.get(stage, messages["rendering"]),
+            percentage,
+        )
+
+    def _on_video_storyboard_render_finished(self, raw_result: object) -> None:
+        result = raw_result if isinstance(raw_result, dict) else {}
+        output_path = str(result.get("output_path") or "")
+        self.video_storyboard_page.set_render_finished(output_path)
+        self.log_view.append_event(
+            self.tr(
+                "video_storyboard_render_complete",
+                "Final video created: {path}",
+                path=output_path,
+            )
+        )
+
+    def _on_video_storyboard_render_failed(self, error: str) -> None:
+        self.video_storyboard_page.set_render_failed(error)
+        self.log_view.append_event(
+            self.tr(
+                "video_storyboard_render_failed",
+                "Video rendering failed: {error}",
+                error=error,
+            )
+        )
+
+    def _clear_video_storyboard_render_worker(self) -> None:
+        self.video_storyboard_render_worker = None
+        self.video_storyboard_render_thread = None
+
+    def _accept_video_storyboard_candidate(
+        self,
+        scene_id: str,
+        candidate_path: str,
+        _prompt: str,
+    ) -> None:
+        source = Path(candidate_path)
+        if not source.is_file() or source.parent.name != "candidates":
+            return
+        scenes = self.video_storyboard_page.scenes()
+        index = next(
+            (
+                position
+                for position, scene in enumerate(scenes, start=1)
+                if scene.get("scene_id") == scene_id
+            ),
+            1,
+        )
+        target_dir = self._video_storyboard_output_dir(candidate=False)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"scene-{index:03d}-{scene_id}.png"
+        try:
+            os.replace(source, target)
+        except OSError as exc:
+            self.log_view.append_event(
+                f"Could not accept storyboard candidate: {exc}"
+            )
+            return
+        self.video_storyboard_page.set_frame_generated(
+            scene_id,
+            str(target),
+        )
+
+    def _reject_video_storyboard_candidate(
+        self,
+        _scene_id: str,
+        candidate_path: str,
+    ) -> None:
+        path = Path(candidate_path)
+        if path.parent.name != "candidates" or path.suffix.casefold() != ".png":
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log_view.append_event(
+                f"Could not delete rejected storyboard candidate: {exc}"
+            )
+
+    def _on_video_storyboard_settings_changed(self) -> None:
+        if self._restoring_settings:
+            return
+        configuration = self.video_storyboard_settings.configuration()
+        self.settings["video_storyboard"] = configuration
+        self.video_storyboard_page.set_configuration(configuration)
+        self._save_settings()
+
     def _show_page(
         self,
         index: int,
@@ -3770,6 +4868,10 @@ class MainWindow(QMainWindow):
         subtitle: str,
         icon_name: str,
     ) -> None:
+        if nav_key != "video_storyboard" and hasattr(
+            self, "video_storyboard_page"
+        ):
+            self.video_storyboard_page.stop_preview()
         self.page_stack.setCurrentIndex(index)
         self.settings_button.setText(self.tr("settings", "Settings"))
         self.settings_button.setIcon(ui_icon("settings"))
@@ -9808,7 +10910,10 @@ class MainWindow(QMainWindow):
     def _change_ai_asset_location(self) -> None:
         if self.asset_storage_thread is not None:
             return
-        if self.worker_thread is not None or self._tts_engine_install_in_progress():
+        if (
+            self.worker_thread is not None
+            or self._tts_engine_install_in_progress()
+        ):
             QMessageBox.warning(
                 self,
                 self.tr("storage_busy_title", "AI assets are busy"),
@@ -13214,6 +14319,12 @@ class MainWindow(QMainWindow):
             self.voice_combo,
             self.settings.get("voice_id", ""),
         )
+        self.video_storyboard_settings.set_configuration(
+            self.settings.get("video_storyboard", {})
+        )
+        self.video_storyboard_page.set_configuration(
+            self.settings.get("video_storyboard", {})
+        )
         self.log_view.append_event(
             self.tr(
                 "voices_found",
@@ -13313,6 +14424,10 @@ class MainWindow(QMainWindow):
             self._show_mix_preview_page()
         elif page_index == 5:
             self._show_voices_page()
+        elif page_index == 6:
+            self._show_bulk_audiobooks_page()
+        elif page_index == 7:
+            self._show_video_storyboard_page()
         else:
             self._show_generation()
         self._set_running(False)
@@ -18027,12 +19142,18 @@ class MainWindow(QMainWindow):
                     },
                 },
                 "custom_tts_engines": self._custom_tts_engines(),
+                "video_storyboard": (
+                    self.video_storyboard_settings.configuration()
+                ),
             }
         )
         try:
             self.settings_manager.save(self.settings)
         except OSError as exc:
             self.log_view.append_event(f"Could not save config.json: {exc}")
+        self.video_storyboard_page.set_configuration(
+            self.settings.get("video_storyboard", {})
+        )
         self._update_text_normalization_editor_state()
         self._mark_normalization_preview_stale()
 
@@ -18135,6 +19256,69 @@ class MainWindow(QMainWindow):
                 self.tr(
                     "storage_move_close_message",
                     "AI assets are being moved. Cancel the move and wait for it to stop before closing LocalText2Voice.",
+                ),
+            )
+            event.ignore()
+            return
+        if (
+            hasattr(self, "video_storyboard_settings")
+            and self.video_storyboard_settings.detection_active()
+        ):
+            QMessageBox.warning(
+                self,
+                self.tr(
+                    "engine_install_running_title",
+                    "Engine installation in progress",
+                ),
+                self.tr(
+                    "video_storyboard_detection_running_close_message",
+                    "Video Storyboard is checking Ollama or ComfyUI. Wait for the "
+                    "connection check to finish before closing LocalText2Voice.",
+                ),
+            )
+            event.ignore()
+            return
+        if self.video_storyboard_planner_thread is not None:
+            QMessageBox.warning(
+                self,
+                self.tr(
+                    "video_storyboard_analysis_running_title",
+                    "Storyboard analysis in progress",
+                ),
+                self.tr(
+                    "video_storyboard_analysis_running_close_message",
+                    "Ollama is analyzing the audiobook. Wait for the current "
+                    "planning block to finish before closing LocalText2Voice.",
+                ),
+            )
+            event.ignore()
+            return
+        if self.video_storyboard_frame_thread is not None:
+            QMessageBox.warning(
+                self,
+                self.tr(
+                    "video_storyboard_generation_running_title",
+                    "Frame generation in progress",
+                ),
+                self.tr(
+                    "video_storyboard_generation_running_close_message",
+                    "ComfyUI is generating storyboard frames. Wait for the "
+                    "current frame to finish before closing LocalText2Voice.",
+                ),
+            )
+            event.ignore()
+            return
+        if self.video_storyboard_render_thread is not None:
+            QMessageBox.warning(
+                self,
+                self.tr(
+                    "video_storyboard_render_running_title",
+                    "Video rendering in progress",
+                ),
+                self.tr(
+                    "video_storyboard_render_running_close_message",
+                    "FFmpeg is rendering the storyboard video. Wait for the "
+                    "MP4 file to finish before closing LocalText2Voice.",
                 ),
             )
             event.ignore()

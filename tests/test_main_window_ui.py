@@ -15,6 +15,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QThread, Qt, QUrl, qInstallMessageHandler
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -42,6 +43,103 @@ class MainWindowUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_closing_previous_storyboard_dialog_keeps_new_reference(
+        self,
+    ) -> None:
+        previous_dialog = object()
+        current_dialog = object()
+        holder = SimpleNamespace(
+            video_storyboard_analysis_dialog=current_dialog
+        )
+
+        MainWindow._clear_video_storyboard_analysis_dialog(
+            holder,
+            previous_dialog,
+        )
+        self.assertIs(holder.video_storyboard_analysis_dialog, current_dialog)
+
+        MainWindow._clear_video_storyboard_analysis_dialog(
+            holder,
+            current_dialog,
+        )
+        self.assertIsNone(holder.video_storyboard_analysis_dialog)
+
+    def test_storyboard_local_vram_release_unloads_speech_models(self) -> None:
+        calls: list[object] = []
+        log_messages: list[str] = []
+        activity_messages: list[str] = []
+        holder = SimpleNamespace(
+            preloaded_whisper_verifier=object(),
+            whisper_model_loaded=True,
+            preloaded_tts_engine_id="qwen",
+            host_loaded_tts_engine_ids={"kokoro"},
+            loaded_tts_engine_id="kokoro",
+            _unload_faster_whisper=lambda: calls.append("whisper"),
+            _unload_preloaded_tts_engine=lambda log_message=False: calls.append(
+                ("tts", log_message)
+            ),
+            _tts_engine_label=lambda engine_id: engine_id.title(),
+            engine_host_client=SimpleNamespace(
+                health=lambda timeout=0.75: True,
+                request_json=lambda *args, **kwargs: calls.append(
+                    (args, kwargs)
+                )
+            ),
+            _refresh_all_engine_status=lambda: calls.append("refresh"),
+            log_view=SimpleNamespace(append_event=log_messages.append),
+            video_storyboard_page=SimpleNamespace(
+                append_activity=activity_messages.append
+            ),
+        )
+
+        MainWindow._release_storyboard_local_vram(holder, "frame generation")
+
+        self.assertIn("whisper", calls)
+        self.assertIn(("tts", False), calls)
+        self.assertEqual(holder.host_loaded_tts_engine_ids, set())
+        self.assertIsNone(holder.loaded_tts_engine_id)
+        self.assertIn("Faster Whisper", log_messages[-1])
+        self.assertIn("Qwen", log_messages[-1])
+        self.assertIn("Kokoro", log_messages[-1])
+        self.assertIn("Releasing TTS and Whisper VRAM", activity_messages[0])
+        self.assertEqual(activity_messages[-1], log_messages[-1])
+
+    def test_storyboard_replacement_image_is_copied_into_project_assets(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "chosen image.png"
+        pixmap = QPixmap(24, 16)
+        pixmap.fill(QColor("#2769a8"))
+        self.assertTrue(pixmap.save(str(source)))
+        replacements: list[tuple[str, str]] = []
+        failures: list[str] = []
+        page = SimpleNamespace(
+            scenes=lambda: [{"scene_id": "scene/one"}],
+            set_frame_replaced=lambda scene_id, path: replacements.append(
+                (scene_id, path)
+            ),
+            set_frame_replacement_failed=failures.append,
+        )
+        holder = SimpleNamespace(
+            video_storyboard_page=page,
+            _video_storyboard_output_dir=lambda candidate=False: root / "frames",
+            tr=lambda _key, default, **values: default.format(**values),
+        )
+
+        MainWindow._replace_video_storyboard_frame(
+            holder,
+            "scene/one",
+            str(source),
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(replacements[0][0], "scene/one")
+        imported = Path(replacements[0][1])
+        self.assertTrue(imported.is_file())
+        self.assertEqual(imported.parent, root / "frames")
+        self.assertTrue(QPixmap(str(imported)).isNull() is False)
 
     def test_review_marks_old_silero_f5_scores_as_pending_once(self) -> None:
         segment = StoredSegment(
@@ -533,7 +631,7 @@ class MainWindowUITests(unittest.TestCase):
             window = MainWindow()
         self.addCleanup(window.deleteLater)
 
-        self.assertEqual(window.page_stack.count(), 7)
+        self.assertEqual(window.page_stack.count(), 8)
         window._select_tts_engine("piper")
         self.assertEqual(window.page_stack.currentIndex(), 0)
         self.assertEqual(window.ui_language_combo.count(), 11)
@@ -716,7 +814,31 @@ class MainWindowUITests(unittest.TestCase):
 
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
-        self.assertEqual(window.settings_tabs.count(), 6)
+        self.assertEqual(window.settings_tabs.count(), 7)
+        self.assertIs(
+            window.settings_tabs.widget(6),
+            window.video_storyboard_settings,
+        )
+        self.assertEqual(
+            window.video_storyboard_settings.image_provider_combo.currentData(),
+            "comfyui",
+        )
+        self.assertEqual(
+            window.video_storyboard_settings.llm_provider_combo.currentData(),
+            "ollama",
+        )
+        self.assertEqual(window.video_storyboard_settings.image_width_spin.value(), 1280)
+        self.assertEqual(window.video_storyboard_settings.image_height_spin.value(), 720)
+        self.assertTrue(hasattr(window.video_storyboard_settings, "comfyui_detect_button"))
+        self.assertTrue(hasattr(window.video_storyboard_settings, "ollama_detect_button"))
+        self.assertEqual(
+            window.video_storyboard_settings.comfyui_diffusion_combo.currentText(),
+            "z_image_turbo_bf16.safetensors",
+        )
+        self.assertEqual(
+            window.video_storyboard_settings.ollama_model_combo.currentText(),
+            "qwen3:8b",
+        )
         self.assertTrue(hasattr(window, "text_normalization_panel"))
         self.assertGreaterEqual(
             window.text_normalization_panel.entries_table.rowCount(),
@@ -761,6 +883,7 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "tts_engine_table"))
         self.assertTrue(hasattr(window, "bulk_audiobooks_page"))
         self.assertIn("bulk", window.nav_buttons)
+        self.assertEqual(list(window.nav_buttons)[-1], "video_storyboard")
         self.assertEqual(
             window.bulk_audiobooks_page.creation_flow_combo.currentData(),
             "settings",
@@ -1021,6 +1144,19 @@ class MainWindowUITests(unittest.TestCase):
         )
         self.assertIn("OpenAI", window.header_engine_label.text())
 
+        window.video_storyboard_settings.enabled_checkbox.setChecked(True)
+        self.assertTrue(
+            SettingsManager(config_path).settings["video_storyboard"]["enabled"]
+        )
+        window._show_video_storyboard_page()
+        self.assertEqual(window.page_stack.currentIndex(), 7)
+        self.assertIn("Enabled", window.video_storyboard_page.status_label.text())
+        self.assertFalse(
+            hasattr(window.video_storyboard_page, "open_settings_button")
+        )
+        self.assertTrue(
+            hasattr(window.video_storyboard_page, "debug_alignment_button")
+        )
         window.back_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 0)
 

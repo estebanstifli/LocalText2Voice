@@ -289,7 +289,7 @@ begin
 
   Result :=
     '{' + #13#10 +
-    '  "settings_schema_version": 21,' + #13#10 +
+    '  "settings_schema_version": 27,' + #13#10 +
     '  "ui_language": "' + UiLang + '",' + #13#10 +
     '  "storage": {' + #13#10 +
     '    "base_dir": "' + AssetsBaseDir + '"' + #13#10 +

@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 21,
+  "settings_schema_version": 27,
   "storage": {
     "base_dir": ".",
     "previous_roots": []
@@ -191,6 +191,68 @@
     "local_catalog_path": "",
     "auto_sync": false,
     "last_sync_at": ""
+  },
+  "video_storyboard": {
+    "enabled": false,
+    "image_provider": "comfyui",
+    "llm_provider": "ollama",
+    "scene": {
+      "mode": "semantic_bounded",
+      "minimum_seconds": 4,
+      "target_seconds": 8,
+      "maximum_seconds": 20
+    },
+    "image": {
+      "width": 1280,
+      "height": 720,
+      "batch_size": 1,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "auraflow_shift": 3.0,
+      "style_mode": "comic_book",
+      "style_prompt": "",
+      "seed_mode": "audiobook_locked"
+    },
+    "comfyui": {
+      "base_url": "http://127.0.0.1:8188",
+      "workflow_path": "",
+      "diffusion_model": "z_image_turbo_bf16.safetensors",
+      "text_encoder": "qwen_3_4b.safetensors",
+      "vae_model": "ae.safetensors",
+      "timeout_seconds": 900
+    },
+    "litellm_image": {
+      "base_url": "",
+      "model": "",
+      "api_key": "",
+      "timeout_seconds": 300
+    },
+    "ollama": {
+      "base_url": "http://127.0.0.1:11434",
+      "model": "qwen3:8b",
+      "context_length": 8192,
+      "timeout_seconds": 300
+    },
+    "litellm": {
+      "base_url": "",
+      "model": "",
+      "api_key": "",
+      "timeout_seconds": 300,
+      "max_output_tokens": 16000
+    },
+    "video": {
+      "fps": 30,
+      "transition": "fade",
+      "transition_seconds": 0.7,
+      "zoom_percent": 30.0,
+      "supersample": 4,
+      "preset": "medium",
+      "codec": "libx264",
+      "crf": 18
+    }
   },
   "custom_tts_engines": [
     {

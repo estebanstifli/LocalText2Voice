@@ -266,3 +266,142 @@ def test_text_normalization_accepts_builtin_and_custom_language_codes(tmp_path):
     manager.settings["text_normalization"]["language"] = "not a valid code!"
     manager.save()
     assert manager.settings["text_normalization"]["language"] == "auto"
+
+
+def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
+    manager = SettingsManager(tmp_path / "config.json")
+    defaults = manager.settings["video_storyboard"]
+
+    assert defaults["enabled"] is False
+    assert defaults["image_provider"] == "comfyui"
+    assert defaults["llm_provider"] == "ollama"
+    assert defaults["image"]["width"] == 1280
+    assert defaults["image"]["height"] == 720
+    assert defaults["image"]["batch_size"] == 1
+    assert defaults["image"]["style_mode"] == "comic_book"
+    assert defaults["litellm"]["base_url"] == ""
+    assert defaults["litellm"]["max_output_tokens"] == 16000
+    assert defaults["video"]["zoom_percent"] == 30.0
+
+    manager.settings["video_storyboard"] = {
+        "enabled": True,
+        "image_provider": "local_z_image",
+        "llm_provider": "local_qwen3",
+        "local_z_image": {"model_id": "obsolete"},
+        "local_qwen": {"model_id": "obsolete"},
+        "scene": {
+            "minimum_seconds": 50,
+            "target_seconds": 4,
+            "maximum_seconds": 2,
+        },
+        "image": {
+            "width": 1,
+            "height": 9000,
+            "batch_size": 99,
+            "steps": 0,
+        },
+        "litellm_image": {"model": "openai/gpt-image-1", "timeout_seconds": 1},
+        "litellm": {"max_output_tokens": 999999},
+        "video": {"fps": 1000, "codec": "unsafe", "crf": 99},
+    }
+    manager.save()
+
+    storyboard = manager.settings["video_storyboard"]
+    assert storyboard["enabled"] is True
+    assert storyboard["image_provider"] == "comfyui"
+    assert storyboard["llm_provider"] == "ollama"
+    assert "local_z_image" not in storyboard
+    assert "local_qwen" not in storyboard
+    assert storyboard["comfyui"]["diffusion_model"] == "z_image_turbo_bf16.safetensors"
+    assert storyboard["ollama"]["context_length"] == 8192
+    assert storyboard["scene"] == {
+        "mode": "semantic_bounded",
+        "minimum_seconds": 50,
+        "target_seconds": 50,
+        "maximum_seconds": 50,
+    }
+    assert storyboard["image"]["width"] == 1280
+    assert storyboard["image"]["height"] == 720
+    assert storyboard["image"]["batch_size"] == 1
+    assert storyboard["image"]["steps"] == 8
+    assert storyboard["litellm_image"]["model"] == "openai/gpt-image-1"
+    assert storyboard["litellm_image"]["timeout_seconds"] == 300
+    assert storyboard["litellm"]["max_output_tokens"] == 16000
+    assert storyboard["video"]["fps"] == 30
+    assert storyboard["video"]["codec"] == "libx264"
+    assert storyboard["video"]["crf"] == 18
+
+    manager.settings["video_storyboard"]["video"]["zoom_percent"] = 250.0
+    manager.save()
+    assert manager.settings["video_storyboard"]["video"]["zoom_percent"] == 250.0
+
+
+def test_video_storyboard_legacy_zoom_is_migrated_to_stronger_motion(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "settings_schema_version": 23,
+                "video_storyboard": {"video": {"zoom_percent": 8.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = SettingsManager(path).settings
+
+    assert settings["settings_schema_version"] == CURRENT_SETTINGS_SCHEMA_VERSION
+    assert settings["video_storyboard"]["video"]["zoom_percent"] == 30.0
+
+
+def test_litellm_provider_model_migrates_legacy_default_proxy_to_direct_sdk(
+    tmp_path,
+):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "settings_schema_version": 25,
+                "video_storyboard": {
+                    "llm_provider": "litellm",
+                    "litellm": {
+                        "base_url": "http://127.0.0.1:4000/v1",
+                        "model": "openai/gpt-5-mini",
+                        "api_key": "secret",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = SettingsManager(path).settings
+
+    assert settings["video_storyboard"]["litellm"]["base_url"] == ""
+
+
+def test_custom_storyboard_image_provider_migrates_to_litellm_image(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "settings_schema_version": 26,
+                "video_storyboard": {
+                    "image_provider": "custom_http",
+                    "custom_image": {
+                        "url": "https://images.example.test/v1",
+                        "api_key": "secret",
+                        "timeout_seconds": 600,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    storyboard = SettingsManager(path).settings["video_storyboard"]
+
+    assert storyboard["image_provider"] == "litellm_image"
+    assert storyboard["litellm_image"]["base_url"] == "https://images.example.test/v1"
+    assert storyboard["litellm_image"]["api_key"] == "secret"
+    assert "custom_image" not in storyboard

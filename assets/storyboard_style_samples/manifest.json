@@ -1,0 +1,414 @@
+{
+  "schema": "localtext2voice.storyboard-style-samples",
+  "version": 1,
+  "resolution": [
+    512,
+    512
+  ],
+  "seed": 20260901,
+  "scene": "An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them",
+  "shot": "wide three-quarter establishing shot, eye level, 35mm viewpoint",
+  "samples": [
+    {
+      "id": "watercolor",
+      "name": "Watercolor",
+      "style_prompt": "watercolor style, soft brush washes, translucent colors, paper texture, delicate edges",
+      "image": "watercolor.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: watercolor style, soft brush washes, translucent colors, paper texture, delicate edges. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "oil_painting",
+      "name": "Oil Painting",
+      "style_prompt": "oil painting style, rich brushstrokes, textured canvas, deep colors, painterly lighting",
+      "image": "oil_painting.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: oil painting style, rich brushstrokes, textured canvas, deep colors, painterly lighting. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "impressionism",
+      "name": "Impressionism",
+      "style_prompt": "impressionist style, loose brushwork, luminous color, soft details, atmospheric light",
+      "image": "impressionism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: impressionist style, loose brushwork, luminous color, soft details, atmospheric light. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "surrealism",
+      "name": "Surrealism",
+      "style_prompt": "surrealist style, dreamlike imagery, unexpected elements, symbolic composition, imaginative atmosphere",
+      "image": "surrealism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: surrealist style, dreamlike imagery, unexpected elements, symbolic composition, imaginative atmosphere. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "pop_art",
+      "name": "Pop Art",
+      "style_prompt": "pop art style, bold colors, comic book aesthetics, graphic shapes, high contrast",
+      "image": "pop_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: pop art style, bold colors, comic book aesthetics, graphic shapes, high contrast. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "minimalism",
+      "name": "Minimalism",
+      "style_prompt": "minimalist style, simple shapes, clean lines, limited color palette, negative space",
+      "image": "minimalism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: minimalist style, simple shapes, clean lines, limited color palette, negative space. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "art_deco",
+      "name": "Art Deco",
+      "style_prompt": "art deco style, elegant geometry, decorative symmetry, luxurious details, refined vintage glamour",
+      "image": "art_deco.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: art deco style, elegant geometry, decorative symmetry, luxurious details, refined vintage glamour. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "art_nouveau",
+      "name": "Art Nouveau",
+      "style_prompt": "art nouveau style, flowing organic lines, ornamental details, floral motifs, graceful curves",
+      "image": "art_nouveau.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: art nouveau style, flowing organic lines, ornamental details, floral motifs, graceful curves. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "pencil_sketch",
+      "name": "Pencil Sketch",
+      "style_prompt": "pencil sketch style, graphite shading, hand-drawn lines, rough texture, monochrome drawing",
+      "image": "pencil_sketch.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: pencil sketch style, graphite shading, hand-drawn lines, rough texture, monochrome drawing. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "charcoal_drawing",
+      "name": "Charcoal Drawing",
+      "style_prompt": "charcoal drawing style, expressive dark strokes, smudged shading, dramatic contrast, textured paper",
+      "image": "charcoal_drawing.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: charcoal drawing style, expressive dark strokes, smudged shading, dramatic contrast, textured paper. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "ink_drawing",
+      "name": "Ink Drawing",
+      "style_prompt": "ink drawing style, crisp black lines, hand-inked illustration, high contrast, detailed linework",
+      "image": "ink_drawing.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: ink drawing style, crisp black lines, hand-inked illustration, high contrast, detailed linework. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "sumi_e",
+      "name": "Sumi-e",
+      "style_prompt": "sumi-e style, minimalist ink wash, expressive brush strokes, elegant simplicity, traditional Japanese painting",
+      "image": "sumi_e.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: sumi-e style, minimalist ink wash, expressive brush strokes, elegant simplicity, traditional Japanese painting. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "etching",
+      "name": "Etching",
+      "style_prompt": "etching style, fine engraved lines, old print texture, monochrome detail, classical printmaking look",
+      "image": "etching.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: etching style, fine engraved lines, old print texture, monochrome detail, classical printmaking look. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "ukiyo_e",
+      "name": "Ukiyo-e",
+      "style_prompt": "ukiyo-e style, flat color areas, woodblock print aesthetics, elegant outlines, traditional Japanese composition",
+      "image": "ukiyo_e.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: ukiyo-e style, flat color areas, woodblock print aesthetics, elegant outlines, traditional Japanese composition. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "gothic",
+      "name": "Gothic",
+      "style_prompt": "gothic style, dark atmosphere, ornate architecture, dramatic shadows, medieval elegance",
+      "image": "gothic.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: gothic style, dark atmosphere, ornate architecture, dramatic shadows, medieval elegance. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "renaissance",
+      "name": "Renaissance",
+      "style_prompt": "renaissance painting style, balanced composition, realistic anatomy, soft chiaroscuro, classical elegance",
+      "image": "renaissance.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: renaissance painting style, balanced composition, realistic anatomy, soft chiaroscuro, classical elegance. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "baroque",
+      "name": "Baroque",
+      "style_prompt": "baroque style, dramatic lighting, rich detail, dynamic composition, theatrical intensity",
+      "image": "baroque.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: baroque style, dramatic lighting, rich detail, dynamic composition, theatrical intensity. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "romanticism",
+      "name": "Romanticism",
+      "style_prompt": "romanticism style, emotional atmosphere, dramatic scenery, expressive light, poetic mood",
+      "image": "romanticism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: romanticism style, emotional atmosphere, dramatic scenery, expressive light, poetic mood. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "naive_art",
+      "name": "Naive Art",
+      "style_prompt": "naive art style, simple forms, bright colors, charming perspective, childlike sincerity",
+      "image": "naive_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: naive art style, simple forms, bright colors, charming perspective, childlike sincerity. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "abstract",
+      "name": "Abstract",
+      "style_prompt": "abstract art style, non-representational forms, dynamic shapes, expressive color, conceptual composition",
+      "image": "abstract.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: abstract art style, non-representational forms, dynamic shapes, expressive color, conceptual composition. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "cubism",
+      "name": "Cubism",
+      "style_prompt": "cubist style, geometric fragmentation, multiple viewpoints, angular forms, abstract structure",
+      "image": "cubism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: cubist style, geometric fragmentation, multiple viewpoints, angular forms, abstract structure. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "fauvism",
+      "name": "Fauvism",
+      "style_prompt": "fauvist style, vivid unnatural colors, bold brushwork, simplified forms, expressive energy",
+      "image": "fauvism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: fauvist style, vivid unnatural colors, bold brushwork, simplified forms, expressive energy. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "expressionism",
+      "name": "Expressionism",
+      "style_prompt": "expressionist style, emotional distortion, bold strokes, dramatic color, intense atmosphere",
+      "image": "expressionism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: expressionist style, emotional distortion, bold strokes, dramatic color, intense atmosphere. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "photorealism",
+      "name": "Photorealism",
+      "style_prompt": "photorealistic style, lifelike detail, realistic lighting, natural textures, highly detailed realism",
+      "image": "photorealism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: photorealistic style, lifelike detail, realistic lighting, natural textures, highly detailed realism. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "vintage_photography",
+      "name": "Vintage Photography",
+      "style_prompt": "vintage photography style, film grain, muted tones, retro lighting, aged photo texture",
+      "image": "vintage_photography.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: vintage photography style, film grain, muted tones, retro lighting, aged photo texture. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "film_noir",
+      "name": "Film Noir",
+      "style_prompt": "film noir style, moody shadows, black and white, hard contrast, mysterious cinematic atmosphere",
+      "image": "film_noir.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: film noir style, moody shadows, black and white, hard contrast, mysterious cinematic atmosphere. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "cyberpunk",
+      "name": "Cyberpunk",
+      "style_prompt": "cyberpunk style, neon lighting, futuristic cityscape, high-tech atmosphere, dark urban mood",
+      "image": "cyberpunk.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: cyberpunk style, neon lighting, futuristic cityscape, high-tech atmosphere, dark urban mood. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "steampunk",
+      "name": "Steampunk",
+      "style_prompt": "steampunk style, brass machinery, Victorian fashion, mechanical details, retro-futuristic design",
+      "image": "steampunk.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: steampunk style, brass machinery, Victorian fashion, mechanical details, retro-futuristic design. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "vaporwave",
+      "name": "Vaporwave",
+      "style_prompt": "vaporwave style, pastel neon palette, retro digital aesthetics, nostalgic 80s mood, surreal graphic atmosphere",
+      "image": "vaporwave.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: vaporwave style, pastel neon palette, retro digital aesthetics, nostalgic 80s mood, surreal graphic atmosphere. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "psychedelic",
+      "name": "Psychedelic",
+      "style_prompt": "psychedelic style, vibrant swirling colors, mind-bending patterns, surreal energy, hallucinatory visuals",
+      "image": "psychedelic.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: psychedelic style, vibrant swirling colors, mind-bending patterns, surreal energy, hallucinatory visuals. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "pixel_art",
+      "name": "Pixel Art",
+      "style_prompt": "pixel art style, low-resolution sprites, blocky forms, retro game aesthetics, crisp pixel detail",
+      "image": "pixel_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: pixel art style, low-resolution sprites, blocky forms, retro game aesthetics, crisp pixel detail. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "low_poly_3d",
+      "name": "Low Poly 3D",
+      "style_prompt": "low poly 3d style, simplified geometry, clean polygonal shapes, stylized 3d look, minimal texture",
+      "image": "low_poly_3d.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: low poly 3d style, simplified geometry, clean polygonal shapes, stylized 3d look, minimal texture. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "claymation",
+      "name": "Claymation",
+      "style_prompt": "claymation style, handcrafted clay textures, stop-motion look, soft modeling, tactile details",
+      "image": "claymation.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: claymation style, handcrafted clay textures, stop-motion look, soft modeling, tactile details. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "stop_motion",
+      "name": "Stop Motion",
+      "style_prompt": "stop motion style, handmade miniature look, tactile materials, practical set design, slightly imperfect handcrafted charm",
+      "image": "stop_motion.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: stop motion style, handmade miniature look, tactile materials, practical set design, slightly imperfect handcrafted charm. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "cartoon",
+      "name": "Cartoon",
+      "style_prompt": "cartoon style, clean outlines, simplified shapes, expressive characters, vibrant colors",
+      "image": "cartoon.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: cartoon style, clean outlines, simplified shapes, expressive characters, vibrant colors. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "anime",
+      "name": "Anime",
+      "style_prompt": "anime style, clean line art, expressive eyes, stylized character design, cel-shaded coloring",
+      "image": "anime.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: anime style, clean line art, expressive eyes, stylized character design, cel-shaded coloring. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "manga",
+      "name": "Manga",
+      "style_prompt": "manga style, black and white illustration, dynamic linework, screentone shading, Japanese comic aesthetics",
+      "image": "manga.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: manga style, black and white illustration, dynamic linework, screentone shading, Japanese comic aesthetics. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "comic_book",
+      "name": "Comic Book",
+      "style_prompt": "comic book style, bold inking, halftone texture, dynamic framing, graphic shading",
+      "image": "comic_book.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: comic book style, bold inking, halftone texture, dynamic framing, graphic shading. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "graphic_novel",
+      "name": "Graphic Novel",
+      "style_prompt": "graphic novel style, dramatic shadows, mature illustration, strong linework, cinematic panel-like composition",
+      "image": "graphic_novel.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: graphic novel style, dramatic shadows, mature illustration, strong linework, cinematic panel-like composition. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "childrens_book_illustration",
+      "name": "Children's Book Illustration",
+      "style_prompt": "children's book illustration style, soft colors, friendly shapes, whimsical details, storybook charm",
+      "image": "childrens_book_illustration.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: children's book illustration style, soft colors, friendly shapes, whimsical details, storybook charm. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "fairy_tale_illustration",
+      "name": "Fairy Tale Illustration",
+      "style_prompt": "fairy tale illustration style, magical atmosphere, decorative detail, dreamy lighting, enchanted storybook look",
+      "image": "fairy_tale_illustration.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: fairy tale illustration style, magical atmosphere, decorative detail, dreamy lighting, enchanted storybook look. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "flat_vector_illustration",
+      "name": "Flat Vector Illustration",
+      "style_prompt": "flat vector illustration style, clean shapes, solid colors, minimal shading, modern graphic design",
+      "image": "flat_vector_illustration.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: flat vector illustration style, clean shapes, solid colors, minimal shading, modern graphic design. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "line_art",
+      "name": "Line Art",
+      "style_prompt": "line art style, clean contours, minimal shading, elegant outlines, simplified illustration",
+      "image": "line_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: line art style, clean contours, minimal shading, elegant outlines, simplified illustration. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "isometric_illustration",
+      "name": "Isometric Illustration",
+      "style_prompt": "isometric illustration style, angled perspective, clean geometry, stylized depth, detailed miniature scene",
+      "image": "isometric_illustration.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: isometric illustration style, angled perspective, clean geometry, stylized depth, detailed miniature scene. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "3d_animation",
+      "name": "3D Animation",
+      "style_prompt": "stylized 3d animation style, smooth surfaces, appealing character design, clean lighting, polished render",
+      "image": "3d_animation.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: stylized 3d animation style, smooth surfaces, appealing character design, clean lighting, polished render. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "cinematic_realism",
+      "name": "Cinematic Realism",
+      "style_prompt": "cinematic realism, dramatic lighting, film still composition, natural detail, immersive atmosphere",
+      "image": "cinematic_realism.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: cinematic realism, dramatic lighting, film still composition, natural detail, immersive atmosphere. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "fantasy_concept_art",
+      "name": "Fantasy Concept Art",
+      "style_prompt": "fantasy concept art style, epic atmosphere, detailed environment design, painterly realism, dramatic lighting",
+      "image": "fantasy_concept_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: fantasy concept art style, epic atmosphere, detailed environment design, painterly realism, dramatic lighting. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "sci_fi_concept_art",
+      "name": "Sci-Fi Concept Art",
+      "style_prompt": "sci-fi concept art style, futuristic design, cinematic scale, advanced technology, detailed environment",
+      "image": "sci_fi_concept_art.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: sci-fi concept art style, futuristic design, cinematic scale, advanced technology, detailed environment. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "medieval_manuscript",
+      "name": "Medieval Manuscript",
+      "style_prompt": "medieval manuscript style, illuminated ornamentation, flat perspective, decorative borders, historical illustration",
+      "image": "medieval_manuscript.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: medieval manuscript style, illuminated ornamentation, flat perspective, decorative borders, historical illustration. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    },
+    {
+      "id": "retro_1950s_illustration",
+      "name": "Retro 1950s Illustration",
+      "style_prompt": "1950s retro illustration style, mid-century design, vintage advertising look, clean shapes, nostalgic palette",
+      "image": "retro_1950s_illustration.png",
+      "seed": 20260901,
+      "compiled_prompt": "SCENE: An eight-year-old girl in a yellow summer dress plays with a red ball on a sunlit cobblestone village square, while a curious tabby cat watches beside a stone fountain; a welcoming house with blue shutters and flower boxes stands behind them. CHARACTERS IN FRAME (only these recurring identities; repeat exactly): girl: an eight-year-old girl with chestnut braids, a yellow summer dress and brown ankle shoes. No other recurring named character is present. STYLE: 1950s retro illustration style, mid-century design, vintage advertising look, clean shapes, nostalgic palette. SHOT AND COMPOSITION: wide three-quarter establishing shot, eye level, 35mm viewpoint."
+    }
+  ],
+  "failures": []
+}

@@ -1352,4 +1352,10 @@ def public_settings_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
     for custom in snapshot.get("custom_tts_engines", []) or []:
         if isinstance(custom, dict) and custom.get("api_key"):
             custom["api_key"] = "***"
+    storyboard = snapshot.get("video_storyboard")
+    if isinstance(storyboard, dict):
+        for provider_name in ("litellm_image", "litellm"):
+            provider = storyboard.get(provider_name)
+            if isinstance(provider, dict) and provider.get("api_key"):
+                provider["api_key"] = "***"
     return json.loads(json.dumps(snapshot, default=str))

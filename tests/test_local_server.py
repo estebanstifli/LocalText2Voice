@@ -14,7 +14,7 @@ from app.core.settings_manager import SettingsManager
 from app.server.http_app import _job_response, create_http_app
 from app.server.engine_host_client import EngineHostClient
 from app.server.job_manager import LocalServerJobManager, ServerJob, wait_for_job
-from app.server.ltv_service import LocalText2VoiceService
+from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
 from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
 
 
@@ -63,6 +63,18 @@ def _settings(tmp_path: Path) -> SettingsManager:
         "max_parallel_jobs": 1,
     }
     return manager
+
+
+def test_public_settings_redact_video_storyboard_api_keys(tmp_path):
+    settings = SettingsManager(tmp_path / "config.json").settings
+    settings["video_storyboard"]["litellm_image"]["api_key"] = "image-secret"
+    settings["video_storyboard"]["litellm"]["api_key"] = "llm-secret"
+
+    public = public_settings_snapshot(settings)
+
+    assert public["video_storyboard"]["litellm_image"]["api_key"] == "***"
+    assert public["video_storyboard"]["litellm"]["api_key"] == "***"
+    assert settings["video_storyboard"]["litellm_image"]["api_key"] == "image-secret"
 
 
 def test_http_server_protects_non_health_endpoints(tmp_path):

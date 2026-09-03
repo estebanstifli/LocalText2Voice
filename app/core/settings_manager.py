@@ -22,8 +22,9 @@ from app.utils.paths import (
     large_assets_root,
     write_assets_location_file,
 )
+from app.core.video_storyboard_styles import normalize_storyboard_style_id
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 21
+CURRENT_SETTINGS_SCHEMA_VERSION = 27
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -275,6 +276,68 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "completed": False,
         "completed_at": "",
     },
+    "video_storyboard": {
+        "enabled": False,
+        "image_provider": "comfyui",
+        "llm_provider": "ollama",
+        "scene": {
+            "mode": "semantic_bounded",
+            "minimum_seconds": 4,
+            "target_seconds": 8,
+            "maximum_seconds": 20,
+        },
+        "image": {
+            "width": 1280,
+            "height": 720,
+            "batch_size": 1,
+            "steps": 8,
+            "cfg": 1.0,
+            "sampler": "res_multistep",
+            "scheduler": "simple",
+            "denoise": 1.0,
+            "auraflow_shift": 3.0,
+            "style_mode": "comic_book",
+            "style_prompt": "",
+            "seed_mode": "audiobook_locked",
+        },
+        "comfyui": {
+            "base_url": "http://127.0.0.1:8188",
+            "workflow_path": "",
+            "diffusion_model": "z_image_turbo_bf16.safetensors",
+            "text_encoder": "qwen_3_4b.safetensors",
+            "vae_model": "ae.safetensors",
+            "timeout_seconds": 900,
+        },
+        "litellm_image": {
+            "base_url": "",
+            "model": "",
+            "api_key": "",
+            "timeout_seconds": 300,
+        },
+        "ollama": {
+            "base_url": "http://127.0.0.1:11434",
+            "model": "qwen3:8b",
+            "context_length": 8192,
+            "timeout_seconds": 300,
+        },
+        "litellm": {
+            "base_url": "",
+            "model": "",
+            "api_key": "",
+            "timeout_seconds": 300,
+            "max_output_tokens": 16000,
+        },
+        "video": {
+            "fps": 30,
+            "transition": "fade",
+            "transition_seconds": 0.7,
+            "zoom_percent": 30.0,
+            "supersample": 4,
+            "preset": "medium",
+            "codec": "libx264",
+            "crf": 18,
+        },
+    },
 }
 
 
@@ -371,6 +434,51 @@ def _migrate_settings(
         result["audio_quality"] = legacy_mp3_bitrate_quality(
             result.get("mp3_bitrate", "128k")
         )
+
+    if version < 24:
+        storyboard = result.get("video_storyboard")
+        if isinstance(storyboard, dict):
+            video = storyboard.get("video")
+            if isinstance(video, dict) and video.get("zoom_percent") == 8.0:
+                video["zoom_percent"] = 14.0
+
+    if version < 25:
+        storyboard = result.get("video_storyboard")
+        if isinstance(storyboard, dict):
+            video = storyboard.get("video")
+            if isinstance(video, dict) and video.get("zoom_percent") == 14.0:
+                video["zoom_percent"] = 30.0
+
+    if version < 26:
+        storyboard = result.get("video_storyboard")
+        litellm = (
+            storyboard.get("litellm", {})
+            if isinstance(storyboard, dict)
+            else {}
+        )
+        if (
+            isinstance(litellm, dict)
+            and str(litellm.get("base_url") or "").rstrip("/")
+            == "http://127.0.0.1:4000/v1"
+            and "/" in str(litellm.get("model") or "")
+        ):
+            # The old default looked like an explicit proxy selection. A
+            # provider-prefixed model is intended for the direct LiteLLM SDK.
+            litellm["base_url"] = ""
+
+    if version < 27:
+        storyboard = result.get("video_storyboard")
+        if isinstance(storyboard, dict):
+            legacy = storyboard.get("custom_image")
+            if isinstance(legacy, dict):
+                storyboard["litellm_image"] = {
+                    "base_url": str(legacy.get("url") or ""),
+                    "model": "",
+                    "api_key": str(legacy.get("api_key") or ""),
+                    "timeout_seconds": legacy.get("timeout_seconds", 300),
+                }
+            if storyboard.get("image_provider") == "custom_http":
+                storyboard["image_provider"] = "litellm_image"
 
     invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
     _sanitize_core_settings(result)
@@ -480,6 +588,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         "installer_setup",
         "text_normalization",
         "storage",
+        "video_storyboard",
     ):
         if not isinstance(settings.get(section), dict):
             settings[section] = deepcopy(DEFAULT_SETTINGS[section])
@@ -552,6 +661,171 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
             if str(path).strip()
         )
     )[-8:]
+
+    _sanitize_video_storyboard(settings["video_storyboard"])
+
+
+def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
+    defaults = DEFAULT_SETTINGS["video_storyboard"]
+    storyboard["enabled"] = bool(storyboard.get("enabled", False))
+    storyboard["image_provider"] = _choice_value(
+        storyboard.get("image_provider"),
+        {"comfyui", "litellm_image"},
+        str(defaults["image_provider"]),
+    )
+    storyboard["llm_provider"] = _choice_value(
+        storyboard.get("llm_provider"),
+        {"ollama", "litellm"},
+        str(defaults["llm_provider"]),
+    )
+
+    for section_name in (
+        "scene",
+        "image",
+        "comfyui",
+        "litellm_image",
+        "ollama",
+        "litellm",
+        "video",
+    ):
+        if not isinstance(storyboard.get(section_name), dict):
+            storyboard[section_name] = deepcopy(defaults[section_name])
+
+    scene = storyboard["scene"]
+    scene["mode"] = _choice_value(
+        scene.get("mode"),
+        {"semantic_bounded", "fixed"},
+        "semantic_bounded",
+    )
+    minimum = _bounded_int(scene.get("minimum_seconds"), 4, 60, 4)
+    target = _bounded_int(
+        scene.get("target_seconds"), minimum, 60, max(minimum, 8)
+    )
+    maximum = _bounded_int(
+        scene.get("maximum_seconds"), target, 60, max(target, 20)
+    )
+    scene.update(
+        {
+            "minimum_seconds": minimum,
+            "target_seconds": target,
+            "maximum_seconds": maximum,
+        }
+    )
+
+    image = storyboard["image"]
+    image["width"] = _bounded_int(image.get("width"), 256, 4096, 1280)
+    image["height"] = _bounded_int(image.get("height"), 256, 4096, 720)
+    image["batch_size"] = 1
+    image["steps"] = _bounded_int(image.get("steps"), 1, 50, 8)
+    image["cfg"] = _bounded_float(image.get("cfg"), 0.0, 20.0, 1.0)
+    image["denoise"] = _bounded_float(image.get("denoise"), 0.0, 1.0, 1.0)
+    image["auraflow_shift"] = _bounded_float(
+        image.get("auraflow_shift"), 0.0, 20.0, 3.0
+    )
+    image["sampler"] = str(image.get("sampler") or "res_multistep").strip()
+    image["scheduler"] = str(image.get("scheduler") or "simple").strip()
+    image["style_prompt"] = str(image.get("style_prompt") or "").strip()
+    raw_style_mode = str(image.get("style_mode") or "").strip()
+    image["style_mode"] = (
+        "custom"
+        if raw_style_mode == "automatic" and image["style_prompt"]
+        else normalize_storyboard_style_id(raw_style_mode or "comic_book")
+    )
+    image["seed_mode"] = "audiobook_locked"
+
+    comfyui = storyboard["comfyui"]
+    comfyui["base_url"] = str(
+        comfyui.get("base_url") or "http://127.0.0.1:8188"
+    ).strip()
+    comfyui["workflow_path"] = str(comfyui.get("workflow_path") or "").strip()
+    comfyui["diffusion_model"] = str(
+        comfyui.get("diffusion_model") or "z_image_turbo_bf16.safetensors"
+    ).strip()
+    comfyui["text_encoder"] = str(
+        comfyui.get("text_encoder") or "qwen_3_4b.safetensors"
+    ).strip()
+    comfyui["vae_model"] = str(
+        comfyui.get("vae_model") or "ae.safetensors"
+    ).strip()
+    comfyui["timeout_seconds"] = _bounded_int(
+        comfyui.get("timeout_seconds"), 30, 7200, 900
+    )
+
+    litellm_image = storyboard["litellm_image"]
+    litellm_image["base_url"] = str(
+        litellm_image.get("base_url") or ""
+    ).strip()
+    litellm_image["model"] = str(litellm_image.get("model") or "").strip()
+    litellm_image["api_key"] = str(
+        litellm_image.get("api_key") or ""
+    ).strip()
+    litellm_image["timeout_seconds"] = _bounded_int(
+        litellm_image.get("timeout_seconds"), 10, 3600, 300
+    )
+
+    for section_name, fallback_url in (
+        ("ollama", "http://127.0.0.1:11434"),
+        ("litellm", ""),
+    ):
+        provider = storyboard[section_name]
+        provider["base_url"] = str(provider.get("base_url") or fallback_url).strip()
+        provider["model"] = str(provider.get("model") or "").strip()
+        provider["timeout_seconds"] = _bounded_int(
+            provider.get("timeout_seconds"), 10, 3600, 300
+        )
+    storyboard["litellm"]["api_key"] = str(
+        storyboard["litellm"].get("api_key") or ""
+    ).strip()
+    storyboard["litellm"]["max_output_tokens"] = _bounded_int(
+        storyboard["litellm"].get("max_output_tokens"), 512, 131072, 16000
+    )
+    storyboard["ollama"]["context_length"] = _bounded_int(
+        storyboard["ollama"].get("context_length"), 2048, 131072, 8192
+    )
+    storyboard.pop("local_z_image", None)
+    storyboard.pop("local_qwen", None)
+    storyboard.pop("custom_image", None)
+
+    video = storyboard["video"]
+    video["fps"] = _bounded_int(video.get("fps"), 12, 60, 30)
+    video["transition"] = _choice_value(
+        video.get("transition"),
+        {
+            "fade", "dissolve", "wipeleft", "wiperight",
+            "smoothleft", "smoothright", "circleopen", "circleclose",
+        },
+        "fade",
+    )
+    video["transition_seconds"] = _bounded_float(
+        video.get("transition_seconds"), 0.0, 3.0, 0.7
+    )
+    video["zoom_percent"] = _bounded_float(
+        video.get("zoom_percent"), 0.0, 1_000_000.0, 30.0
+    )
+    video["supersample"] = 4
+    video["preset"] = "medium"
+    video["codec"] = "libx264"
+    video["crf"] = _bounded_int(video.get("crf"), 0, 51, 18)
+
+
+def _choice_value(
+    value: object,
+    allowed: set[str],
+    fallback: str,
+    *,
+    uppercase: bool = False,
+) -> str:
+    normalized = str(value or "").strip()
+    normalized = normalized.upper() if uppercase else normalized.casefold()
+    return normalized if normalized in allowed else fallback
+
+
+def _bounded_int(value: object, minimum: int, maximum: int, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if minimum <= parsed <= maximum else fallback
 
 
 def _bounded_float(

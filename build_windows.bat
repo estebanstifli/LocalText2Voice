@@ -61,6 +61,7 @@ echo Building portable application folder...
     --paths "%CD%" ^
     --collect-data qtawesome ^
     --collect-data mcp ^
+    --collect-all litellm ^
     --collect-submodules anyio ^
     --collect-submodules fastapi ^
     --collect-submodules mcp.server ^
