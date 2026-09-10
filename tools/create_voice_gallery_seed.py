@@ -385,7 +385,14 @@ def main() -> None:
         "elena": chatterbox_dir / "Elena.wav",
         "gabriel": chatterbox_dir / "Gabriel.wav",
     }
-    common_english = "Hello, this is a short sample for audiobook narration."
+    # Exact transcript verified against the four original Chatterbox clips
+    # (Abigail, Adrian, Alice, Connor). Never substitute preview/demo copy:
+    # OmniVoice conditions generation on both this text and the reference audio.
+    original_reference_transcript = (
+        "We believe that exploring new ideas and sharing knowledge helps make "
+        "the world a brighter place for everyone. Continuous learning and open "
+        "communication are essential for progress and mutual understanding."
+    )
     designed_omnivoice_voices = [
         designed_voice(
             voice_id="omnivoice_en_sandra_dynamic",
@@ -720,7 +727,7 @@ def main() -> None:
                 language="en",
                 language_name="English",
                 source_wav=path,
-                ref_text=common_english,
+                ref_text=original_reference_transcript,
                 tags=["english", "reference", "voice-clone", "podcast"],
             )
             for key, path in list(chatterbox_sources.items())[:4]

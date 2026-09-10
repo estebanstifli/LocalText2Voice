@@ -104,7 +104,7 @@ Name: "gpu"; Description: "{cm:GpuComponent}"; Types: gpu
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "runtimes\python311\engine-deps\*, output\*, logs\*, __pycache__\*, *.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "runtimes\python311\engine-deps\*, output\*, logs\*, __pycache__\*, *.pyc, .installation.json, .installation.tmp"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\LocalText2Voice.exe"
@@ -289,7 +289,7 @@ begin
 
   Result :=
     '{' + #13#10 +
-    '  "settings_schema_version": 27,' + #13#10 +
+    '  "settings_schema_version": 30,' + #13#10 +
     '  "ui_language": "' + UiLang + '",' + #13#10 +
     '  "storage": {' + #13#10 +
     '    "base_dir": "' + AssetsBaseDir + '"' + #13#10 +

@@ -1,0 +1,12 @@
+{
+  "id": "llm",
+  "name": "Ollama · Qwen3 8B",
+  "version": "1.0.0",
+  "engine": "ollama",
+  "ollama_model": "qwen3:8b",
+  "estimated_size_bytes": 5220000000,
+  "workflows": [],
+  "custom_nodes": [],
+  "required_nodes": [],
+  "models": []
+}

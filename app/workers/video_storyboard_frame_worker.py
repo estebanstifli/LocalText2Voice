@@ -13,6 +13,10 @@ from app.core.video_storyboard_comfyui import (
     generate_storyboard_frame,
     prepare_image_runtime,
 )
+from app.core.video_storyboard_image_edit import (
+    VideoStoryboardImageEditError,
+    prepare_image_edit_runtime,
+)
 
 
 class VideoStoryboardFrameWorker(QObject):
@@ -42,13 +46,34 @@ class VideoStoryboardFrameWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            runtime = prepare_image_runtime(
-                self.settings,
-                status=lambda stage: self.progress.emit(0, 0, "", stage),
-            )
             scenes = self.payload.get("scenes", [])
             if not isinstance(scenes, list) or not scenes:
                 raise VideoStoryboardImageError("The storyboard has no scenes to generate.")
+            uses_editing = any(
+                isinstance(scene, dict)
+                and isinstance(scene.get("generation_overrides"), dict)
+                and bool(scene["generation_overrides"].get("reference_images"))
+                for scene in scenes
+            )
+            uses_generation = any(
+                not (
+                    isinstance(scene, dict)
+                    and isinstance(scene.get("generation_overrides"), dict)
+                    and bool(scene["generation_overrides"].get("reference_images"))
+                )
+                for scene in scenes
+            )
+            runtime: dict[str, Any] = {}
+            if uses_generation:
+                runtime["generation"] = prepare_image_runtime(
+                    self.settings,
+                    status=lambda stage: self.progress.emit(0, 0, "", stage),
+                )
+            if uses_editing:
+                runtime["editing"] = prepare_image_edit_runtime(
+                    self.settings,
+                    status=lambda stage: self.progress.emit(0, 0, "", stage),
+                )
             plan = dict(self.payload.get("plan", {}))
             plan.setdefault("style", {})
             plan.setdefault("base_seed", 0)
@@ -93,7 +118,7 @@ class VideoStoryboardFrameWorker(QObject):
                 self.frameReady.emit(result)
                 results.append(result)
             self.finished.emit(results)
-        except VideoStoryboardImageError as exc:
+        except (VideoStoryboardImageError, VideoStoryboardImageEditError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()

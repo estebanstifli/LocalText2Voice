@@ -11,3 +11,7 @@ PyInstaller>=6.0,<7
 packaging>=24
 num2words>=0.5.14,<0.6
 litellm>=1.75,<2
+
+# Private reference uploads for Runpod public endpoints
+boto3>=1.35,<2
+Pillow>=11,<13

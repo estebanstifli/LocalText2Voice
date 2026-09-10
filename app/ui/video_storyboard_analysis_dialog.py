@@ -9,14 +9,19 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QComboBox,
+    QCheckBox,
 )
 
 from app.ui.icons import ui_icon
@@ -29,6 +34,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
     """Live, non-blocking audit window for storyboard analysis."""
 
     cancelRequested = Signal()
+    startRequested = Signal(object)
 
     def __init__(
         self,
@@ -36,13 +42,29 @@ class VideoStoryboardAnalysisDialog(QDialog):
         parent: QWidget | None = None,
         *,
         request_log_path: str = "",
+        provider: str = "LLM",
+        model: str = "",
+        analysis_process: str = "",
+        max_input_characters: int = 4000,
+        max_output_tokens: int = 4096,
+        replaces_existing: bool = False,
+        analysis_choices: dict | None = None,
+        resume_available: bool = False,
     ) -> None:
         super().__init__(parent)
         self.tr_text = tr
         self.request_log_path = str(request_log_path or "")
+        self.provider = str(provider or "LLM")
+        self.model = str(model or "").strip()
+        self.analysis_process = analysis_process
+        self.replaces_existing = bool(replaces_existing)
+        self.analysis_choices = analysis_choices or {}
+        self.resume_available = resume_available
         self._request_count = 0
-        self._running = True
+        self._running = False
+        self._started = False
         self._cancel_requested = False
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setObjectName("videoStoryboardAnalysisDialog")
         self.setWindowTitle(
             self.tr_text(
@@ -51,13 +73,143 @@ class VideoStoryboardAnalysisDialog(QDialog):
             )
         )
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.resize(980, 700)
+        self.resize(980, 850)
         self._build_ui()
+        self.max_input_characters_spin.setValue(
+            max(1000, min(100000, int(max_input_characters or 4000)))
+        )
+        self.max_output_tokens_spin.setValue(
+            max(512, min(131072, int(max_output_tokens or 4096)))
+        )
+        # Keep direct diagnostic/test construction with an already-created log
+        # backwards compatible. The application itself opens this dialog with
+        # no log and waits for explicit confirmation.
+        if self.request_log_path:
+            self._enter_running(emit_start=False)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
+
+        self.setup_group = QGroupBox(
+            self.tr_text(
+                "video_storyboard_analysis_before_start",
+                "Before analysis starts",
+            )
+        )
+        setup_layout = QVBoxLayout(self.setup_group)
+        explanation = QLabel(
+            self.tr_text(
+                "storyboard_plan_intro",
+                "Choose how much continuity this audiobook needs. This step plans scenes; it does not generate images.",
+            )
+        )
+        explanation.setWordWrap(True)
+        setup_layout.addWidget(explanation)
+        self.content_plan_combo = QComboBox()
+        self.plan_help = QLabel()
+        self.plan_help.setWordWrap(True)
+        for key, label in (("scenes", "Solo escenas"), ("basic", "Continuidad básica"), ("full", "Continuidad completa")):
+            self.content_plan_combo.addItem(self.tr_text("storyboard_content_" + key, label), key)
+        self.content_plan_combo.setCurrentIndex(max(0, self.content_plan_combo.findData(self.analysis_choices.get("plan", "full"))))
+        self.content_plan_combo.currentIndexChanged.connect(self._update_plan_help)
+        setup_layout.addWidget(self.content_plan_combo)
+        setup_layout.addWidget(self.plan_help)
+        self.review_checkbox = QCheckBox(self.tr_text("storyboard_review_choice", "Revisar y editar el resumen antes de generar las escenas"))
+        self.review_checkbox.setChecked(bool(self.analysis_choices.get("review")))
+        setup_layout.addWidget(self.review_checkbox)
+        review_help = QLabel(self.tr_text("storyboard_review_help", "El proceso se pausará para corregir el resumen. Puedes guardarlo y continuar más tarde. En Solo escenas añade un breve resumen visual."))
+        review_help.setWordWrap(True)
+        setup_layout.addWidget(review_help)
+        self.resume_checkbox = QCheckBox(self.tr_text("storyboard_review_resume", "Retomar el borrador de revisión guardado, si coincide con este texto y configuración"))
+        self.resume_checkbox.setChecked(self.resume_available)
+        self.resume_checkbox.setVisible(self.resume_available)
+        setup_layout.addWidget(self.resume_checkbox)
+        self._update_plan_help()
+        model_label = QLabel(
+            self.tr_text(
+                "video_storyboard_analysis_selected_model",
+                "AI model: {provider} · {model}",
+                provider=self.provider,
+                model=self.model or self.tr_text("unknown", "Unknown"),
+            )
+        )
+        model_label.setObjectName("sectionTitle")
+        model_label.setWordWrap(True)
+        setup_layout.addWidget(model_label)
+        if self.analysis_process:
+            setup_layout.addWidget(QLabel(self.tr_text("continuity_selected_process", "Analysis process: {process}", process=self.analysis_process)))
+        if self.replaces_existing:
+            warning = QLabel(
+                self.tr_text(
+                    "video_storyboard_reanalyze_warning_compact",
+                    "Warning: continuing will replace the current scene plan and its frame references. Existing image files will not be deleted.",
+                )
+            )
+            warning.setObjectName("warningLabel")
+            warning.setWordWrap(True)
+            setup_layout.addWidget(warning)
+        limits_form = QFormLayout()
+        self.max_input_characters_spin = QSpinBox()
+        self.max_input_characters_spin.setRange(1000, 100000)
+        self.max_input_characters_spin.setSingleStep(1000)
+        self.max_input_characters_spin.setSuffix(" characters")
+        self.max_input_characters_spin.setToolTip(
+            self.tr_text(
+                "video_storyboard_analysis_input_size_help",
+                "Higher values send more timed narration in each request and reduce the number of calls, but require a model with a larger context window.",
+            )
+        )
+        self.max_output_tokens_spin = QSpinBox()
+        self.max_output_tokens_spin.setRange(512, 131072)
+        self.max_output_tokens_spin.setSingleStep(1000)
+        self.max_output_tokens_spin.setSuffix(" tokens")
+        self.max_output_tokens_spin.setToolTip(
+            self.tr_text(
+                "video_storyboard_analysis_output_size_help",
+                "Maximum response budget for each analysis request. The model may finish before reaching it.",
+            )
+        )
+        limits_form.addRow(
+            self.tr_text(
+                "video_storyboard_analysis_input_size",
+                "Audiobook text per request",
+            ),
+            self.max_input_characters_spin,
+        )
+        limits_form.addRow(
+            self.tr_text(
+                "video_storyboard_analysis_output_size",
+                "Maximum response tokens",
+            ),
+            self.max_output_tokens_spin,
+        )
+        setup_layout.addLayout(limits_form)
+        advanced_note = QLabel(
+            self.tr_text(
+                "video_storyboard_analysis_limits_note",
+                "Use larger values only with capable models such as GPT-5.5 and a sufficiently large context window. The defaults are safer for local 8B models.",
+            )
+        )
+        advanced_note.setObjectName("helperLabel")
+        advanced_note.setWordWrap(True)
+        setup_layout.addWidget(advanced_note)
+        setup_buttons = QHBoxLayout()
+        setup_buttons.addStretch(1)
+        self.continue_button = QPushButton(
+            self.tr_text("continue", "Continue")
+        )
+        self.continue_button.setObjectName("primaryButton")
+        self.continue_button.setIcon(ui_icon("apply"))
+        self.initial_cancel_button = QPushButton(
+            self.tr_text("cancel", "Cancel")
+        )
+        self.initial_cancel_button.setIcon(ui_icon("cancel"))
+        setup_buttons.addWidget(self.continue_button)
+        setup_buttons.addWidget(self.initial_cancel_button)
+        setup_layout.addLayout(setup_buttons)
+        layout.addWidget(self.setup_group)
 
         self.status_label = QLabel(
             self.tr_text(
@@ -67,16 +219,19 @@ class VideoStoryboardAnalysisDialog(QDialog):
         )
         self.status_label.setObjectName("sectionTitle")
         self.status_label.setWordWrap(True)
+        self.status_label.hide()
         layout.addWidget(self.status_label)
 
         self.detail_label = QLabel()
         self.detail_label.setObjectName("helperLabel")
         self.detail_label.setWordWrap(True)
+        self.detail_label.hide()
         layout.addWidget(self.detail_label)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
 
         self.tabs = QTabWidget()
@@ -95,9 +250,10 @@ class VideoStoryboardAnalysisDialog(QDialog):
             self.response_view,
             self.tr_text(
                 "video_storyboard_analysis_response_tab",
-                "Structured response",
+                "Model response",
             ),
         )
+        self.tabs.hide()
         layout.addWidget(self.tabs, 1)
 
         note = QLabel(
@@ -108,6 +264,8 @@ class VideoStoryboardAnalysisDialog(QDialog):
         )
         note.setObjectName("helperLabel")
         note.setWordWrap(True)
+        note.hide()
+        self.stream_note = note
         layout.addWidget(note)
 
         request_log_row = QHBoxLayout()
@@ -128,6 +286,8 @@ class VideoStoryboardAnalysisDialog(QDialog):
         request_log_row.addWidget(self.open_request_log_button)
         layout.addLayout(request_log_row)
         self._refresh_request_log_row()
+        self.request_log_label.hide()
+        self.open_request_log_button.hide()
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -147,16 +307,63 @@ class VideoStoryboardAnalysisDialog(QDialog):
         self.cancel_button.setIcon(ui_icon("stop"))
         buttons.addWidget(self.close_continue_button)
         buttons.addWidget(self.cancel_button)
-        layout.addLayout(buttons)
+        self.running_buttons = QWidget()
+        self.running_buttons.setLayout(buttons)
+        self.running_buttons.hide()
+        layout.addWidget(self.running_buttons)
 
         self.close_continue_button.clicked.connect(self.hide)
         self.cancel_button.clicked.connect(self._request_cancel)
+        self.continue_button.clicked.connect(self._start_analysis)
+        self.initial_cancel_button.clicked.connect(self.reject)
+
+    def _start_analysis(self) -> None:
+        if self._started:
+            return
+        self._enter_running(emit_start=True)
+
+    def _update_plan_help(self):
+        descriptions = {
+            "scenes": "Para divulgación y documentales sin protagonistas recurrentes. Crea escenas sin fichas de personajes ni lugares. Mantiene estilo y época manual.",
+            "basic": "Para cuentos sencillos. Mantiene una apariencia estable de personajes y lugares, sin estados temporales ni detección de épocas.",
+            "full": "Crea perfiles iniciales editables de personajes y lugares. En este flujo simplificado los cambios temporales y la época se ajustan manualmente; no se extraen durante la conversión de los resúmenes.",
+        }
+        key = self.content_plan_combo.currentData()
+        self.plan_help.setText(self.tr_text("storyboard_content_help_" + key, descriptions[key]))
+
+    def _enter_running(self, *, emit_start: bool) -> None:
+        self._started = True
+        self._running = True
+        self.setup_group.hide()
+        for widget in (
+            self.status_label,
+            self.detail_label,
+            self.progress_bar,
+            self.tabs,
+            self.stream_note,
+            self.running_buttons,
+        ):
+            widget.show()
+        self._refresh_request_log_row()
         self.append_activity(
             self.tr_text(
                 "video_storyboard_analysis_started",
                 "Analysis started. Releasing image-model memory before contacting the LLM provider.",
             )
         )
+        if emit_start:
+            self.startRequested.emit(
+                {
+                    "max_input_characters": self.max_input_characters_spin.value(),
+                    "max_output_tokens": self.max_output_tokens_spin.value(),
+                    "analysis_choices": {"plan": self.content_plan_combo.currentData(), "review": self.review_checkbox.isChecked()},
+                    "resume_review": self.resume_checkbox.isChecked(),
+                }
+            )
+
+    def set_request_log_path(self, path: str) -> None:
+        self.request_log_path = str(path or "")
+        self._refresh_request_log_row()
 
     @staticmethod
     def _log_view() -> QPlainTextEdit:
@@ -193,7 +400,12 @@ class VideoStoryboardAnalysisDialog(QDialog):
         kind = str(event.get("kind") or "")
         if kind == "block":
             phase = str(event.get("phase") or "scenes")
-            if phase == "continuity":
+            if phase == "discovery":
+                phase_label = self.tr_text(
+                    "video_storyboard_analysis_discovery_phase",
+                    "Continuity discovery",
+                )
+            elif phase == "continuity":
                 phase_label = self.tr_text(
                     "video_storyboard_analysis_continuity_phase",
                     "Continuity analyzer",
@@ -278,6 +490,14 @@ class VideoStoryboardAnalysisDialog(QDialog):
                     label=event.get("label", ""),
                 )
             )
+        elif kind == "warning":
+            self.append_activity(
+                self.tr_text(
+                    "video_storyboard_analysis_warning",
+                    "Warning: {message}",
+                    message=str(event.get("message") or "Continuity issue"),
+                )
+            )
         elif kind == "error":
             message = str(event.get("message") or "LLM provider error")
             self.append_activity(message)
@@ -296,7 +516,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
         self.activity_view.appendPlainText(f"[{timestamp}] {message}")
 
     def _refresh_request_log_row(self) -> None:
-        visible = bool(self.request_log_path)
+        visible = self._started and bool(self.request_log_path)
         self.request_log_label.setVisible(visible)
         self.open_request_log_button.setVisible(visible)
         if visible:
@@ -325,7 +545,14 @@ class VideoStoryboardAnalysisDialog(QDialog):
         locations: int = 0,
     ) -> None:
         self.progress_bar.setValue(round(current / max(1, total) * 100))
-        if phase == "continuity":
+        if phase == "discovery":
+            message = self.tr_text(
+                "video_storyboard_discovery_partial_saved",
+                "Discovery block {current}/{total} analyzed and saved.",
+                current=current,
+                total=total,
+            )
+        elif phase == "continuity":
             message = self.tr_text(
                 "video_storyboard_continuity_partial_saved",
                 "Continuity block {current}/{total} validated and saved ({characters} characters, {locations} locations).",
@@ -345,6 +572,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
         self.append_activity(message)
 
     def set_finished(self, success: bool, message: str) -> None:
+        self._started = True
         self._running = False
         self.status_label.setText(message)
         if success:

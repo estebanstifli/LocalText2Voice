@@ -16,6 +16,7 @@ from app.server.engine_host_client import EngineHostClient
 from app.server.job_manager import LocalServerJobManager, ServerJob, wait_for_job
 from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
 from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
+from app.workers.verification_worker import EngineHostSegmentRegenerationWorker
 
 
 class FakeGenerationService:
@@ -48,6 +49,16 @@ class FakeGenerationService:
             "clean_mp3": str(Path("output") / "podcast1.mp3"),
             "mix_mp3": "",
         }
+
+
+class FakeSegmentEngine:
+    def __init__(self) -> None:
+        self.configurations: list[dict] = []
+
+    def synthesize_to_wav(self, text, output_wav, voice_config):
+        self.configurations.append(dict(voice_config))
+        Path(output_wav).write_bytes(f"audio:{text}".encode())
+        return Path(output_wav)
 
 
 def _settings(tmp_path: Path) -> SettingsManager:
@@ -159,6 +170,19 @@ def test_engine_host_client_uses_dedicated_internal_port(tmp_path):
     assert client.base_url() == "http://127.0.0.1:9123"
 
 
+def test_engine_host_client_submits_review_segment_to_shared_host(tmp_path):
+    client = EngineHostClient(SettingsManager(tmp_path / "config.json"))
+    client.request_json = MagicMock(return_value={"output_wav": "C:/candidate.wav"})
+    payload = {"text": "Edited", "output_wav": "C:/candidate.tmp.wav"}
+
+    result = client.synthesize_review_segment(payload)
+
+    assert result == {"output_wav": "C:/candidate.wav"}
+    client.request_json.assert_called_once_with(
+        "POST", "/review/segments/synthesize", payload, timeout=900.0
+    )
+
+
 def test_repeated_cancel_requests_are_sent_to_engine_host_only_once():
     client = MagicMock()
     client.submit_job.return_value = {"job_id": "job-123"}
@@ -175,6 +199,53 @@ def test_repeated_cancel_requests_are_sent_to_engine_host_only_once():
         worker.run()
 
     client.cancel_job.assert_called_once_with("job-123")
+
+
+def test_review_segment_synthesis_reuses_the_host_cached_engine(tmp_path):
+    service = LocalText2VoiceService(_settings(tmp_path), keep_engines_alive=True)
+    engine = FakeSegmentEngine()
+    service._get_tts_engine = MagicMock(return_value=engine)
+    output = tmp_path / "candidate.wav"
+
+    result = service.synthesize_segment(
+        "Changed line.",
+        output,
+        {"engine": "qwen", "model": "base_1_7b", "language": "Spanish"},
+    )
+
+    assert result == output
+    assert output.read_bytes() == b"audio:Changed line."
+    service._get_tts_engine.assert_called_once()
+    assert service._get_tts_engine.call_args.args[0] == "qwen"
+    assert engine.configurations[0]["model"] == "base_1_7b"
+
+
+def test_review_segment_worker_calls_engine_host_not_a_local_tts_engine(tmp_path):
+    client = MagicMock()
+    candidate = tmp_path / "candidate.wav"
+    temporary = tmp_path / "candidate.tmp.wav"
+
+    def synthesize(payload):
+        Path(payload["output_wav"]).write_bytes(b"candidate")
+        return {"output_wav": payload["output_wav"]}
+
+    client.synthesize_review_segment.side_effect = synthesize
+    worker = EngineHostSegmentRegenerationWorker(
+        client,
+        42,
+        "Changed line.",
+        {"engine": "qwen", "model": "base_1_7b"},
+        candidate,
+    )
+    completed: list[tuple[int, str]] = []
+    worker.finished.connect(lambda segment_id, path: completed.append((segment_id, path)))
+
+    worker.run()
+
+    assert candidate.read_bytes() == b"candidate"
+    assert not temporary.exists()
+    assert completed == [(42, str(candidate))]
+    assert client.synthesize_review_segment.call_args.args[0]["voice_config"]["engine"] == "qwen"
 
 
 def test_job_manager_runs_generation_job(tmp_path):

@@ -117,6 +117,13 @@ class EngineHostClient:
             self.request_json("POST", f"/jobs/{job_id}/cancel", {}, timeout=10.0)
         )
 
+    def synthesize_review_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return dict(
+            self.request_json(
+                "POST", "/review/segments/synthesize", payload, timeout=900.0
+            )
+        )
+
     def engine_memory(self) -> dict[str, dict[str, Any]]:
         if not self.health():
             return {}

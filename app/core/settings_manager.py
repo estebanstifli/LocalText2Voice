@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.core.storyboard_profiles import RUNPOD_DEFAULTS, PROFILE_IDS, infer_profile
+
 import json
 import re
 from copy import deepcopy
@@ -23,8 +25,9 @@ from app.utils.paths import (
     write_assets_location_file,
 )
 from app.core.video_storyboard_styles import normalize_storyboard_style_id
+from app.core.storyboard_analysis_settings import defaults as continuity_defaults, normalize as normalize_continuity_settings
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 27
+CURRENT_SETTINGS_SCHEMA_VERSION = 30
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -59,6 +62,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "previous_roots": [],
     },
     "output_dir": "output",
+    "projects_dir": "projects",
     "voice_id": "",
     "language": "",
     "tts_engine": "piper",
@@ -277,8 +281,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "completed_at": "",
     },
     "video_storyboard": {
+        "continuity_analysis": continuity_defaults(),
         "enabled": False,
+        "installation": {"comfy_root": "", "comfy_python": ""},
+        "active_profile": "local",
+        "profiles": {},
+        "video_provider": "comfyui",
+        "runpod": deepcopy(RUNPOD_DEFAULTS),
         "image_provider": "comfyui",
+        "image_edit_provider": "disabled",
         "llm_provider": "ollama",
         "scene": {
             "mode": "semantic_bounded",
@@ -301,6 +312,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "seed_mode": "audiobook_locked",
         },
         "comfyui": {
+            "output_node": "",
+            "auth_token": "",
+            "bindings": {name: "" for name in ("prompt", "negative_prompt", "seed", "width", "height", "steps", "cfg", "output_prefix")},
             "base_url": "http://127.0.0.1:8188",
             "workflow_path": "",
             "diffusion_model": "z_image_turbo_bf16.safetensors",
@@ -308,11 +322,65 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "vae_model": "ae.safetensors",
             "timeout_seconds": 900,
         },
+        "comfyui_video": {
+            "output_node": "",
+            "base_url": "http://127.0.0.1:8188",
+            "auth_token": "",
+            "workflow_profile": "wan22_rapid",
+            "workflow_path": "",
+            "unet_model": "wan2.2-i2v-rapid-aio-v10-Q4_K.gguf",
+            "text_encoder": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+            "vae_model": "wan_2.1_vae.safetensors",
+            "clip_vision_model": "clip_vision_h.safetensors",
+            "width": 640,
+            "height": 360,
+            "frames": 49,
+            "wan_behavior": "split",
+            "steps": 4,
+            "fps": 24,
+            "ltx_prompt_enhance": False,
+            "bindings": {
+                "image": "",
+                "prompt": "",
+                "seed": "",
+                "width": "",
+                "height": "",
+                "duration": "",
+                "fps": "",
+                "frame_count": "",
+                "output_prefix": "",
+            },
+            "timeout_seconds": 1800,
+        },
         "litellm_image": {
             "base_url": "",
             "model": "",
             "api_key": "",
             "timeout_seconds": 300,
+        },
+        "comfyui_image_edit": {
+            "base_url": "http://127.0.0.1:8188",
+            "auth_token": "",
+            "workflow_path_1": "",
+            "workflow_path_2": "",
+            "workflow_path_3": "",
+            "unet_model": "Qwen-Image-Edit-2509-Q3_K_S.gguf",
+            "lora_model": "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+            "camera_lora_model": "镜头转换.safetensors",
+            "camera_lora_strength": 1.0,
+            "text_encoder": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "vae_model": "qwen_image_vae.safetensors",
+            "width": 1280,
+            "height": 720,
+            "steps": 4,
+            "cfg": 1.0,
+            "timeout_seconds": 1800,
+        },
+        "litellm_image_edit": {
+            "base_url": "",
+            "model": "",
+            "api_key": "",
+            "timeout_seconds": 600,
         },
         "ollama": {
             "base_url": "http://127.0.0.1:11434",
@@ -480,6 +548,25 @@ def _migrate_settings(
             if storyboard.get("image_provider") == "custom_http":
                 storyboard["image_provider"] = "litellm_image"
 
+    if version < 28:
+        storyboard = result.get("video_storyboard")
+        if isinstance(storyboard, dict) and not isinstance(
+            storyboard.get("comfyui_video"), dict
+        ):
+            storyboard["comfyui_video"] = deepcopy(
+                DEFAULT_SETTINGS["video_storyboard"]["comfyui_video"]
+            )
+
+    if version < 29:
+        storyboard = result.get("video_storyboard")
+        if isinstance(storyboard, dict):
+            storyboard.setdefault("image_edit_provider", "disabled")
+            for section_name in ("comfyui_image_edit", "litellm_image_edit"):
+                if not isinstance(storyboard.get(section_name), dict):
+                    storyboard[section_name] = deepcopy(
+                        DEFAULT_SETTINGS["video_storyboard"][section_name]
+                    )
+
     invalid_legacy_chunk_size = not _valid_chunk_size(result.get("chunk_size"))
     _sanitize_core_settings(result)
     if (
@@ -490,6 +577,11 @@ def _migrate_settings(
         # Builds before schema 12 could save the first UI option (Arabic) and a
         # one-character chunk size while the widgets were only half restored.
         result["ui_language"] = DEFAULT_SETTINGS["ui_language"]
+    if version < 30:
+        storyboard = result.get("video_storyboard", {})
+        if isinstance(storyboard, dict):
+            previous = {k: v for k, v in storyboard.items() if k != "active_profile"}
+            storyboard["active_profile"] = infer_profile(previous)
     result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
     return result
 
@@ -666,12 +758,28 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
 
 
 def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
+    storyboard["continuity_analysis"] = normalize_continuity_settings(storyboard.get("continuity_analysis"))
     defaults = DEFAULT_SETTINGS["video_storyboard"]
     storyboard["enabled"] = bool(storyboard.get("enabled", False))
+    storyboard["active_profile"] = infer_profile(storyboard)
+    snapshots = storyboard.get("profiles", {})
+    storyboard["profiles"] = {k: v for k, v in snapshots.items() if k in PROFILE_IDS and isinstance(v, dict)} if isinstance(snapshots, dict) else {}
+    storyboard["video_provider"] = _choice_value(storyboard.get("video_provider"), {"comfyui", "runpod", "disabled"}, "comfyui")
+    runpod = storyboard.get("runpod", {})
+    runpod = runpod if isinstance(runpod, dict) else {}
+    storyboard["runpod"] = {key: str(runpod.get(key) or fallback).strip() if isinstance(fallback, str) else runpod.get(key, fallback) for key, fallback in RUNPOD_DEFAULTS.items()}
+    storyboard["runpod"]["timeout_seconds"] = _bounded_int(runpod.get("timeout_seconds"), 60, 7200, 1800)
+    storyboard["runpod"]["video_size"] = _choice_value(runpod.get("video_size"), {"1280*720", "1920*1080"}, "1280*720")
+    storyboard["runpod"]["reference_storage"] = _choice_value(runpod.get("reference_storage"), {"auto", "disabled", "s3", "managed"}, "auto")
     storyboard["image_provider"] = _choice_value(
         storyboard.get("image_provider"),
-        {"comfyui", "litellm_image"},
+        {"comfyui", "custom_comfyui", "litellm_image", "runpod"},
         str(defaults["image_provider"]),
+    )
+    storyboard["image_edit_provider"] = _choice_value(
+        storyboard.get("image_edit_provider"),
+        {"disabled", "comfyui", "litellm_image", "runpod"},
+        str(defaults["image_edit_provider"]),
     )
     storyboard["llm_provider"] = _choice_value(
         storyboard.get("llm_provider"),
@@ -683,7 +791,10 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         "scene",
         "image",
         "comfyui",
+        "comfyui_video",
+        "comfyui_image_edit",
         "litellm_image",
+        "litellm_image_edit",
         "ollama",
         "litellm",
         "video",
@@ -697,12 +808,10 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         {"semantic_bounded", "fixed"},
         "semantic_bounded",
     )
-    minimum = _bounded_int(scene.get("minimum_seconds"), 4, 60, 4)
+    maximum = _bounded_int(scene.get("maximum_seconds"), 4, 60, 20)
+    minimum = _bounded_int(scene.get("minimum_seconds"), 4, maximum, 4)
     target = _bounded_int(
-        scene.get("target_seconds"), minimum, 60, max(minimum, 8)
-    )
-    maximum = _bounded_int(
-        scene.get("maximum_seconds"), target, 60, max(target, 20)
+        scene.get("target_seconds"), minimum, maximum, min(maximum, max(minimum, 8))
     )
     scene.update(
         {
@@ -737,6 +846,9 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     comfyui["base_url"] = str(
         comfyui.get("base_url") or "http://127.0.0.1:8188"
     ).strip()
+    comfyui["auth_token"] = str(comfyui.get("auth_token") or "").strip()
+    bindings = comfyui.get("bindings")
+    comfyui["bindings"] = {name: str((bindings if isinstance(bindings, dict) else {}).get(name) or "").strip() for name in defaults["comfyui"]["bindings"]}
     comfyui["workflow_path"] = str(comfyui.get("workflow_path") or "").strip()
     comfyui["diffusion_model"] = str(
         comfyui.get("diffusion_model") or "z_image_turbo_bf16.safetensors"
@@ -751,6 +863,77 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         comfyui.get("timeout_seconds"), 30, 7200, 900
     )
 
+    comfyui_video = storyboard["comfyui_video"]
+    comfyui_video["base_url"] = str(
+        comfyui_video.get("base_url")
+        or comfyui.get("base_url")
+        or "http://127.0.0.1:8188"
+    ).strip()
+    comfyui_video["auth_token"] = str(
+        comfyui_video.get("auth_token") or ""
+    ).strip()
+    comfyui_video["workflow_profile"] = _choice_value(
+        comfyui_video.get("workflow_profile"),
+        {"wan22_rapid", "ltx23_i2v", "custom"},
+        "wan22_rapid",
+    )
+    comfyui_video["workflow_path"] = str(
+        comfyui_video.get("workflow_path") or ""
+    ).strip()
+    comfyui_video["unet_model"] = str(
+        comfyui_video.get("unet_model")
+        or "wan2.2-i2v-rapid-aio-v10-Q4_K.gguf"
+    ).strip()
+    comfyui_video["text_encoder"] = str(
+        comfyui_video.get("text_encoder")
+        or "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    ).strip()
+    comfyui_video["vae_model"] = str(
+        comfyui_video.get("vae_model") or "wan_2.1_vae.safetensors"
+    ).strip()
+    comfyui_video["clip_vision_model"] = str(
+        comfyui_video.get("clip_vision_model") or "clip_vision_h.safetensors"
+    ).strip()
+    comfyui_video["width"] = _bounded_int(
+        comfyui_video.get("width"), 64, 4096, 640
+    )
+    comfyui_video["height"] = _bounded_int(
+        comfyui_video.get("height"), 64, 4096, 360
+    )
+    if comfyui_video.get("wan_behavior") not in {"split", "stretch"}:
+        comfyui_video["wan_behavior"] = "split"
+    comfyui_video["frames"] = _bounded_int(
+        comfyui_video.get("frames"), 1, 1000, 49
+    )
+    comfyui_video["steps"] = _bounded_int(
+        comfyui_video.get("steps"), 1, 100, 4
+    )
+    comfyui_video["fps"] = _bounded_int(
+        comfyui_video.get("fps"), 1, 120, 24
+    )
+    comfyui_video["ltx_prompt_enhance"] = bool(
+        comfyui_video.get("ltx_prompt_enhance", False)
+    )
+    raw_bindings = comfyui_video.get("bindings")
+    raw_bindings = raw_bindings if isinstance(raw_bindings, dict) else {}
+    comfyui_video["bindings"] = {
+        name: str(raw_bindings.get(name) or "").strip()
+        for name in (
+            "image",
+            "prompt",
+            "seed",
+            "width",
+            "height",
+            "duration",
+            "fps",
+            "frame_count",
+            "output_prefix",
+        )
+    }
+    comfyui_video["timeout_seconds"] = _bounded_int(
+        comfyui_video.get("timeout_seconds"), 30, 7200, 1800
+    )
+
     litellm_image = storyboard["litellm_image"]
     litellm_image["base_url"] = str(
         litellm_image.get("base_url") or ""
@@ -761,6 +944,62 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     ).strip()
     litellm_image["timeout_seconds"] = _bounded_int(
         litellm_image.get("timeout_seconds"), 10, 3600, 300
+    )
+
+    comfyui_image_edit = storyboard["comfyui_image_edit"]
+    comfyui_image_edit["base_url"] = str(
+        comfyui_image_edit.get("base_url")
+        or comfyui.get("base_url")
+        or "http://127.0.0.1:8188"
+    ).strip()
+    comfyui_image_edit["auth_token"] = str(
+        comfyui_image_edit.get("auth_token") or ""
+    ).strip()
+    for field in ("workflow_path_1", "workflow_path_2", "workflow_path_3"):
+        comfyui_image_edit[field] = str(
+            comfyui_image_edit.get(field) or ""
+        ).strip()
+    for field, fallback in (
+        ("unet_model", "Qwen-Image-Edit-2509-Q3_K_S.gguf"),
+        ("lora_model", "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors"),
+        ("camera_lora_model", "镜头转换.safetensors"),
+        ("text_encoder", "qwen_2.5_vl_7b_fp8_scaled.safetensors"),
+        ("vae_model", "qwen_image_vae.safetensors"),
+    ):
+        comfyui_image_edit[field] = str(
+            comfyui_image_edit.get(field) or fallback
+        ).strip()
+    comfyui_image_edit["camera_lora_strength"] = _bounded_float(
+        comfyui_image_edit.get("camera_lora_strength"), 0.1, 2.0, 1.0
+    )
+    comfyui_image_edit["width"] = _bounded_int(
+        comfyui_image_edit.get("width"), 256, 4096, 1280
+    )
+    comfyui_image_edit["height"] = _bounded_int(
+        comfyui_image_edit.get("height"), 256, 4096, 720
+    )
+    comfyui_image_edit["steps"] = _bounded_int(
+        comfyui_image_edit.get("steps"), 1, 100, 4
+    )
+    comfyui_image_edit["cfg"] = _bounded_float(
+        comfyui_image_edit.get("cfg"), 0.0, 20.0, 1.0
+    )
+    comfyui_image_edit["timeout_seconds"] = _bounded_int(
+        comfyui_image_edit.get("timeout_seconds"), 30, 7200, 1800
+    )
+
+    litellm_image_edit = storyboard["litellm_image_edit"]
+    litellm_image_edit["base_url"] = str(
+        litellm_image_edit.get("base_url") or ""
+    ).strip()
+    litellm_image_edit["model"] = str(
+        litellm_image_edit.get("model") or ""
+    ).strip()
+    litellm_image_edit["api_key"] = str(
+        litellm_image_edit.get("api_key") or ""
+    ).strip()
+    litellm_image_edit["timeout_seconds"] = _bounded_int(
+        litellm_image_edit.get("timeout_seconds"), 10, 3600, 600
     )
 
     for section_name, fallback_url in (

@@ -423,6 +423,22 @@ def create_http_app(
     def unload_engine(engine_id: str) -> dict[str, Any]:
         return service.unload_engine(engine_id)
 
+    @app.post("/review/segments/synthesize")
+    async def synthesize_review_segment(request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        voice_config = payload.get("voice_config")
+        if not isinstance(voice_config, dict):
+            raise HTTPException(status_code=400, detail="voice_config must be an object.")
+        try:
+            output = service.synthesize_segment(
+                str(payload.get("text", "")),
+                str(payload.get("output_wav", "")),
+                voice_config,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"output_wav": str(output)}
+
     @app.get("/voices")
     def http_list_voices(
         engine_id: str | None = None,

@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 27,
+  "settings_schema_version": 30,
   "storage": {
     "base_dir": ".",
     "previous_roots": []
@@ -8,6 +8,7 @@
   "ui_theme": "light",
   "gpu_device_index": "auto",
   "output_dir": "output",
+  "projects_dir": "projects",
   "voice_id": "",
   "language": "",
   "tts_engine": "piper",
@@ -193,8 +194,20 @@
     "last_sync_at": ""
   },
   "video_storyboard": {
+    "continuity_analysis": {
+      "process": "compact",
+      "block_size": "medium",
+      "custom_characters": 4000,
+      "era_mode": "detect",
+      "prompts": {}
+    },
     "enabled": false,
+    "installation": {
+      "comfy_root": "",
+      "comfy_python": ""
+    },
     "image_provider": "comfyui",
+    "image_edit_provider": "disabled",
     "llm_provider": "ollama",
     "scene": {
       "mode": "semantic_bounded",
@@ -222,13 +235,77 @@
       "diffusion_model": "z_image_turbo_bf16.safetensors",
       "text_encoder": "qwen_3_4b.safetensors",
       "vae_model": "ae.safetensors",
-      "timeout_seconds": 900
+      "timeout_seconds": 900,
+      "auth_token": "",
+      "bindings": {
+        "prompt": "",
+        "negative_prompt": "",
+        "seed": "",
+        "width": "",
+        "height": "",
+        "steps": "",
+        "cfg": "",
+        "output_prefix": ""
+      }
+    },
+    "comfyui_video": {
+      "base_url": "http://127.0.0.1:8188",
+      "auth_token": "",
+      "workflow_profile": "wan22_rapid",
+      "workflow_path": "",
+      "unet_model": "wan2.2-i2v-rapid-aio-v10-Q4_K.gguf",
+      "text_encoder": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "vae_model": "wan_2.1_vae.safetensors",
+      "clip_vision_model": "clip_vision_h.safetensors",
+      "width": 640,
+      "height": 360,
+      "frames": 49,
+      "wan_behavior": "split",
+      "steps": 4,
+      "fps": 24,
+      "ltx_prompt_enhance": false,
+      "bindings": {
+        "image": "",
+        "prompt": "",
+        "seed": "",
+        "width": "",
+        "height": "",
+        "duration": "",
+        "fps": "",
+        "frame_count": "",
+        "output_prefix": ""
+      },
+      "timeout_seconds": 1800
     },
     "litellm_image": {
       "base_url": "",
       "model": "",
       "api_key": "",
       "timeout_seconds": 300
+    },
+    "comfyui_image_edit": {
+      "base_url": "http://127.0.0.1:8188",
+      "auth_token": "",
+      "workflow_path_1": "",
+      "workflow_path_2": "",
+      "workflow_path_3": "",
+      "unet_model": "Qwen-Image-Edit-2509-Q3_K_S.gguf",
+      "lora_model": "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "camera_lora_model": "镜头转换.safetensors",
+      "camera_lora_strength": 1.0,
+      "text_encoder": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "vae_model": "qwen_image_vae.safetensors",
+      "width": 1280,
+      "height": 720,
+      "steps": 4,
+      "cfg": 1.0,
+      "timeout_seconds": 1800
+    },
+    "litellm_image_edit": {
+      "base_url": "",
+      "model": "",
+      "api_key": "",
+      "timeout_seconds": 600
     },
     "ollama": {
       "base_url": "http://127.0.0.1:11434",
@@ -252,6 +329,28 @@
       "preset": "medium",
       "codec": "libx264",
       "crf": 18
+    },
+    "active_profile": "local",
+    "profiles": {},
+    "video_provider": "comfyui",
+    "runpod": {
+      "api_key_encrypted": "",
+      "image_endpoint": "z-image-turbo",
+      "edit_endpoint": "qwen-image-edit-2511",
+      "video_endpoint": "wan-2-6-i2v",
+      "video_size": "1280*720",
+      "edit_size": "1536*1080",
+      "edit_preserve_size": true,
+      "timeout_seconds": 1800,
+      "prompt_expansion": false,
+      "s3_endpoint": "",
+      "s3_bucket": "",
+      "s3_region": "auto",
+      "s3_access_key": "",
+      "s3_secret_encrypted": "",
+      "reference_storage": "auto",
+      "temporary_storage_url": "",
+      "temporary_storage_token_encrypted": ""
     }
   },
   "custom_tts_engines": [

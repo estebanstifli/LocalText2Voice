@@ -55,10 +55,14 @@ def render_storyboard_video(
                 f"Scene {scene_id} has no generated frame. Generate all frames "
                 "before rendering the final video."
             )
+        generated_video = Path(str(scene.get("video_path") or ""))
         normalized.append(
             {
                 **scene,
                 "image": image,
+                "generated_video": (
+                    generated_video if generated_video.is_file() else None
+                ),
                 "duration": max(0.1, float(scene.get("duration_seconds") or 0.0)),
             }
         )
@@ -78,6 +82,15 @@ def render_storyboard_video(
     crf = max(0, min(51, int(video.get("crf") or 18)))
     preset = str(video.get("preset") or "medium")
     supersample = max(1, min(4, int(video.get("supersample") or 4)))
+    generated_frames = max(
+        1,
+        int(settings.get("comfyui_video", {}).get("frames") or 49),
+    )
+    generated_fps = max(
+        1.0,
+        float(settings.get("comfyui_video", {}).get("fps") or 24.0),
+    )
+    default_generated_duration = generated_frames / generated_fps
     width = max(64, int(settings.get("image", {}).get("width") or 1280))
     height = max(64, int(settings.get("image", {}).get("height") or 720))
     width -= width % 2
@@ -108,22 +121,43 @@ def render_storyboard_video(
                 )
                 clip = Path(temporary_dir) / f"scene-{index:04d}.mp4"
                 clip_paths.append(clip)
-                scene_filter = _scene_video_filter(
-                    scene,
-                    extended,
-                    fps,
-                    width,
-                    height,
-                    zoom_percent,
-                    supersample,
-                )
+                generated_video = scene.get("generated_video")
+                if isinstance(generated_video, Path):
+                    scene_filter = _generated_scene_video_filter(
+                        scene,
+                        extended,
+                        fps,
+                        width,
+                        height,
+                        zoom_percent,
+                        supersample,
+                        max(
+                            0.1,
+                            float(
+                                scene.get("video_duration_seconds")
+                                or default_generated_duration
+                            ),
+                        ),
+                    )
+                    media_input = generated_video
+                else:
+                    scene_filter = _scene_video_filter(
+                        scene,
+                        extended,
+                        fps,
+                        width,
+                        height,
+                        zoom_percent,
+                        supersample,
+                    )
+                    media_input = scene["image"]
                 clip_arguments = [
                     "-y",
                     "-hide_banner",
                     "-loglevel",
                     "error",
                     "-i",
-                    str(scene["image"]),
+                    str(media_input),
                     "-vf",
                     scene_filter,
                     "-an",
@@ -282,6 +316,63 @@ def _scene_video_filter(
         f"y='ih/2-(ih/zoom/2)':d={frame_count}:s={width}x{height}:fps={fps},"
         "setsar=1,format=yuv420p"
     )
+
+
+def _generated_scene_video_filter(
+    scene: dict[str, Any],
+    duration: float,
+    fps: int,
+    width: int,
+    height: int,
+    zoom_percent: float,
+    supersample: int,
+    source_duration: float,
+) -> str:
+    """Fit an accepted I2V clip to its scene and apply video-only motion."""
+    target_duration = max(0.1, float(duration))
+    original_duration = max(0.1, float(source_duration))
+    speed_factor = target_duration / original_duration
+    render_width = width * max(1, supersample)
+    render_height = height * max(1, supersample)
+    filters = [
+        (
+            f"scale={render_width}:{render_height}:"
+            "force_original_aspect_ratio=increase:flags=lanczos"
+        ),
+        f"crop={render_width}:{render_height}",
+        f"fps={fps}",
+    ]
+    motion_in = str(scene.get("video_motion_in") or "none").lower()
+    motion_out = str(scene.get("video_motion_out") or "none").lower()
+    if motion_in in {"zoom_in", "zoom_out"} or motion_out in {
+        "zoom_in",
+        "zoom_out",
+    }:
+        source_frames = max(1, round(original_duration * fps))
+        zoom = _two_phase_zoom_expression(
+            motion_in,
+            motion_out,
+            max(0.0, float(zoom_percent)) / 100.0,
+            max(1, source_frames - 1),
+        )
+        filters.append(
+            f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':"
+            f"y='ih/2-(ih/zoom/2)':d=1:s={width}x{height}:fps={fps}"
+        )
+    else:
+        filters.append(f"scale={width}:{height}:flags=lanczos")
+    filters.extend(
+        [
+            f"setpts={speed_factor:.9f}*(PTS-STARTPTS)",
+            f"fps={fps}",
+            f"tpad=stop_mode=clone:stop_duration={_decimal(target_duration)}",
+            f"trim=duration={_decimal(target_duration)}",
+            "setpts=PTS-STARTPTS",
+            "setsar=1",
+            "format=yuv420p",
+        ]
+    )
+    return ",".join(filters)
 
 
 def _transition_edge_durations(

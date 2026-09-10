@@ -59,6 +59,16 @@ def test_analysis_request_log_preserves_complete_bodies_without_secrets(
     append_storyboard_analysis_result(
         target,
         {
+            "kind": "warning",
+            "provider": "ollama",
+            "label": "continuity block 1/2",
+            "message": "Possible character Ana was not added; analysis continued.",
+        },
+        1,
+    )
+    append_storyboard_analysis_result(
+        target,
+        {
             "kind": "error",
             "provider": "litellm",
             "label": "block 1/2 compact retry",
@@ -87,6 +97,8 @@ def test_analysis_request_log_preserves_complete_bodies_without_secrets(
     assert "RAW RESPONSE FOR REQUEST 1" in content
     assert '"content": "{\\"scenes\\": []}"' in content
     assert "ERROR FOR REQUEST 1" in content
+    assert "WARNING FOR REQUEST 1" in content
+    assert "analysis continued" in content
     assert '"status_code": 400' in content
     assert "Unsupported response format" in content
     assert "must-not-be-written" not in content
@@ -100,9 +112,12 @@ def test_storyboard_state_is_atomic_portable_and_restores_project_paths(
     tmp_path: Path,
 ) -> None:
     frame = tmp_path / "storyboard" / "frames" / "scene-001.png"
+    video = tmp_path / "storyboard" / "video" / "clips" / "scene-001.mp4"
     audio = tmp_path / "audio" / "narration.wav"
     frame.parent.mkdir(parents=True)
     frame.write_bytes(b"frame")
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
     audio.parent.mkdir(parents=True)
     audio.write_bytes(b"audio")
     state = {
@@ -128,6 +143,12 @@ def test_storyboard_state_is_atomic_portable_and_restores_project_paths(
                 "duration_seconds": 8.0,
                 "prompt": "A blue landscape",
                 "image_path": str(frame),
+                "video_path": str(video),
+                "video_prompt": "Subtle wind moves the grass",
+                "video_frame_role": "start",
+                "video_duration_seconds": 8.0,
+                "video_motion_in": "zoom_in",
+                "video_motion_out": "none",
             }
         ],
     }
@@ -138,17 +159,21 @@ def test_storyboard_state_is_atomic_portable_and_restores_project_paths(
         analysis_status="analyzing",
     )
     raw = json.loads(target.read_text(encoding="utf-8"))
-    assert raw["version"] == 2
+    assert raw["version"] == 3
     assert raw["plan"]["continuity"]["version"] == 1
     assert raw["source"]["narration_cues"][0]["duration_seconds"] == 8.0
     assert raw["source"]["audio_path"] == "audio/narration.wav"
     assert raw["scenes"][0]["image_path"] == "storyboard/frames/scene-001.png"
+    assert raw["scenes"][0]["video_path"] == "storyboard/video/clips/scene-001.mp4"
     assert raw["analysis_status"] == "analyzing"
     assert not list(target.parent.glob(".*.tmp"))
 
     restored = load_storyboard_state(tmp_path)
     assert restored is not None
     assert restored["scenes"][0]["image_path"] == str(frame)
+    assert restored["scenes"][0]["video_path"] == str(video)
+    assert restored["scenes"][0]["video_duration_seconds"] == 8.0
+    assert restored["scenes"][0]["video_motion_in"] == "zoom_in"
     assert restored["source"]["audio_path"] == str(audio)
     assert storyboard_matches_source(restored, "Saved audiobook text")
     assert not storyboard_matches_source(restored, "Changed text")
@@ -190,7 +215,10 @@ def test_legacy_flat_character_and_era_metadata_is_migrated(tmp_path: Path) -> N
     restored = load_storyboard_state(tmp_path)
 
     assert restored is not None
-    assert restored["version"] == 2
+    assert restored["version"] == 3
+    assert restored["scenes"][0]["video_path"] == ""
+    assert restored["scenes"][0]["video_duration_seconds"] == 0.0
+    assert restored["scenes"][0]["video_motion_in"] == "none"
     continuity = restored["plan"]["continuity"]
     assert continuity["characters"][0]["states"][0]["id"] == "luis_young"
     assert continuity["characters"][0]["states"][0]["to_seconds"] == 10.0

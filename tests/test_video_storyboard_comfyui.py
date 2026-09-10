@@ -440,7 +440,7 @@ def test_generation_queues_waits_and_downloads_frame(tmp_path: Path) -> None:
             }
         raise AssertionError(url)
 
-    def fake_download(url, selected_target, timeout):
+    def fake_download(url, selected_target, timeout, headers=None):
         assert "filename=scene.png" in url
         assert timeout == 120
         selected_target.write_bytes(b"fake-png")
@@ -515,3 +515,45 @@ def test_runtime_check_finds_configured_nodes_and_models() -> None:
     assert runtime["version"] == "0.34.1"
     assert any(url.endswith("/api/generate") for url in calls)
     assert any(url.endswith("/free") for url in calls)
+
+
+def test_custom_image_mapping_preserves_unmapped_inputs():
+    from app.core.video_storyboard_comfyui import build_custom_image_workflow, VideoStoryboardImageError
+    import pytest
+    template = {"3": {"class_type": "CustomNode", "inputs": {"text": "original", "seed": 12, "steps": 30, "width": "{{WIDTH}}"}}}
+    values = dict(prompt="new prompt", negative_prompt="", seed=42, width=640, height=360, steps=8, cfg=1.0, output_prefix="test")
+    result = build_custom_image_workflow(template, values, {"prompt": "3.text", "seed": "3.seed"})
+    assert result["3"]["inputs"] == dict(text="new prompt", seed=42, steps=30, width=640)
+    assert template["3"]["inputs"]["text"] == "original"
+    with pytest.raises(VideoStoryboardImageError, match="Invalid image workflow binding"):
+        build_custom_image_workflow(template, values, {"prompt": "3.missing"})
+    with pytest.raises(VideoStoryboardImageError, match="Map the prompt"):
+        build_custom_image_workflow(template, values, {})
+
+
+def test_custom_image_remote_runtime_and_generation(tmp_path):
+    import json
+    settings = _settings()
+    settings["image_provider"] = "custom_comfyui"
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text(json.dumps({"1": {"class_type": "MyImageNode", "inputs": {"text": "{{PROMPT}}", "seed": "{{SEED}}"}}}))
+    settings["comfyui"].update(workflow_path=str(workflow), auth_token="remote-secret")
+    def http(url, **kwargs):
+        if "/api/" in url:
+            return {}
+        assert kwargs["headers"] == {"Authorization": "Bearer remote-secret"}
+        if url.endswith("/system_stats"):
+            return {"system": {}, "devices": []}
+        if url.endswith("/object_info"):
+            return {"MyImageNode": {}}
+        if url.endswith("/prompt"):
+            assert isinstance(kwargs["payload"]["prompt"]["1"]["inputs"]["seed"], int)
+            return {"prompt_id": "job"}
+        if url.endswith("/history/job"):
+            return {"job": {"status": {"completed": True}, "outputs": {"1": {"images": [{"filename": "frame.png"}]}}}}
+        return {}
+    with patch("app.core.video_storyboard_comfyui._http_json", side_effect=http), patch("app.core.video_storyboard_comfyui._download") as download:
+        prepare_image_runtime(settings)
+        plan, scene = _plan_and_scene()
+        generate_storyboard_frame(scene, plan, settings, tmp_path / "frame.png")
+        assert download.call_args.kwargs["headers"] == {"Authorization": "Bearer remote-secret"}

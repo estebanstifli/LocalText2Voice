@@ -282,6 +282,8 @@ def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
     assert defaults["litellm"]["base_url"] == ""
     assert defaults["litellm"]["max_output_tokens"] == 16000
     assert defaults["video"]["zoom_percent"] == 30.0
+    assert defaults["comfyui_video"]["workflow_profile"] == "wan22_rapid"
+    assert defaults["comfyui_video"]["auth_token"] == ""
 
     manager.settings["video_storyboard"] = {
         "enabled": True,
@@ -313,12 +315,18 @@ def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
     assert "local_z_image" not in storyboard
     assert "local_qwen" not in storyboard
     assert storyboard["comfyui"]["diffusion_model"] == "z_image_turbo_bf16.safetensors"
+    assert storyboard["comfyui_video"]["width"] == 640
+    assert storyboard["comfyui_video"]["height"] == 360
+    assert storyboard["comfyui_video"]["frames"] == 49
+    assert storyboard["comfyui_video"]["steps"] == 4
+    assert storyboard["comfyui_video"]["workflow_profile"] == "wan22_rapid"
+    assert storyboard["comfyui_video"]["bindings"]["prompt"] == ""
     assert storyboard["ollama"]["context_length"] == 8192
     assert storyboard["scene"] == {
         "mode": "semantic_bounded",
-        "minimum_seconds": 50,
-        "target_seconds": 50,
-        "maximum_seconds": 50,
+        "minimum_seconds": 4,
+        "target_seconds": 4,
+        "maximum_seconds": 20,
     }
     assert storyboard["image"]["width"] == 1280
     assert storyboard["image"]["height"] == 720
@@ -405,3 +413,13 @@ def test_custom_storyboard_image_provider_migrates_to_litellm_image(tmp_path):
     assert storyboard["litellm_image"]["base_url"] == "https://images.example.test/v1"
     assert storyboard["litellm_image"]["api_key"] == "secret"
     assert "custom_image" not in storyboard
+
+
+def test_custom_comfyui_image_settings_persist(tmp_path):
+    config_path = tmp_path / "settings.json"
+    config_path.write_text(json.dumps({"settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION, "video_storyboard": {"image_provider": "custom_comfyui", "comfyui": {"auth_token": " remote-token ", "workflow_path": "custom.json", "bindings": {"prompt": " 7.text ", "seed": "8.seed"}}}}))
+    settings = SettingsManager(config_path)
+    storyboard = settings.get("video_storyboard")
+    assert storyboard["image_provider"] == "custom_comfyui"
+    assert storyboard["comfyui"]["auth_token"] == "remote-token"
+    assert storyboard["comfyui"]["bindings"]["prompt"] == "7.text"

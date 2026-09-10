@@ -71,6 +71,10 @@ class LocalText2VoiceService:
         self.keep_engines_alive = keep_engines_alive
         self._engine_cache: dict[str, BaseTTSEngine] = {}
         self._engine_lock = threading.RLock()
+        # A cached engine represents one live runtime (and, for Python engines,
+        # one CUDA-owning child process).  Do not hand it to two synthesis calls
+        # at once.
+        self._synthesis_lock = threading.RLock()
         self.kokoro_manager = KokoroPythonManager()
         self.chatterbox_manager = ChatterboxManager()
         self.qwen_manager = QwenManager()
@@ -225,6 +229,39 @@ class LocalText2VoiceService:
             return {"engine_id": engine, "loaded": False, "unloaded": False}
         tts_engine.close()
         return {"engine_id": engine, "loaded": False, "unloaded": True}
+
+    def synthesize_segment(
+        self,
+        text: str,
+        output_wav: str | Path,
+        voice_config: dict[str, Any],
+        log_callback: LogCallback | None = None,
+    ) -> Path:
+        """Synthesize one review candidate through this host's engine cache.
+
+        Review regeneration must run here rather than in the desktop process:
+        engines such as Qwen own a persistent Python/CUDA worker and starting a
+        second copy for one segment can leave both workers contending for CUDA.
+        """
+        content = str(text).strip()
+        if not content:
+            raise ValueError("Segment text is required.")
+        config = dict(voice_config)
+        engine_id = str(config.get("engine", "piper"))
+        if engine_id == "kokoro_python":
+            engine_id = "kokoro"
+            config["engine"] = engine_id
+        destination = Path(output_wav)
+        if not destination.is_absolute():
+            raise ValueError("Segment output path must be absolute.")
+        log = log_callback or (lambda message: None)
+        with self._synthesis_lock:
+            engine = self._get_tts_engine(engine_id, log)
+            log(f"Engine host regenerating one segment with cached {engine_id} engine.")
+            engine.synthesize_to_wav(content, destination, config)
+        if not destination.is_file() or destination.stat().st_size == 0:
+            raise ValueError("TTS engine did not create a valid segment WAV file.")
+        return destination
 
     def list_background_music(self) -> list[dict[str, Any]]:
         self.refresh_settings()

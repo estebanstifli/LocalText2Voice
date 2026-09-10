@@ -1,0 +1,86 @@
+{
+  "id": "edit",
+  "name": "Qwen Image Edit 2509 · Q3_K_S",
+  "version": "1.0.0",
+  "engine": "comfyui",
+  "workflows": [
+    "workflow.json",
+    "workflow-2.json",
+    "workflow-3.json"
+  ],
+  "custom_nodes": [
+    {
+      "name": "ComfyUI-GGUF",
+      "repository": "https://github.com/city96/ComfyUI-GGUF",
+      "classes": [
+        "UnetLoaderGGUF"
+      ]
+    }
+  ],
+  "required_nodes": [
+    "KSampler",
+    "VAEDecode",
+    "CLIPLoader",
+    "VAELoader",
+    "SaveImage",
+    "ModelSamplingAuraFlow",
+    "CFGNorm",
+    "LoadImage",
+    "ImageScaleToTotalPixels",
+    "TextEncodeQwenImageEditPlus",
+    "EmptySD3LatentImage",
+    "UnetLoaderGGUF",
+    "LoraLoaderModelOnly"
+  ],
+  "models": [
+    {
+      "url": "https://huggingface.co/QuantStack/Qwen-Image-Edit-2509-GGUF/resolve/84a3006979126011422eeeefe0c9485ddf431ef5/Qwen-Image-Edit-2509-Q3_K_S.gguf",
+      "filename": "Qwen-Image-Edit-2509-Q3_K_S.gguf",
+      "folder": "diffusion_models",
+      "size_bytes": 9037543968,
+      "sha256": "03e46bb9666f15c282d316989bd082c449074e5f4cf186382444d4dfad1e8308",
+      "node": "UnetLoaderGGUF",
+      "input": "unet_name"
+    },
+    {
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "filename": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "folder": "text_encoders",
+      "size_bytes": 9384670680,
+      "sha256": "cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4",
+      "node": "CLIPLoader",
+      "input": "clip_name"
+    },
+    {
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f/split_files/vae/qwen_image_vae.safetensors",
+      "filename": "qwen_image_vae.safetensors",
+      "folder": "vae",
+      "size_bytes": 253806246,
+      "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+      "node": "VAELoader",
+      "input": "vae_name"
+    },
+    {
+      "url": "https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/e74da8d4e71a54b341de86aa9f8d2509165aa513/Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "filename": "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "folder": "loras",
+      "size_bytes": 849608296,
+      "sha256": "2a32ce938ec71db2b49a817b4844ae86995569518dea56ee0ddc209cbe8e1377",
+      "node": "LoraLoaderModelOnly",
+      "input": "lora_name"
+    },
+    {
+      "url": "https://huggingface.co/dx8152/Qwen-Edit-2509-Multiple-angles/resolve/c342b0e746c3a3275af1a4a0c6ae78e0e4802531/%E9%95%9C%E5%A4%B4%E8%BD%AC%E6%8D%A2.safetensors",
+      "filename": "镜头转换.safetensors",
+      "folder": "loras",
+      "size_bytes": 236117032,
+      "sha256": "e0cea9508025a39e41f50da0e7d10fbd9db182d057c745136a42ef8829914c8f",
+      "node": "LoraLoaderModelOnly",
+      "input": "lora_name",
+      "optional": true,
+      "aliases": [
+        "Qwen-Edit-2509-Multiple-Angles.safetensors"
+      ]
+    }
+  ]
+}

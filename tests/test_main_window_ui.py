@@ -15,7 +15,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QThread, Qt, QUrl, qInstallMessageHandler
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -140,6 +140,120 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(imported.is_file())
         self.assertEqual(imported.parent, root / "frames")
         self.assertTrue(QPixmap(str(imported)).isNull() is False)
+
+    def test_storyboard_edited_image_is_saved_as_a_new_project_asset(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        replacements: list[tuple[str, str]] = []
+        failures: list[str] = []
+        page = SimpleNamespace(
+            scenes=lambda: [{"scene_id": "scene/one"}],
+            set_frame_replaced=lambda scene_id, path: replacements.append(
+                (scene_id, path)
+            ),
+            set_frame_replacement_failed=failures.append,
+        )
+        holder = SimpleNamespace(
+            video_storyboard_page=page,
+            _video_storyboard_output_dir=lambda candidate=False: root / "frames",
+            tr=lambda _key, default, **values: default.format(**values),
+        )
+        image = QImage(24, 16, QImage.Format.Format_ARGB32)
+        image.fill(QColor("#2769a8"))
+
+        MainWindow._save_video_storyboard_frame_edit(
+            holder,
+            "scene/one",
+            image,
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(replacements[0][0], "scene/one")
+        edited = Path(replacements[0][1])
+        self.assertTrue(edited.is_file())
+        self.assertIn("-edit-", edited.name)
+        self.assertEqual(edited.parent, root / "frames")
+        self.assertFalse(QImage(str(edited)).isNull())
+
+    def test_storyboard_video_candidate_is_moved_into_project_assets(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        candidates = root / "video" / "candidates"
+        candidates.mkdir(parents=True)
+        source = candidates / "candidate.mp4"
+        source.write_bytes(b"video")
+        accepted: list[tuple[str, str, str, str, float]] = []
+        failures: list[tuple[str, str]] = []
+        page = SimpleNamespace(
+            scenes=lambda: [{"scene_id": "scene/one"}],
+            set_scene_video=lambda *values: accepted.append(values),
+            set_video_generation_failed=lambda *values: failures.append(values),
+        )
+        holder = SimpleNamespace(
+            video_storyboard_page=page,
+            _video_storyboard_video_output_dir=lambda candidate=False: (
+                root / "video" / ("candidates" if candidate else "clips")
+            ),
+            tr=lambda _key, default, **values: default.format(**values),
+        )
+
+        MainWindow._accept_video_storyboard_video_candidate(
+            holder,
+            {
+                "scene_id": "scene/one",
+                "video_path": str(source),
+                "prompt": "Natural movement",
+                "frame_role": "start",
+                "video_duration_seconds": 7.5,
+            },
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(accepted[0][0], "scene/one")
+        target = Path(accepted[0][1])
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.parent, root / "video" / "clips")
+        self.assertEqual(accepted[0][4], 7.5)
+        self.assertFalse(source.exists())
+
+    def test_storyboard_automatic_video_queue_starts_one_scene_at_a_time(self) -> None:
+        progress: list[tuple[int, int, str]] = []
+        started: list[dict] = []
+        holder = SimpleNamespace(
+            settings={},
+            video_storyboard_video_thread=None,
+            video_storyboard_frame_thread=None,
+            video_storyboard_planner_thread=None,
+            video_storyboard_render_thread=None,
+            video_storyboard_auto_video_queue=[],
+            video_storyboard_auto_video_total=0,
+            video_storyboard_auto_video_completed=0,
+            video_storyboard_auto_video_failed=0,
+            video_storyboard_auto_video_waiting=False,
+            video_storyboard_page=SimpleNamespace(
+                set_auto_video_generation_progress=lambda *values: progress.append(values),
+                finish_auto_video_generation=lambda *_values: None,
+                append_activity=lambda *_values: None,
+            ),
+            _start_video_storyboard_video_generation=lambda request: started.append(request),
+            _start_next_video_storyboard_automatic_video=lambda: MainWindow._start_next_video_storyboard_automatic_video(holder),
+            tr=lambda _key, default, **values: default.format(**values),
+        )
+
+        MainWindow._start_video_storyboard_automatic_video_generation(
+            holder,
+            [
+                {"scene": {"scene_id": "001"}, "automatic": True},
+                {"scene": {"scene_id": "002"}, "automatic": True},
+            ],
+        )
+
+        self.assertEqual([item["scene"]["scene_id"] for item in started], ["001"])
+        self.assertTrue(started[0]["prepare_runtime"])
+        self.assertEqual(progress, [(1, 2, "001")])
+        self.assertTrue(holder.video_storyboard_auto_video_waiting)
 
     def test_review_marks_old_silero_f5_scores_as_pending_once(self) -> None:
         segment = StoredSegment(
@@ -403,6 +517,71 @@ class MainWindowUITests(unittest.TestCase):
             window.qwen_reference_text_edit.toPlainText(),
             transcript,
         )
+
+    def test_voice_library_row_selects_qwen_base_reference_voice(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        first_path = Path(temporary.name) / "harriet.wav"
+        second_path = Path(temporary.name) / "ricky.wav"
+        first_path.write_bytes(b"RIFF")
+        second_path.write_bytes(b"RIFF")
+        first = GalleryVoice(
+            voice_id="qwen_harriet",
+            engine="qwen",
+            name="Harriet",
+            language="en",
+            language_name="English",
+            voice_type="Reference voice",
+            install_type="reference_audio",
+            ref_text="Harriet reference transcript.",
+            installed_path=str(first_path),
+        )
+        second = GalleryVoice(
+            voice_id="qwen_ricky",
+            engine="qwen",
+            name="Ricky-Kid",
+            language="en",
+            language_name="English",
+            voice_type="Reference voice",
+            install_type="reference_audio",
+            ref_text="Ricky reference transcript.",
+            installed_path=str(second_path),
+        )
+        window.voice_gallery_manager = SimpleNamespace(
+            list_voices=lambda _engine: [first, second],
+            is_installed=lambda voice: bool(voice.installed_path),
+            preview_source=lambda voice: voice.installed_path,
+            ensure_voice_audio=lambda voice: Path(voice.installed_path),
+        )
+        window.qwen_reference_picker.set_path(first_path)
+        window.qwen_reference_text_edit.setPlainText(first.ref_text)
+        window.qwen_model_combo.setCurrentIndex(
+            window.qwen_model_combo.findData("base_1_7b")
+        )
+        qwen_index = window.tts_engine_combo.findData("qwen")
+        window.tts_engine_combo.blockSignals(True)
+        window.tts_engine_combo.setCurrentIndex(qwen_index)
+        window.tts_engine_combo.blockSignals(False)
+
+        with (
+            patch.object(window.qwen_manager, "is_installed", return_value=True),
+            patch.object(window, "_save_settings"),
+        ):
+            window._refresh_voices_page()
+            target_row = next(
+                row
+                for row in range(window.voices_table.rowCount())
+                if window.voices_table.item(row, 1).text() == second.name
+            )
+            window.voices_table.cellClicked.emit(target_row, 1)
+
+        self.assertEqual(window.qwen_reference_picker.path(), second_path)
+        self.assertEqual(
+            window.qwen_reference_text_edit.toPlainText(), second.ref_text
+        )
+        self.assertEqual(window.voices_table.item(target_row, 0).text(), "Selected")
 
     def test_qwen_voices_refresh_checks_engine_readiness_only_once(self) -> None:
         window = MainWindow()
@@ -815,6 +994,13 @@ class MainWindowUITests(unittest.TestCase):
         window.settings_button.click()
         self.assertEqual(window.page_stack.currentIndex(), 1)
         self.assertEqual(window.settings_tabs.count(), 7)
+        self.assertIs(window.continuity_analysis_settings.parentWidget(), window.continuity_settings_dialog)
+        window.video_storyboard_settings.continuity_settings_button.click()
+        self.assertTrue(window.continuity_settings_dialog.isVisible())
+        window.continuity_settings_dialog.close()
+        window.continuity_analysis_settings.process.setCurrentIndex(1)
+        self.assertEqual(window.settings["video_storyboard"]["continuity_analysis"]["process"], "simple")
+        window.continuity_analysis_settings.process.setCurrentIndex(0)
         self.assertIs(
             window.settings_tabs.widget(6),
             window.video_storyboard_settings,
@@ -1154,7 +1340,7 @@ class MainWindowUITests(unittest.TestCase):
         self.assertFalse(
             hasattr(window.video_storyboard_page, "open_settings_button")
         )
-        self.assertTrue(
+        self.assertFalse(
             hasattr(window.video_storyboard_page, "debug_alignment_button")
         )
         window.back_button.click()

@@ -1,0 +1,71 @@
+{
+  "id": "video",
+  "name": "WAN 2.2 Rapid I2V · Q4_K",
+  "version": "1.0.0",
+  "engine": "comfyui",
+  "workflows": [
+    "workflow.json"
+  ],
+  "custom_nodes": [
+    {
+      "name": "ComfyUI-GGUF",
+      "repository": "https://github.com/city96/ComfyUI-GGUF",
+      "classes": [
+        "UnetLoaderGGUF"
+      ]
+    }
+  ],
+  "required_nodes": [
+    "UnetLoaderGGUF",
+    "ModelSamplingSD3",
+    "KSampler",
+    "CLIPLoader",
+    "CLIPTextEncode",
+    "VAELoader",
+    "CLIPVisionLoader",
+    "LoadImage",
+    "CLIPVisionEncode",
+    "WanImageToVideo",
+    "VAEDecodeTiled",
+    "CreateVideo",
+    "SaveVideo"
+  ],
+  "models": [
+    {
+      "url": "https://huggingface.co/befox/WAN2.2-14B-Rapid-AllInOne-GGUF/resolve/f55c762a5bfae157e3f0ca9e9a959de53dbf2a6d/v10/wan2.2-i2v-rapid-aio-v10-Q4_K.gguf",
+      "filename": "wan2.2-i2v-rapid-aio-v10-Q4_K.gguf",
+      "folder": "diffusion_models",
+      "size_bytes": 10849052416,
+      "sha256": "9c21ebf29891434cb3a24aa3840af2b893e575ec0d85dcf8320507be36ed9709",
+      "node": "UnetLoaderGGUF",
+      "input": "unet_name"
+    },
+    {
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/617a7633e636506f850e043bc4605f290a466a8e/split_files/clip_vision/clip_vision_h.safetensors",
+      "filename": "clip_vision_h.safetensors",
+      "folder": "clip_vision",
+      "size_bytes": 1264219396,
+      "sha256": "64a7ef761bfccbadbaa3da77366aac4185a6c58fa5de5f589b42a65bcc21f161",
+      "node": "CLIPVisionLoader",
+      "input": "clip_name"
+    },
+    {
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/617a7633e636506f850e043bc4605f290a466a8e/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "filename": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "folder": "text_encoders",
+      "size_bytes": 6735906897,
+      "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68",
+      "node": "CLIPLoader",
+      "input": "clip_name"
+    },
+    {
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/617a7633e636506f850e043bc4605f290a466a8e/split_files/vae/wan_2.1_vae.safetensors",
+      "filename": "wan_2.1_vae.safetensors",
+      "folder": "vae",
+      "size_bytes": 253815318,
+      "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b",
+      "node": "VAELoader",
+      "input": "vae_name"
+    }
+  ]
+}

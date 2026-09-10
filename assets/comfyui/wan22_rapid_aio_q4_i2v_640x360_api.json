@@ -1,0 +1,16 @@
+{
+  "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "wan2.2-i2v-rapid-aio-v10-Q4_K.gguf"}},
+  "2": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": 8.0}},
+  "3": {"class_type": "KSampler", "inputs": {"model": ["2", 0], "seed": 82461937, "steps": 4, "cfg": 1.0, "sampler_name": "sa_solver", "scheduler": "beta", "positive": ["11", 0], "negative": ["11", 1], "latent_image": ["11", 2], "denoise": 1.0}},
+  "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "cpu"}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "A gentle cinematic realistic scene. Preserve the subject's appearance, stable background, subtle natural movement, consistent warm lighting and stable colors.", "clip": ["4", 0]}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "flickering, brightness flicker, exposure changes, color shifts, morphing face, changing identity, extra limbs, distorted hands, malformed objects, unstable background, camera shake, text, watermark", "clip": ["4", 0]}},
+  "7": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+  "8": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": "clip_vision_h.safetensors"}},
+  "9": {"class_type": "LoadImage", "inputs": {"image": "input.png"}},
+  "10": {"class_type": "CLIPVisionEncode", "inputs": {"clip_vision": ["8", 0], "image": ["9", 0], "crop": "center"}},
+  "11": {"class_type": "WanImageToVideo", "inputs": {"positive": ["5", 0], "negative": ["6", 0], "vae": ["7", 0], "clip_vision_output": ["10", 0], "start_image": ["9", 0], "width": 640, "height": 360, "length": 49, "batch_size": 1}},
+  "12": {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["3", 0], "vae": ["7", 0], "tile_size": 256, "overlap": 64, "temporal_size": 16, "temporal_overlap": 8}},
+  "13": {"class_type": "CreateVideo", "inputs": {"images": ["12", 0], "fps": 24.0, "bit_depth": 8, "color_space": "sRGB"}},
+  "14": {"class_type": "SaveVideo", "inputs": {"video": ["13", 0], "filename_prefix": "video/WAN22_Rapid_AIO_Q4_I2V_640x360", "format": "mp4", "format.codec": "h264"}}
+}

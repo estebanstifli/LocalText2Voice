@@ -50,6 +50,19 @@ class VideoStoryboardPageTests(unittest.TestCase):
     def test_timeline_edits_contiguous_scenes_and_zoom(self) -> None:
         self.assertEqual(self.page.track_labels.width(), 58)
         self.assertIn("Video", self.page.track_labels.toolTip())
+        self.assertTrue(self.page.current_preview.hasHeightForWidth())
+        self.assertTrue(self.page.scene_video_widget.hasHeightForWidth())
+        self.assertEqual(self.page.current_preview.heightForWidth(320), 180)
+        self.assertEqual(self.page.scene_video_widget.heightForWidth(320), 180)
+        self.page.resize(1280, 900)
+        self.page.show()
+        self.page.inspector_tabs.setTabVisible(0, True)
+        self.page.inspector_tabs.setCurrentIndex(0)
+        self.application.processEvents()
+        self.assertEqual(
+            self.page.scene_video_widget.size(),
+            self.page.current_preview.size(),
+        )
         self.assertTrue(self.page.narration_edit.isReadOnly())
         self.assertTrue(self.page.render_button.isHidden())
         self.assertEqual(self.page.scenes()[1]["start_seconds"], 6.0)
@@ -194,7 +207,7 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.page.redo_button.click()
         self.assertEqual(self.page.scenes()[0]["motion_out"], "zoom_out")
 
-    def test_generate_frames_warns_when_an_existing_frame_will_be_kept(self) -> None:
+    def test_generate_frames_dialog_can_keep_or_overwrite_existing_frames(self) -> None:
         requests: list[object] = []
         self.page.generateFramesRequested.connect(requests.append)
         temporary = TemporaryDirectory()
@@ -203,19 +216,176 @@ class VideoStoryboardPageTests(unittest.TestCase):
         frame.write_bytes(b"frame")
         self.page.set_frame_generated("001", str(frame))
 
-        with patch(
-            "app.ui.video_storyboard_page.QMessageBox.warning",
-            return_value=QMessageBox.StandardButton.Cancel,
-        ):
-            self.page.generate_frames_button.click()
+        self.page.generate_frames_button.click()
         self.assertEqual(requests, [])
-
-        with patch(
-            "app.ui.video_storyboard_page.QMessageBox.warning",
-            return_value=QMessageBox.StandardButton.Yes,
-        ):
-            self.page.generate_frames_button.click()
+        dialog = self.page._frame_batch_dialog
+        self.assertIsNotNone(dialog)
+        assert dialog is not None
+        self.assertTrue(dialog.overwrite_checkbox.isVisible())
+        self.assertFalse(dialog.overwrite_checkbox.isChecked())
+        dialog.overwrite_checkbox.setChecked(True)
+        dialog.start_button.click()
         self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["scenes"][0]["image_path"], "")
+
+    def test_frame_batch_restarts_after_success_failure_and_cancellation(self) -> None:
+        requests = []
+        self.page.generateFramesRequested.connect(requests.append)
+        for mode, error in (("generate", None), ("regenerate", "provider error"),
+                            ("generate", "cancelled"), ("regenerate", None)):
+            self.page._open_frame_batch_dialog(mode)
+            dialog = self.page._frame_batch_dialog
+            assert dialog is not None
+            self.assertFalse(dialog._finished)
+            self.assertEqual(dialog.progress_bar.value(), 0)
+            self.assertEqual(dialog.log_edit.toPlainText(), "")
+            self.assertEqual(dialog.mode, mode)
+            dialog.start_button.click()
+            if error:
+                self.page.set_frame_generation_failed(error)
+            else:
+                self.page.set_frame_generation_finished()
+            self.assertIsNone(self.page._frame_batch_dialog)
+            # Destruction of the previous result must not clear a new dialog.
+            self.page._open_frame_batch_dialog(mode)
+            following = self.page._frame_batch_dialog
+            self.page._clear_frame_batch_dialog(dialog)
+            self.assertIs(self.page._frame_batch_dialog, following)
+            dialog.close_button.click()
+            following.close()
+            self.page._clear_frame_batch_dialog(following)
+        self.assertEqual(len(requests), 4)
+
+    def test_project_change_discards_idle_frame_confirmation(self) -> None:
+        self.page._open_frame_batch_dialog("generate")
+        self.page.set_audiobook_source(99, "New Project", "New text", [], 0)
+        self.assertIsNone(self.page._frame_batch_dialog)
+
+    def test_frame_batch_can_hide_in_background_and_cancel_the_worker(self) -> None:
+        cancellations: list[bool] = []
+        self.page.cancelFrameGenerationRequested.connect(
+            lambda: cancellations.append(True)
+        )
+        self.page.generate_frames_button.click()
+        dialog = self.page._frame_batch_dialog
+        assert dialog is not None
+        dialog.start_button.click()
+        dialog.close()
+        self.assertFalse(dialog.isVisible())
+        self.page._open_frame_batch_dialog("generate")
+        self.assertIs(self.page._frame_batch_dialog, dialog)
+        dialog.cancel_process_button.click()
+        self.assertEqual(cancellations, [True])
+        self.page.set_frame_generation_failed("cancelled")
+
+    def test_rendered_video_replaces_provider_status_and_can_be_cleared(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        video = Path(temporary.name) / "storyboard-final.mp4"
+        video.write_bytes(b"video")
+
+        self.page.set_existing_render_output(str(video))
+
+        self.assertTrue(self.page.status_label.isHidden())
+        self.assertFalse(self.page.rendered_video_button.isHidden())
+        self.assertEqual(self.page.rendered_video_button.text(), video.name)
+
+        self.page.set_existing_render_output("")
+        self.assertFalse(self.page.status_label.isHidden())
+        self.assertTrue(self.page.rendered_video_button.isHidden())
+
+    def test_inspector_generate_video_only_when_scene_has_no_video(self):
+        with TemporaryDirectory() as directory, patch("PySide6.QtMultimedia.QMediaPlayer.setSource"):
+            root = Path(directory)
+            source = root / "frame.png"
+            image = QImage(16, 9, QImage.Format.Format_RGB32)
+            image.fill(QColor("blue"))
+            image.save(str(source))
+            self.page._select_scene("001")
+            button = self.page.inspector_generate_video_button
+            self.assertFalse(button.isHidden())
+            self.assertFalse(button.isEnabled())
+            self.page._scenes[0].image_path = str(source)
+            self.page._select_scene("001")
+            self.assertTrue(button.isEnabled())
+            self.assertFalse(button.icon().isNull())
+            button.click()
+            self.assertEqual(self.page._video_dialog.scene_id, "001")
+            self.page._video_dialog.close()
+            video = root / "scene.mp4"
+            video.write_bytes(b"video")
+            self.page._scenes[0].video_path = str(video)
+            self.page._select_scene("001")
+            self.assertTrue(button.isHidden())
+            video.unlink()
+            self.page._select_scene("001")
+            self.assertFalse(button.isHidden())
+            self.page.set_scenes([])
+            self.assertTrue(button.isHidden())
+
+    def test_edit_frame_is_available_in_toolbar_context_and_inspector(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        first = root / "first.png"
+        second = root / "second.png"
+        image = QImage(4, 2, QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        image.setPixelColor(0, 0, QColor("blue"))
+        self.assertTrue(image.save(str(first)))
+        self.assertTrue(image.save(str(second)))
+        previous_video = root / "previous.mp4"
+        previous_video.write_bytes(b"video")
+        self.page._scenes[0].image_path = str(first)
+        self.page._scenes[0].video_path = str(previous_video)
+        self.page._scenes[1].image_path = str(second)
+        self.page._select_scene("002")
+        edits: list[tuple[str, QImage]] = []
+        self.page.editFrameRequested.connect(
+            lambda scene_id, edited: edits.append((scene_id, edited))
+        )
+
+        self.assertTrue(self.page.edit_frame_button.isEnabled())
+        self.assertTrue(self.page.inspector_edit_frame_button.isEnabled())
+        self.page.edit_frame_button.click()
+        dialog = self.page._image_edit_dialog
+        assert dialog is not None
+        self.assertTrue(dialog.previous_video_button.isEnabled())
+        dialog.flip_horizontal_button.click()
+        dialog.accept_button.click()
+
+        self.assertEqual(edits[0][0], "002")
+        self.assertEqual(edits[0][1].pixelColor(3, 0), QColor("blue"))
+
+    def test_edit_frame_can_replace_and_crop_back_to_the_same_resolution(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        current = root / "current.png"
+        replacement = root / "replacement.png"
+        image = QImage(4, 4, QImage.Format.Format_ARGB32)
+        image.fill(QColor("red"))
+        self.assertTrue(image.save(str(current)))
+        other = QImage(4, 4, QImage.Format.Format_ARGB32)
+        other.fill(QColor("blue"))
+        self.assertTrue(other.save(str(replacement)))
+        self.page._scenes[0].image_path = str(current)
+        self.page._select_scene("001")
+        self.page.edit_frame_button.click()
+        dialog = self.page._image_edit_dialog
+        assert dialog is not None
+
+        self.assertEqual(dialog.file_link_button.text(), current.name)
+        with patch(
+            "app.ui.video_storyboard_image_edit_dialog.QFileDialog.getOpenFileName",
+            return_value=(str(replacement), ""),
+        ):
+            dialog.replace_button.click()
+        self.assertEqual(dialog.file_link_button.text(), replacement.name)
+        dialog._apply_crop(QRect(0, 0, 2, 4))
+        self.assertEqual(dialog._working.size(), other.size())
+        self.assertEqual(dialog._working.pixelColor(3, 2), QColor("blue"))
+        dialog.reject()
 
     def test_context_menu_exposes_the_frame_actions(self) -> None:
         menu = self.page._build_frame_context_menu("002")
@@ -227,15 +397,16 @@ class VideoStoryboardPageTests(unittest.TestCase):
             [
                 "Replace frame with an image",
                 "Regenerate frame",
+                "Edit frame",
                 "Split frame into two",
                 "Delete frame",
-                "Convert to video (coming soon)",
+                "Generate scene video",
                 "Undo",
                 "Redo",
             ],
         )
         self.assertEqual(self.page.selected_scene().scene_id, "002")
-        self.assertFalse(menu.actions()[4].isEnabled())
+        self.assertFalse(menu.actions()[5].isEnabled())
         menu.deleteLater()
 
     def test_native_context_menu_event_selects_the_clicked_frame(self) -> None:
@@ -256,6 +427,122 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.assertTrue(event.isAccepted())
         self.assertEqual(requested, [("001", position)])
         self.assertEqual(self.page.selected_scene().scene_id, "001")
+
+    def test_video_layer_keeps_reference_frame_and_is_undoable(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        frame = Path(temporary.name) / "frame.png"
+        video = Path(temporary.name) / "clip.mp4"
+        frame.write_bytes(b"frame")
+        video.write_bytes(b"video")
+        self.page.set_frame_replaced("001", str(frame))
+        original_frame = self.page.scenes()[0]["image_path"]
+
+        self.page.set_scene_video(
+            "001",
+            str(video),
+            "The girl walks naturally through the square.",
+            "end",
+            6.0,
+        )
+
+        scene = self.page.scenes()[0]
+        self.assertEqual(scene["image_path"], original_frame)
+        self.assertEqual(scene["video_path"], str(video))
+        self.assertEqual(scene["video_frame_role"], "end")
+        self.assertEqual(scene["video_duration_seconds"], 6.0)
+        self.assertEqual(scene["video_motion_in"], "none")
+        self.assertEqual(scene["video_motion_out"], "none")
+        self.assertEqual(self.page.inspector_heading.text(), "Selected scene")
+        self.assertTrue(self.page.inspector_tabs.isTabVisible(0))
+        self.assertEqual(self.page.inspector_tabs.currentIndex(), 0)
+        self.page.video_motion_in_combo.setCurrentIndex(
+            self.page.video_motion_in_combo.findData("zoom_in")
+        )
+        self.assertEqual(self.page.scenes()[0]["video_motion_in"], "zoom_in")
+        self.assertTrue(self.page.convert_frame_video_button.isEnabled())
+        self.page.undo_button.click()
+        self.assertEqual(self.page.scenes()[0]["video_motion_in"], "none")
+        self.page.undo_button.click()
+        self.assertEqual(self.page.scenes()[0]["video_path"], "")
+
+    def test_generate_all_videos_only_queues_scenes_without_a_video(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        first_frame = Path(temporary.name) / "first.png"
+        second_frame = Path(temporary.name) / "second.png"
+        existing_video = Path(temporary.name) / "existing.mp4"
+        first_frame.write_bytes(b"frame")
+        second_frame.write_bytes(b"frame")
+        existing_video.write_bytes(b"video")
+        self.page._scenes[0].image_path = str(first_frame)
+        self.page._scenes[1].image_path = str(second_frame)
+        self.page._scenes[1].video_path = str(existing_video)
+        queued: list[object] = []
+        self.page.generateAllVideosRequested.connect(queued.append)
+
+        with patch.object(
+            self.page,
+            "_choose_generate_all_videos_scope",
+            return_value="missing",
+        ) as choose_scope:
+            self.page.generate_all_videos_button.click()
+
+        choose_scope.assert_called_once_with(1, 2, 1)
+        assert len(queued) == 1
+        request = queued[0]
+        assert isinstance(request, list)
+        assert len(request) == 1
+        assert request[0]["scene"]["scene_id"] == "001"
+        assert request[0]["automatic"] is True
+        self.assertFalse(self.page.generate_all_videos_button.isEnabled())
+
+    def test_generate_all_videos_can_overwrite_existing_scene_videos(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        first_frame = Path(temporary.name) / "first.png"
+        second_frame = Path(temporary.name) / "second.png"
+        existing_video = Path(temporary.name) / "existing.mp4"
+        first_frame.write_bytes(b"frame")
+        second_frame.write_bytes(b"frame")
+        existing_video.write_bytes(b"video")
+        self.page._scenes[0].image_path = str(first_frame)
+        self.page._scenes[1].image_path = str(second_frame)
+        self.page._scenes[1].video_path = str(existing_video)
+        queued: list[object] = []
+        self.page.generateAllVideosRequested.connect(queued.append)
+
+        with patch.object(
+            self.page,
+            "_choose_generate_all_videos_scope",
+            return_value="all",
+        ):
+            self.page.generate_all_videos_button.click()
+
+        assert len(queued) == 1
+        request = queued[0]
+        assert isinstance(request, list)
+        assert [item["scene"]["scene_id"] for item in request] == ["001", "002"]
+        assert all(item["automatic"] is True for item in request)
+
+    def test_generate_all_videos_cancel_keeps_the_queue_empty(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        frame = Path(temporary.name) / "first.png"
+        frame.write_bytes(b"frame")
+        self.page._scenes[0].image_path = str(frame)
+        queued: list[object] = []
+        self.page.generateAllVideosRequested.connect(queued.append)
+
+        with patch.object(
+            self.page,
+            "_choose_generate_all_videos_scope",
+            return_value=None,
+        ):
+            self.page.generate_all_videos_button.click()
+
+        self.assertEqual(queued, [])
+        self.assertTrue(self.page.generate_all_videos_button.isEnabled())
 
     def test_clicking_a_cut_selects_and_edits_only_its_transition(self) -> None:
         boundary_x = round(
@@ -552,9 +839,11 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.assertEqual(page.scenes()[0]["image_path"], "")
         self.assertTrue(page.generate_frames_button.isEnabled())
         page.generate_frames_button.click()
+        assert page._frame_batch_dialog is not None
+        page._frame_batch_dialog.start_button.click()
         self.assertEqual(len(generation_requests), 1)
 
-    def test_reanalysis_requires_confirmation_before_replacing_scenes(self) -> None:
+    def test_reanalysis_confirmation_is_delegated_to_analysis_preflight(self) -> None:
         self.page.set_audiobook_source(9, "Book", "Text", [], 12.0)
         self.page.set_analysis_result(
             [{"id": "001", "duration": 12, "prompt": "Existing scene"}]
@@ -562,19 +851,9 @@ class VideoStoryboardPageTests(unittest.TestCase):
         requests: list[object] = []
         self.page.analyzeRequested.connect(requests.append)
 
-        with patch(
-            "app.ui.video_storyboard_page.QMessageBox.warning",
-            return_value=QMessageBox.StandardButton.No,
-        ):
-            self.page.analyze_button.click()
-        self.assertEqual(requests, [])
-
-        with patch(
-            "app.ui.video_storyboard_page.QMessageBox.warning",
-            return_value=QMessageBox.StandardButton.Yes,
-        ):
-            self.page.analyze_button.click()
+        self.page.analyze_button.click()
         self.assertEqual(len(requests), 1)
+        self.assertTrue(self.page.analyze_button.isEnabled())
 
     def test_partial_analysis_appears_immediately_and_is_exportable(self) -> None:
         self.page.set_audiobook_source(9, "Book", "Text", [], 12.0)
@@ -875,6 +1154,8 @@ class VideoStoryboardPageTests(unittest.TestCase):
             )
 
         self.page.regenerate_all_button.click()
+        assert self.page._frame_batch_dialog is not None
+        self.page._frame_batch_dialog.start_button.click()
         self.assertTrue(
             all(
                 not scene["image_path"]
@@ -1049,6 +1330,89 @@ class VideoStoryboardPageTests(unittest.TestCase):
             ["char_luis_state_2"],
         )
 
+        character_item = self.page.continuity_characters_tree.topLevelItem(0)
+        self.page.continuity_characters_tree.setCurrentItem(character_item)
+        self.assertTrue(self.page.delete_character_button.isEnabled())
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            self.page._delete_character()
+        self.assertEqual(
+            self.page.project_state()["plan"]["continuity"]["characters"],
+            [],
+        )
+        self.assertEqual(self.page.scenes()[0]["characters"], [])
+        self.assertFalse(self.page.delete_character_button.isEnabled())
+
+    def test_regeneration_entity_buttons_insert_markup_and_bind_states(self) -> None:
+        scenes = self.page.scenes()
+        self.page.set_analysis_result(
+            {
+                "style": {"medium": "comic book", "characters": []},
+                "continuity": {
+                    "characters": [
+                        {
+                            "id": "ana",
+                            "name": "Ana",
+                            "identity_description": "dark curly hair",
+                            "states": [
+                                {
+                                    "id": "ana_blue",
+                                    "description": "blue coat",
+                                    "from_seconds": 0,
+                                    "to_seconds": 20,
+                                }
+                            ],
+                        }
+                    ],
+                    "locations": [
+                        {
+                            "id": "plaza",
+                            "name": "Central Plaza",
+                            "identity_description": "stone fountain",
+                            "states": [
+                                {
+                                    "id": "plaza_day",
+                                    "description": "sunny morning",
+                                    "from_seconds": 0,
+                                    "to_seconds": 20,
+                                }
+                            ],
+                        }
+                    ],
+                    "eras": [],
+                    "assignments": [],
+                },
+                "scenes": scenes,
+            }
+        )
+        self.page.regenerate_button.click()
+        dialog = self.page._regeneration_dialog
+        assert dialog is not None
+        character = dialog.plan["continuity"]["characters"][0]
+        location = dialog.plan["continuity"]["locations"][0]
+        dialog._insert_entity(character, character["states"][0], "characters")
+        dialog._insert_entity(location, location["states"][0], "locations")
+
+        self.assertIn("@Ana", dialog.prompt_edit.toPlainText())
+        self.assertIn("@Central Plaza", dialog.prompt_edit.toPlainText())
+        payload = dialog.request_payload()
+        self.assertNotIn("@", payload["prompt"])
+        self.assertEqual(
+            payload["overrides"]["location_state_ids"],
+            ["plaza_day"],
+        )
+        self.assertTrue(
+            any(
+                line.startswith("ana_blue:")
+                for line in payload["overrides"]["style"]["characters"]
+            )
+        )
+        self.assertNotIn("@", dialog.raw_prompt_edit.toPlainText())
+        dialog.close()
+
     def test_timeline_click_moves_preview_playhead(self) -> None:
         requested: list[float] = []
         self.page.timeline_canvas.seekRequested.connect(requested.append)
@@ -1118,18 +1482,9 @@ class VideoStoryboardPageTests(unittest.TestCase):
         )
         self.assertEqual(page.scenes()[0]["duration_seconds"], 8.0)
 
-    def test_alignment_debug_dialog_opens_with_colored_scene_report(self) -> None:
-        self.page.debug_alignment_button.click()
-        self.application.processEvents()
-
-        dialog = self.page._debug_dialog
-        self.assertIsNotNone(dialog)
-        self.assertEqual(dialog.scene_list.count(), 2)
-        self.assertIn('"scenes"', dialog.log_view.toPlainText())
-        self.assertTrue(dialog.scene_list.item(0).background().color().isValid())
-
-        dialog.close()
-        self.application.processEvents()
+    def test_development_alignment_debug_ui_is_removed(self) -> None:
+        self.assertFalse(hasattr(self.page, "debug_alignment_button"))
+        self.assertFalse(hasattr(self.page, "_debug_dialog"))
 
 
 if __name__ == "__main__":

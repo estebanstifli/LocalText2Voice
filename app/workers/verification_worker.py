@@ -43,6 +43,7 @@ from app.core.text_normalization import (
     strip_russian_stress_marks,
 )
 from app.tts.base import BaseTTSEngine, TTSCancelled, TTSEngineError
+from app.server.engine_host_client import EngineHostClient, EngineHostClientError
 from app.tts.engine_registry import create_tts_engine
 from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
 from app.utils.ffmpeg_utils import FFmpegCancelled, FFmpegError, FFmpegRunner, find_ffmpeg
@@ -964,6 +965,75 @@ class AudioTailCutWorker(QObject):
         self._cancel_requested.set()
         if self._runner is not None:
             self._runner.cancel_current()
+
+
+class EngineHostSegmentRegenerationWorker(QObject):
+    """Generate a Review candidate in the persistent engine-host process."""
+
+    progress = Signal(int, int, str)
+    log = Signal(str)
+    finished = Signal(int, str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self,
+        client: EngineHostClient,
+        segment_id: int,
+        source_text: str,
+        voice_config: dict,
+        candidate_wav: Path,
+    ) -> None:
+        super().__init__()
+        self.client = client
+        self.segment_id = segment_id
+        self.source_text = source_text
+        self.voice_config = dict(voice_config)
+        self.candidate_wav = Path(candidate_wav)
+        self._cancel_requested = threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            if self._cancel_requested.is_set():
+                self.cancelled.emit()
+                return
+            self.candidate_wav.parent.mkdir(parents=True, exist_ok=True)
+            temporary_wav = self.candidate_wav.with_name(
+                self.candidate_wav.stem + ".tmp.wav"
+            )
+            self.progress.emit(0, 1, "Connecting to the shared TTS engine...")
+            self.log.emit("Regenerating review segment through the shared engine host.")
+            result = self.client.synthesize_review_segment(
+                {
+                    "text": self.source_text,
+                    "output_wav": str(temporary_wav.resolve()),
+                    "voice_config": self.voice_config,
+                }
+            )
+            if self._cancel_requested.is_set():
+                temporary_wav.unlink(missing_ok=True)
+                self.cancelled.emit()
+                return
+            output = Path(str(result.get("output_wav", temporary_wav)))
+            if output.resolve() != temporary_wav.resolve():
+                raise EngineHostClientError("Engine host returned an unexpected candidate path.")
+            if not temporary_wav.is_file() or temporary_wav.stat().st_size == 0:
+                raise EngineHostClientError("Engine host did not create a valid candidate WAV.")
+            temporary_wav.replace(self.candidate_wav)
+            self.progress.emit(1, 1, "Segment regenerated.")
+            self.finished.emit(self.segment_id, str(self.candidate_wav))
+        except EngineHostClientError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            traceback.print_exc()
+            self.failed.emit(f"Unexpected segment regeneration error: {exc}")
+
+    def request_cancel(self) -> None:
+        # The HTTP request cannot be interrupted safely from this client thread.
+        # Once the host returns, discard its candidate instead of touching a
+        # cached engine from the UI process.
+        self._cancel_requested.set()
 
 
 class SegmentRegenerationWorker(QObject):

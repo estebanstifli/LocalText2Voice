@@ -5,6 +5,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from app.core.comfyui_http import comfyui_request_headers
+
 
 class VideoStoryboardServiceError(RuntimeError):
     pass
@@ -49,10 +51,11 @@ def detect_ollama(base_url: str, timeout: float = 10) -> dict[str, Any]:
     return {"service": "ollama", "models": models, "loaded_models": loaded}
 
 
-def detect_comfyui(base_url: str, timeout: float = 30) -> dict[str, Any]:
+def detect_comfyui(base_url: str, timeout: float = 30, auth_token: str = "") -> dict[str, Any]:
     root = _normalize_url(base_url)
-    stats = _http_json(f"{root}/system_stats", min(timeout, 15))
-    object_info = _http_json(f"{root}/object_info", timeout)
+    headers = {"Authorization": f"Bearer {auth_token.strip()}"} if auth_token.strip() else {}
+    stats = _http_json(f"{root}/system_stats", min(timeout, 15), headers=headers)
+    object_info = _http_json(f"{root}/object_info", timeout, headers=headers)
     if not isinstance(object_info, dict):
         raise VideoStoryboardServiceError("ComfyUI returned invalid node information.")
     devices = stats.get("devices", []) if isinstance(stats, dict) else []
@@ -98,10 +101,10 @@ def _normalize_url(value: str) -> str:
     return url
 
 
-def _http_json(url: str, timeout: float) -> dict[str, Any]:
+def _http_json(url: str, timeout: float, headers: dict[str, str] | None = None) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": "LocalText2Voice"},
+        headers=comfyui_request_headers(headers),
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

@@ -15,10 +15,11 @@ class VideoStoryboardServiceDetectionWorker(QObject):
     finished = Signal(str, object)
     failed = Signal(str, str)
 
-    def __init__(self, service: str, base_url: str) -> None:
+    def __init__(self, service: str, base_url: str, auth_token: str = "") -> None:
         super().__init__()
         self.service = service
         self.base_url = base_url
+        self.auth_token = auth_token
 
     @Slot()
     def run(self) -> None:
@@ -26,7 +27,7 @@ class VideoStoryboardServiceDetectionWorker(QObject):
             if self.service == "ollama":
                 result = detect_ollama(self.base_url)
             elif self.service == "comfyui":
-                result = detect_comfyui(self.base_url)
+                result = detect_comfyui(self.base_url, auth_token=self.auth_token)
             else:
                 raise VideoStoryboardServiceError(
                     f"Unknown Video Storyboard service: {self.service}"

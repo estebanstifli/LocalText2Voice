@@ -1,0 +1,27 @@
+{
+  "name": "localtext2voice-temporary-assets",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-03-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "r2_buckets": [{
+    "binding": "REFERENCES",
+    "bucket_name": "localtext2voice-temporary-references",
+    "jurisdiction": "eu"
+  }],
+  "durable_objects": {
+    "bindings": [{ "name": "REGISTRY", "class_name": "AssetRegistry" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AssetRegistry"] }],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "MAX_IMAGE_BYTES": "15728640",
+    "CLIENT_DAILY_UPLOADS": "100",
+    "CLIENT_DAILY_BYTES": "524288000",
+    "GLOBAL_DAILY_UPLOADS": "2000",
+    "GLOBAL_DAILY_BYTES": "2147483648",
+    "GLOBAL_DAILY_DOWNLOADS": "10000",
+    "ASSET_TTL_SECONDS": "86400"
+  }
+}

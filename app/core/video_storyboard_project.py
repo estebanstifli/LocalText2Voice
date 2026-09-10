@@ -77,9 +77,9 @@ def append_storyboard_analysis_result(
     event: dict[str, Any],
     request_number: int,
 ) -> None:
-    """Append a raw LLM response or error beside its preceding request."""
+    """Append a raw LLM response, warning or error beside its request."""
     kind = str(event.get("kind") or "")
-    if kind not in {"raw_response", "error"}:
+    if kind not in {"raw_response", "warning", "error"}:
         return
     timestamp = datetime.now().astimezone().isoformat()
     provider = str(event.get("provider") or "LLM")
@@ -87,6 +87,9 @@ def append_storyboard_analysis_result(
     if kind == "raw_response":
         heading = "RAW RESPONSE"
         payload = event.get("raw_response")
+    elif kind == "warning":
+        heading = "WARNING"
+        payload = {"message": str(event.get("message") or "")}
     else:
         heading = "ERROR"
         payload = event.get("raw_error")
@@ -186,12 +189,16 @@ def save_storyboard_state(
             str(scene.get("image_path") or ""),
             root,
         )
+        scene["video_path"] = _portable_path(
+            str(scene.get("video_path") or ""),
+            root,
+        )
         portable_scenes.append(scene)
 
     text = str(source.get("text") or "")
     document = {
         "schema": "localtext2voice.video-storyboard",
-        "version": 2,
+        "version": 3,
         "analysis_status": str(analysis_status or "ready"),
         "analysis_error": str(error or ""),
         "source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -248,6 +255,10 @@ def load_storyboard_state(project_dir: Path) -> dict[str, Any] | None:
                 str(scene.get("image_path") or ""),
                 root,
             )
+            scene["video_path"] = _restored_path(
+                str(scene.get("video_path") or ""),
+                root,
+            )
             restored_scenes.append(scene)
     result["scenes"] = restored_scenes
     return result
@@ -269,6 +280,15 @@ def _migrate_storyboard_document(document: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(scenes, list):
         scenes = []
         result["scenes"] = scenes
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene.setdefault("video_path", "")
+        scene.setdefault("video_prompt", "")
+        scene.setdefault("video_frame_role", "start")
+        scene.setdefault("video_duration_seconds", 0.0)
+        scene.setdefault("video_motion_in", "none")
+        scene.setdefault("video_motion_out", "none")
     continuity = plan.get("continuity")
     if isinstance(continuity, dict):
         continuity.setdefault("version", 1)
@@ -277,7 +297,8 @@ def _migrate_storyboard_document(document: dict[str, Any]) -> dict[str, Any]:
         continuity.setdefault("locations", [])
         continuity.setdefault("eras", [])
         continuity.setdefault("assignments", [])
-        result["version"] = 2
+        continuity.setdefault("discovery_reports", [])
+        result["version"] = 3
         return result
 
     duration = max(
@@ -376,7 +397,7 @@ def _migrate_storyboard_document(document: dict[str, Any]) -> dict[str, Any]:
         "eras": eras,
         "assignments": [],
     }
-    result["version"] = 2
+    result["version"] = 3
     return result
 
 

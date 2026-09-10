@@ -14,6 +14,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.comfyui_http import comfyui_request_headers
+from app.core.video_storyboard_visual_traits import compact_visual_description
+from app.core.video_storyboard_appearance import selected_appearance
+from app.core.video_storyboard_prompt_entities import (
+    strip_storyboard_prompt_markers,
+)
 from app.core.video_storyboard_services import REQUIRED_COMFYUI_NODES
 
 
@@ -34,6 +40,50 @@ def generate_storyboard_frame(
     status: StatusCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> dict[str, Any]:
+    overrides = scene.get("generation_overrides", {})
+    reference_images = (
+        overrides.get("reference_images", [])
+        if isinstance(overrides, dict)
+        else []
+    )
+    if isinstance(reference_images, list) and reference_images:
+        from app.core.video_storyboard_image_edit import (
+            generate_edited_storyboard_image,
+        )
+
+        effective_plan = _effective_frame_plan(plan, scene)
+        prompt = compile_effective_scene_prompt(plan, scene)
+        edit_prompt = compile_reference_edit_prompt(prompt, reference_images)
+        image = settings.get("image", {})
+        result = generate_edited_storyboard_image(
+            reference_images,
+            edit_prompt,
+            settings,
+            target,
+            seed=int(effective_plan.get("base_seed") or 0),
+            width=int(image.get("width") or 1280),
+            height=int(image.get("height") or 720),
+            scene_id=str(scene.get("scene_id") or scene.get("id") or ""),
+            status=status,
+            cancelled=cancelled,
+        )
+        result["compiled_prompt"] = edit_prompt
+        return result
+    if settings.get("image_provider") == "runpod":
+        from app.core import video_storyboard_runpod as rp
+        effective = _effective_frame_plan(plan, scene)
+        prompt = compile_effective_scene_prompt(plan, scene)
+        seed = int(effective.get("base_seed") or 0)
+        image = settings.get("image", {})
+        from app.core.runpod_image_models import image_parameters
+        try:
+            parameters = image_parameters(rp.configuration(settings), prompt, seed,
+                                          image.get("width") or 1280, image.get("height") or 720)
+            seed = parameters["seed"]
+            result = rp.execute(settings, "image", parameters, target, status=status, cancelled=cancelled)
+        except (rp.RunpodError, ValueError) as exc:
+            raise VideoStoryboardImageError(str(exc)) from exc
+        return {**result, "scene_id": str(scene.get("scene_id") or scene.get("id") or ""), "image_path": str(target), "compiled_prompt": prompt, "seed": seed, "seed_applied": True}
     if str(settings.get("image_provider") or "comfyui") == "litellm_image":
         return _generate_litellm_storyboard_frame(
             scene, plan, settings, target, status=status, cancelled=cancelled
@@ -53,8 +103,14 @@ def generate_storyboard_frame(
         "height": int(image.get("height") or 720),
         "prefix": prefix,
     }
+    values.update(negative_prompt=values["negative"], output_prefix=prefix,
+                  steps=int(image.get("steps") or 8), cfg=float(image.get("cfg", 1.0)))
+    headers = _image_auth_headers(comfy)
+    custom = settings.get("image_provider") == "custom_comfyui"
     workflow_path = str(comfy.get("workflow_path") or "").strip()
-    if workflow_path:
+    if custom and not workflow_path:
+        raise VideoStoryboardImageError("Select a ComfyUI API workflow JSON for Custom ComfyUI.")
+    if custom:
         try:
             template = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -63,7 +119,7 @@ def generate_storyboard_frame(
             ) from exc
         if not isinstance(template, dict):
             raise VideoStoryboardImageError("The custom ComfyUI workflow is not an object.")
-        workflow = customize_workflow(template, values)
+        workflow = build_custom_image_workflow(template, values, comfy.get("bindings")) if custom else customize_workflow(template, values)
     else:
         workflow = build_z_image_workflow(prompt, seed, settings, prefix)
     if cancelled and cancelled():
@@ -74,6 +130,7 @@ def generate_storyboard_frame(
         f"{root}/prompt",
         method="POST",
         payload={"prompt": workflow, "client_id": f"ltv-{uuid.uuid4()}"},
+        headers=headers,
         timeout=30,
     )
     prompt_id = str(result.get("prompt_id") or "")
@@ -90,8 +147,9 @@ def generate_storyboard_frame(
         prompt_id,
         float(comfy.get("timeout_seconds") or 900),
         cancelled,
+        headers=headers,
     )
-    image_info = _find_output_image(history)
+    image_info = _find_output_image(history, str(comfy.get("output_node") or "") if custom else "")
     if status:
         status("downloading")
     query = urllib.parse.urlencode(
@@ -101,14 +159,18 @@ def generate_storyboard_frame(
             "type": image_info.get("type", "output"),
         }
     )
-    _download(f"{root}/view?{query}", target, timeout=120)
+    _download(f"{root}/view?{query}", target, timeout=120, headers=headers)
     return {
         "scene_id": str(scene.get("scene_id") or scene.get("id") or ""),
         "image_path": str(target),
         "prompt_id": prompt_id,
         "compiled_prompt": prompt,
         "seed": seed,
-        "seed_applied": True,
+        "seed_applied": (
+            not custom
+            or bool(str((comfy.get("bindings") or {}).get("seed") or "").strip())
+            or "{{SEED}}" in json.dumps(template)
+        ),
     }
 
 
@@ -125,11 +187,43 @@ def compile_effective_scene_prompt(
     return compile_scene_prompt(_effective_frame_plan(plan, scene), scene)
 
 
+def compile_reference_edit_prompt(
+    prompt: str,
+    reference_images: list[object],
+) -> str:
+    """Add the exact Qwen multi-reference roles once, in stable image order."""
+    base_prompt = str(prompt or "").strip()
+    if "Image 1 is the visual reference for " in base_prompt:
+        return base_prompt
+    labels = [
+        str(value.get("label") or "reference").strip()
+        for value in reference_images
+        if isinstance(value, dict)
+    ]
+    reference_instruction = " ".join(
+        f"Image {index} is the visual reference for {label or 'reference'}."
+        for index, label in enumerate(labels, start=1)
+    )
+    return " ".join(
+        value for value in (
+            reference_instruction,
+            "Create the requested storyboard scene while preserving the referenced identities and visual traits.",
+            base_prompt,
+        ) if value
+    )
+
+
 def prepare_image_runtime(
     settings: dict[str, Any],
     *,
     status: StatusCallback | None = None,
 ) -> dict[str, Any]:
+    if settings.get("image_provider") == "runpod":
+        from app.core import video_storyboard_runpod as rp
+        try:
+            return rp.prepare(settings, "image")
+        except rp.RunpodError as exc:
+            raise VideoStoryboardImageError(str(exc)) from exc
     if str(settings.get("image_provider") or "comfyui") == "litellm_image":
         config = settings.get("litellm_image", {})
         model = str(config.get("model") or "").strip()
@@ -149,9 +243,19 @@ def prepare_image_runtime(
     root = _normalize_url(comfy.get("base_url"), "http://127.0.0.1:8188")
     if status:
         status("check_comfyui")
-    stats = _http_json(f"{root}/system_stats", timeout=15)
-    object_info = _http_json(f"{root}/object_info", timeout=60)
-    missing_nodes = sorted(REQUIRED_COMFYUI_NODES - set(object_info))
+    headers = _image_auth_headers(comfy)
+    stats = _http_json(f"{root}/system_stats", timeout=15, headers=headers)
+    object_info = _http_json(f"{root}/object_info", timeout=60, headers=headers)
+    custom = settings.get("image_provider") == "custom_comfyui"
+    required_nodes = REQUIRED_COMFYUI_NODES
+    if custom:
+        try:
+            template = json.loads(Path(str(comfy.get("workflow_path") or "")).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise VideoStoryboardImageError("Select a valid ComfyUI API workflow JSON for Custom ComfyUI.") from exc
+        build_custom_image_workflow(template, dict(prompt="check", negative_prompt="", seed=0, width=1280, height=720, steps=8, cfg=1.0, output_prefix="check"), comfy.get("bindings"))
+        required_nodes = {node["class_type"] for node in template.values()}
+    missing_nodes = sorted(required_nodes - set(object_info))
     if missing_nodes:
         raise VideoStoryboardImageError(
             f"ComfyUI is missing required nodes: {', '.join(missing_nodes)}"
@@ -162,7 +266,7 @@ def prepare_image_runtime(
         ("VAELoader", "vae_name", str(comfy.get("vae_model") or "")),
     )
     missing_models: list[str] = []
-    for node, field, expected in required_models:
+    for node, field, expected in (() if custom else required_models):
         choices = _node_choices(object_info, node, field)
         if expected not in choices:
             missing_models.append(expected or f"{node}.{field}")
@@ -175,6 +279,7 @@ def prepare_image_runtime(
             f"{root}/free",
             method="POST",
             payload={"unload_models": True, "free_memory": True},
+            headers=_image_auth_headers(comfy),
             timeout=30,
         )
     except VideoStoryboardImageError:
@@ -442,7 +547,7 @@ def _save_litellm_image(response: dict[str, Any], target: Path, timeout: float) 
 
 
 def release_comfyui_memory(settings: dict[str, Any]) -> None:
-    if str(settings.get("image_provider") or "comfyui") != "comfyui":
+    if str(settings.get("image_provider") or "comfyui") not in {"comfyui", "custom_comfyui"}:
         return
     comfy = settings.get("comfyui", {})
     root = _normalize_url(comfy.get("base_url"), "http://127.0.0.1:8188")
@@ -451,6 +556,7 @@ def release_comfyui_memory(settings: dict[str, Any]) -> None:
             f"{root}/free",
             method="POST",
             payload={"unload_models": True, "free_memory": True},
+            headers=_image_auth_headers(comfy),
             timeout=30,
         )
     except VideoStoryboardImageError:
@@ -464,6 +570,15 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
         for name in scene.get("characters", [])
         if str(name).strip()
     } if isinstance(scene.get("characters"), list) else set()
+    # Also support unambiguous short names in existing projects/manual prompts.
+    # Raw overrides still bypass this compiler entirely.
+    for line in canonical_character_lines_for_prompt(plan, scene, str(scene.get("prompt") or "")):
+        state_id = line.split(":", 1)[0].strip().casefold()
+        record = next((r for r in plan.get("continuity", {}).get("characters", [])
+                       if any(str(s.get("id", "")).casefold() == state_id for s in r.get("states", []))), None)
+        if record and any(str(s.get("id", "")).casefold() in requested_names for s in record.get("states", [])):
+            continue  # An explicitly chosen state wins; do not inject two outfits.
+        requested_names.add(state_id)
     descriptions: list[str] = []
     character_locks: list[str] = []
     resolved_character_state_ids: set[str] = set()
@@ -486,17 +601,13 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
                 if not state_id or state_id.casefold() not in requested_names:
                     continue
                 resolved_character_state_ids.add(state_id.casefold())
-                state_description = str(state.get("description") or "").strip()
+                identity, state_description = selected_appearance(character, state)
                 if name and identity.casefold().startswith(name.casefold()):
                     identity = identity[len(name):].lstrip(" ,:;.-")
                 combined = ", ".join(
                     value for value in (name, identity, state_description) if value
                 )
-                details = ", ".join(
-                    value.rstrip(" .")
-                    for value in (identity, state_description)
-                    if value
-                )
+                details = compact_visual_description(identity, state_description)
                 descriptions.append(
                     f"{name}: {details}" if name and details else combined
                 )
@@ -531,14 +642,23 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
             state_id = str(state.get("id") or "").strip()
             if not state_id or state_id.casefold() not in requested_locations:
                 continue
-            state_description = str(state.get("description") or "").strip()
-            combined = ", ".join(
-                value for value in (name, identity, state_description) if value
-            )
+            identity, state_description = selected_appearance(location, state)
+            combined = ", ".join(value for value in (
+                name, compact_visual_description(identity, state_description, max_words=50)
+            ) if value)
             if combined:
                 location_locks.append(combined)
+    clean_scene = dict(scene)
+    clean_scene["prompt"] = strip_storyboard_prompt_markers(
+        str(scene.get("prompt") or ""),
+        plan,
+    )
+    clean_scene["shot"] = strip_storyboard_prompt_markers(
+        str(scene.get("shot") or ""),
+        plan,
+    )
     scene_prompt, scene_shot = _generation_scene_fields(
-        scene,
+        clean_scene,
         descriptions,
     )
     narrative_context = (
@@ -591,10 +711,10 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
                 f"SCENE: {compiled_scene}"
                 + ("" if compiled_scene.endswith((".", "!", "?")) else ".")
             ),
-            f"STYLE: {style_prompt}." if style_prompt else "",
-            f"SHOT AND COMPOSITION: {scene_shot}." if scene_shot else "",
+            f"STYLE: {style_prompt.rstrip('. ')}." if style_prompt else "",
+            f"SHOT AND COMPOSITION: {scene_shot.rstrip('. ')}." if scene_shot else "",
             (
-                f"ERA AND MATERIAL CULTURE: {era}."
+                f"ERA AND MATERIAL CULTURE: {era.rstrip('. ')}."
                 if era
                 else ""
             ),
@@ -634,26 +754,8 @@ def canonical_character_lines_for_prompt(
 
     # Prefer the longest canonical name, so a mention of "Maria Elena" does
     # not also select a different character named "Maria" from the same span.
-    occupied_spans: list[tuple[int, int]] = []
-    matched: list[dict[str, Any]] = []
-    for character in sorted(
-        characters,
-        key=lambda value: len(str(value.get("name") or "")),
-        reverse=True,
-    ):
-        name = str(character.get("name") or "").strip()
-        match = re.search(
-            rf"(?<!\w){re.escape(name)}(?!\w)",
-            str(prompt),
-            flags=re.IGNORECASE,
-        )
-        if match is None or any(
-            match.start() < end and match.end() > begin
-            for begin, end in occupied_spans
-        ):
-            continue
-        occupied_spans.append(match.span())
-        matched.append(character)
+    from app.core.storyboard_entity_names import mentioned_records
+    matched = mentioned_records(str(prompt), characters)
 
     lines: list[str] = []
     for character in matched:
@@ -682,8 +784,9 @@ def canonical_character_lines_for_prompt(
             value
             for value in (
                 str(character.get("name") or "").strip(),
-                str(character.get("identity_description") or "").strip(),
-                str(active_state.get("description") or "").strip(),
+                compact_visual_description(
+                    *selected_appearance(character, active_state),
+                ),
             )
             if value
         )
@@ -838,6 +941,47 @@ def build_z_image_workflow(
     }
 
 
+def _image_auth_headers(config: dict[str, Any]) -> dict[str, str]:
+    token = str(config.get("auth_token") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def build_custom_image_workflow(template: dict[str, Any], values: dict[str, Any], raw_bindings: object) -> dict[str, Any]:
+    if not isinstance(template, dict) or not template or any(
+        not isinstance(node, dict) or not isinstance(node.get("class_type"), str) or not isinstance(node.get("inputs"), dict)
+        for node in template.values()
+    ):
+        raise VideoStoryboardImageError("Export the custom workflow in ComfyUI API format (node IDs with class_type and inputs).")
+    replacements = {"{{" + name.upper() + "}}": value for name, value in values.items()}
+    replacements["{{PREFIX}}"] = values["output_prefix"]
+    def replace(value):
+        if isinstance(value, str):
+            if value in replacements:
+                return replacements[value]
+            for token, replacement in replacements.items():
+                value = value.replace(token, str(replacement))
+            return value
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        return value
+    workflow = replace(template)
+    bindings = raw_bindings if isinstance(raw_bindings, dict) else {}
+    if not str(bindings.get("prompt") or "").strip() and "{{PROMPT}}" not in json.dumps(template):
+        raise VideoStoryboardImageError("Map the prompt input or add {{PROMPT}} to the custom workflow.")
+    for name, value in values.items():
+        locator = str(bindings.get(name) or "").strip()
+        if not locator:
+            continue
+        node_id, separator, field = locator.rpartition(".")
+        node = workflow.get(node_id) if separator else None
+        if not isinstance(node, dict) or field not in node["inputs"]:
+            raise VideoStoryboardImageError(f"Invalid image workflow binding '{name}': {locator}.")
+        node["inputs"][field] = value
+    return workflow
+
+
 def customize_workflow(
     template: dict[str, Any],
     values: dict[str, Any],
@@ -926,17 +1070,18 @@ def _wait_for_history(
     prompt_id: str,
     timeout: float,
     cancelled: CancelCallback | None,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     endpoint = f"{root}/history/{urllib.parse.quote(prompt_id)}"
     while time.monotonic() < deadline:
         if cancelled and cancelled():
             try:
-                _http_json(f"{root}/interrupt", method="POST", payload={}, timeout=10)
+                _http_json(f"{root}/interrupt", method="POST", payload={}, timeout=10, headers=headers)
             except VideoStoryboardImageError:
                 pass
             raise VideoStoryboardImageError("Frame generation was cancelled.")
-        history = _http_json(endpoint, timeout=30)
+        history = _http_json(endpoint, timeout=30, headers=headers)
         entry = history.get(prompt_id)
         if isinstance(entry, dict):
             status = entry.get("status", {})
@@ -953,8 +1098,10 @@ def _wait_for_history(
     )
 
 
-def _find_output_image(history: dict[str, Any]) -> dict[str, Any]:
+def _find_output_image(history: dict[str, Any], output_node: str = "") -> dict[str, Any]:
     outputs = history.get("outputs", {})
+    if output_node:
+        outputs = {output_node: outputs.get(output_node, {})}
     if isinstance(outputs, dict):
         for output in outputs.values():
             images = output.get("images", []) if isinstance(output, dict) else []
@@ -966,10 +1113,13 @@ def _find_output_image(history: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _download(url: str, target: Path, timeout: float) -> None:
+def _download(url: str, target: Path, timeout: float, headers: dict[str, str] | None = None) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".part")
-    request = urllib.request.Request(url, headers={"Accept": "image/*"})
+    request = urllib.request.Request(
+        url,
+        headers=comfyui_request_headers(headers, accept="image/*,*/*"),
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read()
@@ -1019,13 +1169,18 @@ def _http_json(
     method: str = "GET",
     payload: dict[str, Any] | None = None,
     timeout: float,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request_headers = comfyui_request_headers(
+        headers,
+        content_type="application/json",
+    )
     request = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=request_headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

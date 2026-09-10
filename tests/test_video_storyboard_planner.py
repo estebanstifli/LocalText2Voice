@@ -8,6 +8,8 @@ import pytest
 
 from app.core.video_storyboard_planner import (
     VideoStoryboardPlanningError,
+    _continuity_analyzer_schema,
+    _continuity_visual_completion_schema,
     _continuity_analyzer_validation_issues,
     _empty_continuity,
     _finalize_continuity_periods,
@@ -15,12 +17,70 @@ from app.core.video_storyboard_planner import (
     _litellm_direct_completion,
     _litellm_direct_responses,
     _merge_continuity_events,
+    _normalize_continuity_first_appearance_anchors,
+    _normalize_continuity_event_semantics,
     _normalize_scene_continuity_references,
     _normalize_binder_era_transitions,
     _normalize_unit_binding_references,
+    _missing_character_repair_schema,
+    _partition_continuity_issues,
+    _planning_batches,
+    _plan_schema,
     _repair_explicit_character_changes,
-    plan_video_storyboard,
+    _unit_binder_schema,
+    _plan_video_storyboard_legacy as plan_video_storyboard,
 )
+
+
+def test_analysis_block_size_can_send_more_timed_text_per_request() -> None:
+    pieces = [f"Segment {index} " + ("detail " * 70) for index in range(8)]
+    text = " ".join(pieces)
+    cues = [
+        {
+            "text": piece,
+            "start_seconds": index * 10.0,
+            "end_seconds": (index + 1) * 10.0,
+        }
+        for index, piece in enumerate(pieces)
+    ]
+    normal = _planning_batches(text, cues, 80.0)
+    large = _planning_batches(
+        text,
+        cues,
+        80.0,
+        {
+            "analysis": {
+                "max_block_characters": 12000,
+                "max_block_seconds": 120,
+            }
+        },
+    )
+
+    assert len(normal) > 1
+    assert len(large) == 1
+
+
+def _assert_closed_openai_schema_objects(value: object) -> None:
+    """OpenAI strict JSON schemas require every object to be closed."""
+    if isinstance(value, dict):
+        if value.get("type") == "object":
+            assert value.get("additionalProperties") is False
+        for child in value.values():
+            _assert_closed_openai_schema_objects(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_closed_openai_schema_objects(child)
+
+
+def test_all_storyboard_structured_schemas_are_openai_strict_compatible() -> None:
+    for schema in (
+        _continuity_analyzer_schema(),
+        _missing_character_repair_schema(),
+        _continuity_visual_completion_schema(2),
+        _unit_binder_schema(2),
+        _plan_schema(2),
+    ):
+        _assert_closed_openai_schema_objects(schema)
 
 
 def _settings() -> dict:
@@ -65,6 +125,16 @@ def _source() -> dict:
 
 
 def _fake_ollama(_url, payload, _timeout, _headers=None):
+    if "format" not in payload:
+        return {
+            "message": {
+                "content": (
+                    "CHARACTERS\nMara is a recurring woman seen at 6.00s; "
+                    "her other visual traits are not stated.\n\n"
+                    "PLACES\nA train and its valley route are visually important."
+                )
+            }
+        }
     schema = payload["format"]
     if "character_events" in schema["properties"]:
         user = payload["messages"][1]["content"]
@@ -190,8 +260,8 @@ def test_ollama_planner_returns_normalized_structured_scenes() -> None:
             progress=lambda current, total: updates.append((current, total)),
         )
 
-    assert request.call_count == 3
-    assert updates == [(1, 3), (2, 3), (3, 3)]
+    assert request.call_count == 4
+    assert updates == [(1, 4), (2, 4), (3, 4), (4, 4)]
     assert plan["title"] == "Train journey"
     assert plan["base_seed"] == int.from_bytes(
         hashlib.sha256(_source()["text"].encode("utf-8")).digest()[:6],
@@ -211,14 +281,26 @@ def test_ollama_planner_returns_normalized_structured_scenes() -> None:
     assert plan["narrative_context"]["era_source"] == "detected"
     assert "continuity" not in plan["style"]
     assert plan["style"]["characters"] == [
-        "char_mara_state_1: Mara, oval face and dark eyes, young woman with short dark hair and a blue coat"
+        "char_mara_state_1: Mara, oval face, dark eyes, young woman, short dark hair, a blue coat"
     ]
     assert plan["continuity"]["characters"][0]["name"] == "Mara"
     assert plan["continuity"]["characters"][0]["states"][0]["to_seconds"] == 13.0
+    assert plan["continuity"]["discovery_reports"] == [
+        {
+            "block": 1,
+            "start_seconds": 0.0,
+            "end_seconds": 13.0,
+            "text": (
+                "CHARACTERS\nMara is a recurring woman seen at 6.00s; "
+                "her other visual traits are not stated.\n\n"
+                "PLACES\nA train and its valley route are visually important."
+            ),
+        }
+    ]
     request_payload = request.call_args.args[1]
     assert request_payload["options"]["num_predict"] >= 800
     assert request_payload["options"]["num_ctx"] == 8192
-    assert request_payload["think"] is False
+    assert request_payload["think"] is True
     assert request_payload["options"]["repeat_penalty"] > 1.0
     request_text = request_payload["messages"][1]["content"]
     assert "zoom_in" not in request_text
@@ -248,16 +330,26 @@ def test_ollama_trace_exposes_the_complete_raw_request_body() -> None:
     ):
         plan_video_storyboard(_source(), _settings(), trace=events.append)
 
-    request = next(event for event in events if event.get("kind") == "request")
-    assert request["endpoint"] == "http://127.0.0.1:11434/api/chat"
-    assert request["attempt"] == 1
+    requests = [event for event in events if event.get("kind") == "request"]
+    discovery_request = requests[0]
+    assert discovery_request["endpoint"] == "http://127.0.0.1:11434/api/chat"
+    assert discovery_request["attempt"] == 1
+    assert discovery_request["response_mode"] == "plain_text"
+    assert "format" not in discovery_request["raw_request"]
+
+    request = requests[1]
     raw = request["raw_request"]
     assert raw["model"] == "qwen3:8b-storyboard"
     assert raw["messages"][0]["role"] == "system"
     assert raw["messages"][1]["role"] == "user"
+    assert (
+        "For NEW entities only"
+        in raw["messages"][0]["content"]
+    )
+    assert "Plain-text discovery report:" in raw["messages"][1]["content"]
     assert raw["format"]["type"] == "object"
     assert raw["options"]["num_predict"] >= 800
-    assert raw["think"] is False
+    assert raw["think"] is True
 
 
 def test_project_seed_override_replaces_the_automatic_audiobook_seed() -> None:
@@ -286,16 +378,20 @@ def test_planner_reports_invalid_llm_json() -> None:
 
 def test_ollama_retries_once_with_compact_anti_repetition_settings() -> None:
     attempts = 0
+    structured_attempts = 0
 
     def invalid_then_valid(url, payload, timeout, headers=None):
-        nonlocal attempts
+        nonlocal attempts, structured_attempts
         attempts += 1
-        if attempts == 1:
+        if "format" not in payload:
+            return _fake_ollama(url, payload, timeout, headers)
+        structured_attempts += 1
+        if structured_attempts == 1:
             return {
                 "message": {"content": '{"style": {'},
                 "done_reason": "length",
             }
-        if attempts == 2:
+        if structured_attempts == 2:
             assert "COMPACT RECOVERY" in payload["messages"][1]["content"]
             assert payload["options"]["repeat_penalty"] == 1.2
         return _fake_ollama(url, payload, timeout, headers)
@@ -306,7 +402,7 @@ def test_ollama_retries_once_with_compact_anti_repetition_settings() -> None:
     ):
         result = plan_video_storyboard(_source(), _settings())
 
-    assert attempts == 4
+    assert attempts == 5
     assert len(result["scenes"]) == 2
 
 
@@ -316,7 +412,7 @@ def test_planner_retries_a_batch_when_ollama_prompts_are_too_terse() -> None:
     def terse_then_detailed(url, payload, timeout, headers=None):
         nonlocal attempts
         response = _fake_ollama(url, payload, timeout, headers)
-        if "scenes" not in payload["format"]["properties"]:
+        if "format" not in payload or "scenes" not in payload["format"]["properties"]:
             return response
         attempts += 1
         if attempts == 1:
@@ -394,9 +490,9 @@ def test_legacy_automatic_style_migrates_to_comic_book_without_llm_choice() -> N
     ) as request:
         result = plan_video_storyboard(source, settings)
 
-    assert request.call_count == 6
-    first_schema = request.call_args_list[2].args[1]["format"]
-    second_schema = request.call_args_list[5].args[1]["format"]
+    assert request.call_count == 9  # Includes the overall story synopsis.
+    first_schema = request.call_args_list[6].args[1]["format"]
+    second_schema = request.call_args_list[7].args[1]["format"]
     assert "style_preset" not in first_schema["properties"]
     assert "style_preset" not in second_schema["properties"]
     assert result["style"]["medium"].startswith(
@@ -427,6 +523,8 @@ def test_character_life_stages_are_stored_as_distinct_visual_states() -> None:
 
     def life_stage_response(url, payload, timeout, headers=None):
         response = _fake_ollama(url, payload, timeout, headers)
+        if "format" not in payload:
+            return response
         value = json.loads(response["message"]["content"])
         if "character_events" in payload["format"]["properties"]:
             user = payload["messages"][1]["content"]
@@ -557,6 +655,7 @@ def test_qwen_state_like_entity_is_merged_into_the_existing_character() -> None:
                     "event_type": "stable_revelation",
                     "identity_description": "his body slowly weakened",
                     "state_description": "older adult using a wheelchair",
+                    "evidence": "Decades later he began using a wheelchair.",
                 },
             ],
             "location_events": [],
@@ -568,7 +667,7 @@ def test_qwen_state_like_entity_is_merged_into_the_existing_character() -> None:
     assert len(continuity["characters"]) == 1
     character = continuity["characters"][0]
     assert character["id"] == "char_stephen_hawking"
-    assert character["identity_description"] == "narrow face and dark hair"
+    assert character["identity_description"] == "narrow face, dark hair"
     assert [state["id"] for state in character["states"]] == [
         "char_stephen_hawking_state_1",
         "char_stephen_hawking_state_2",
@@ -602,6 +701,9 @@ def test_continuity_validation_rejects_missing_named_person_and_wrong_birth_age(
         empty_result, units, _empty_continuity()
     )
     assert any("Stephen Hawking" in issue for issue in issues)
+    hard, warnings = _partition_continuity_issues(issues)
+    assert not hard
+    assert any("Stephen Hawking" in warning for warning in warnings)
 
     wrong_age = {
         **empty_result,
@@ -652,6 +754,416 @@ def test_continuity_validation_detects_single_word_story_characters() -> None:
     assert "Peter" in issue
     assert "Snowflake" in issue
     assert "Alps" not in issue
+
+
+def test_continuity_name_hint_ignores_capitalized_dialogue_exclamations() -> None:
+    units = [
+        {"id": 0, "text": "—¿Vamos hasta el paseo marítimo?"},
+        {"id": 1, "text": "—¡Mira qué grande!"},
+        {"id": 2, "text": "—¡Delfines!"},
+    ]
+    result = {
+        "character_events": [], "location_events": [], "era_events": [],
+    }
+
+    issues = _continuity_analyzer_validation_issues(
+        result, units, _empty_continuity()
+    )
+
+    assert not any(
+        name in issue for issue in issues for name in ("Vamos", "Mira", "Delfines")
+    )
+
+
+def test_first_appearance_is_moved_to_the_earliest_literal_name_mention() -> None:
+    units = [
+        {
+            "id": 0,
+            "text": "Era Clara, su amiga, que venía corriendo.",
+            "start_seconds": 2.0,
+        },
+        {
+            "id": 1,
+            "text": "Clara tenía el cabello oscuro y los ojos verdes.",
+            "start_seconds": 8.0,
+        },
+    ]
+    result = {
+        "character_events": [
+            {
+                "id": "clara",
+                "name": "Clara",
+                "aliases": [],
+                "effective_unit_id": 1,
+                "event_type": "first_appearance",
+            }
+        ],
+        "location_events": [],
+    }
+
+    _normalize_continuity_first_appearance_anchors(
+        result,
+        units,
+        _empty_continuity(),
+    )
+
+    assert result["character_events"][0]["effective_unit_id"] == 0
+
+
+def test_later_revelation_is_not_kept_as_a_false_visual_change() -> None:
+    units = [
+        {"id": 0, "text": "Clara llegó corriendo."},
+        {"id": 1, "text": "Clara tenía el cabello oscuro."},
+        {"id": 2, "text": "Diez años después, Clara volvió con un abrigo rojo."},
+    ]
+    result = {
+        "character_events": [
+            {
+                "id": "clara",
+                "effective_unit_id": 0,
+                "event_type": "first_appearance",
+            },
+            {
+                "id": "clara",
+                "effective_unit_id": 1,
+                "event_type": "explicit_change",
+            },
+            {
+                "id": "clara",
+                "effective_unit_id": 2,
+                "event_type": "stable_revelation",
+            },
+        ]
+    }
+
+    _normalize_continuity_event_semantics(result, units, _empty_continuity())
+
+    assert [event["event_type"] for event in result["character_events"]] == [
+        "first_appearance",
+        "stable_revelation",
+        "explicit_change",
+    ]
+
+
+def test_valid_character_age_phrases_from_qwen_are_normalized_not_rejected() -> None:
+    units = [
+        {"id": 0, "text": "Ana vivía junto a la playa."},
+        {"id": 1, "text": "Peter esperaba en la plaza."},
+        {"id": 2, "text": "Toby era un perro pequeño de pelo marrón."},
+    ]
+    result = {
+        "character_events": [
+            {
+                "id": "ana",
+                "name": "Ana",
+                "aliases": [],
+                "effective_unit_id": 0,
+                "event_type": "first_appearance",
+                "identity_description": "Young adult woman with dark hair and green eyes",
+                "state_description": "Early twenties, wearing a denim jacket and jeans, accessible",
+                "evidence": "Ana vivía junto a la playa.",
+            },
+            {
+                "id": "peter",
+                "name": "Peter",
+                "aliases": [],
+                "effective_unit_id": 1,
+                "event_type": "first_appearance",
+                "identity_description": "Late twenties man with black hair and a lean build",
+                "state_description": "Mid-twenties, wearing a navy hoodie and cargo pants, accessible",
+                "evidence": "Peter esperaba en la plaza.",
+            },
+            {
+                "id": "toby",
+                "name": "Toby",
+                "aliases": [],
+                "effective_unit_id": 2,
+                "event_type": "first_appearance",
+                "identity_description": "Small brown-haired dog with erect ears",
+                "state_description": "Young dog, wearing a yellow collar, accessible",
+                "evidence": "Toby era un perro pequeño.",
+            },
+        ],
+        "location_events": [],
+        "era_events": [],
+    }
+
+    _normalize_continuity_event_semantics(result, units, _empty_continuity())
+    issues = _continuity_analyzer_validation_issues(
+        result,
+        units,
+        _empty_continuity(),
+    )
+
+    assert not issues
+    assert result["character_events"][0]["identity_description"].startswith("woman")
+    assert result["character_events"][1]["identity_description"].startswith("man")
+
+
+def test_non_ascii_model_ids_are_transliterated_before_validation() -> None:
+    units = [
+        {
+            "id": 64,
+            "text": "En aquel pequeño pueblo junto al mar.",
+            "start_seconds": 322.0,
+        }
+    ]
+    result = {
+        "character_events": [],
+        "location_events": [
+            {
+                "id": "loc_pequeño_pueblo_junto_al_mar",
+                "name": "pequeño pueblo junto al mar",
+                "aliases": [],
+                "effective_unit_id": 64,
+                "event_type": "first_appearance",
+                "context_description": "small coastal town",
+                "identity_description": "cobblestone streets and whitewashed houses",
+                "state_description": "quiet seaside settlement",
+                "evidence": "pequeño pueblo junto al mar",
+            }
+        ],
+        "era_events": [],
+    }
+
+    _normalize_continuity_event_semantics(result, units, _empty_continuity())
+    issues = _continuity_analyzer_validation_issues(
+        result,
+        units,
+        _empty_continuity(),
+    )
+
+    assert result["location_events"][0]["id"] == "loc_pequeno_pueblo_junto_al_mar"
+    assert not any("lowercase_snake_case" in issue for issue in issues)
+
+
+def test_missing_possible_character_gets_a_small_repair_then_remains_a_warning() -> None:
+    source = {
+        "title": "Ana",
+        "text": "La niña llamó a Ana desde la plaza.",
+        "duration_seconds": 6.0,
+        "narration_cues": [
+            {
+                "start_seconds": 0.0,
+                "end_seconds": 6.0,
+                "duration_seconds": 6.0,
+                "text": "La niña llamó a Ana desde la plaza.",
+            }
+        ],
+    }
+
+    def response(_settings, schema, _system, user, **_kwargs):
+        if schema is None:
+            return "CHARACTERS\nAna: named person.\n\nPLACES\nThe plaza."
+        if "character_events" in schema["properties"]:
+            return {
+                "character_events": [],
+                "location_events": [],
+                "era_events": [],
+            }
+        if "unit_bindings" in schema["properties"]:
+            units = json.loads(
+                user.split("Consecutive narration units:\n", 1)[1].split(
+                    "\n\nReturn exactly", 1
+                )[0]
+            )
+            return {
+                "unit_bindings": [
+                    {
+                        "unit_id": unit["unit_id"],
+                        "character_ids": [],
+                        "location_ids": [],
+                        "era_id": "",
+                    }
+                    for unit in units
+                ]
+            }
+        return {
+            "scenes": [
+                {
+                    "character_state_ids": [],
+                    "location_state_ids": [],
+                    "era_state_id": "",
+                    "visual": (
+                        "A young girl calls across a sunlit village plaza while pale stone "
+                        "walls, a quiet fountain, long afternoon shadows and scattered "
+                        "bicycles establish a specific lively neighborhood moment."
+                    ),
+                }
+            ]
+        }
+
+    traced: list[dict] = []
+    with patch(
+        "app.core.video_storyboard_planner._request_plan",
+        side_effect=response,
+    ) as request:
+        result = plan_video_storyboard(source, _settings(), trace=traced.append)
+
+    assert request.call_count == 5
+    warnings = result["alignment_debug"]["warnings"]
+    assert any("Ana" in warning and "continued" in warning for warning in warnings)
+    assert any(event.get("kind") == "warning" for event in traced)
+
+
+def test_targeted_character_repair_completes_a_minimal_first_appearance() -> None:
+    source = {
+        "title": "Clara",
+        "text": "Era Clara, su amiga, que venía corriendo por el paseo.",
+        "duration_seconds": 6.0,
+        "narration_cues": [
+            {
+                "start_seconds": 0.0,
+                "end_seconds": 6.0,
+                "duration_seconds": 6.0,
+                "text": "Era Clara, su amiga, que venía corriendo por el paseo.",
+            }
+        ],
+    }
+
+    def response(_settings, schema, _system, user, **kwargs):
+        label = kwargs.get("request_label", "")
+        if schema is None:
+            return "CHARACTERS\nClara: friend, female.\n\nPLACES\nCoastal promenade."
+        if label.startswith("continuity structurer"):
+            return {
+                "character_events": [],
+                "location_events": [],
+                "era_events": [],
+            }
+        if label.startswith("missing character repair"):
+            assert 'Possible omitted names: ["Clara"]' in user
+            return {
+                "character_events": [
+                    {
+                        "id": "clara",
+                        "name": "Clara",
+                        "aliases": [],
+                        "effective_unit_id": 999,
+                        "event_type": "first_appearance",
+                        "context_description": "friend of Ana and Peter",
+                        "identity_description": "female",
+                        "state_description": "",
+                        "evidence": "Era Clara, su amiga",
+                    }
+                ]
+            }
+        if "replacements" in schema["properties"]:
+            return {
+                "replacements": [
+                        {
+                            "collection": "character_events",
+                            "id": "char_clara",
+                        "effective_unit_id": 0,
+                        "identity_description": (
+                            "oval face, green eyes and shoulder-length brown hair"
+                        ),
+                        "state_description": (
+                            "young woman wearing a blue blouse and dark trousers, "
+                            "walking without mobility aids"
+                        ),
+                    }
+                ]
+            }
+        if "unit_bindings" in schema["properties"]:
+            units = json.loads(
+                user.split("Consecutive narration units:\n", 1)[1].split(
+                    "\n\nReturn exactly", 1
+                )[0]
+            )
+            return {
+                "unit_bindings": [
+                    {
+                        "unit_id": unit["unit_id"],
+                        "character_ids": ["char_clara"],
+                        "location_ids": [],
+                        "era_id": "",
+                    }
+                    for unit in units
+                ]
+            }
+        return {
+            "scenes": [
+                {
+                    "character_state_ids": ["char_clara_state_1"],
+                    "location_state_ids": [],
+                    "era_state_id": "",
+                    "visual": (
+                        "Clara runs along the coastal promenade toward her friends while "
+                        "white houses, blue doors, palm trees and bright afternoon sunlight "
+                        "establish one clear and lively narrative moment."
+                    ),
+                }
+            ]
+        }
+
+    with patch(
+        "app.core.video_storyboard_planner._request_plan",
+        side_effect=response,
+    ):
+        result = plan_video_storyboard(source, _settings())
+
+    clara = result["continuity"]["characters"][0]
+    assert clara["id"] == "char_clara"
+    assert clara["context_description"] == "friend of Ana and Peter"
+    assert "oval face" in clara["identity_description"]
+    assert clara["identity_description"].startswith("female")
+    assert clara["states"][0]["description"].startswith("young woman")
+    assert not any("Clara" in warning for warning in result["alignment_debug"]["warnings"])
+
+
+def test_stable_revelation_accumulates_facts_without_creating_a_new_state() -> None:
+    continuity = _empty_continuity()
+    units = [
+        {"id": 0, "text": "Clara arrived.", "start_seconds": 0.0, "end_seconds": 4.0},
+        {"id": 1, "text": "Clara was a girl with long blonde hair.", "start_seconds": 4.0, "end_seconds": 8.0},
+    ]
+    _merge_continuity_events(
+        continuity,
+        {
+            "character_events": [
+                {
+                    "id": "clara",
+                    "name": "Clara",
+                    "aliases": [],
+                    "effective_unit_id": 0,
+                    "event_type": "first_appearance",
+                    "identity_description": "female with green eyes",
+                    "state_description": "",
+                    "evidence": "Clara arrived.",
+                },
+                {
+                    "id": "clara",
+                    "name": "Clara",
+                    "aliases": [],
+                    "effective_unit_id": 1,
+                    "event_type": "stable_revelation",
+                    "identity_description": "long blonde hair",
+                    "state_description": "girl",
+                    "evidence": "Clara was a girl with long blonde hair.",
+                },
+                {
+                    "id": "clara",
+                    "name": "Clara",
+                    "aliases": [],
+                    "effective_unit_id": 1,
+                    "event_type": "explicit_change",
+                    "context_description": "",
+                    "identity_description": "",
+                    "state_description": "",
+                    "evidence": "Clara laughed.",
+                },
+            ],
+            "location_events": [],
+            "era_events": [],
+        },
+        units,
+    )
+
+    clara = continuity["characters"][0]
+    assert clara["identity_description"] == "female, green eyes, long blonde hair"
+    assert len(clara["states"]) == 1
+    assert clara["states"][0]["description"] == "girl"
 
 
 def test_binder_normalizes_known_aliases_and_discards_unknown_locations() -> None:
@@ -806,6 +1318,8 @@ def test_detected_era_stops_at_a_later_time_jump() -> None:
 def test_app_owned_alignment_ignores_any_unrequested_llm_narration() -> None:
     def repeated_narration(url, payload, timeout, headers=None):
         response = _fake_ollama(url, payload, timeout, headers)
+        if "format" not in payload:
+            return response
         decoded = json.loads(response["message"]["content"])
         for scene in decoded.get("scenes", []):
             scene["narration"] = "The same incorrect repeated paragraph"
@@ -818,7 +1332,7 @@ def test_app_owned_alignment_ignores_any_unrequested_llm_narration() -> None:
     ) as request:
         result = plan_video_storyboard(_source(), _settings())
 
-    assert request.call_count == 3
+    assert request.call_count == 4
     assert [scene["narration"] for scene in result["scenes"]] == [
         "The train crossed the valley.",
         "Mara looked through the window.",
@@ -849,9 +1363,9 @@ def test_planner_publishes_each_completed_ollama_block_incrementally() -> None:
             partial=partials.append,
         )
 
-    assert len(partials) == 6
-    assert [value["completed_blocks"] for value in partials] == [4, 5, 6, 7, 8, 9]
-    assert all(value["total_blocks"] == 9 for value in partials)
+    assert len(partials) == 12
+    assert [value["completed_blocks"] for value in partials] == list(range(1, 13))
+    assert all(value["total_blocks"] == 12 for value in partials)
     scene_partials = [
         value for value in partials if value.get("analysis_phase") == "scenes"
     ]
@@ -882,8 +1396,8 @@ def test_planner_uses_shorter_blocks_to_give_ollama_more_attention() -> None:
     ) as request:
         plan_video_storyboard(source, _settings(), partial=partials.append)
 
-    assert request.call_count == 12
-    assert [value["completed_blocks"] for value in partials] == list(range(5, 13))
+    assert request.call_count == 19  # Three pairwise synopsis reductions.
+    assert [value["completed_blocks"] for value in partials] == list(range(1, 17))
 
 
 def test_continuity_pass_carries_pronoun_identity_across_blocks() -> None:
@@ -909,6 +1423,8 @@ def test_continuity_pass_carries_pronoun_identity_across_blocks() -> None:
     }
 
     def response(url, payload, timeout, headers=None):
+        if "format" not in payload:
+            return _fake_ollama(url, payload, timeout, headers)
         schema = payload["format"]
         user = payload["messages"][1]["content"]
         if "character_events" in schema["properties"]:
@@ -1028,6 +1544,8 @@ def test_fixed_assignments_keep_police_prompt_with_police_narration() -> None:
 
     def semantic_fake(url, payload, timeout, headers=None):
         response = _fake_ollama(url, payload, timeout, headers)
+        if "format" not in payload:
+            return response
         decoded = json.loads(response["message"]["content"])
         if "scenes" not in decoded:
             return response
@@ -1109,11 +1627,16 @@ def test_litellm_known_provider_uses_direct_sdk_when_url_is_empty() -> None:
 
     def direct_response(payload, *, api_key, timeout, trace, cancelled):
         assert payload["model"] == "openai/gpt-5-mini"
-        assert payload["max_output_tokens"] == 16000
         assert payload["stream"] is True
-        assert payload["text"]["format"]["type"] == "json_schema"
         assert api_key == "test-secret"
         assert timeout == 90
+        if "text" not in payload:
+            assert payload["max_output_tokens"] == 700
+            content = "CHARACTERS\nMara: recurring woman.\n\nPLACES\nTrain and valley."
+            trace({"kind": "content", "text": content})
+            return {"choices": [{"message": {"content": content}}]}
+        assert payload["max_output_tokens"] == 16000
+        assert payload["text"]["format"]["type"] == "json_schema"
         schema = payload["text"]["format"]["schema"]
         fake = _fake_ollama(
             "",
@@ -1143,7 +1666,11 @@ def test_litellm_known_provider_uses_direct_sdk_when_url_is_empty() -> None:
 
     assert direct.called
     http.assert_not_called()
-    request_event = next(event for event in events if event.get("kind") == "request")
+    request_event = next(
+        event
+        for event in events
+        if event.get("kind") == "request" and event.get("output_tokens") == 16000
+    )
     assert request_event["transport"] == "sdk"
     assert request_event["endpoint"] == "LiteLLM Python SDK (direct provider)"
     assert request_event["output_tokens"] == 16000
@@ -1296,6 +1823,22 @@ def test_litellm_explicit_url_keeps_openai_compatible_proxy_transport() -> None:
     def proxy_response(url, payload, timeout, headers=None):
         assert url == "https://llm.example.test/v1/responses"
         assert headers == {"Authorization": "Bearer proxy-secret"}
+        if "text" not in payload:
+            return {
+                "id": "resp-discovery",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "CHARACTERS\nMara.\n\nPLACES\nTrain and valley.",
+                            }
+                        ],
+                    }
+                ],
+            }
         assert payload["max_output_tokens"] == 32000
         schema = payload["text"]["format"]["schema"]
         fake = _fake_ollama(
