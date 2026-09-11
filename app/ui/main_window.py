@@ -13361,16 +13361,26 @@ class MainWindow(QMainWindow):
             "",
             self.tr(
                 "supported_documents",
-                "Supported documents (*.txt *.md *.docx);;"
+                "Supported documents (*.txt *.md *.docx *.epub);;"
                 "Text files (*.txt);;Markdown files (*.md);;"
-                "Word documents (*.docx)",
+                "Word documents (*.docx);;EPUB files (*.epub)",
             ),
         )
         if not path_text:
             return
         try:
-            text = ProjectManager.import_document(Path(path_text))
+            from app.core.book_metadata import BOOK_METADATA_KEY
+            text, metadata = ProjectManager.import_document_with_metadata(Path(path_text))
             self.text_editor.setPlainText(text)
+            
+            if metadata:
+                current_meta = dict(self.settings.get(BOOK_METADATA_KEY, {}))
+                for key, value in metadata.items():
+                    if value:
+                        current_meta[key] = value
+                self.settings[BOOK_METADATA_KEY] = current_meta
+                self._mark_project_dirty()
+                
             self._show_original_text_tab()
             self.log_view.append_event(f"Imported: {path_text}")
         except DocumentImportError as exc:

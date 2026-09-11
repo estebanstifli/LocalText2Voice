@@ -10,3 +10,5 @@ mcp[cli]>=1.28,<2
 PyInstaller>=6.0,<7
 packaging>=24
 num2words>=0.5.14,<0.6
+ebooklib>=0.18,<1
+beautifulsoup4>=4.12,<5
