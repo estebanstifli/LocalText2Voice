@@ -35,3 +35,9 @@ capturas/hotfix_generated.png
 capturas/hotfix_start.png
 capturas/settings_after_select.png
 capturas/settings_normalization_now.png
+
+# Transcriptions
+*.srt
+*.vtt
+*.tsv
+transcription*/

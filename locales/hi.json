@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "स्वचालित कवर। छवि चुनने के लिए क्लिक करें; स्वचालित कवर लौटाने के लिए दायाँ-क्लिक करें।",
   "m4b_chapters_rebuild": "अध्याय सेटिंग बदली गई। TTS दोबारा चलाए बिना कैश किए WAV सेगमेंट से M4B फिर बनाया जा रहा है।",
   "m4b_chapters_rebuild_unavailable": "अध्याय सेटिंग सहेजी गई, लेकिन कैश किए WAV सेगमेंट नहीं मिले; इसे लागू करने के लिए ऑडियो फिर बनाएं।",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

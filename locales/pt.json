@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "Capa automática. Clique para escolher uma imagem; clique com o botão direito para restaurar a automática.",
   "m4b_chapters_rebuild": "As configurações de capítulos mudaram. Reconstruindo o M4B a partir dos segmentos WAV em cache sem executar o TTS novamente.",
   "m4b_chapters_rebuild_unavailable": "As configurações de capítulos foram salvas, mas faltam segmentos WAV em cache; gere o áudio novamente para aplicá-las.",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

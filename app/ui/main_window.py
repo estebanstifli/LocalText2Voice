@@ -9535,6 +9535,9 @@ class MainWindow(QMainWindow):
         self.save_next_to_source_checkbox = QCheckBox(
             self.tr("save_next_to_source", "Save output in the same folder as the imported file")
         )
+        self.use_source_filename_checkbox = QCheckBox(
+            self.tr("use_source_filename", "Use the imported file's name for the output audio file")
+        )
         self.normalize_checkbox = QCheckBox(
             self.tr("normalize_clean_audio", "Normalize clean narration")
         )
@@ -9570,11 +9573,9 @@ class MainWindow(QMainWindow):
             self.tr("audio_quality", "Quality"),
             self.audio_quality_combo,
         )
-        narration_form.addRow(
-            self.tr("output_folder", "Output folder"),
-            self.output_picker,
-        )
+        narration_form.addRow(self.tr("output_folder", "Output folder"), self.output_picker)
         narration_form.addRow("", self.save_next_to_source_checkbox)
+        narration_form.addRow("", self.use_source_filename_checkbox)
         narration_form.addRow("", self.normalize_checkbox)
         narration_form.addRow("", normalize_help)
 
@@ -13208,6 +13209,9 @@ class MainWindow(QMainWindow):
         self.save_next_to_source_checkbox.setChecked(
             bool(self.settings.get("save_next_to_source", False))
         )
+        self.use_source_filename_checkbox.setChecked(
+            bool(self.settings.get("use_source_filename", False))
+        )
         self.ui_language_combo.blockSignals(True)
         self._select_combo_data(
             self.ui_language_combo,
@@ -13653,6 +13657,14 @@ class MainWindow(QMainWindow):
         audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
         if audiobook is not None and audiobook.title.strip():
             return audiobook.title.strip()
+        
+        if hasattr(self, "use_source_filename_checkbox") and self.use_source_filename_checkbox.isChecked():
+            from app.core.book_metadata import BOOK_METADATA_KEY
+            book_metadata = self.settings.get(BOOK_METADATA_KEY, {})
+            imported_source_path_str = book_metadata.get("imported_source_path", "")
+            if imported_source_path_str:
+                return Path(imported_source_path_str).stem
+                
         return str(getattr(self, "_draft_project_title", "Project1")).strip() or "Project1"
 
     def _refresh_project_title_header(self) -> None:
@@ -17872,6 +17884,7 @@ class MainWindow(QMainWindow):
                 ),
                 "open_output_on_finish": self.open_folder_checkbox.isChecked(),
                 "save_next_to_source": self.save_next_to_source_checkbox.isChecked(),
+                "use_source_filename": self.use_source_filename_checkbox.isChecked(),
                 "kokoro": {
                     "voice": (
                         self.kokoro_python_voice_combo.currentData() or "af_heart"

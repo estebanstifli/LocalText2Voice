@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "自动封面。单击可选择图像；右键单击可恢复自动封面。",
   "m4b_chapters_rebuild": "章节设置已更改。正在使用缓存的 WAV 分段重建 M4B，无需再次运行 TTS。",
   "m4b_chapters_rebuild_unavailable": "章节设置已保存，但缺少缓存的 WAV 分段；请重新生成音频以应用设置。",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

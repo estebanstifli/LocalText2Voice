@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "自動カバーです。クリックして画像を選択し、右クリックで自動カバーに戻します。",
   "m4b_chapters_rebuild": "チャプター設定が変更されました。TTS を再実行せず、キャッシュ済み WAV セグメントから M4B を再構築します。",
   "m4b_chapters_rebuild_unavailable": "チャプター設定は保存されましたが、キャッシュ済み WAV セグメントがありません。適用するには音声を再生成してください。",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

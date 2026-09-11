@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "غلاف تلقائي. انقر لاختيار صورة؛ وانقر بزر الفأرة الأيمن لاستعادة الغلاف التلقائي.",
   "m4b_chapters_rebuild": "تغيّرت إعدادات الفصول. ستتم إعادة بناء M4B من مقاطع WAV المخزنة مؤقتًا دون تشغيل TTS مجددًا.",
   "m4b_chapters_rebuild_unavailable": "تم حفظ إعدادات الفصول، لكن مقاطع WAV المخزنة مؤقتًا مفقودة؛ أعد إنشاء الصوت لتطبيقها.",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

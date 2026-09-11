@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "Automatisches Cover. Klicken, um ein Bild auszuwählen; Rechtsklick stellt das automatische Cover wieder her.",
   "m4b_chapters_rebuild": "Die Kapiteleinstellungen wurden geändert. M4B wird ohne erneute TTS-Ausführung aus zwischengespeicherten WAV-Segmenten neu erstellt.",
   "m4b_chapters_rebuild_unavailable": "Die Kapiteleinstellungen wurden gespeichert, aber zwischengespeicherte WAV-Segmente fehlen; Audio neu erzeugen, um sie anzuwenden.",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

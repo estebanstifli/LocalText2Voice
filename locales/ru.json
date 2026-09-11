@@ -1031,5 +1031,6 @@
   "bulk_cover_hint": "Автоматическая обложка. Нажмите, чтобы выбрать изображение; щёлкните правой кнопкой, чтобы вернуть автоматическую.",
   "m4b_chapters_rebuild": "Настройки глав изменены. M4B будет пересобран из кэшированных WAV-сегментов без повторного запуска TTS.",
   "m4b_chapters_rebuild_unavailable": "Настройки глав сохранены, но кэшированные WAV-сегменты отсутствуют; повторно создайте аудио, чтобы применить их.",
-  "save_next_to_source": "Save output in the same folder as the imported file"
+  "save_next_to_source": "Save in the same location where the text file is loaded?",
+  "use_source_filename": "Use the imported file's name for the output audio file"
 }

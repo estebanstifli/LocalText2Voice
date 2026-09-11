@@ -59,6 +59,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "output_dir": "output",
     "save_next_to_source": False,
+    "use_source_filename": False,
     "voice_id": "",
     "language": "",
     "tts_engine": "piper",

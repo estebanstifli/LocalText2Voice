@@ -2239,7 +2239,7 @@ class AudioPipeline:
             index = 0
             while True:
                 numbered_stem = f"{stem}_{index + 1}" if index else stem
-                narration = f"{numbered_stem}_voice{extension}"
+                narration = f"{numbered_stem}{extension}"
                 podcast_mix = f"{numbered_stem}_mix{extension}"
                 if not (output_dir / narration).exists() and (
                     not include_podcast_mix
@@ -2276,9 +2276,7 @@ class AudioPipeline:
                 if project_stem
                 else chapter_stem
             )
-            narration = (
-                f"{stem}_voice{extension}" if project_stem else f"{stem}{extension}"
-            )
+            narration = f"{stem}{extension}"
             podcast_mix = (
                 f"{stem}_mix{extension}"
                 if project_stem
