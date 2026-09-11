@@ -9532,6 +9532,9 @@ class MainWindow(QMainWindow):
             self.tr("browse", "Browse"),
             output_path,
         )
+        self.save_next_to_source_checkbox = QCheckBox(
+            self.tr("save_next_to_source", "Save output in the same folder as the imported file")
+        )
         self.normalize_checkbox = QCheckBox(
             self.tr("normalize_clean_audio", "Normalize clean narration")
         )
@@ -9571,6 +9574,7 @@ class MainWindow(QMainWindow):
             self.tr("output_folder", "Output folder"),
             self.output_picker,
         )
+        narration_form.addRow("", self.save_next_to_source_checkbox)
         narration_form.addRow("", self.normalize_checkbox)
         narration_form.addRow("", normalize_help)
 
@@ -13201,6 +13205,9 @@ class MainWindow(QMainWindow):
         self.open_folder_checkbox.setChecked(
             bool(self.settings.get("open_output_on_finish", True))
         )
+        self.save_next_to_source_checkbox.setChecked(
+            bool(self.settings.get("save_next_to_source", False))
+        )
         self.ui_language_combo.blockSignals(True)
         self._select_combo_data(
             self.ui_language_combo,
@@ -13373,13 +13380,14 @@ class MainWindow(QMainWindow):
             text, metadata = ProjectManager.import_document_with_metadata(Path(path_text))
             self.text_editor.setPlainText(text)
             
+            current_meta = dict(self.settings.get(BOOK_METADATA_KEY, {}))
             if metadata:
-                current_meta = dict(self.settings.get(BOOK_METADATA_KEY, {}))
                 for key, value in metadata.items():
                     if value:
                         current_meta[key] = value
-                self.settings[BOOK_METADATA_KEY] = current_meta
-                self._mark_project_dirty()
+            current_meta["imported_source_path"] = str(Path(path_text).resolve())
+            self.settings[BOOK_METADATA_KEY] = current_meta
+            self._mark_project_dirty()
                 
             self._show_original_text_tab()
             self.log_view.append_event(f"Imported: {path_text}")
@@ -15611,6 +15619,16 @@ class MainWindow(QMainWindow):
         output_dir = self.output_picker.path()
         if not output_dir.is_absolute():
             output_dir = resolve_app_path(output_dir)
+            
+        if self.save_next_to_source_checkbox.isChecked():
+            from app.core.book_metadata import BOOK_METADATA_KEY
+            book_metadata = self.settings.get(BOOK_METADATA_KEY, {})
+            imported_source_path_str = book_metadata.get("imported_source_path", "")
+            if imported_source_path_str:
+                source_path = Path(imported_source_path_str)
+                if source_path.is_file():
+                    output_dir = source_path.parent
+                    self.output_picker.set_path(output_dir)
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -17853,6 +17871,7 @@ class MainWindow(QMainWindow):
                     self.ducking_strength_combo.currentData() or "low"
                 ),
                 "open_output_on_finish": self.open_folder_checkbox.isChecked(),
+                "save_next_to_source": self.save_next_to_source_checkbox.isChecked(),
                 "kokoro": {
                     "voice": (
                         self.kokoro_python_voice_combo.currentData() or "af_heart"

@@ -58,6 +58,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "previous_roots": [],
     },
     "output_dir": "output",
+    "save_next_to_source": False,
     "voice_id": "",
     "language": "",
     "tts_engine": "piper",

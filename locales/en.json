@@ -96,7 +96,7 @@
   "import_md": "Import .md",
   "import_docx": "Import .docx",
   "import_file": "Import file",
-  "supported_documents": "Supported documents (*.txt *.md *.docx);;Text files (*.txt);;Markdown files (*.md);;Word documents (*.docx)",
+  "supported_documents": "Supported documents (*.txt *.md *.docx *.epub);;Text files (*.txt);;Markdown files (*.md);;Word documents (*.docx);;EPUB (*.epub)",
   "text_placeholder": "Paste a chapter, lesson, article, or complete course here...",
   "generation_settings": "Generation",
   "settings": "Settings",
@@ -872,8 +872,8 @@
   "engine_install_cancelled": "Installation cancelled.",
   "engine_install_deferred": "{engine} installation postponed.",
   "engine_install_running_title": "Engine installation in progress",
-  "engine_install_running_close_message": "Do not close LocalText2Voice while a TTS engine is being installed. Cancel the installation from its progress window and wait for it to stop safely."
-  ,"reset_settings_group": "Reset settings",
+  "engine_install_running_close_message": "Do not close LocalText2Voice while a TTS engine is being installed. Cancel the installation from its progress window and wait for it to stop safely.",
+  "reset_settings_group": "Reset settings",
   "reset_settings_description": "Restore application preferences to their safe defaults. Downloaded models, voices, projects, music, and generated audio are not deleted.",
   "reset_settings_button": "Restore defaults",
   "reset_settings_confirm_title": "Restore default settings",
@@ -1030,5 +1030,6 @@
   "no_chapters": "No chapters",
   "bulk_cover_hint": "Automatic cover. Click to choose an image; right-click to restore automatic.",
   "m4b_chapters_rebuild": "Chapter settings changed. Rebuilding M4B from cached WAV segments without running TTS again.",
-  "m4b_chapters_rebuild_unavailable": "Chapter settings were saved, but cached WAV segments are missing; regenerate audio to apply them."
+  "m4b_chapters_rebuild_unavailable": "Chapter settings were saved, but cached WAV segments are missing; regenerate audio to apply them.",
+  "save_next_to_source": "Save output in the same folder as the imported file"
 }
