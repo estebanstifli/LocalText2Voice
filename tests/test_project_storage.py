@@ -90,3 +90,16 @@ def test_project_directory_setting_persists_and_defaults_for_old_config(tmp_path
     settings["projects_dir"] = str(tmp_path / "custom")
     manager.save(settings)
     assert SettingsManager(config).load()["projects_dir"] == str(tmp_path / "custom")
+
+
+def test_new_project_does_not_inherit_imported_source_or_metadata(tmp_path):
+    window = project_window(tmp_path / "projects")
+    snapshot = {"document_source": {"path": str(tmp_path / "old.epub")},
+                "book_metadata": {"author": "Previous author"},
+                "video_storyboard": {"enabled": True}}
+    window._project_settings_snapshot = lambda: dict(snapshot)
+    MainWindow._create_new_project(window)
+    saved = window.audiobook_store.create_audiobook.call_args.args[-2]
+    assert "document_source" not in saved
+    assert "book_metadata" not in saved
+    assert saved["video_storyboard"] == {"enabled": True}

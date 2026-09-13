@@ -132,7 +132,7 @@
   "import_md": "Импортировать .md",
   "import_docx": "Импортировать .docx",
   "import_file": "Импортировать файл",
-  "supported_documents": "Поддерживаемые документы (*.txt *.md *.docx);;Текстовые файлы (*.txt);;Файлы Markdown (*.md);;Документы Word (*.docx)",
+  "supported_documents": "Поддерживаемые документы (*.txt *.md *.docx *.epub);;Текстовые файлы (*.txt);;Файлы Markdown (*.md);;Документы Word (*.docx);;EPUB (*.epub)",
   "text_placeholder": "Вставьте сюда главу, урок, статью или полный курс...",
   "generation_settings": "Генерация",
   "settings": "Настройки",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "Руководство, демо и разработка"
+  "video_storyboard_beta_guide": "Руководство, демо и разработка",
+  "save_next_to_source": "Сохранять аудио рядом с импортированным документом",
+  "use_source_filename": "Использовать имя импортированного файла как основу имени аудио"
 }

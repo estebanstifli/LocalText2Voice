@@ -170,7 +170,7 @@
   "import_md": "Importer un .md",
   "import_docx": "Importer un .docx",
   "import_file": "Importer un fichier",
-  "supported_documents": "Documents pris en charge (*.txt *.md *.docx);;Fichiers texte (*.txt);;Fichiers Markdown (*.md);;Documents Word (*.docx)",
+  "supported_documents": "Documents pris en charge (*.txt *.md *.docx *.epub);;Fichiers texte (*.txt);;Fichiers Markdown (*.md);;Documents Word (*.docx);;EPUB (*.epub)",
   "text_placeholder": "Collez ici un chapitre, une leçon, un article ou un cours complet...",
   "generation_settings": "Génération",
   "settings": "Paramètres",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "Guide, démos et développement"
+  "video_storyboard_beta_guide": "Guide, démos et développement",
+  "save_next_to_source": "Enregistrer l’audio à côté du document importé",
+  "use_source_filename": "Utiliser le nom du fichier importé comme base du nom audio"
 }

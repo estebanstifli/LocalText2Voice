@@ -170,7 +170,7 @@
   "import_md": "导入.md",
   "import_docx": "导入.docx",
   "import_file": "导入文件",
-  "supported_documents": "支持的文档 (*.txt *.md *.docx);;文本文件 (*.txt);;Markdown文件 (*.md);;Word文档 (*.docx)",
+  "supported_documents": "支持的文档 (*.txt *.md *.docx *.epub);;文本文件 (*.txt);;Markdown文件 (*.md);;Word文档 (*.docx);;EPUB (*.epub)",
   "text_placeholder": "在此粘贴章节、课程、文章或完整教程...",
   "generation_settings": "生成",
   "settings": "设置",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "指南、演示与开发进展"
+  "video_storyboard_beta_guide": "指南、演示与开发进展",
+  "save_next_to_source": "将音频保存在导入文档旁边",
+  "use_source_filename": "使用导入文件名作为音频名称的基础"
 }

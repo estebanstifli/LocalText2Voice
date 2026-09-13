@@ -239,7 +239,7 @@
   "import_md": "Importar .md",
   "import_docx": "Importar .docx",
   "import_file": "Importar archivo",
-  "supported_documents": "Documentos compatibles (*.txt *.md *.docx);;Archivos de texto (*.txt);;Archivos Markdown (*.md);;Documentos Word (*.docx)",
+  "supported_documents": "Documentos compatibles (*.txt *.md *.docx *.epub);;Archivos de texto (*.txt);;Archivos Markdown (*.md);;Documentos Word (*.docx);;EPUB (*.epub)",
   "text_placeholder": "Pega aquí un capítulo, lección, artículo o curso completo...",
   "generation_settings": "Generación",
   "settings": "Configuración",
@@ -1625,5 +1625,7 @@
   "wan_behavior_split": "Dividir y continuar con el último fotograma (predeterminado)",
   "wan_behavior_stretch": "Alargar reduciendo FPS",
   "wan_split_preview": "Al aceptar: {video:.3f} s de vídeo + otra escena de {still:.3f} s con el último fotograma.",
-  "video_storyboard_beta_guide": "Guía, demos y desarrollo"
+  "video_storyboard_beta_guide": "Guía, demos y desarrollo",
+  "save_next_to_source": "Guardar el audio junto al documento importado",
+  "use_source_filename": "Usar el nombre del archivo importado como base del nombre del audio"
 }

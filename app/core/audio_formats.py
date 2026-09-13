@@ -168,6 +168,8 @@ def encoding_arguments(format_id: object, quality_id: object) -> list[str]:
         arguments.extend(["-vbr", "on", "-application", "audio"])
     if spec.id in {"m4a", "m4b"}:
         arguments.extend(["-movflags", "+faststart"])
+    if spec.id == "m4b":
+        arguments.extend(["-brand", "M4B "])
     arguments.extend(["-f", spec.container])
     return arguments
 

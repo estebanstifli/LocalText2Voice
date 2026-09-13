@@ -170,7 +170,7 @@
   "import_md": ".mdを読み込む",
   "import_docx": ".docxを読み込む",
   "import_file": "ファイルを読み込む",
-  "supported_documents": "対応ドキュメント (*.txt *.md *.docx);;テキストファイル (*.txt);;Markdownファイル (*.md);;Wordドキュメント (*.docx)",
+  "supported_documents": "対応ドキュメント (*.txt *.md *.docx *.epub);;テキストファイル (*.txt);;Markdownファイル (*.md);;Wordドキュメント (*.docx);;EPUB (*.epub)",
   "text_placeholder": "章、レッスン、記事、または講座全体をここに貼り付けてください...",
   "generation_settings": "音声生成",
   "settings": "設定",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "ガイド・デモ・開発状況"
+  "video_storyboard_beta_guide": "ガイド・デモ・開発状況",
+  "save_next_to_source": "読み込んだ文書と同じフォルダーに音声を保存",
+  "use_source_filename": "読み込んだファイル名を音声ファイル名のベースに使用"
 }

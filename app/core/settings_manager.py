@@ -63,6 +63,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "previous_roots": [],
     },
     "output_dir": "output",
+    "save_next_to_source": False,
+    "use_source_filename": False,
     "projects_dir": "projects",
     "voice_id": "",
     "language": "",

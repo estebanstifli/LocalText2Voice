@@ -104,6 +104,7 @@ from app.core.audio_event_timeline import (
 )
 from app.core.ltv_markup import LTVMarkupParser
 from app.core.project_manager import DocumentImportError, ProjectManager
+from app.core.document_source import output_directory, settings_for_document
 from app.core.settings_manager import (
     DEFAULT_SETTINGS,
     MAX_CHUNK_SIZE,
@@ -11670,6 +11671,12 @@ class MainWindow(QMainWindow):
             self.tr("browse", "Browse"),
             output_path,
         )
+        self.save_next_to_source_checkbox = QCheckBox(
+            self.tr("save_next_to_source", "Save audio next to the imported document")
+        )
+        self.use_source_filename_checkbox = QCheckBox(
+            self.tr("use_source_filename", "Use the imported filename as the audio base name")
+        )
         self.normalize_checkbox = QCheckBox(
             self.tr("normalize_clean_audio", "Normalize clean narration")
         )
@@ -11709,6 +11716,8 @@ class MainWindow(QMainWindow):
             self.tr("output_folder", "Output folder"),
             self.output_picker,
         )
+        narration_form.addRow("", self.save_next_to_source_checkbox)
+        narration_form.addRow("", self.use_source_filename_checkbox)
         narration_form.addRow("", self.normalize_checkbox)
         narration_form.addRow("", normalize_help)
 
@@ -15368,6 +15377,8 @@ class MainWindow(QMainWindow):
         self.open_folder_checkbox.setChecked(
             bool(self.settings.get("open_output_on_finish", True))
         )
+        self.save_next_to_source_checkbox.setChecked(bool(self.settings.get("save_next_to_source", False)))
+        self.use_source_filename_checkbox.setChecked(bool(self.settings.get("use_source_filename", False)))
         self.ui_language_combo.blockSignals(True)
         self._select_combo_data(
             self.ui_language_combo,
@@ -15541,19 +15552,26 @@ class MainWindow(QMainWindow):
             "",
             self.tr(
                 "supported_documents",
-                "Supported documents (*.txt *.md *.docx);;"
+                "Supported documents (*.txt *.md *.docx *.epub);;"
                 "Text files (*.txt);;Markdown files (*.md);;"
-                "Word documents (*.docx)",
+                "Word documents (*.docx);;EPUB files (*.epub)",
             ),
         )
         if not path_text:
             return
         try:
-            text = ProjectManager.import_document(Path(path_text))
-            self.text_editor.setPlainText(text)
+            document = ProjectManager.load_document(Path(path_text))
+            if self.current_audiobook_id is None and not self._save_project():
+                return
+            audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            self.settings = settings_for_document(
+                self.settings, document, Path(path_text), audiobook.title, audiobook.project_dir
+            )
+            self.text_editor.setPlainText(document.text)
+            self._mark_project_dirty()
             self._show_original_text_tab()
             self.log_view.append_event(f"Imported: {path_text}")
-        except DocumentImportError as exc:
+        except (DocumentImportError, OSError, ValueError) as exc:
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
 
     def _stored_project_id(self) -> int | None:
@@ -16747,6 +16765,9 @@ class MainWindow(QMainWindow):
         )
         output_dir = self._project_output_dir(project_dir)
         self.output_picker.set_path(output_dir)
+        snapshot = self._project_settings_snapshot()
+        if snapshot.pop("document_source", None):
+            snapshot.pop("book_metadata", None)
         audiobook = self.audiobook_store.create_audiobook(
             "",
             {"engine": str(self.settings.get("tts_engine", "piper") or "piper")},
@@ -16754,11 +16775,11 @@ class MainWindow(QMainWindow):
             str(self.split_combo.currentData() or "safe_chunks"),
             "single",
             title,
-            self._project_settings_snapshot(),
+            snapshot,
             project_dir,
         )
         audiobook = self._materialize_project_book_assets(
-            audiobook, self._project_settings_snapshot()
+            audiobook, snapshot
         )
         self._load_project(audiobook.id)
         self.log_view.append_event(
@@ -16878,6 +16899,9 @@ class MainWindow(QMainWindow):
         if isinstance(project_settings, dict):
             project_settings.pop("projects_dir", None)
             project_settings.pop("sidebar_collapsed", None)
+            if self.settings.get("document_source") and "book_metadata" not in project_settings:
+                self.settings.pop("book_metadata", None)
+            self.settings.pop("document_source", None)
             self.settings.update(project_settings)
             self.settings["current_project_id"] = audiobook.id
             self.settings_manager.save(self.settings)
@@ -17797,6 +17821,9 @@ class MainWindow(QMainWindow):
         output_dir = self.output_picker.path()
         if not output_dir.is_absolute():
             output_dir = resolve_app_path(output_dir)
+        output_dir = output_directory(
+            {**self.settings, "save_next_to_source": self.save_next_to_source_checkbox.isChecked()}, output_dir
+        )
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -19881,6 +19908,8 @@ class MainWindow(QMainWindow):
             self.omnivoice_chunk_size_spin,
             self.f5_russian_chunk_size_spin,
             self.output_picker,
+            self.save_next_to_source_checkbox,
+            self.use_source_filename_checkbox,
             self.normalize_checkbox,
             self.auto_delete_segment_wavs_checkbox,
             self.cleanup_current_wavs_button,
@@ -20032,6 +20061,8 @@ class MainWindow(QMainWindow):
                     self.ducking_strength_combo.currentData() or "low"
                 ),
                 "open_output_on_finish": self.open_folder_checkbox.isChecked(),
+                "save_next_to_source": self.save_next_to_source_checkbox.isChecked(),
+                "use_source_filename": self.use_source_filename_checkbox.isChecked(),
                 "kokoro": {
                     "voice": (
                         self.kokoro_python_voice_combo.currentData() or "af_heart"

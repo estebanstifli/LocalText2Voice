@@ -2209,6 +2209,10 @@ class AudioPipeline:
         return outputs
 
     def _project_output_title(self, options: AudioGenerationOptions) -> str:
+        from app.core.document_source import output_stem
+        imported_stem = output_stem(options.project_settings)
+        if imported_stem:
+            return self._safe_output_filename_stem(imported_stem)
         if self._active_audiobook is not None:
             return self._safe_output_filename_stem(self._active_audiobook.title)
         return self._safe_output_filename_stem(

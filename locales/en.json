@@ -213,7 +213,7 @@
   "import_md": "Import .md",
   "import_docx": "Import .docx",
   "import_file": "Import file",
-  "supported_documents": "Supported documents (*.txt *.md *.docx);;Text files (*.txt);;Markdown files (*.md);;Word documents (*.docx)",
+  "supported_documents": "Supported documents (*.txt *.md *.docx *.epub);;Text files (*.txt);;Markdown files (*.md);;Word documents (*.docx);;EPUB (*.epub)",
   "text_placeholder": "Paste a chapter, lesson, article, or complete course here...",
   "generation_settings": "Generation",
   "settings": "Settings",
@@ -1599,5 +1599,7 @@
   "wan_behavior_split": "Split and continue with the last frame (default)",
   "wan_behavior_stretch": "Extend by reducing FPS",
   "wan_split_preview": "On acceptance: {video:.3f} s of video + a continuation scene of {still:.3f} s using the last frame.",
-  "video_storyboard_beta_guide": "Guide, demos and development"
+  "video_storyboard_beta_guide": "Guide, demos and development",
+  "save_next_to_source": "Save audio next to the imported document",
+  "use_source_filename": "Use the imported filename as the audio base name"
 }

@@ -7,6 +7,24 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Import DRM-free EPUB 2/3 books in reading order, with navigation-based chapter
+  headings, original book metadata and a project-owned cover for M4B export.
+- Optional output beside an imported document and source-based audio names.
+  Both are off by default; the existing `_voice` / `_mix` suffixes and collision
+  numbering are preserved, and project names are not changed.
+- EPUB support adapts the contribution proposed by
+  [Tomas-Falcon in PR #23](https://github.com/estebanstifli/LocalText2Voice/pull/23)
+  to the current project storage and beta. It uses Python's built-in ZIP/XML/HTML
+  readers rather than adding EbookLib or BeautifulSoup.
+
+### Fixed
+
+- Preserve inline word spacing and text in lists, tables and generic blocks when
+  importing EPUB, and prevent imported metadata leaking into a subsequent book.
+
+
 ## [1.5.1] - 2026-08-21
 
 ### Added

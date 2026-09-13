@@ -2,16 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.core.epub_import import ImportedDocument, read_epub
+
 
 class DocumentImportError(RuntimeError):
     pass
 
 
 class ProjectManager:
-    SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx"}
+    SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".epub"}
 
     @classmethod
     def import_document(cls, path: Path) -> str:
+        return cls.load_document(path).text
+
+    @classmethod
+    def load_document(cls, path: Path) -> ImportedDocument:
         suffix = path.suffix.lower()
         if suffix not in cls.SUPPORTED_EXTENSIONS:
             raise DocumentImportError(f"Unsupported file type: {suffix or 'unknown'}")
@@ -19,8 +25,13 @@ class ProjectManager:
             raise DocumentImportError(f"File not found: {path}")
 
         if suffix in {".txt", ".md"}:
-            return cls._read_plain_text(path)
-        return cls._read_docx(path)
+            return ImportedDocument(cls._read_plain_text(path))
+        if suffix == ".docx":
+            return ImportedDocument(cls._read_docx(path))
+        try:
+            return read_epub(path)
+        except Exception as exc:
+            raise DocumentImportError(f"Could not import EPUB {path.name}: {exc}") from exc
 
     @staticmethod
     def _read_plain_text(path: Path) -> str:

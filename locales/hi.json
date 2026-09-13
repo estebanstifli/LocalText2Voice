@@ -170,7 +170,7 @@
   "import_md": ".md आयात करें",
   "import_docx": ".docx आयात करें",
   "import_file": "फ़ाइल आयात करें",
-  "supported_documents": "समर्थित दस्तावेज़ (*.txt *.md *.docx);;टेक्स्ट फ़ाइलें (*.txt);;Markdown फ़ाइलें (*.md);;Word दस्तावेज़ (*.docx)",
+  "supported_documents": "समर्थित दस्तावेज़ (*.txt *.md *.docx *.epub);;टेक्स्ट फ़ाइलें (*.txt);;Markdown फ़ाइलें (*.md);;Word दस्तावेज़ (*.docx);;EPUB (*.epub)",
   "text_placeholder": "यहाँ कोई अध्याय, पाठ, लेख या पूरा पाठ्यक्रम पेस्ट करें...",
   "generation_settings": "ऑडियो निर्माण",
   "settings": "सेटिंग्स",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "गाइड, डेमो और विकास"
+  "video_storyboard_beta_guide": "गाइड, डेमो और विकास",
+  "save_next_to_source": "आयातित दस्तावेज़ के साथ ऑडियो सहेजें",
+  "use_source_filename": "ऑडियो नाम के आधार के लिए आयातित फ़ाइल का नाम इस्तेमाल करें"
 }

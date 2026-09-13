@@ -130,7 +130,7 @@ LocalText2Voice is no longer just "text to speech". It is becoming a complete lo
 
 ```mermaid
 flowchart TD
-    A["1. Input text<br>Paste text or import TXT / MD / DOCX"] --> B["2. Optional normalization<br>Dictionaries and structured-value rules"]
+    A["1. Input text<br>Paste text or import TXT / MD / DOCX / EPUB"] --> B["2. Optional normalization<br>Dictionaries and structured-value rules"]
     B --> C["3. Smart text processing<br>Paragraphs, chapters, safe chunks"]
     C --> D["4. Optional LTV Markup<br>{{voice}}, {{pause}}, {{speed}}, {{volume}}, {{cmd}}"]
     D --> E["5. TTS generation by segments<br>Piper, Kokoro, Chatterbox, Qwen3, OmniVoice, F5, or API"]
@@ -203,7 +203,7 @@ Qwen3 TTS exposes two independently downloadable checkpoints in Settings:
 ### Long-Form Text Processing
 
 - Paste long text directly into the editor.
-- Import `.txt`, `.md`, and `.docx`.
+- Import `.txt`, `.md`, `.docx`, and DRM-free `.epub` books. See the [EPUB import guide](docs/EPUB_IMPORT.md) for metadata, chapters and export options.
 - Detect chapters, lessons, modules, Markdown headings, and uppercase short headings.
 - Split text into safe TTS chunks.
 - Preserve paragraph boundaries.

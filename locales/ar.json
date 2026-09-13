@@ -170,7 +170,7 @@
   "import_md": "استيراد .md",
   "import_docx": "استيراد .docx",
   "import_file": "استيراد ملف",
-  "supported_documents": "المستندات المدعومة (*.txt *.md *.docx);;ملفات نصية (*.txt);;ملفات Markdown (*.md);;مستندات Word (*.docx)",
+  "supported_documents": "المستندات المدعومة (*.txt *.md *.docx *.epub);;ملفات نصية (*.txt);;ملفات Markdown (*.md);;مستندات Word (*.docx);;EPUB (*.epub)",
   "text_placeholder": "الصق هنا فصلاً أو درساً أو مقالاً أو دورة كاملة...",
   "generation_settings": "إنشاء الصوت",
   "settings": "الإعدادات",
@@ -1325,5 +1325,7 @@
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
   "video_storyboard_insert_location": "Location",
-  "video_storyboard_beta_guide": "الدليل والعروض والتطوير"
+  "video_storyboard_beta_guide": "الدليل والعروض والتطوير",
+  "save_next_to_source": "حفظ الصوت بجوار المستند المستورد",
+  "use_source_filename": "استخدام اسم الملف المستورد كأساس لاسم الصوت"
 }
