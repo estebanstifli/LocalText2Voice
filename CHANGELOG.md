@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-13
+
+### Fixed
+
+- Fixed Windows startup failure while importing QtGui ([#24](https://github.com/estebanstifli/LocalText2Voice/issues/24)). The Windows build now
+  isolates PyInstaller's DLL search paths so unrelated Poppler ICU libraries
+  cannot replace the Windows ICU library used by Qt.
+- Added a packaging validation step that rejects bundles containing the
+  conflicting ICU DLLs before an installer is created.
+- Upgrades remove the incompatible `icuuc.dll` and `icudt78.dll` files that were
+  accidentally shipped in v2.0.1, while preserving user configuration,
+  projects, models and generated data.
+
 ## [2.0.1] - 2026-09-13
 
 ### Added

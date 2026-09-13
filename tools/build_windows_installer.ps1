@@ -60,6 +60,11 @@ try {
         throw "Portable application folder not found: $InstallerSource"
     }
 
+    & "$RepositoryRoot\.venv\Scripts\python.exe" "$RepositoryRoot\tools\check_windows_qt_bundle.py" $InstallerSource
+    if ($LASTEXITCODE -ne 0) {
+        throw "The portable application failed the Qt DLL packaging check."
+    }
+
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     & $Compiler /Qp "/DMyAppVersion=$Version" "/DSourceDir=$InstallerSource" $InstallerScript
     if ($LASTEXITCODE -ne 0) {

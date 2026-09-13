@@ -19682,6 +19682,7 @@ class MainWindow(QMainWindow):
                 self.text_normalization_panel.store.db_path
             ),
             comparison_normalization_rules=normalization.get("rules"),
+            engine_host_client=self.engine_host_client,
         )
         thread = QThread(self)
         worker.moveToThread(thread)

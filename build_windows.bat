@@ -50,7 +50,7 @@ if /I "%PRESERVE_LOCAL_CONFIG%"=="1" if exist "%DIST_DIR%\config.json" (
 )
 
 echo Building portable application folder...
-".venv\Scripts\python.exe" -m PyInstaller ^
+".venv\Scripts\python.exe" tools\run_pyinstaller.py ^
     --noconfirm ^
     --clean ^
     --windowed ^
@@ -78,8 +78,11 @@ echo Building portable application folder...
     main.py
 if errorlevel 1 goto :error
 
+".venv\Scripts\python.exe" tools\check_windows_qt_bundle.py "%DIST_DIR%"
+if errorlevel 1 goto :error
+
 echo Building persistent engine host executable...
-".venv\Scripts\python.exe" -m PyInstaller ^
+".venv\Scripts\python.exe" tools\run_pyinstaller.py ^
     --noconfirm ^
     --clean ^
     --console ^
@@ -104,7 +107,7 @@ echo Building persistent engine host executable...
 if errorlevel 1 goto :error
 
 echo Building MCP stdio server executable...
-".venv\Scripts\python.exe" -m PyInstaller ^
+".venv\Scripts\python.exe" tools\run_pyinstaller.py ^
     --noconfirm ^
     --clean ^
     --console ^

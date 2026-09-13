@@ -86,6 +86,15 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
+## What's New In 2.0.2
+
+- Fixed a Windows startup issue caused by an incompatible Poppler ICU DLL being
+  picked up by Qt during the v2.0.1 build.
+- Hardened the Windows packaging pipeline with isolated DLL search paths and a
+  bundle validation check.
+- Upgrading from v2.0.1 removes the conflicting ICU files without deleting
+  settings, projects, downloaded models or generated audio.
+
 ## What's New In 2.0.1
 
 - Import DRM-free EPUB 2/3 books in reading order, preserve book metadata and

@@ -152,6 +152,7 @@ class SegmentVerificationWorker(QObject):
         tail_autocut_enabled: bool = False,
         ffmpeg_path: str | Path = "ffmpeg/ffmpeg.exe",
         comparison_normalization_rules: object = None,
+        engine_host_client: EngineHostClient | None = None,
     ) -> None:
         super().__init__()
         self.store = store
@@ -190,6 +191,10 @@ class SegmentVerificationWorker(QObject):
         self.comparison_normalization_rules = normalization_rule_settings(
             comparison_normalization_rules
         )
+        # The desktop UI already generates through EngineHost. Reuse that same
+        # process for automatic retry candidates so heavyweight TTS engines do
+        # not get loaded a second time during Whisper review.
+        self.engine_host_client = engine_host_client
         self.comparison_normalizer = (
             TextNormalizer(db_path=comparison_normalization_db_path)
             if self.comparison_normalization_enabled
@@ -788,12 +793,14 @@ class SegmentVerificationWorker(QObject):
     ) -> int:
         voice_config = self._voice_config_for_segment(segment)
         engine_id = str(voice_config.get("engine", "piper"))
-        engine = self._tts_engines.get(engine_id)
-        if engine is None:
-            engine = create_tts_engine(engine_id, self.piper_path)
-            engine.set_log_callback(self.log.emit)
-            self._tts_engines[engine_id] = engine
-        self._active_tts_engine = engine
+        engine: BaseTTSEngine | None = None
+        if self.engine_host_client is None:
+            engine = self._tts_engines.get(engine_id)
+            if engine is None:
+                engine = create_tts_engine(engine_id, self.piper_path)
+                engine.set_log_callback(self.log.emit)
+                self._tts_engines[engine_id] = engine
+            self._active_tts_engine = engine
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         temporary_wav = output_wav.with_name(output_wav.stem + ".tmp.wav")
         started = time.perf_counter()
@@ -802,10 +809,40 @@ class SegmentVerificationWorker(QObject):
             f"{attempt}/{self.max_retries}."
         )
         try:
-            engine.synthesize_to_wav(segment.source_text, temporary_wav, voice_config)
+            if self.engine_host_client is not None:
+                self.log.emit(
+                    f"Segment {segment.sequence_index}: sending retry through "
+                    "the shared Engine Host."
+                )
+                result = self.engine_host_client.synthesize_review_segment(
+                    {
+                        "text": segment.source_text,
+                        "output_wav": str(temporary_wav.resolve()),
+                        "voice_config": voice_config,
+                    }
+                )
+                returned_path = Path(str(result.get("output_wav", temporary_wav)))
+                if returned_path.resolve() != temporary_wav.resolve():
+                    raise EngineHostClientError(
+                        "Engine host returned an unexpected retry candidate path."
+                    )
+            else:
+                assert engine is not None
+                engine.synthesize_to_wav(
+                    segment.source_text,
+                    temporary_wav,
+                    voice_config,
+                )
+            if not temporary_wav.is_file() or temporary_wav.stat().st_size == 0:
+                raise EngineHostClientError(
+                    "Engine host did not create a valid retry candidate WAV."
+                ) if self.engine_host_client is not None else TTSEngineError(
+                    "TTS engine did not create a valid retry candidate WAV."
+                )
             temporary_wav.replace(output_wav)
         finally:
             self._active_tts_engine = None
+            temporary_wav.unlink(missing_ok=True)
         return round((time.perf_counter() - started) * 1000)
 
     def _voice_config_for_segment(self, segment: StoredSegment) -> dict:

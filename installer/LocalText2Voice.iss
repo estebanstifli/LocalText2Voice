@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.0.1"
+  #define MyAppVersion "2.0.2"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -105,6 +105,12 @@ Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:Add
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "runtimes\python311\engine-deps\*, output\*, logs\*, __pycache__\*, *.pyc, .installation.json, .installation.tmp"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; v2.0.1 accidentally bundled Poppler ICU from the build host's PATH (#24).
+; These must also be removed when upgrading an existing affected installation.
+Type: files; Name: "{app}\_internal\icuuc.dll"
+Type: files; Name: "{app}\_internal\icudt78.dll"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\LocalText2Voice.exe"

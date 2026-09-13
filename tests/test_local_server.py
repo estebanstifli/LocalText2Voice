@@ -9,14 +9,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.audio_pipeline import GenerationCancelled
-from app.core.audiobook_store import AudiobookStore
+from app.core.audiobook_store import AudiobookStore, StoredSegment
 from app.core.settings_manager import SettingsManager
 from app.server.http_app import _job_response, create_http_app
 from app.server.engine_host_client import EngineHostClient
 from app.server.job_manager import LocalServerJobManager, ServerJob, wait_for_job
 from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
 from app.workers.engine_host_generation_worker import EngineHostGenerationWorker
-from app.workers.verification_worker import EngineHostSegmentRegenerationWorker
+from app.workers.verification_worker import (
+    EngineHostSegmentRegenerationWorker,
+    SegmentVerificationWorker,
+)
 
 
 class FakeGenerationService:
@@ -246,6 +249,55 @@ def test_review_segment_worker_calls_engine_host_not_a_local_tts_engine(tmp_path
     assert not temporary.exists()
     assert completed == [(42, str(candidate))]
     assert client.synthesize_review_segment.call_args.args[0]["voice_config"]["engine"] == "qwen"
+
+
+def test_automatic_retry_uses_engine_host_instead_of_loading_a_local_tts_engine(tmp_path):
+    client = MagicMock()
+    candidate = tmp_path / "candidates" / "retry_001.wav"
+
+    def synthesize(payload):
+        Path(payload["output_wav"]).write_bytes(b"candidate")
+        return {"output_wav": payload["output_wav"]}
+
+    client.synthesize_review_segment.side_effect = synthesize
+    segment = StoredSegment(
+        id=7,
+        audiobook_id=1,
+        sequence_index=1,
+        chapter_index=1,
+        chapter_title="Chapter",
+        source_text="Retry this segment.",
+        wav_path=str(tmp_path / "original.wav"),
+        status="rendered",
+        similarity_score=80.0,
+        verification_status="retry_needed",
+        transcript_text="Retry this segment.",
+        engine_config_json=json.dumps(
+            {"engine": "chatterbox", "model": "multilingual_v3"}
+        ),
+    )
+    worker = SegmentVerificationWorker(
+        MagicMock(),
+        1,
+        MagicMock(),
+        "cpu",
+        "int8",
+        "en",
+        1,
+        92.0,
+        max_retries=1,
+        engine_host_client=client,
+    )
+
+    with patch("app.workers.verification_worker.create_tts_engine") as factory:
+        worker._regenerate_candidate(segment, candidate, 1)
+
+    factory.assert_not_called()
+    assert candidate.read_bytes() == b"candidate"
+    client.synthesize_review_segment.assert_called_once()
+    payload = client.synthesize_review_segment.call_args.args[0]
+    assert payload["voice_config"]["engine"] == "chatterbox"
+    assert payload["output_wav"].endswith("retry_001.tmp.wav")
 
 
 def test_job_manager_runs_generation_job(tmp_path):
