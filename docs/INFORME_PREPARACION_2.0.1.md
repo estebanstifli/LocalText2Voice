@@ -154,6 +154,51 @@ reconocida en código, guía y changelog. El usuario confirmó que funciona en l
 
 ## 4. Audio, servidor y cambios transversales
 
+### Incidencias #20 y #21: corregidas localmente, pendientes de release
+
+Las dos incidencias siguen abiertas en GitHub. El 10 de septiembre se informó
+a sus autores de que estaban corregidas en desarrollo y que llegarían en la
+siguiente release. En #21 se indicó expresamente que permanecería abierta hasta
+la publicación. Esta revisión no ha añadido comentarios ni cerrado esas incidencias.
+
+| Incidencia | Corrección y evidencia | Publicación pendiente |
+| --- | --- | --- |
+| [#20: Voice Library no cambia la voz Qwen activa](https://github.com/estebanstifli/LocalText2Voice/issues/20) | El clic en la fila usa los datos de la voz almacenados en la celda y llama al mismo selector que el botón ✓. El selector aplica audio, transcripción e idioma de la referencia Qwen Base y refresca Selected. El test cambia de Harriet a Ricky-Kid y comprueba audio, texto e indicador. | Repositorio principal, release 2.0.1; no necesita cambios en VoiceGallery. |
+| [#21: regeneración de segmento bloqueada al 0 %](https://github.com/estebanstifli/LocalText2Voice/issues/21) | Review utiliza `EngineHostSegmentRegenerationWorker` y el endpoint `/review/segments/synthesize` para reutilizar el motor del host, evitando iniciar otra instancia TTS local para el segmento. Las pruebas verifican la ruta HTTP, reutilización del motor y entrega del candidato. | Repositorio principal, release 2.0.1; no necesita cambios en VoiceGallery. |
+
+Las correcciones están dentro del checkpoint `8eb793a`. Se volvieron a ejecutar
+las pruebas específicas el 13 de septiembre: **4 aprobadas** (selección Qwen y
+pruebas de regeneración del servidor/worker). Utilizan dobles de motor; no se ha
+repetido aquí una síntesis Qwen real sobre la RTX 5080 del informante. La explicación
+del usuario sobre un bloqueo CUDA no se considera una causa de bajo nivel probada
+por estos tests: lo verificado es el cambio de arquitectura que evita la segunda
+instancia en el flujo de Review.
+
+El informe inicial ya describía la corrección de #21 sin su enlace, pero omitía
+la referencia explícita a #20. Ambas quedan incorporadas aquí y deben figurar en
+las notas de correcciones de 2.0.1. Cerrar las incidencias cuando la versión con
+estas correcciones esté disponible.
+
+### Repositorio de voces: cambio separado y ya publicado
+
+Se revisó el checkout `LocalText2Voice-VoiceGallery` y se actualizó la referencia
+remota con `git fetch origin`. `main` y `origin/main` coinciden en
+[`305fb33`](https://github.com/estebanstifli/LocalText2Voice-VoiceGallery/commit/305fb3356a1d2ab8348d9c16cfbc0f540a1aef4d),
+sin cambios sin guardar ni commits pendientes de envío.
+
+Ese commit, del 8 de septiembre, corrige el `ref_text` de **Abigail, Adrian,
+Alice y Connor para OmniVoice**: reemplaza un texto genérico por la transcripción
+de los audios de referencia. Es una corrección distinta de #20 y #21, que afectan
+a Qwen y al flujo de Review.
+
+**No queda un push pendiente al repositorio de voces.** En la app sí está pendiente
+publicar, junto con la release, la modificación de
+`tools/create_voice_gallery_seed.py` que conserva esas transcripciones correctas
+cuando se vuelve a generar el catálogo. La comprobación de sincronización de Git
+no demuestra que todos los usuarios hayan actualizado su caché local del catálogo.
+
+### Otros detalles del cambio de audio y configuración
+
 - La regeneración de un segmento en Review pasa por el engine host persistente,
   con un endpoint y worker nuevos, para reutilizar el motor TTS y evitar cargar
   otra instancia Python/CUDA en el proceso de escritorio.
