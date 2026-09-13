@@ -147,8 +147,10 @@ That document contains dated notes, including older approaches retained for cont
 ## Demos and feedback
 
 The official channel is **[LocalText2Voice on YouTube](https://www.youtube.com/@LocalText2Voice)**.
-Public demos and walkthroughs will be linked here as they become available;
-private demonstration videos are not linked as public examples.
+Watch **[50 AI Image Styles for Video Storyboards | VideoStoryboard Demo](https://www.youtube.com/watch?v=WSU09pJ0rXc)**
+for a showcase of the built-in visual styles. The app includes 50 style presets
+with preview images, plus a custom style prompt. More demos and walkthroughs
+will be added to the channel as development progresses.
 
 To report a problem, [open a GitHub issue](https://github.com/estebanstifli/LocalText2Voice/issues)
 with the app version, analysis model/provider, affected step, expected result and

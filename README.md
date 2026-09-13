@@ -33,10 +33,22 @@ The goal is simple: paste or import a long text, choose a voice engine, generate
 
 ## Video Storyboard (Beta)
 
+**In development for the upcoming 2.0.1 release.**
+
 Turn narration into an editable visual timeline, generate or import images,
 create video clips, and render an MP4 with the audiobook audio. This beta includes
 character and location profiles, scene review, and local or optional remote
 visual providers. AI continuity and timing still need human review.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=WSU09pJ0rXc">
+    <img src="https://i.ytimg.com/vi/WSU09pJ0rXc/hqdefault.jpg" alt="Watch: 50 AI Image Styles for Video Storyboards | VideoStoryboard Demo" width="640">
+  </a><br>
+  <a href="https://www.youtube.com/watch?v=WSU09pJ0rXc"><strong>50 AI Image Styles for Video Storyboards | VideoStoryboard Demo</strong></a>
+</p>
+
+Explore the 50 built-in image styles, each with a preview, or create your own
+style prompt. Click the demo above to watch on YouTube.
 
 **[Feature guide and development notes](docs/VIDEO_STORYBOARD.md)** ·
 [Guía en español](docs/VIDEO_STORYBOARD.es.md) ·
