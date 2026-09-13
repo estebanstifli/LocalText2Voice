@@ -1,5 +1,35 @@
 # Storyboard continuity (ledger v3)
 
+## Current combined-report flow (2026-09-11)
+
+The default medium input allowance is 17,000 characters. Source passages are
+balanced, preferring paragraph and sentence boundaries, with no text loss or
+overlap. A roughly 50,000-character book uses three passages; shorter books may
+use one and longer books use more. Ollama retains its 8,192-token default context.
+The analysis dialog remains editable; the previous saved 12,000 default upgrades
+to 17,000, while other explicit limits remain unchanged.
+
+Each passage receives the tested B question: characters and appearance, changes,
+and a short story summary in free-text sections. There is no separate appearance
+chat. After all reports, short pairwise novelty requests append new character
+descriptions to the first report's character section. Initial descriptions are
+not rewritten by the novelty step. Explicit no-new-character replies are not
+converted into profiles. This does not guarantee semantic alias deduplication.
+
+Scene proposals use independent source-passage requests, avoiding carrying the
+entire combined answer into another large request. Place summaries, scene quote
+alignment, JSON conversion and rendering remain downstream. Character conversion
+receives accumulated initial descriptions, never the concatenation of later
+appearance-change sections. Full analysis still verifies changes against their
+original passage and builds timestamped states; basic analysis keeps baselines.
+
+Project-local `storyboard/analysis/<run>/` stores `resumenN.txt`, `novedadesN.txt`,
+`resumen_unificado.txt` (append-only character list), `historia_concatenada.txt`
+and `cambios_por_tramo.txt`. Raw reports and per-passage summaries also persist
+in the plan. Existing analysis checkpoints are invalidated by pipeline revision.
+The new prompt keys are `conversation_report` and `conversation_additions`;
+legacy custom questions remain stored but are not applied to this new phase.
+
 ## User-controlled maximum scene duration
 
 Scene-first analysis uses `scene.maximum_seconds` (default 20, range 4–60).
@@ -10,9 +40,10 @@ hidden in settings and cannot increase the maximum during normalization.
 
 ## Explicit character changes and human hair (2026-09-10)
 
-The default appearance chat now chooses one visual design, including hair length
+The previous appearance chat chose one visual design, including hair length
 and color (or baldness) for humans only. Source facts take priority; missing hair
-details are chosen once, not once per frame. The two-field profile converter
+details were chosen once, not once per frame. The current B question is shorter
+and does not explicitly require hair attributes. The two-field profile converter
 preserves that INITIAL portrait rather than mixing later outfits into it.
 
 Full analysis subsequently extracts explicit appearance changes from bounded

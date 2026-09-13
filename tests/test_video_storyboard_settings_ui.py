@@ -104,9 +104,16 @@ class VideoStoryboardSettingsUITests(unittest.TestCase):
         self.assertEqual(layout.itemAt(1).widget().title(), "Scene timing")
         self.assertEqual(layout.itemAt(2).widget().title(), "Image preset")
         self.assertEqual(layout.itemAt(3).widget().title(), "Final video output")
-        advanced = layout.itemAt(layout.count() - 2).widget()
-        self.assertEqual(advanced.title(), "Advanced image settings")
-        self.assertIs(widget.image_steps_spin.parentWidget(), advanced)
+        self.assertFalse(hasattr(widget, "image_steps_spin"))
+        saved = widget.configuration()
+        saved["image"].update(steps=12, cfg=1.7, sampler="euler", scheduler="normal", denoise=0.8, auraflow_shift=2.5)
+        widget.set_configuration(saved)
+        self.assertEqual(widget.configuration()["image"], saved["image"])
+        self.assertFalse(any(
+            item.widget() and hasattr(item.widget(), "title")
+            and item.widget().title() == "Advanced image settings"
+            for item in (layout.itemAt(i) for i in range(layout.count()))
+        ))
         workflow_href = widget.comfyui_workflow_help.text().split('href="', 1)[1].split('"', 1)[0]
         self.assertTrue(Path(workflow_href.removeprefix("file:///")).is_file())
         self.assertEqual(widget.litellm_max_output_tokens_spin.value(), 16000)

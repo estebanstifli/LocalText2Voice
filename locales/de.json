@@ -1,4 +1,7 @@
 {
+  "video_storyboard_clipboard_edit_help": "Kopiere das Bild, bearbeite es in ChatGPT, Gemini oder einer anderen App und kopiere das Ergebnis, um es hier einzufügen.",
+  "video_storyboard_copy_frame": "Kopieren",
+  "video_storyboard_paste_frame": "Einfügen",
   "projects_folder": "Projektordner",
   "projects_folder_help": "Neue Projekte werden hier automatisch in einem Unterordner gespeichert. Mit Speichern unter wählen Sie einen anderen Speicherort.",
   "language_name": "Deutsch",
@@ -1041,7 +1044,7 @@
   "book_title": "Buchtitel", "subtitle": "Untertitel", "author": "Autor", "narrator": "Sprecher", "series": "Reihe", "series_index": "Bandnummer", "genre": "Genre", "publisher": "Verlag", "publication_date": "Veröffentlichungsdatum / Jahr", "copyright": "Urheberrecht", "description": "Beschreibung",
   "chapter_mode": "Kapitel", "chapters_from_markup": "LTV-Kapitelmarkierungen", "chapters_from_headings": "Textüberschriften erkennen", "no_chapters": "Keine Kapitel",
   "bulk_cover_hint": "Automatisches Cover. Klicken, um ein Bild auszuwählen; Rechtsklick stellt das automatische Cover wieder her.", "m4b_chapters_rebuild": "Die Kapiteleinstellungen wurden geändert. M4B wird ohne erneute TTS-Ausführung aus zwischengespeicherten WAV-Segmenten neu erstellt.", "m4b_chapters_rebuild_unavailable": "Die Kapiteleinstellungen wurden gespeichert, aber zwischengespeicherte WAV-Segmente fehlen; Audio neu erzeugen, um sie anzuwenden.",
-  "nav_video_storyboard": "Video Storyboard", "video_storyboard_title": "Video Storyboard", "video_storyboard_settings": "Video Storyboard", "video_storyboard_page_subtitle": "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.", "video_storyboard_settings_description": "Prepare the optional models and defaults used to turn an audiobook into a visual storyboard and MP4 video.", "video_storyboard_open_settings": "Open Video Storyboard settings",
+  "nav_video_storyboard": "Video Storyboard (Beta)", "video_storyboard_title": "Video Storyboard (Beta)", "video_storyboard_settings": "Video Storyboard (Beta)", "video_storyboard_page_subtitle": "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.", "video_storyboard_settings_description": "Prepare the optional models and defaults used to turn an audiobook into a visual storyboard and MP4 video.", "video_storyboard_open_settings": "Open Video Storyboard settings",
   "video_storyboard_runtime_description": "Video Storyboard uses Ollama for text analysis and ComfyUI for image generation. LocalText2Voice detects and orchestrates them, but does not install or duplicate their models.",
   "video_storyboard_detect_models": "Detect service and models",
   "video_storyboard_not_checked": "Not checked",
@@ -1321,5 +1324,6 @@
   "video_storyboard_invalid_image": "Invalid image",
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
-  "video_storyboard_insert_location": "Location"
+  "video_storyboard_insert_location": "Location",
+  "video_storyboard_beta_guide": "Anleitung, Demos und Entwicklung"
 }

@@ -11,6 +11,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -81,6 +82,7 @@ class VideoStoryboardVideoDialog(QDialog):
     """Generate and review an optional ComfyUI video layer for one scene."""
 
     generateRequested = Signal(object)
+    importRequested = Signal(str)
     candidateAccepted = Signal(object)
     candidateRejected = Signal(str, str)
 
@@ -291,6 +293,9 @@ class VideoStoryboardVideoDialog(QDialog):
             )
         )
         self.generate_button.setIcon(ui_icon("convert_video"))
+        self.open_video_button = QPushButton(self.tr_text("storyboard_open_video_file", "Open video file…"))
+        self.open_video_button.setIcon(ui_icon("folder"))
+        self.open_video_button.clicked.connect(self._request_import)
         self.accept_button = QPushButton(
             self.tr_text(
                 "video_storyboard_accept_video",
@@ -305,6 +310,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self.accept_button.hide()
         self.discard_button.hide()
         buttons.addWidget(self.generate_button)
+        buttons.addWidget(self.open_video_button)
         buttons.addStretch(1)
         buttons.addWidget(self.accept_button)
         buttons.addWidget(self.discard_button)
@@ -359,6 +365,7 @@ class VideoStoryboardVideoDialog(QDialog):
         )
         self.video_stack.setCurrentWidget(self.video_placeholder)
         self._generating = True
+        self.open_video_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.accept_button.hide()
         self.discard_button.hide()
@@ -371,6 +378,38 @@ class VideoStoryboardVideoDialog(QDialog):
         self._sync_playback_buttons(False)
         self.generateRequested.emit(self.request_payload())
 
+    def _request_import(self) -> None:
+        if self._generating:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.tr_text("storyboard_open_video_file", "Open video file…"), "",
+            self.tr_text("storyboard_video_files", "Video files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.wmv *.mpeg *.mpg);;All files (*)"),
+        )
+        if not path:
+            return
+        previous = self._candidate_path
+        self._candidate_path = ""
+        self._candidate_duration_seconds = 0.0
+        self._resolved = False
+        self._release_player()
+        if previous:
+            self.candidateRejected.emit(self.scene_id, previous)
+        self._generating = True
+        self.generate_button.setEnabled(False)
+        self.open_video_button.setEnabled(False)
+        self.frame_role_combo.setEnabled(False)
+        self.prompt_edit.setEnabled(False)
+        self.accept_button.hide()
+        self.discard_button.hide()
+        self._sync_playback_buttons(False)
+        message = self.tr_text("storyboard_importing_video", "Preparing a copy of the selected video…")
+        self.video_placeholder.setText(message)
+        self.log_edit.clear()
+        self.log_edit.show()
+        self.progress_bar.show()
+        self.set_progress(message, -1)
+        self.importRequested.emit(path)
+
     def set_progress(self, message: str, percentage: int) -> None:
         self.status_label.setText(message)
         self.progress_bar.setRange(0, 0 if percentage < 0 else 100)
@@ -381,6 +420,7 @@ class VideoStoryboardVideoDialog(QDialog):
 
     def set_candidate(self, path: str, duration_seconds: float = 0.0) -> None:
         self._generating = False
+        self.open_video_button.setEnabled(True)
         self._candidate_path = str(path or "")
         self._candidate_duration_seconds = max(0.0, float(duration_seconds or 0.0))
         self.video_placeholder.setText(
@@ -413,6 +453,7 @@ class VideoStoryboardVideoDialog(QDialog):
 
     def set_failed(self, error: str) -> None:
         self._generating = False
+        self.open_video_button.setEnabled(True)
         self.progress_bar.hide()
         self.status_label.setText(str(error))
         self.log_edit.appendPlainText(str(error))
@@ -499,6 +540,15 @@ class VideoStoryboardVideoDialog(QDialog):
         self.play_button.setEnabled(enabled)
         self.pause_button.setEnabled(enabled)
         self.stop_button.setEnabled(enabled)
+
+    def reject(self) -> None:
+        if self._generating:
+            return
+        self._release_player()
+        if self._candidate_path and not self._resolved:
+            self.candidateRejected.emit(self.scene_id, self._candidate_path)
+            self._resolved = True
+        super().reject()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         if self._generating:

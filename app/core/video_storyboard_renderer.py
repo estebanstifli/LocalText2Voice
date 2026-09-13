@@ -201,7 +201,16 @@ def render_storyboard_video(
                 output_label = f"vx{index}"
                 duration = edge_durations[index - 1]
                 left = f"[{video_output}]"
+                right = f"[{index}:v:0]"
                 if duration > 0:
+                    # concat changes the time base to AVTB and may report a
+                    # variable frame rate. xfade needs identical CFR timing on
+                    # both inputs, including when a hard cut precedes a fade.
+                    timing = f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}"
+                    filters.append(f"{left}{timing}[left{index}]")
+                    filters.append(f"{right}{timing}[right{index}]")
+                    left = f"[left{index}]"
+                    right = f"[right{index}]"
                     transition = str(
                         normalized[index].get("transition")
                         or video.get("transition")
@@ -210,7 +219,7 @@ def render_storyboard_video(
                     if transition not in _XFADE_TRANSITIONS:
                         transition = "fade"
                     filters.append(
-                        f"{left}[{index}:v:0]xfade=transition={transition}:"
+                        f"{left}{right}xfade=transition={transition}:"
                         f"duration={_decimal(duration)}:offset={_decimal(elapsed)}"
                         f"[{output_label}]"
                     )

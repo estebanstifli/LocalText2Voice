@@ -563,6 +563,16 @@ def release_comfyui_memory(settings: dict[str, Any]) -> None:
         return
 
 
+def _character_sentence(name: str, details: str) -> str:
+    details = details.strip().rstrip(". ")
+    if not details:
+        return name
+    article = "" if details.casefold().startswith(("a ", "an ", "the ")) else "a "
+    if article and details.casefold().startswith(("older ", "old ", "adult ", "elderly ", "anthropomorphic ")):
+        article = "an "
+    return f"{name} is {article}{details}"
+
+
 def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
     style = plan.get("style", {}) if isinstance(plan.get("style"), dict) else {}
     requested_names = {
@@ -613,7 +623,7 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
                 )
                 if combined:
                     character_locks.append(
-                        f"{name} ({details})" if name and details else combined
+                        _character_sentence(name, details) if name and details else combined
                     )
     if isinstance(style.get("characters"), list):
         for value in style["characters"]:
@@ -625,7 +635,10 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
                 continue
             if description not in descriptions:
                 descriptions.append(description)
-                character_locks.append(description)
+                character_locks.append(
+                    _character_sentence(name, description.split(":", 1)[1])
+                    if ":" in description else description
+                )
     requested_locations = {
         str(value).strip().casefold()
         for value in scene.get("locations", [])
@@ -696,7 +709,7 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
     style_prompt = "; ".join(style_parts)
     scene_parts = [scene_prompt]
     if character_locks:
-        scene_parts.append("CHARACTERS: " + " | ".join(character_locks))
+        scene_parts.append("CHARACTERS: " + ". ".join(part.rstrip(". ") for part in character_locks))
     if location_locks:
         scene_parts.append(
             "Location continuity: " + " | ".join(location_locks)

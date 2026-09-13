@@ -16,7 +16,7 @@ def choices(value):
 
 
 def fingerprint(source, settings):
-    data = {"pipeline_revision": 5, "source": {k: source.get(k) for k in ("text", "duration_seconds", "narration_cues", "voice_start_offset_seconds")}, "plan": choices(settings.get("analysis_choices")),
+    data = {"pipeline_revision": 11, "source": {k: source.get(k) for k in ("text", "duration_seconds", "narration_cues", "voice_start_offset_seconds")}, "plan": choices(settings.get("analysis_choices")),
             "analysis": settings.get("analysis"), "scene": settings.get("scene"),
             "continuity": settings.get("continuity_analysis"),
             "era": settings.get("narrative_context")}

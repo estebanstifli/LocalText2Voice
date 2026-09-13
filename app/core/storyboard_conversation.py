@@ -14,12 +14,12 @@ from app.core.storyboard_analysis_review import choices, fingerprint
 from app.core.storyboard_analysis_settings import PROMPTS, normalize, conversation_input_limit
 from app.core.storyboard_entity_names import resolve, clean_names, resolve_references
 
-CHARACTERS = PROMPTS["conversation_characters"][1]
+CHARACTERS = PROMPTS["conversation_report"][1]
 SCENES = PROMPTS["conversation_scenes"][1]
 APPEARANCE = PROMPTS["conversation_appearance"][1]
 LOCATIONS = "Which physical places appear in this scene summary? Briefly describe each place using only the information given."
 PROFILE_INSTRUCTIONS = {
-    "characters": "Convert this character summary to JSON: character and visual_description for a storyboard. Keep each INITIAL visual design, including human hair length and color or baldness. Do not mix later appearances into the initial portrait. Be concise; do not invent details, actions or changes.",
+    "characters": 'Convert the summary to JSON, one entry per named person; exclude groups. "character" is their name, never their species. "visual_description" must describe species, approximate age, hair length and color, and clothing with a distinct color. Preserve stated traits; invent missing hair and clothing as a consistent storyboard design. Write neutral portraits in 15-25 words, without actions, relationships, burial details or props.',
     "locations": "Convert this place summary to JSON: location and visual_description for a storyboard. Keep the names and visual facts. Be concise; do not invent details, events or changes.",
 }
 
@@ -33,7 +33,7 @@ def _array(item):
 
 
 STRING = {"type": "string"}
-SCENE_SCHEMA = _object({"scenes": _array(_object({"title": STRING, "start_quote": STRING}))})
+SCENE_SCHEMA = _object({"scenes": _array(_object({"title": STRING, "start_quote": STRING, "source_proposal_id": STRING}))})
 CHARACTER_SCHEMA = _object({"characters": _array(_object({"character": STRING, "visual_description": STRING}))})
 LOCATION_SCHEMA = _object({"locations": _array(_object({"location": STRING, "visual_description": STRING}))})
 VISUAL_SCHEMA = _object({"scenes": _array(_object({
@@ -55,6 +55,23 @@ def _valid_visual(row):
 
 
 def request_visuals(request, data, instruction, label, warn, check):
+    """Request at most two intervals at a time, preserving positional alignment."""
+    intervals = data["intervals"]
+    rows = []
+    for start in range(0, len(intervals), 2):
+        check()
+        batch = deepcopy(data)
+        batch["intervals"] = intervals[start:start + 2]
+        count = len(batch["intervals"])
+        batch_label = (f"{label} / frames {start + 1}-{start + count}/{len(intervals)}"
+                       if len(intervals) > 2 else label)
+        batch_instruction = (f"Describe exactly {count} still images, one per supplied narration interval in order. "
+                             + instruction)
+        rows.extend(_request_visual_batch(request, batch, batch_instruction, batch_label, warn, check))
+    return rows
+
+
+def _request_visual_batch(request, data, instruction, label, warn, check):
     """Recover malformed/empty successful replies without restarting analysis.
 
     Wrong-count replies have ambiguous positional correspondence: never attach
@@ -95,6 +112,31 @@ def request_visuals(request, data, instruction, label, warn, check):
                 "after two individual retries. Previously completed scenes remain saved."
             )
     return rows
+
+
+def scene_excerpt_prompt(prompt, number):
+    return f"{prompt} Number them {number}-1, {number}-2, etc."
+
+
+def scene_passages(text, units, start, end, limit, seconds=120):
+    """Keep scene discovery local, using narration boundaries rather than words/time estimates."""
+    passages = []
+    cursor = start
+    while cursor < end:
+        active = [u for u in units if u["text_end"] > cursor and u["text_start"] < end]
+        boundary = end
+        if active:
+            first_time = active[0]["start_seconds"]
+            for unit in active[1:]:
+                if unit["end_seconds"] - first_time > seconds:
+                    boundary = max(cursor + 1, unit["text_start"])
+                    break
+        boundary = min(end, boundary)
+        # Unusually long cues still respect the configured text budget.
+        for passage in source_chunks(text[cursor:boundary], limit):
+            passages.append(passage)
+        cursor = boundary
+    return passages
 
 
 def _tokens(text):
@@ -301,7 +343,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     selection = choices(settings.get("analysis_choices"))
     config = normalize(settings.get("continuity_analysis"))
     prompts = {k: config["prompts"].get(k) or PROMPTS[k][1] for k in (
-        "conversation_characters", "conversation_scenes", "conversation_appearance")}
+        "conversation_report", "conversation_scenes", "conversation_additions")}
     duration = float(source.get("duration_seconds") or max(4, len(text.split()) / 2.6))
     offset = max(0.0, float(source.get("voice_start_offset_seconds") or 0))
     warnings, conversations, scenes = [], [], []
@@ -391,14 +433,29 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     # Keep short books whole. Long books use consecutive, plain-text passages;
     # completed reports remain available for review and global identity reuse.
     limit = max(1000, int(settings.get("analysis", {}).get("max_block_characters") or conversation_input_limit(config)))
-    chunks = source_chunks(text, limit)
+    from app.core.storyboard_combined_discovery import balanced_passages, split_report, new_character_text
+    chunks = balanced_passages(text, limit)
     key = fingerprint(source, settings)
     checkpoint = settings.get("review_checkpoint", {})
     resumable = (checkpoint.get("fingerprint") == key and checkpoint.get("pipeline") == "conversational-v2"
                  and checkpoint.get("status") in {"pending", "approved"})
     if resumable:
         conversations = deepcopy(checkpoint.get("reports", []))
+        unified_characters = str(checkpoint.get("unified_characters") or "")
     else:
+        from app.core.storyboard_summary_files import SummaryFiles
+        summary_files = SummaryFiles(settings.get("review_project_dir"))
+        first_answers = []
+        unified_characters = ""
+
+        def save_summary(number, answer):
+            try:
+                target = summary_files.save(number, answer)
+                if target is not None and trace:
+                    trace({"kind": "status", "message": f"Saved character summary: {target}"})
+            except OSError as exc:
+                warn(f"Could not save character summary file: {exc}")
+
         cursor = 0
         for number, chunk in enumerate(chunks, 1):
             check()
@@ -407,26 +464,67 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                 raise p.VideoStoryboardPlanningError("Cannot locate conversation passage in the audiobook.")
             cursor = start + len(chunk)
             history = []
-            first = "" if selection["plan"] == "scenes" else ask(history, prompts["conversation_characters"] + "\n\n" + chunk,
-                                                       f"conversation {number}/{len(chunks)}: characters and summary")
-            proposed = ask(history, prompts["conversation_scenes"] + ("\n\n" + chunk if not history else ""),
-                           f"conversation {number}/{len(chunks)}: scenes and start sentences")
-            appearance = "" if selection["plan"] == "scenes" else ask(history, prompts["conversation_appearance"],
-                                                       f"conversation {number}/{len(chunks)}: appearance")
-            locations = "" if selection["plan"] == "scenes" else ask([], LOCATIONS + "\n\n" + proposed,
-                                                       f"conversation {number}/{len(chunks)}: place summary")
-            conversations.append({"start": start, "text": chunk, "characters": first,
-                                  "scenes": proposed, "appearance": appearance, "locations": locations, "messages": history})
+            first = "" if selection["plan"] == "scenes" else ask(history, prompts["conversation_report"] + "\n\n" + chunk,
+                                                       f"conversation {number}/{len(chunks)}: characters, appearance and summary")
+            if selection["plan"] != "scenes":
+                first_answers.append(first)
+                save_summary(number, first)
+                continuity["first_phase_summaries"] = list(first_answers)
+                publish("discovery")
+            report = split_report(first, warn) if first else {"characters": "", "changes": "", "summary": ""}
+            conversations.append({"start": start, "text": chunk, "characters": report["characters"],
+                                  "scenes": "", "appearance": report["changes"], "locations": "", "messages": history,
+                                  "raw_report": first, "story_summary": report["summary"]})
             continuity["discovery_reports"] = deepcopy(conversations)
             publish("discovery")
-    sections = {"characters": "\n\n".join(c["characters"] for c in conversations),
+        if first_answers:
+            unified_characters = conversations[0]["characters"]
+            for number, report in enumerate(conversations[1:], 2):
+                answer = ask([], prompts["conversation_additions"] + "\n\nFIRST TEXT:\n" + unified_characters +
+                             "\n\nSECOND TEXT:\n" + report["characters"], f"conversation: new characters from block {number}/{len(chunks)}")
+                try:
+                    summary_files.save_named(f"novedades{number}.txt", answer)
+                except OSError as exc:
+                    warn(f"Could not save character additions: {exc}")
+                addition = new_character_text(answer)
+                if addition:
+                    unified_characters += "\n\n" + addition
+                continuity["unified_character_summary"] = unified_characters
+                publish("discovery")
+            save_summary(None, unified_characters)
+            for field, filename in (("story_summary", "historia_concatenada.txt"), ("appearance", "cambios_por_tramo.txt")):
+                try:
+                    summary_files.save_named(filename, "\n\n".join(f"TRAMO {i}\n{r[field]}" for i, r in enumerate(conversations, 1)))
+                except OSError as exc:
+                    warn(f"Could not save {filename}: {exc}")
+        # Scene proposals get their own bounded conversation: don't carry the
+        # full B answer into another already large source-text request.
+        excerpt_number = 0
+        for number, report in enumerate(conversations, 1):
+            excerpts = scene_passages(text, units, report["start"],
+                                      report["start"] + len(report["text"]), min(limit, 4000))
+            answers = []
+            for part, excerpt in enumerate(excerpts, 1):
+                excerpt_number += 1
+                answers.append(ask([], scene_excerpt_prompt(prompts["conversation_scenes"], excerpt_number) + "\n\n" + excerpt,
+                                   f"conversation {number}/{len(chunks)}: scenes and start sentences / global excerpt {excerpt_number} (part {part}/{len(excerpts)})"))
+            report["scenes"] = "\n\n".join(answers)
+            if selection["plan"] != "scenes":
+                report["locations"] = ask([], LOCATIONS + "\n\n" + report["scenes"],
+                                          f"conversation {number}/{len(chunks)}: place summary")
+            continuity["discovery_reports"] = deepcopy(conversations)
+            publish("discovery")
+    continuity["first_phase_summaries"] = [c.get("raw_report", c["characters"]) for c in conversations if c["characters"]]
+    continuity["unified_character_summary"] = unified_characters
+    sections = {"characters": unified_characters or "\n\n".join(c["characters"] for c in conversations),
                 "scenes": "\n\n".join(c["scenes"] for c in conversations),
-                "appearance": "\n\n".join(c["appearance"] for c in conversations), "era": era,
+                "appearance": "", "era": era,
                 "locations": "\n\n".join(c.get("locations", "") for c in conversations),
                 "directions": ""}
     checkpoint = deepcopy(checkpoint) if resumable else {
         "fingerprint": key, "pipeline": "conversational-v2", "status": "pending",
-        "choices": selection, "reports": conversations, "original": deepcopy(sections), "edited": sections}
+        "choices": selection, "reports": conversations, "unified_characters": unified_characters,
+        "original": deepcopy(sections), "edited": sections}
     if selection["review"] and review:
         checkpoint = review(deepcopy(checkpoint))
     sections = checkpoint.get("edited", sections)
@@ -434,7 +532,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     p._seed_requested_era(continuity, era, duration)
     continuity["analysis_review"] = checkpoint
     continuity["discovery_reports"] = conversations
-    continuity["story_context"] = sections.get("characters", "")
+    continuity["story_context"] = "\n\n".join(c.get("story_summary", "") for c in conversations)
     publish("discovery")
 
     if selection["plan"] != "scenes":
@@ -447,7 +545,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             else:
                 fields = ("locations",)
             edited = any(sections.get(k, "") != checkpoint.get("original", {}).get(k, "") for k in fields)
-            summaries = (["\n\n".join(str(sections.get(k, "")) for k in fields)] if edited else
+            summaries = (["\n\n".join(str(sections.get(k, "")) for k in fields if sections.get(k))] if edited or (collection == "characters" and unified_characters) else
                          ["\n\n".join(str(report.get(k, "")) for k in fields) for report in conversations])
             for summary in summaries:
                 for summary_part in source_chunks(summary, min(limit, 6000)):
@@ -463,7 +561,13 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
         clean_names(continuity[collection])
     if selection["plan"] == "full" and continuity["characters"]:
         from app.core.storyboard_character_changes import build_character_states
-        build_character_states(continuity["characters"], conversations, sections,
+        state_sections = dict(sections)
+        if unified_characters and sections.get("characters") == checkpoint.get("original", {}).get("characters"):
+            # Unification is not a user edit: keep passage-local change evidence.
+            state_sections["characters"] = "\n\n".join(c["characters"] for c in conversations)
+            if sections.get("appearance") == checkpoint.get("original", {}).get("appearance"):
+                state_sections["appearance"] = "\n\n".join(c["appearance"] for c in conversations)
+        build_character_states(continuity["characters"], conversations, state_sections,
                                text, units, duration, structured, warn, check)
     publish("continuity")
     proposals = {"scenes": []}
@@ -474,6 +578,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
         for summary_part in source_chunks(summary, min(limit, 6000)):
             converted = structured(SCENE_SCHEMA,
                 "Convert these proposed scenes to JSON, in the same order. Copy each title and start sentence exactly. "
+                "Copy each fragment-scene label (e.g. 2-3) into source_proposal_id; use an empty string if absent. "
                 "Do not invent or rewrite scenes or quotes.",
                 summary_part, "conversation: convert scene summary to JSON")
             proposals["scenes"].extend(converted.get("scenes", []))
@@ -519,6 +624,12 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     for proposal in aligned:
         if not proposal.get("alignment_approximate") and proposal["quote_offset"] != proposal["unit"]["text_start"]:
             warnings.append(f"{proposal['title']}: start quote is inside a narration cue; using its start time (not word-level alignment).")
+    # Preserve an omitted opening as its own semantic block instead of pulling
+    # a later subject (for example childhood) back over the introduction.
+    if aligned and units and aligned[0]["unit"]["id"] > units[0]["id"]:
+        aligned.insert(0, {"title": "Opening narration", "start_quote": units[0]["text"],
+                           "unit": units[0], "quote_offset": 0, "aligned_start_seconds": 0.0})
+        warn("The proposed scenes omit the opening narration; preserving it as a separate scene.")
     # First picture covers the introduction/silence; subsequent pictures start
     # at their cited source cue. Quote-to-cue alignment is not word-level ASR.
     aligned[0]["aligned_start_seconds"] = 0.0
@@ -549,12 +660,11 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                             and u["text_start"] < text_end and u["text_end"] > text_start]
             assignments.append({"narration": " ".join(u["text"] for u in active_units), "start": a, "end": b,
                                 "units": active_units or [proposal["unit"]]})
-        scene_context = next((r.get("characters", "") for r in conversations
+        scene_context = next((r.get("story_summary", "") for r in conversations
                               if r["start"] <= proposal["quote_offset"] < r["start"] + len(r["text"])), "")
         if sections.get("characters") != checkpoint.get("original", {}).get("characters"):
             scene_context = sections.get("characters", "")
-        visual_instruction = (f"Describe exactly {count} still images, one per supplied narration interval in order. "
-            "Use concrete English visual descriptions of 25-55 words. Use canonical names from profiles "
+        visual_instruction = ("Use concrete English visual descriptions of 25-55 words. Use canonical names from profiles "
             "but do not repeat their appearance. List only visible characters and locations by canonical name. "
             "Resolve pronouns using story context, not by inserting everyone. No style or zoom/motion instructions. "
             "For repeated action vary framing or show an important existing detail; never anticipate later actions.")
@@ -579,6 +689,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                 "shot": "", "motion": "zoom_in" if len(scenes) % 2 == 0 else "zoom_out",
                 "transition": "fade", "image_path": "", "status": "planned",
                 "semantic_scene_id": f"{i + 1:03d}", "semantic_title": proposal["title"],
+                "source_proposal_id": str(proposal.get("source_proposal_id") or ""),
                 "coverage_index": j + 1, "coverage_count": count, "coverage_prompt_version": 2,
                 "source_unit_start": selected_units[0]["id"], "source_unit_end": selected_units[-1]["id"],
                 "source_text_start": selected_units[0]["text_start"], "source_text_end": selected_units[-1]["text_end"],

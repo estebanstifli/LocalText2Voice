@@ -6,6 +6,7 @@ from app.core import video_storyboard_planner as p
 
 
 TEXT = "Ana enters the house. Ana sits beside the window. Ana leaves the house."
+REPORT = "Characters\nAna: Brown-haired woman in a blue coat.\nChanges\nNone.\nSummary\nA visit to a house."
 SOURCE = {"text": TEXT, "duration_seconds": 32, "voice_start_offset_seconds": 2,
           "narration_cues": [
               {"text": "Ana enters the house.", "start_seconds": 2, "end_seconds": 10},
@@ -13,11 +14,45 @@ SOURCE = {"text": TEXT, "duration_seconds": 32, "voice_start_offset_seconds": 2,
               {"text": "Ana leaves the house.", "start_seconds": 24, "end_seconds": 32}]}
 
 
+def test_scene_passages_follow_cues_and_preserve_every_character():
+    text = "One. Two. Three. Four. Five."
+    units = [{"text_start": text.index(word), "text_end": text.index(word) + len(word),
+              "start_seconds": i * 50 + 2, "end_seconds": (i + 1) * 50 + 2}
+             for i, word in enumerate(["One.", "Two.", "Three.", "Four.", "Five."])]
+    parts = c.scene_passages(text, units, 0, len(text), 4000)
+    assert parts == ["One. Two. ", "Three. Four. ", "Five."]
+    assert "".join(parts) == text
+    limited = c.scene_passages(text, units, 0, len(text), 10)
+    assert "".join(limited) == text
+    assert all(len(part) <= 10 for part in limited)
+
+
+def test_omitted_opening_is_not_merged_into_later_scene(monkeypatch):
+    fake_backend(monkeypatch)
+    original = p._request_plan
+    def request(settings, schema, system, user, **kwargs):
+        if schema == c.SCENE_SCHEMA:
+            return {"scenes": [{"title": "Departure", "start_quote": "Ana leaves the house."}]}
+        return original(settings, schema, system, user, **kwargs)
+    monkeypatch.setattr(p, "_request_plan", request)
+    plan = p.plan_video_storyboard(SOURCE, {})
+    assert [s["start_seconds"] for s in plan["scenes"]] == [0, 12, 24]
+    assert plan["scenes"][0]["semantic_title"] == "Opening narration"
+    assert plan["scenes"][-1]["semantic_title"] == "Departure"
+
+
 def fake_backend(monkeypatch):
     chats, requests = [], []
     def free(*args, **kwargs):
         chats.append(deepcopy(kwargs["messages"]))
-        return ["Ana. A visit to a house.", "Arrival, sitting, departure.", "Ana wears a blue coat.", "House: a small white house."][(len(chats)-1) % 4]
+        label = kwargs["request_label"]
+        if "characters, appearance and summary" in label:
+            return REPORT
+        if "new characters from block" in label:
+            return "None."
+        if "scenes and start sentences" in label:
+            return "Arrival, sitting, departure."
+        return "House: a small white house."
     def structured(settings, schema, system, user, **kwargs):
         requests.append((schema, system, user))
         if "changes" in schema.get("properties", {}):
@@ -27,8 +62,8 @@ def fake_backend(monkeypatch):
         if schema == c.LOCATION_SCHEMA:
             return {"locations": [{"location": "House", "visual_description": "Small white house"}]}
         if schema == c.SCENE_SCHEMA:
-            return {"scenes": [{"title": "Visit", "start_quote": "Ana enters the house."},
-                               {"title": "Departure", "start_quote": "Ana leaves the house."}]}
+            return {"scenes": [{"title": "Visit", "start_quote": "Ana enters the house.", "source_proposal_id": "1-1"},
+                               {"title": "Departure", "start_quote": "Ana leaves the house.", "source_proposal_id": "1-2"}]}
         import json
         return {"scenes": [{"visual": "Ana stands beside the house.", "characters": ["Ana"], "locations": []}
                            for _ in json.loads(user)["intervals"]]}
@@ -41,17 +76,30 @@ def test_new_public_flow_shared_history_and_offset(monkeypatch):
     chats, requests = fake_backend(monkeypatch)
     partials = []
     plan = p.plan_video_storyboard(SOURCE, {"seed_override": 123}, partial=partials.append)
-    assert len(chats) == 4
+    assert len(chats) == 3
     assert chats[0] == [{"role": "user", "content": c.CHARACTERS + "\n\n" + TEXT}]
-    assert chats[1][-1]["content"] == c.SCENES
-    assert len(chats[2]) == 5
+    assert chats[1][-1]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\n" + TEXT
+    assert len(chats[2]) == 1
     assert all(m["role"] != "system" for m in chats[2])
-    assert len(chats[3]) == 1
-    assert chats[3][0]["content"] == c.LOCATIONS + "\n\nArrival, sitting, departure."
+    assert chats[2][0]["content"] == c.LOCATIONS + "\n\nArrival, sitting, departure."
     assert plan["base_seed"] == 123
     assert [s["start_seconds"] for s in plan["scenes"]] == [0, 12, 24]
     assert sum(s["duration"] for s in plan["scenes"]) == 32
+    assert [s["source_proposal_id"] for s in plan["scenes"]] == ["1-1", "1-1", "1-2"]
     assert plan["scenes"][0]["characters"] == ["character_ana_state_1"]
+    character_instruction = next(system for schema, system, _ in requests if schema == c.CHARACTER_SCHEMA)
+    assert "Complete insufficient descriptions in about 8-12 words" in character_instruction
+    assert "Preserve known traits and each INITIAL visual design" in character_instruction
+    assert "Make characters visually distinct at a glance" in character_instruction
+    assert "when unspecified, choose a different bold clothing color per character if appropriate to the story" in character_instruction
+    assert "Do not dress natural wildlife" in character_instruction
+    assert "For humans, include hair length and color or baldness" in character_instruction
+    assert "Start each description with the character's species or kind" in character_instruction
+    assert "never assume human from clothing or a family role" in character_instruction
+    assert "for animals, describe their species-appropriate features instead" in character_instruction
+    assert "4–5-line summary" in chats[0][0]["content"]
+    assert "including unnamed relatives" in chats[0][0]["content"]
+    assert "do not invent actions or changes" in character_instruction
     assert all(s["image_path"] == "" for s in plan["scenes"])
     assert partials[-1]["scenes"] == plan["scenes"]
 
@@ -109,9 +157,73 @@ def test_scene_only_skips_character_profiles(monkeypatch):
     chats, requests = fake_backend(monkeypatch)
     plan = p.plan_video_storyboard(SOURCE, {"analysis_choices": {"plan": "scenes"}})
     assert len(chats) == 1
-    assert chats[0][0]["content"] == c.SCENES + "\n\n" + TEXT
+    assert chats[0][0]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\n" + TEXT
     assert not plan["continuity"]["characters"]
     assert all(r[0] not in (c.CHARACTER_SCHEMA, c.LOCATION_SCHEMA) for r in requests)
+
+
+def test_first_phase_saves_one_summary_without_unification(monkeypatch, tmp_path):
+    chats, _ = fake_backend(monkeypatch)
+    result = p.plan_video_storyboard(SOURCE, {"review_project_dir": str(tmp_path)})
+    files = list((tmp_path / "storyboard" / "analysis").glob("*/resumen*.txt"))
+    assert len(chats) == 3
+    assert {f.name for f in files} == {"resumen1.txt", "resumen_unificado.txt"}
+    assert next(f for f in files if f.name == "resumen1.txt").read_text(encoding="utf-8") == REPORT
+    assert result["continuity"]["unified_character_summary"] == "Ana: Brown-haired woman in a blue coat."
+
+
+def test_multiple_first_phase_summaries_are_unified_once_and_resume(monkeypatch, tmp_path):
+    chats, requests = fake_backend(monkeypatch)
+    from app.core import storyboard_combined_discovery as combined
+    original_free, original_chunks = p._request_free_text, combined.balanced_passages
+    monkeypatch.setattr(combined, "balanced_passages", lambda text, limit:
+                        ["Ana enters the house. ", TEXT[len("Ana enters the house. "):]]
+                        if text == TEXT else original_chunks(text, limit))
+    unifications = []
+    def free(*args, **kwargs):
+        if "new characters from block" in kwargs["request_label"]:
+            unifications.append(deepcopy(kwargs["messages"]))
+            return "Luis: Red hat."
+        return original_free(*args, **kwargs)
+    monkeypatch.setattr(p, "_request_free_text", free)
+    drafts = []
+    def review(draft):
+        drafts.append(deepcopy(draft))
+        return draft
+    settings = {"review_project_dir": str(tmp_path), "analysis_choices": {"plan": "basic", "review": True}}
+    result = p.plan_video_storyboard(SOURCE, settings, review=review)
+    assert len(chats) == 6 and len(unifications) == 1
+    scene_questions = [chat[0]["content"] for chat in chats if "Number them" in chat[0]["content"]]
+    assert len(scene_questions) == 2
+    assert "Number them 1-1, 1-2, etc." in scene_questions[0]
+    assert "Number them 2-1, 2-2, etc." in scene_questions[1]
+    assert len(unifications[0]) == 1
+    prompt = unifications[0][0]["content"]
+    assert prompt.count("Ana: Brown-haired woman in a blue coat.") == 2
+    assert "FIRST TEXT:" in prompt and "SECOND TEXT:" in prompt
+    assert "A visit to a house." not in prompt  # only character descriptions
+    files = list((tmp_path / "storyboard" / "analysis").glob("*/resumen*.txt"))
+    assert {f.name for f in files} == {"resumen1.txt", "resumen2.txt", "resumen_unificado.txt"}
+    assert result["continuity"]["story_context"] == "A visit to a house.\n\nA visit to a house."
+    assert drafts[0]["original"]["characters"] == "Ana: Brown-haired woman in a blue coat.\n\nLuis: Red hat."
+    assert any("Luis: Red hat." in user for schema, _, user in requests if schema == c.CHARACTER_SCHEMA)
+    settings["review_checkpoint"] = drafts[0]
+    chats.clear()
+    again = p.plan_video_storyboard(SOURCE, settings, review=review)
+    assert not chats and len(unifications) == 1
+    assert again["continuity"]["story_context"] == result["continuity"]["story_context"]
+
+
+def test_summary_saved_before_a_later_phase_fails(monkeypatch, tmp_path):
+    def free(*args, **kwargs):
+        if "characters, appearance and summary" in kwargs["request_label"]:
+            return "Ana: niña de pelo castaño."
+        raise p.VideoStoryboardPlanningError("Later phase failed")
+    monkeypatch.setattr(p, "_request_free_text", free)
+    with pytest.raises(p.VideoStoryboardPlanningError, match="Later phase failed"):
+        p.plan_video_storyboard(SOURCE, {"review_project_dir": str(tmp_path)})
+    target = next((tmp_path / "storyboard" / "analysis").glob("*/resumen1.txt"))
+    assert target.read_text(encoding="utf-8") == "Ana: niña de pelo castaño."
 
 
 def test_transport_ollama_retains_messages_and_model_defaults(monkeypatch):
@@ -180,7 +292,7 @@ def test_conversion_inputs_are_only_their_own_summaries(monkeypatch):
     characters = next(r for r in requests if r[0] == c.CHARACTER_SCHEMA)
     locations = next(r for r in requests if r[0] == c.LOCATION_SCHEMA)
     scenes = next(r for r in requests if r[0] == c.SCENE_SCHEMA)
-    assert characters[2] == "Ana. A visit to a house.\n\nAna wears a blue coat."
+    assert characters[2] == "Ana: Brown-haired woman in a blue coat."
     assert locations[2] == "House: a small white house."
     assert scenes[2] == "Arrival, sitting, departure."
     for schema in (c.CHARACTER_SCHEMA, c.LOCATION_SCHEMA):
@@ -265,6 +377,43 @@ def test_empty_or_wrong_count_recovers_individual_frames(bad):
     rows = c.request_visuals(request, data, "", "block", warnings.append, lambda: None)
     assert [r["visual"] for r in rows] == ["first", "second"]
     assert len(calls) == 3 and warnings
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 11, 12])
+def test_visual_requests_are_limited_to_two_intervals(count):
+    data = {"scene": "Visit", "context": "Story context", "profiles": {"characters": ["Ana"]},
+            "intervals": [{"narration": f"Fragment {i}"} for i in range(count)]}
+    original = deepcopy(data)
+    calls = []
+    def request(schema, instruction, payload, label):
+        size = len(payload["intervals"])
+        assert 1 <= size <= 2
+        assert schema["properties"]["scenes"]["minItems"] == size
+        assert schema["properties"]["scenes"]["maxItems"] == size
+        assert instruction.startswith(f"Describe exactly {size} still images")
+        assert payload["profiles"] == data["profiles"]
+        assert payload["context"] == data["context"]
+        calls.append(label)
+        return {"scenes": [{"visual": row["narration"], "characters": [], "locations": []}
+                           for row in payload["intervals"]]}
+    rows = c.request_visuals(request, data, "Use concrete descriptions.", "test", lambda _: None, lambda: None)
+    assert [row["visual"] for row in rows] == [row["narration"] for row in data["intervals"]]
+    assert len(calls) == (count + 1) // 2
+    assert len(set(calls)) == len(calls)
+    assert data == original
+
+
+def test_visual_batches_stop_on_cancellation():
+    calls = []
+    def request(*args):
+        calls.append(args)
+        return {"scenes": [{"visual": "Valid", "characters": [], "locations": []}] * 2}
+    def check():
+        if calls:
+            raise p.VideoStoryboardPlanningError("cancelled")
+    with pytest.raises(p.VideoStoryboardPlanningError, match="cancelled"):
+        c.request_visuals(request, {"intervals": [{}] * 11}, "", "test", lambda _: None, check)
+    assert len(calls) == 1
 
 
 def test_valid_rows_are_preserved_and_retries_are_bounded():

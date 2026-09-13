@@ -48,6 +48,9 @@ class VideoStoryboardPageTests(unittest.TestCase):
         )
 
     def test_timeline_edits_contiguous_scenes_and_zoom(self) -> None:
+        self.assertTrue(self.page.beta_guide_link.openExternalLinks())
+        self.assertIn("https://github.com/estebanstifli/LocalText2Voice/blob/main/docs/VIDEO_STORYBOARD.md", self.page.beta_guide_link.text())
+        self.assertIn("Guide, demos and development", self.page.beta_guide_link.text())
         self.assertEqual(self.page.track_labels.width(), 58)
         self.assertIn("Video", self.page.track_labels.toolTip())
         self.assertTrue(self.page.current_preview.hasHeightForWidth())
@@ -395,6 +398,8 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.assertEqual(
             labels,
             [
+                "Copy",
+                "Paste",
                 "Replace frame with an image",
                 "Regenerate frame",
                 "Edit frame",
@@ -406,7 +411,11 @@ class VideoStoryboardPageTests(unittest.TestCase):
             ],
         )
         self.assertEqual(self.page.selected_scene().scene_id, "002")
-        self.assertFalse(menu.actions()[5].isEnabled())
+        convert_action = next(
+            action for action in menu.actions()
+            if action.text() == "Generate scene video"
+        )
+        self.assertFalse(convert_action.isEnabled())
         menu.deleteLater()
 
     def test_native_context_menu_event_selects_the_clicked_frame(self) -> None:

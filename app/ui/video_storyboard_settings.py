@@ -124,7 +124,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         intro = QFrame()
         intro.setObjectName("card")
         intro_layout = QVBoxLayout(intro)
-        title = QLabel(self.tr_text("video_storyboard_settings", "Video Storyboard"))
+        title = QLabel(self.tr_text("video_storyboard_settings", "Video Storyboard (Beta)"))
         title.setObjectName("sectionTitle")
         description = QLabel(self.tr_text(
             "storyboard_engine_runtime_description",
@@ -248,7 +248,6 @@ class VideoStoryboardSettingsWidget(QWidget):
         layout.addWidget(self.engine_sections["video"])
         layout.addWidget(self.engine_sections["edit"])
 
-        layout.addWidget(self._build_advanced_image_settings())
         layout.addStretch(1)
         scroll.setWidget(content)
         root_layout.addWidget(scroll)
@@ -891,37 +890,6 @@ class VideoStoryboardSettingsWidget(QWidget):
         form.addRow(self.style_prompt_label, self.style_prompt_edit)
         return group
 
-    def _build_advanced_image_settings(self) -> QGroupBox:
-        group = QGroupBox(self.tr_text("video_storyboard_image_advanced", "Advanced image settings"))
-        form = QFormLayout(group)
-        hint = QLabel(self.tr_text("video_storyboard_image_advanced_help",
-            "Defaults are recommended for Z-Image Turbo. Change these only if your workflow requires it; not all providers support these parameters."))
-        hint.setObjectName("helperLabel")
-        hint.setWordWrap(True)
-        form.addRow(hint)
-        self.image_steps_spin = QSpinBox()
-        self.image_steps_spin.setRange(1, 50)
-        self.image_cfg_spin = self._decimal_spin(0.0, 20.0, 0.1)
-        self.image_denoise_spin = self._decimal_spin(0.0, 1.0, 0.05)
-        self.image_shift_spin = self._decimal_spin(0.0, 20.0, 0.1)
-        self.image_sampler_edit = QLineEdit()
-        self.image_scheduler_edit = QLineEdit()
-        form.addRow(self.tr_text("video_storyboard_batch", "Batch"), QLabel("1"))
-        form.addRow(self.tr_text("video_storyboard_steps", "Sampling steps"), self.image_steps_spin)
-        form.addRow("CFG", self.image_cfg_spin)
-        form.addRow(self.tr_text("video_storyboard_sampler", "Sampler"), self.image_sampler_edit)
-        form.addRow(self.tr_text("video_storyboard_scheduler", "Scheduler"), self.image_scheduler_edit)
-        form.addRow("Denoise", self.image_denoise_spin)
-        form.addRow("AuraFlow shift", self.image_shift_spin)
-        seed_note = QLabel(self.tr_text(
-            "video_storyboard_seed_note",
-            "The seed is locked and stored per audiobook so regenerations remain reproducible.",
-        ))
-        seed_note.setObjectName("helperLabel")
-        seed_note.setWordWrap(True)
-        form.addRow(seed_note)
-        return group
-
     def _build_video_settings(self) -> QGroupBox:
         group = QGroupBox(self.tr_text("video_storyboard_final_video_output", "Final video output"))
         form = QFormLayout(group)
@@ -1021,8 +989,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             self.ollama_context_spin, self.ollama_timeout_spin,
             self.litellm_timeout_spin, self.litellm_max_output_tokens_spin,
             self.scene_minimum_spin, self.scene_target_spin, self.scene_maximum_spin,
-            self.image_width_spin, self.image_height_spin, self.image_steps_spin,
-            self.image_cfg_spin, self.image_denoise_spin, self.image_shift_spin,
+            self.image_width_spin, self.image_height_spin,
             self.video_fps_spin, self.video_transition_seconds_spin,
             self.video_zoom_spin, self.video_crf_spin,
         ):
@@ -1047,8 +1014,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             self.litellm_image_custom_model_edit, self.litellm_image_api_key_edit,
             self.ollama_url_edit,
             self.litellm_url_edit, self.litellm_custom_model_edit,
-            self.litellm_api_key_edit, self.image_sampler_edit,
-            self.image_scheduler_edit,
+            self.litellm_api_key_edit,
         ):
             edit.textChanged.connect(self._emit_changed)
         for edit in (*self.comfyui_video_binding_edits.values(), *self.comfyui_binding_edits.values()):
@@ -1200,12 +1166,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             image = config["image"]
             self.image_width_spin.setValue(int(image.get("width", 1280)))
             self.image_height_spin.setValue(int(image.get("height", 720)))
-            self.image_steps_spin.setValue(int(image.get("steps", 8)))
-            self.image_cfg_spin.setValue(float(image.get("cfg", 1.0)))
-            self.image_sampler_edit.setText(str(image.get("sampler", "res_multistep")))
-            self.image_scheduler_edit.setText(str(image.get("scheduler", "simple")))
-            self.image_denoise_spin.setValue(float(image.get("denoise", 1.0)))
-            self.image_shift_spin.setValue(float(image.get("auraflow_shift", 3.0)))
+            self._image_settings = deepcopy(image)
             style_mode = normalize_storyboard_style_id(
                 image.get("style_mode") or DEFAULT_STORYBOARD_STYLE_ID
             )
@@ -1243,13 +1204,9 @@ class VideoStoryboardSettingsWidget(QWidget):
                 "maximum_seconds": self.scene_maximum_spin.value(),
             },
             "image": {
+                **deepcopy(self._image_settings),
                 "width": self.image_width_spin.value(), "height": self.image_height_spin.value(),
-                "batch_size": 1, "steps": self.image_steps_spin.value(),
-                "cfg": self.image_cfg_spin.value(),
-                "sampler": self.image_sampler_edit.text().strip() or "res_multistep",
-                "scheduler": self.image_scheduler_edit.text().strip() or "simple",
-                "denoise": self.image_denoise_spin.value(),
-                "auraflow_shift": self.image_shift_spin.value(),
+                "batch_size": 1,
                 "style_mode": self._style_mode_value(),
                 "style_prompt": (
                     self.style_prompt_edit.toPlainText().strip()

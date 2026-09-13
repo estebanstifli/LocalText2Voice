@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtGui import QIcon, QIconEngine, QPainter, QPixmap
+from PySide6.QtCore import QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 try:
@@ -47,6 +47,7 @@ _QTAWESOME_ICONS = {
     "open": "fa5s.folder-open",
     "copy": "fa5s.copy",
     "crop": "fa5s.crop-alt",
+    "cut": "fa5s.cut",
     "convert_video": "fa5s.video",
     "hide": "fa5s.eye-slash",
     "show": "fa5s.eye",
@@ -70,7 +71,6 @@ _QTAWESOME_ICONS = {
     "server": "fa5s.network-wired",
     "stop": "fa5s.stop",
     "storyboard": "fa5s.photo-video",
-    "split": "fa5s.cut",
     "video_track": "fa5s.film",
     "audiobook": "fa5s.book-open",
     "tail": "fa5s.forward",
@@ -188,6 +188,51 @@ class _ThemeAwareIconEngine(QIconEngine):
         mode: QIcon.Mode,
         state: QIcon.State,
     ) -> None:
+        if self.name in {"copy", "paste", "split"}:
+            color = self.color or _icon_color(
+                self.name, active=self.active, danger=self.danger
+            )
+            if mode == QIcon.Mode.Disabled:
+                color = ICON_MUTED_DARK if _dark_theme_active() else ICON_MUTED
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            side = min(rect.width(), rect.height())
+            painter.translate(rect.x() + (rect.width() - side) / 2,
+                              rect.y() + (rect.height() - side) / 2)
+            painter.scale(side / 24, side / 24)
+            painter.setPen(QPen(QColor(color), 1.8))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            if self.name == "copy":
+                path = QPainterPath()
+                path.moveTo(7, 17)
+                path.lineTo(4, 17)
+                path.lineTo(4, 4)
+                path.lineTo(15, 4)
+                path.lineTo(15, 7)
+                painter.drawPath(path)
+                painter.drawRoundedRect(QRectF(8, 8, 12, 13), 1, 1)
+            elif self.name == "paste":
+                path = QPainterPath()
+                path.moveTo(8, 5)
+                path.lineTo(5, 5)
+                path.lineTo(5, 21)
+                path.lineTo(19, 21)
+                path.lineTo(19, 5)
+                path.lineTo(16, 5)
+                painter.drawPath(path)
+                painter.drawRoundedRect(QRectF(8, 3, 8, 4), 1, 1)
+            else:
+                # Two separated clip edges, matching the timeline split symbol.
+                path = QPainterPath()
+                for outer, inner in ((3, 9), (21, 15)):
+                    path.moveTo(outer, 6)
+                    path.lineTo(inner, 6)
+                    path.lineTo(inner, 18)
+                    path.lineTo(outer, 18)
+                painter.setPen(QPen(QColor(color), 2.4))
+                painter.drawPath(path)
+            painter.restore()
+            return
         self._resolved_icon().paint(
             painter,
             rect,
@@ -202,6 +247,13 @@ class _ThemeAwareIconEngine(QIconEngine):
         mode: QIcon.Mode,
         state: QIcon.State,
     ) -> QPixmap:
+        if self.name in {"copy", "paste", "split"}:
+            pixmap = QPixmap(size)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            self.paint(painter, QRect(0, 0, size.width(), size.height()), mode, state)
+            painter.end()
+            return pixmap
         return self._resolved_icon().pixmap(size, mode, state)
 
     def _resolved_icon(self) -> QIcon:

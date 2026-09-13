@@ -86,7 +86,7 @@ def test_settings_widget_roundtrip_and_editor_cancel_save():
     app = QApplication.instance() or QApplication([])
     widget = StoryboardAnalysisSettingsWidget(lambda key, default, **values: default.format(**values))
     config = normalize({"process": "conversational", "block_size": "custom", "custom_characters": 7000,
-                        "prompts": {"conversation_characters": "Original custom text"}})
+                        "prompts": {"conversation_report": "Original custom text"}})
     widget.set_configuration(config)
     assert widget.configuration() == config and widget.characters.isEnabled()
 
@@ -98,5 +98,5 @@ def test_settings_widget_roundtrip_and_editor_cancel_save():
     assert widget.configuration() == config
     with patch.object(QDialog, "exec", lambda d: edit_and_return(d, QDialog.DialogCode.Accepted)):
         widget._edit()
-    assert widget.configuration()["prompts"]["conversation_characters"] == "Changed custom text"
+    assert widget.configuration()["prompts"]["conversation_report"] == "Changed custom text"
     widget.deleteLater()

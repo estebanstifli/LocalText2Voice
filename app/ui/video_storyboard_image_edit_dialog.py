@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QProcess, QRect, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QComboBox,
     QFileDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.icons import ui_icon
+from app.ui.storyboard_image_fit_dialog import fit_pasted_image
 from app.core.video_storyboard_camera import runpod_camera_prompt, camera_prompt, compose_image_edit_prompt
 from app.ui.video_storyboard_camera_controls import StoryboardCameraControls
 from app.ui.video_storyboard_reference_picker_dialog import VideoStoryboardReferencePickerDialog
@@ -228,6 +230,9 @@ class VideoStoryboardImageEditDialog(QDialog):
             "QPushButton { color: #1769ff; text-decoration: underline; border: 0; }"
         )
         header.addWidget(self.file_link_button)
+        self.open_folder_button = self._button("open_folder", "Open Folder", "folder")
+        self.open_folder_button.clicked.connect(self._open_current_folder)
+        header.addWidget(self.open_folder_button)
         layout.addLayout(header)
         self._refresh_file_link()
         description = QLabel(
@@ -245,6 +250,24 @@ class VideoStoryboardImageEditDialog(QDialog):
         image_panel = QWidget()
         image_layout = QVBoxLayout(image_panel)
         image_layout.setContentsMargins(0, 0, 10, 0)
+        clipboard_row = QHBoxLayout()
+        self.copy_button = self._button(
+            "video_storyboard_copy_frame", "Copy", "copy"
+        )
+        self.paste_button = self._button(
+            "video_storyboard_paste_frame", "Paste", "paste"
+        )
+        clipboard_row.addWidget(self.copy_button)
+        clipboard_row.addWidget(self.paste_button)
+        clipboard_row.addStretch(1)
+        image_layout.addLayout(clipboard_row)
+        clipboard_help = QLabel(self.tr_text(
+            "video_storyboard_clipboard_edit_help",
+            "Copy the image, edit it in ChatGPT, Gemini or another app, then copy the result and paste it here.",
+        ))
+        clipboard_help.setObjectName("helperLabel")
+        clipboard_help.setWordWrap(True)
+        image_layout.addWidget(clipboard_help)
         self.preview = _EditedImagePreview()
         self.preview.set_image(self._working)
         image_layout.addWidget(self.preview, 1)
@@ -451,6 +474,10 @@ class VideoStoryboardImageEditDialog(QDialog):
         )
         self.reset_button.clicked.connect(lambda: self._set_working(self._original))
         self.replace_button.clicked.connect(self._replace_image)
+        self.copy_button.clicked.connect(self._copy_image)
+        self.paste_button.clicked.connect(self._paste_image)
+        QApplication.clipboard().dataChanged.connect(self._refresh_clipboard_actions)
+        self._refresh_clipboard_actions()
         self.crop_button.toggled.connect(self._set_crop_mode)
         self.preview.cropSelected.connect(self._apply_crop)
         self.file_link_button.clicked.connect(self._open_current_file)
@@ -521,6 +548,7 @@ class VideoStoryboardImageEditDialog(QDialog):
         self.generate_ai_button.setEnabled(not self._generating_edit and has_instruction)
 
     def _set_edit_busy(self, busy: bool) -> None:
+        self._refresh_clipboard_actions(busy=busy)
         for widget in (
             self.ai_prompt_edit, self.prompt_examples, self.reference_button,
             self.replace_button, self.crop_button, self.flip_horizontal_button,
@@ -542,6 +570,7 @@ class VideoStoryboardImageEditDialog(QDialog):
         if image.isNull():
             return
         self._working = image.copy()
+        self._refresh_clipboard_actions()
         self.preview.set_image(self._working)
         self.camera_controls.set_image(self._working)
         self.accept_button.setVisible(not self._working.isNull() and self._working != self._initial_image)
@@ -645,6 +674,7 @@ class VideoStoryboardImageEditDialog(QDialog):
         self.file_link_button.setText(path.name if path is not None else "")
         self.file_link_button.setToolTip(str(path or ""))
         self.file_link_button.setVisible(bool(path and path.is_file()))
+        self.open_folder_button.setEnabled(bool(path and path.parent.is_dir()))
 
     def _open_current_file(self) -> None:
         if self.image_path and Path(self.image_path).is_file():
@@ -652,6 +682,34 @@ class VideoStoryboardImageEditDialog(QDialog):
                 QUrl.fromLocalFile(str(Path(self.image_path).resolve()))
             )
 
+    def _refresh_clipboard_actions(self, *, busy: bool | None = None) -> None:
+        self.copy_button.setEnabled(not self._working.isNull())
+        self.paste_button.setEnabled(
+            not (self._generating_edit if busy is None else busy)
+            and not QApplication.clipboard().image().isNull()
+        )
+
+    def _copy_image(self) -> None:
+        if not self._working.isNull():
+            QApplication.clipboard().setImage(self._working.copy())
+
+    def _paste_image(self) -> None:
+        if self._generating_edit:
+            return
+        image = QApplication.clipboard().image()
+        if not image.isNull():
+            image = fit_pasted_image(
+                self.tr_text, image, self.output_width, self.output_height, self,
+            )
+        if not image.isNull():
+            self.crop_button.setChecked(False)
+            self._set_working(image)
+
+    def _open_current_folder(self) -> None:
+        if self.image_path:
+            folder = Path(self.image_path).resolve().parent
+            if folder.is_dir():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
     def _replace_image(self) -> None:
         selected, _selected_filter = QFileDialog.getOpenFileName(
             self,

@@ -31,6 +31,18 @@ LocalText2Voice is a desktop app for creating long-form spoken audio with AI tex
 
 The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
 
+## Video Storyboard (Beta)
+
+Turn narration into an editable visual timeline, generate or import images,
+create video clips, and render an MP4 with the audiobook audio. This beta includes
+character and location profiles, scene review, and local or optional remote
+visual providers. AI continuity and timing still need human review.
+
+**[Feature guide and development notes](docs/VIDEO_STORYBOARD.md)** ·
+[Guía en español](docs/VIDEO_STORYBOARD.es.md) ·
+[Official YouTube channel](https://www.youtube.com/@LocalText2Voice)
+
+
 ## System Requirements (Guidance)
 
 LocalText2Voice can run on modest computers, but its actual requirements depend

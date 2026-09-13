@@ -26,7 +26,7 @@ def test_effective_prompt_applies_all_temporary_frame_overrides() -> None:
     prompt = compile_effective_scene_prompt(plan, scene)
 
     assert "STYLE: charcoal illustration" in prompt
-    assert "Mara: older woman with silver hair" in prompt
+    assert "Mara is an older woman with silver hair" in prompt
     assert "SHOT AND COMPOSITION: profile close-up, 85mm viewpoint" in prompt
 
 
@@ -184,11 +184,11 @@ def test_default_workflow_and_prompt_use_locked_style_and_models() -> None:
         "test/scene-001",
     )
 
-    assert "Mara: young woman" in prompt
+    assert "Mara is a young woman" in prompt
     assert "Conductor: older man" not in prompt
     assert prompt == (
         "SCENE: Mara stands beside a train in a green valley. "
-        "CHARACTERS: Mara: young woman with short dark hair and blue coat. "
+        "CHARACTERS: Mara is a young woman with short dark hair and blue coat. "
         "STYLE: painted cinematic realism; palette: green and gold; lighting: soft morning light. "
         "SHOT AND COMPOSITION: wide shot from a low angle. "
         "ERA AND MATERIAL CULTURE: late nineteenth century."
@@ -245,8 +245,8 @@ def test_prompt_uses_only_character_states_selected_by_semantic_analysis() -> No
 
     prompt = compile_scene_prompt(plan, scene)
 
-    assert "Mara: young woman" not in prompt
-    assert "Conductor: older man" in prompt
+    assert "Mara is a young woman" not in prompt
+    assert "Conductor is an older man" in prompt
 
 
 def test_prompt_injects_exact_temporal_character_location_and_era_locks() -> None:
@@ -302,7 +302,7 @@ def test_prompt_injects_exact_temporal_character_location_and_era_locks() -> Non
 
     prompt = compile_scene_prompt(plan, scene)
 
-    assert "Luis (dark complexion, square face and brown eyes, older man without glasses" in prompt
+    assert "Luis is a dark complexion, square face and brown eyes, older man without glasses" in prompt
     assert "adult man with glasses" not in prompt
     assert "Maria's house, small white masonry house with two front windows" in prompt
     assert "wool tunics, stone streets and oil lamps" in prompt

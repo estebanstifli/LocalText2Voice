@@ -186,6 +186,7 @@ from app.workers.video_storyboard_render_worker import (
 from app.workers.video_storyboard_video_worker import (
     VideoStoryboardVideoWorker,
 )
+from app.workers.video_storyboard_video_import_worker import VideoStoryboardVideoImportWorker
 from app.ui.audio_tail_cut_dialog import AudioTailCutDialog
 from app.utils.i18n import Translator
 from app.utils.paths import (
@@ -1011,7 +1012,7 @@ class MainWindow(QMainWindow):
         self.video_storyboard_image_edit_worker: VideoStoryboardImageEditWorker | None = None
         self.video_storyboard_image_edit_thread: QThread | None = None
         self.video_storyboard_image_edit_scene_id = ""
-        self.video_storyboard_video_worker: VideoStoryboardVideoWorker | None = None
+        self.video_storyboard_video_worker: VideoStoryboardVideoWorker | VideoStoryboardVideoImportWorker | None = None
         self.video_storyboard_video_thread: QThread | None = None
         self.video_storyboard_video_scene_id = ""
         self.video_storyboard_auto_video_queue: list[dict[str, object]] = []
@@ -1221,6 +1222,9 @@ class MainWindow(QMainWindow):
         self.video_storyboard_page.generateVideoRequested.connect(
             self._start_video_storyboard_video_generation
         )
+        self.video_storyboard_page.importVideoRequested.connect(
+            self._start_video_storyboard_video_import
+        )
         self.video_storyboard_page.generateAllVideosRequested.connect(
             self._start_video_storyboard_automatic_video_generation
         )
@@ -1400,6 +1404,8 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
+        self.sidebar = sidebar
+        self._sidebar_collapsed = False
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(260)
         layout = QVBoxLayout(sidebar)
@@ -1411,30 +1417,41 @@ class MainWindow(QMainWindow):
         brand_widget.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         brand_layout = QHBoxLayout(brand_widget)
         brand_layout.setContentsMargins(0, 8, 0, 12)
-        brand_layout.setSpacing(10)
-        logo_label = QLabel()
+        brand_layout.setSpacing(4)
+        logo_label = QPushButton()
+        self.sidebar_logo_button = logo_label
         logo_label.setObjectName("logoLabel")
         logo_label.setFixedSize(44, 44)
-        logo_label.setPixmap(
-            QPixmap(str(resource_root() / "assets" / "logotipo.png")).scaled(
-                44,
-                44,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_layout = QVBoxLayout()
+        logo_label.setIcon(QIcon(str(resource_root() / "assets" / "logotipo.png")))
+        logo_label.setIconSize(QSize(44, 44))
+        logo_label.setFlat(True)
+        logo_label.setStyleSheet("QPushButton { border: 0; padding: 0; background: transparent; }")
+        logo_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        logo_label.setToolTip(self.tr("sidebar_expand", "Expand sidebar"))
+        logo_label.setAccessibleName(logo_label.toolTip())
+        logo_label.clicked.connect(lambda: self._set_sidebar_collapsed(False))
+        self.sidebar_title_widget = QWidget()
+        self.sidebar_title_widget.setStyleSheet("background: transparent;")
+        title_layout = QVBoxLayout(self.sidebar_title_widget)
+        title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(0)
         title = QLabel(self.tr("app_title", "LocalText2Voice"))
         title.setObjectName("sidebarTitleLabel")
+        title.setStyleSheet("font-size: 10pt;")
         sidebar_subtitle = QLabel(self.tr("sidebar_subtitle", "AI Voice & Audio Production"))
         sidebar_subtitle.setObjectName("sidebarSubtitleLabel")
         sidebar_subtitle.setWordWrap(True)
         title_layout.addWidget(title)
         title_layout.addWidget(sidebar_subtitle)
         brand_layout.addWidget(logo_label)
-        brand_layout.addLayout(title_layout, 1)
+        brand_layout.addWidget(self.sidebar_title_widget, 1)
+        self.sidebar_collapse_button = QPushButton("‹")
+        self.sidebar_collapse_button.setFixedSize(18, 30)
+        self.sidebar_collapse_button.setStyleSheet("QPushButton { border: 0; padding: 0; font-size: 24px; background: transparent; }")
+        self.sidebar_collapse_button.setToolTip(self.tr("sidebar_collapse", "Collapse sidebar"))
+        self.sidebar_collapse_button.setAccessibleName(self.sidebar_collapse_button.toolTip())
+        self.sidebar_collapse_button.clicked.connect(lambda: self._set_sidebar_collapsed(True))
+        brand_layout.addWidget(self.sidebar_collapse_button)
         layout.addWidget(brand_widget)
 
         self.nav_buttons: dict[str, QPushButton] = {}
@@ -1458,7 +1475,7 @@ class MainWindow(QMainWindow):
             (
                 "video_storyboard",
                 "storyboard",
-                self.tr("nav_video_storyboard", "Video Storyboard"),
+                self.tr("nav_video_storyboard", "Video Storyboard (Beta)"),
                 self._show_video_storyboard_page,
             ),
         )
@@ -1471,6 +1488,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
 
         engine_card = QFrame()
+        self.sidebar_engine_card = engine_card
         engine_card.setObjectName("sidebarStatusCard")
         engine_layout = QVBoxLayout(engine_card)
         engine_layout.setContentsMargins(14, 14, 14, 14)
@@ -1518,7 +1536,10 @@ class MainWindow(QMainWindow):
         engine_layout.addWidget(self.sidebar_change_gpu_button)
         layout.addWidget(engine_card)
 
-        footer = QHBoxLayout()
+        self.sidebar_footer = QWidget()
+        self.sidebar_footer.setStyleSheet("background: transparent;")
+        footer = QHBoxLayout(self.sidebar_footer)
+        footer.setContentsMargins(0, 0, 0, 0)
         footer.addWidget(QLabel(f"v{__version__}"))
         footer.addStretch(1)
         author_credit = QLabel(
@@ -1529,8 +1550,28 @@ class MainWindow(QMainWindow):
         author_credit.setOpenExternalLinks(True)
         author_credit.setWordWrap(True)
         footer.addWidget(author_credit)
-        layout.addLayout(footer)
+        layout.addWidget(self.sidebar_footer)
+        self._set_sidebar_collapsed(
+            self.settings.get("sidebar_collapsed", False) is True, persist=False
+        )
         return sidebar
+
+    def _set_sidebar_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
+        self._sidebar_collapsed = collapsed
+        self.sidebar.setFixedWidth(72 if collapsed else 260)
+        self.sidebar_title_widget.setVisible(not collapsed)
+        self.sidebar_collapse_button.setVisible(not collapsed)
+        self.sidebar_engine_card.setVisible(not collapsed)
+        self.sidebar_footer.setVisible(not collapsed)
+        for button in self.nav_buttons.values():
+            button.setText("" if collapsed else str(button.property("navigationLabel")))
+            button.setStyleSheet("text-align: center; padding: 10px 0;" if collapsed else "")
+        if persist:
+            self.settings["sidebar_collapsed"] = collapsed
+            try:
+                self.settings_manager.save(self.settings)
+            except OSError as exc:
+                self.log_view.append_event(f"Could not save sidebar preference: {exc}")
 
     def _sidebar_button(self, icon_name: str, text: str) -> QPushButton:
         button = QPushButton(text)
@@ -1540,6 +1581,9 @@ class MainWindow(QMainWindow):
         button.setCheckable(True)
         button.setProperty("active", False)
         button.setProperty("icon_name", icon_name)
+        button.setProperty("navigationLabel", text)
+        button.setToolTip(text)
+        button.setAccessibleName(text)
         return button
 
     def _build_page_header(self) -> QWidget:
@@ -3658,7 +3702,7 @@ class MainWindow(QMainWindow):
         self.settings_tabs.addTab(
             self.video_storyboard_settings,
             ui_icon("storyboard"),
-            self.tr("video_storyboard_settings", "Video Storyboard"),
+            self.tr("video_storyboard_settings", "Video Storyboard (Beta)"),
         )
         layout.addWidget(self.settings_tabs, 1)
         self.continuity_analysis_settings = StoryboardAnalysisSettingsWidget(self.tr)
@@ -3979,7 +4023,7 @@ class MainWindow(QMainWindow):
         self._show_page(
             7,
             "video_storyboard",
-            self.tr("video_storyboard_title", "Video Storyboard"),
+            self.tr("video_storyboard_title", "Video Storyboard (Beta)"),
             self.tr(
                 "video_storyboard_page_subtitle",
                 "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.",
@@ -4090,6 +4134,9 @@ class MainWindow(QMainWindow):
         review_state = load_review(audiobook.project_dir) if audiobook else {}
         configuration["review_project_dir"] = str(audiobook.project_dir) if audiobook else ""
         saved_limits = review_state.get("limits", {})
+        # Upgrade the previous default while preserving other user choices.
+        if saved_limits.get("max_input_characters") == 12000 and default_input == 17000:
+            saved_limits = dict(saved_limits, max_input_characters=default_input)
         dialog = VideoStoryboardAnalysisDialog(
             self.tr,
             self,
@@ -4928,6 +4975,47 @@ class MainWindow(QMainWindow):
         )
         return root / "video" / ("candidates" if candidate else "clips")
 
+    def _start_video_storyboard_video_import(self, request: object) -> None:
+        if not isinstance(request, dict):
+            return
+        scene_id = str(request.get("scene_id") or "")
+        if not any(str(scene.get("scene_id") or "") == scene_id for scene in self.video_storyboard_page.scenes()):
+            return
+        if any(getattr(self, name, None) is not None for name in (
+            "video_storyboard_video_thread", "video_storyboard_frame_thread",
+            "video_storyboard_planner_thread", "video_storyboard_render_thread",
+            "video_storyboard_image_edit_thread",
+        )):
+            self.video_storyboard_page.set_video_generation_failed(scene_id, self.tr(
+                "video_storyboard_video_generation_busy", "Another image or video is currently being generated."))
+            return
+        output_dir = self._video_storyboard_video_output_dir(candidate=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.video_storyboard_page.set_video_generation_failed(scene_id, str(exc))
+            return
+        worker = VideoStoryboardVideoImportWorker(
+            scene_id, Path(str(request.get("source_path") or "")),
+            output_dir / f"video-import-{time.time_ns()}.mp4",
+            str(self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe")),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_video_storyboard_video_progress)
+        worker.finished.connect(self._on_video_storyboard_video_ready)
+        worker.failed.connect(self._on_video_storyboard_video_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_video_storyboard_video_worker)
+        self.video_storyboard_video_worker = worker
+        self.video_storyboard_video_thread = thread
+        self.video_storyboard_video_scene_id = scene_id
+        thread.start()
+
     def _start_video_storyboard_video_generation(self, request: object) -> None:
         if not isinstance(request, dict):
             return
@@ -5116,6 +5204,7 @@ class MainWindow(QMainWindow):
     def _on_video_storyboard_video_progress(self, stage: str) -> None:
         scene_id = self.video_storyboard_video_scene_id
         messages = {
+            "importing_video": self.tr("storyboard_importing_video", "Preparing a copy of the selected video…"),
             "unload_ollama": self.tr(
                 "video_storyboard_unloading_ollama",
                 "Freeing Ollama GPU memory...",
@@ -5158,6 +5247,7 @@ class MainWindow(QMainWindow):
             ),
         }
         progress = {
+            "importing_video": -1,
             "unload_ollama": 5,
             "unload_comfyui": 10,
             "check_comfyui_video": 18,
@@ -15886,6 +15976,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
         snapshot = json.loads(json.dumps(self.settings))
         snapshot.pop("projects_dir", None)
+        snapshot.pop("sidebar_collapsed", None)
         snapshot["current_project_id"] = self.current_audiobook_id
         return snapshot
 
@@ -16786,6 +16877,7 @@ class MainWindow(QMainWindow):
             project_settings = {}
         if isinstance(project_settings, dict):
             project_settings.pop("projects_dir", None)
+            project_settings.pop("sidebar_collapsed", None)
             self.settings.update(project_settings)
             self.settings["current_project_id"] = audiobook.id
             self.settings_manager.save(self.settings)

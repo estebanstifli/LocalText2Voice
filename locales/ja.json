@@ -1,4 +1,7 @@
 {
+  "video_storyboard_clipboard_edit_help": "画像をコピーしてChatGPT、Geminiなどのアプリで編集し、結果をコピーしてここに貼り付けてください。",
+  "video_storyboard_copy_frame": "コピー",
+  "video_storyboard_paste_frame": "貼り付け",
   "projects_folder": "プロジェクトフォルダー",
   "projects_folder_help": "新しいプロジェクトは、この場所のサブフォルダーに自動保存されます。別の場所を選ぶには「名前を付けて保存」を使用してください。",
   "language_name": "日本語",
@@ -1041,7 +1044,7 @@
   "book_title": "書籍タイトル", "subtitle": "サブタイトル", "author": "著者", "narrator": "ナレーター", "series": "シリーズ", "series_index": "シリーズ番号", "genre": "ジャンル", "publisher": "出版社", "publication_date": "出版日 / 年", "copyright": "著作権", "description": "説明",
   "chapter_mode": "チャプター", "chapters_from_markup": "LTV チャプターマーカー", "chapters_from_headings": "テキスト見出しを検出", "no_chapters": "チャプターなし",
   "bulk_cover_hint": "自動カバーです。クリックして画像を選択し、右クリックで自動カバーに戻します。", "m4b_chapters_rebuild": "チャプター設定が変更されました。TTS を再実行せず、キャッシュ済み WAV セグメントから M4B を再構築します。", "m4b_chapters_rebuild_unavailable": "チャプター設定は保存されましたが、キャッシュ済み WAV セグメントがありません。適用するには音声を再生成してください。",
-  "nav_video_storyboard": "Video Storyboard", "video_storyboard_title": "Video Storyboard", "video_storyboard_settings": "Video Storyboard", "video_storyboard_page_subtitle": "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.", "video_storyboard_settings_description": "Prepare the optional models and defaults used to turn an audiobook into a visual storyboard and MP4 video.", "video_storyboard_open_settings": "Open Video Storyboard settings",
+  "nav_video_storyboard": "Video Storyboard (Beta)", "video_storyboard_title": "Video Storyboard (Beta)", "video_storyboard_settings": "Video Storyboard (Beta)", "video_storyboard_page_subtitle": "Plan consistent visual scenes for an audiobook and prepare a final MP4 video.", "video_storyboard_settings_description": "Prepare the optional models and defaults used to turn an audiobook into a visual storyboard and MP4 video.", "video_storyboard_open_settings": "Open Video Storyboard settings",
   "video_storyboard_runtime_description": "Video Storyboard uses Ollama for text analysis and ComfyUI for image generation. LocalText2Voice detects and orchestrates them, but does not install or duplicate their models.",
   "video_storyboard_detect_models": "Detect service and models",
   "video_storyboard_not_checked": "Not checked",
@@ -1321,5 +1324,6 @@
   "video_storyboard_invalid_image": "Invalid image",
   "video_storyboard_invalid_image_detail": "The selected file could not be opened as an image.",
   "video_storyboard_insert_character": "Character",
-  "video_storyboard_insert_location": "Location"
+  "video_storyboard_insert_location": "Location",
+  "video_storyboard_beta_guide": "ガイド・デモ・開発状況"
 }

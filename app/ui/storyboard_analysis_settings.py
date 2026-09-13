@@ -90,7 +90,7 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         dialog.resize(980, 740)
         layout = QVBoxLayout(dialog)
         stages = QComboBox()
-        keys = ["conversation_characters", "conversation_scenes", "conversation_appearance"]
+        keys = ["conversation_report", "conversation_additions", "conversation_scenes"]
         catalog = prompt_catalog()
         for key in keys:
             stages.addItem(catalog[key][0], key)

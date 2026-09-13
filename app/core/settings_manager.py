@@ -53,6 +53,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
     "ui_language": "en",
     "ui_theme": "light",
+    "sidebar_collapsed": False,
     "gpu_device_index": "auto",
     "current_project_id": None,
     "storage": {

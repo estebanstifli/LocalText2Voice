@@ -118,6 +118,31 @@ def test_generated_video_filter_uses_independent_video_motion() -> None:
     assert "d=1:s=1280x720:fps=24" in filtered
 
 
+@pytest.mark.skipif(not Path("ffmpeg/ffmpeg.exe").is_file(), reason="Bundled FFmpeg required")
+@pytest.mark.parametrize("transitions", [("none", "fade"), ("fade", "none", "dissolve")])
+def test_renderer_mixes_hard_cuts_and_fades(tmp_path, transitions):
+    frame = tmp_path / "frame.ppm"
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "mixed.mp4"
+    _write_ppm(frame, 200, 80, 30)
+    duration = 0.5 * (len(transitions) + 1)
+    _write_silent_wav(audio, duration)
+    scenes = [
+        {"image_path": str(frame), "duration_seconds": 0.5, "transition": transition}
+        for transition in ("none", *transitions)
+    ]
+    render_storyboard_video(scenes, audio, output, {
+        "ffmpeg_path": "ffmpeg/ffmpeg.exe",
+        "image": {"width": 160, "height": 90},
+        "video": {"fps": 30, "transition_seconds": 0.1, "supersample": 1, "preset": "ultrafast"},
+    })
+    decoded = subprocess.run([
+        str(Path("ffmpeg/ffmpeg.exe").resolve()), "-v", "error", "-i", str(output),
+        "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+    ], capture_output=True, check=True)
+    assert len(decoded.stdout) / (160 * 90 * 3) == pytest.approx(duration * 30, abs=1)
+
+
 @pytest.mark.skipif(
     not Path("ffmpeg/ffmpeg.exe").is_file(),
     reason="Bundled FFmpeg is required for the real render test",

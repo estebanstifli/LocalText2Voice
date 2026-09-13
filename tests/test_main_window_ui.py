@@ -878,10 +878,17 @@ class MainWindowUITests(unittest.TestCase):
         )
         self.assertFalse(hasattr(window, "title_close_button"))
         self.assertFalse(hasattr(window, "resize_handles"))
-        logo = window.findChild(QLabel, "logoLabel")
+        logo = window.findChild(QPushButton, "logoLabel")
         self.assertIsNotNone(logo)
-        self.assertIsNotNone(logo.pixmap())
-        self.assertFalse(logo.pixmap().isNull())
+        self.assertFalse(logo.icon().isNull())
+        labels = {key: button.text() for key, button in window.nav_buttons.items()}
+        window.sidebar_collapse_button.click()
+        self.assertEqual(window.sidebar.width(), 72)
+        self.assertTrue(all(not button.text() and button.toolTip() for button in window.nav_buttons.values()))
+        self.assertTrue(window.sidebar_engine_card.isHidden())
+        logo.click()
+        self.assertEqual(window.sidebar.width(), 260)
+        self.assertEqual({key: button.text() for key, button in window.nav_buttons.items()}, labels)
         self.assertIsNotNone(window.findChild(QWidget, "sidebarBrand"))
         self.assertIn(
             "QFrame#sidebar QLabel",

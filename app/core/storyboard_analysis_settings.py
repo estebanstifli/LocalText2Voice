@@ -3,10 +3,14 @@ from copy import deepcopy
 
 VERSION = 1
 PROMPTS = {
+    "conversation_report": ("Characters, appearance, changes and story summary",
+        "Which characters appear in this story? State each character's species or kind from the story, including unnamed relatives. What do they look like and wear? Does any character change their clothing, appearance, or age? Also add a 4–5-line summary of what the story is about. Use sections: Characters (Name: species and appearance), Changes, Summary."),
+    "conversation_additions": ("New characters from the next report",
+        "Which characters appear in the second text but not in the first? List only those characters and their descriptions."),
     "conversation_characters": ("Characters and story summary",
         "Which characters appear in this story? Does any character change their clothing, appearance, or age? Also add a brief 2–3-line summary of what the story is about."),
     "conversation_scenes": ("Proposed scenes and source sentences",
-        "Which visual scenes would you illustrate in this story? For each scene, give the sentence from the original text that starts that scene."),
+        "What scenes would you illustrate in this excerpt? For each, briefly describe the image and quote its opening sentence."),
     "conversation_appearance": ("Character appearance",
         "What does each character look like and wear? Give one consistent visual design per character, not alternatives. For humans only, specify hair length and color, or baldness. Respect the story; if these details are missing, choose them once. Keep the initial appearance separate from any clothing or appearance changes explicitly described in the story."),
     "characters": ("Identify characters and groups",
@@ -73,7 +77,7 @@ def input_limit(config):
 
 
 def conversation_input_limit(config):
-    return {"small": 4000, "medium": 12000}.get(config["block_size"], config["custom_characters"])
+    return {"small": 4000, "medium": 17000}.get(config["block_size"], config["custom_characters"])
 
 
 def snapshot(settings):

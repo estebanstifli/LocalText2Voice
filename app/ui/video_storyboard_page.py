@@ -25,6 +25,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -55,6 +56,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.icons import ui_icon
+from app.ui.storyboard_text_hover import StoryboardTextHover
+from app.ui.storyboard_video_clipboard import VideoLastFrameCopy
+from app.ui.storyboard_video_edit_dialog import StoryboardVideoEditDialog
+from app.ui.storyboard_image_fit_dialog import fit_pasted_image
 from app.ui.video_storyboard_frame_batch_dialog import (
     VideoStoryboardFrameBatchDialog,
 )
@@ -89,6 +94,8 @@ from app.core.video_storyboard_styles import (
 
 
 Translate = Callable[..., str]
+
+STORYBOARD_GUIDE_URL = "https://github.com/estebanstifli/LocalText2Voice/blob/main/docs/VIDEO_STORYBOARD.md"
 
 
 class _ContinuityItemDelegate(QStyledItemDelegate):
@@ -161,6 +168,7 @@ class StoryboardScene:
     llm_narration: str = ""
     alignment_confidence: float = 0.0
     semantic_scene_id: str = ""
+    source_proposal_id: str = ""
     coverage_index: int = 1
     coverage_count: int = 1
     shot_strategy: str = "semantic_shot"
@@ -235,6 +243,7 @@ class StoryboardScene:
                 min(1.0, float(value.get("alignment_confidence") or 0.0)),
             ),
             semantic_scene_id=str(value.get("semantic_scene_id") or ""),
+            source_proposal_id=str(value.get("source_proposal_id") or ""),
             coverage_index=max(1, _safe_int(value.get("coverage_index"), 1)),
             coverage_count=max(1, _safe_int(value.get("coverage_count"), 1)),
             shot_strategy=str(value.get("shot_strategy") or "semantic_shot"),
@@ -281,6 +290,7 @@ class StoryboardScene:
             "llm_narration": self.llm_narration,
             "alignment_confidence": self.alignment_confidence,
             "semantic_scene_id": self.semantic_scene_id,
+            "source_proposal_id": self.source_proposal_id,
             "coverage_index": self.coverage_index,
             "coverage_count": self.coverage_count,
             "shot_strategy": self.shot_strategy,
@@ -427,6 +437,7 @@ class StoryboardTimelineCanvas(QWidget):
         self._dragging_playhead = False
         self._pixmap_cache: dict[str, QPixmap] = {}
         self.playhead_seconds: float | None = None
+        self._text_hover = StoryboardTextHover(self)
         self.selected_transition_index: int | None = None
         self.setFixedHeight(self.CANVAS_HEIGHT)
         self.setMouseTracking(True)
@@ -450,6 +461,7 @@ class StoryboardTimelineCanvas(QWidget):
         return max(scene_total, narration_total, self.source_duration_seconds)
 
     def set_scenes(self, scenes: list[StoryboardScene]) -> None:
+        self._text_hover.hide()
         self.scenes = scenes
         self._recalculate_starts()
         if self.selected_scene_id not in {item.scene_id for item in scenes}:
@@ -468,6 +480,7 @@ class StoryboardTimelineCanvas(QWidget):
         cues: list[StoryboardNarrationCue],
     ) -> None:
         self.narration_cues = cues
+        self._text_hover.hide()
         self._update_width()
         self.update()
 
@@ -871,6 +884,7 @@ class StoryboardTimelineCanvas(QWidget):
                 painter.drawRect(x, video_rect.bottom() - 5, 5, 3)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self._text_hover.hide()
         if event.button() != Qt.MouseButton.LeftButton:
             return
         index = self._scene_index_at(event.position().x(), event.position().y())
@@ -906,6 +920,8 @@ class StoryboardTimelineCanvas(QWidget):
             self._request_seek(event.position().x())
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if not event.buttons():
+            self._show_text_hover(event.position().toPoint())
         if (
             self._drag_boundary is not None
             and event.buttons() & Qt.MouseButton.LeftButton
@@ -944,6 +960,43 @@ class StoryboardTimelineCanvas(QWidget):
             if boundary is not None
             else Qt.CursorShape.ArrowCursor
         )
+
+    def _text_block_at(self, point: QPoint):
+        if not self.TEXT_TOP + 3 <= point.y() < self.TEXT_TOP + self.TEXT_HEIGHT - 3:
+            return None
+        blocks = (
+            ((cue.start_seconds, cue.duration_seconds, cue.text) for cue in reversed(self.narration_cues))
+            if self.narration_cues else
+            ((scene.start_seconds, scene.duration_seconds, scene.narration) for scene in reversed(self.scenes))
+        )
+        for start, seconds, text in blocks:
+            left = round(start * self.pixels_per_second)
+            width = max(12, round(max(0.3, seconds) * self.pixels_per_second))
+            rect = QRect(left + 1, self.TEXT_TOP + 3, max(1, width - 2), self.TEXT_HEIGHT - 6)
+            if rect.contains(point) and text.strip():
+                return text, start, seconds, rect
+        return None
+
+    def _show_text_hover(self, point: QPoint) -> None:
+        block = self._text_block_at(point)
+        if block is None:
+            self._text_hover.schedule_hide()
+            return
+        text, start, seconds, rect = block
+        rect = rect.intersected(self.visibleRegion().boundingRect())
+        anchor = QRect(self.mapToGlobal(rect.topLeft()), rect.size())
+        self._text_hover.show_text(
+            text, f"{self._format_time(start)} – {self._format_time(start + seconds)}",
+            anchor, self.mapToGlobal(point),
+        )
+
+    def leaveEvent(self, event) -> None:
+        self._text_hover.schedule_hide()
+        super().leaveEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self._text_hover.hide()
+        super().hideEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._drag_boundary is not None:
@@ -1086,6 +1139,7 @@ class _TimelineScrollArea(QScrollArea):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.setFixedHeight(canvas.CANVAS_HEIGHT + 18)
+        self.horizontalScrollBar().valueChanged.connect(lambda value: canvas._text_hover.hide())
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
@@ -1190,6 +1244,7 @@ class VideoStoryboardPage(QWidget):
     cancelFrameGenerationRequested = Signal()
     storyboardSettingsRequested = Signal()
     generateVideoRequested = Signal(object)
+    importVideoRequested = Signal(object)
     generateAllVideosRequested = Signal(object)
     videoCandidateAccepted = Signal(object)
     videoCandidateRejected = Signal(str, str)
@@ -1246,6 +1301,8 @@ class VideoStoryboardPage(QWidget):
         self._ffmpeg_path = "ffmpeg/ffmpeg.exe"
         self._regeneration_dialog: VideoStoryboardRegenerationDialog | None = None
         self._video_dialog: VideoStoryboardVideoDialog | None = None
+        self._video_edit_dialog: StoryboardVideoEditDialog | None = None
+        self._video_copy_task: VideoLastFrameCopy | None = None
         self._build_ui()
         self._setup_preview_player()
         self.set_configuration({})
@@ -1255,6 +1312,18 @@ class VideoStoryboardPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
+        self.beta_guide_link = QLabel()
+        self.beta_guide_link.setTextFormat(Qt.TextFormat.RichText)
+        self.beta_guide_link.setText(
+            f'<a href="{STORYBOARD_GUIDE_URL}">'
+            + self.tr_text("video_storyboard_beta_guide", "Guide, demos and development")
+            + " ↗</a>"
+        )
+        self.beta_guide_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.beta_guide_link.setOpenExternalLinks(True)
+        self.beta_guide_link.setWordWrap(True)
+        layout.addWidget(self.beta_guide_link)
 
         toolbar = QFrame()
         toolbar.setObjectName("card")
@@ -1335,6 +1404,24 @@ class VideoStoryboardPage(QWidget):
         )
         heading.setObjectName("sectionTitle")
         self.timeline_heading = heading
+        self.copy_last_frame_button = self._timeline_action_button(
+            "copy", self.tr_text("storyboard_copy_last_frame", "Copy Last Frame")
+        )
+        self.edit_video_button = self._timeline_action_button(
+            "edit", self.tr_text("storyboard_edit_video", "Edit Video")
+        )
+        self.delete_video_button = self._timeline_action_button(
+            "delete", self.tr_text("storyboard_delete_video", "Delete Video")
+        )
+        self.timeline_regenerate_video_button = self._timeline_action_button(
+            "regenerate", self.tr_text("video_storyboard_regenerate_video", "Regenerate Video")
+        )
+        self.copy_frame_button = self._timeline_action_button(
+            "copy", self.tr_text("video_storyboard_copy_frame", "Copy")
+        )
+        self.paste_frame_button = self._timeline_action_button(
+            "paste", self.tr_text("video_storyboard_paste_frame", "Paste")
+        )
         self.replace_frame_button = self._timeline_action_button(
             "replace_image",
             self.tr_text(
@@ -1408,12 +1495,18 @@ class VideoStoryboardPage(QWidget):
         heading_row.addStretch(1)
         heading_row.addWidget(self.undo_button)
         heading_row.addWidget(self.redo_button)
+        heading_row.addWidget(self.copy_frame_button)
+        heading_row.addWidget(self.paste_frame_button)
         heading_row.addWidget(self.replace_frame_button)
         heading_row.addWidget(self.timeline_regenerate_button)
         heading_row.addWidget(self.edit_frame_button)
         heading_row.addWidget(self.split_frame_button)
         heading_row.addWidget(self.delete_frame_button)
         heading_row.addWidget(self.convert_frame_video_button)
+        heading_row.addWidget(self.copy_last_frame_button)
+        heading_row.addWidget(self.edit_video_button)
+        heading_row.addWidget(self.delete_video_button)
+        heading_row.addWidget(self.timeline_regenerate_video_button)
         timeline_layout.addLayout(heading_row)
         tracks = QHBoxLayout()
         tracks.setSpacing(0)
@@ -1518,6 +1611,12 @@ class VideoStoryboardPage(QWidget):
         )
         self.timeline_canvas.seekRequested.connect(self._seek_preview)
         self.replace_frame_button.clicked.connect(self._request_frame_replacement)
+        self.copy_frame_button.clicked.connect(self._copy_selected_frame)
+        self.copy_last_frame_button.clicked.connect(self._copy_video_last_frame)
+        self.edit_video_button.clicked.connect(self._request_video_edit)
+        self.delete_video_button.clicked.connect(self._delete_selected_video)
+        self.timeline_regenerate_video_button.clicked.connect(self._request_video_generation)
+        self.paste_frame_button.clicked.connect(self._paste_selected_frame)
         self.timeline_regenerate_button.clicked.connect(
             self._request_regeneration
         )
@@ -2049,7 +2148,15 @@ class VideoStoryboardPage(QWidget):
             )
         )
         self.regenerate_video_button.setIcon(ui_icon("convert_video"))
-        video_layout.addWidget(self.regenerate_video_button)
+        video_actions_row = QHBoxLayout()
+        video_actions_row.addWidget(self.regenerate_video_button, 1)
+        self.inspector_edit_video_button = QPushButton(
+            self.tr_text("storyboard_edit_video", "Edit Video")
+        )
+        self.inspector_edit_video_button.setIcon(ui_icon("edit"))
+        self.inspector_edit_video_button.clicked.connect(self._request_video_edit)
+        video_actions_row.addWidget(self.inspector_edit_video_button, 1)
+        video_layout.addLayout(video_actions_row)
         video_layout.addStretch(1)
 
         self.frame_inspector_tab = QWidget()
@@ -2057,6 +2164,13 @@ class VideoStoryboardPage(QWidget):
         frame_layout.setContentsMargins(8, 10, 8, 8)
         self.current_preview = _PixmapPreview()
         frame_layout.addWidget(self.current_preview)
+        for preview in (self.current_preview, self.scene_video_widget):
+            preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            preview.customContextMenuRequested.connect(
+                lambda point, preview=preview: self._open_frame_context_menu(
+                    self._selected_scene_id, preview.mapToGlobal(point)
+                )
+            )
 
         motion_row = QHBoxLayout()
         motion_row.addWidget(QLabel(self.tr_text("video_storyboard_motion_in", "In")))
@@ -2945,6 +3059,7 @@ class VideoStoryboardPage(QWidget):
 
     def _show_selected_scene(self, scene: StoryboardScene | None) -> None:
         enabled = scene is not None
+        self._sync_video_action_visibility(scene)
         scene_changed = bool(
             scene is not None and scene.scene_id != self._inspector_scene_id
         )
@@ -2966,6 +3081,8 @@ class VideoStoryboardPage(QWidget):
         self.regenerate_video_button.setEnabled(enabled)
         self.timeline_regenerate_button.setEnabled(enabled)
         self.replace_frame_button.setEnabled(enabled)
+        self.copy_frame_button.setEnabled(enabled)
+        self.paste_frame_button.setEnabled(enabled)
         self.convert_frame_video_button.setEnabled(
             bool(scene is not None and scene.image_path and Path(scene.image_path).is_file())
         )
@@ -3354,6 +3471,114 @@ class VideoStoryboardPage(QWidget):
         self.scenesChanged.emit(self.scenes())
         self._remember_scene_snapshot()
 
+    @staticmethod
+    def _scene_has_video(scene: StoryboardScene | None) -> bool:
+        return bool(scene and scene.video_path and Path(scene.video_path).is_file())
+
+    def _sync_video_action_visibility(self, scene: StoryboardScene | None) -> None:
+        has_video = self._scene_has_video(scene)
+        for button in (
+            self.copy_last_frame_button, self.edit_video_button,
+            self.delete_video_button, self.timeline_regenerate_video_button,
+        ):
+            button.setVisible(has_video)
+            button.setEnabled(has_video)
+        self.copy_last_frame_button.setEnabled(has_video and self._video_copy_task is None)
+        self.inspector_edit_video_button.setVisible(has_video)
+        self.inspector_edit_video_button.setEnabled(has_video)
+        for button in (
+            self.copy_frame_button, self.paste_frame_button, self.replace_frame_button,
+            self.timeline_regenerate_button, self.edit_frame_button, self.split_frame_button,
+            self.delete_frame_button, self.convert_frame_video_button,
+        ):
+            button.setVisible(not has_video)
+
+    def _copy_video_last_frame(self) -> None:
+        scene = self.selected_scene()
+        if not self._scene_has_video(scene) or self._video_copy_task is not None:
+            return
+        task = VideoLastFrameCopy(self)
+        self._video_copy_task = task
+        self._sync_video_action_visibility(scene)
+        self.append_activity(self.tr_text("storyboard_copy_last_frame_loading", "Copying the last video frame…"))
+
+        def finished(ok: bool, error: str) -> None:
+            self._video_copy_task = None
+            self._sync_video_action_visibility(self.selected_scene())
+            if ok:
+                self.append_activity(self.tr_text("storyboard_copy_last_frame_done", "Last video frame copied to clipboard."))
+            else:
+                message = self.tr_text("storyboard_copy_last_frame_error", "Could not copy the last video frame: {error}", error=error)
+                self.append_activity(message)
+                QMessageBox.warning(self, self.tr_text("storyboard_copy_last_frame", "Copy Last Frame"), message)
+            task.deleteLater()
+
+        task.finished.connect(finished)
+        task.start(scene.video_path, self._ffmpeg_path)
+
+    def _delete_selected_video(self) -> None:
+        scene = self.selected_scene()
+        if scene is None or not scene.video_path:
+            return
+        self._record_scene_edit()
+        self._clear_scene_video_source()
+        scene.video_path = ""
+        scene.video_duration_seconds = 0.0
+        scene.video_motion_in = scene.video_motion_out = "none"
+        scene.video_frame_role = "start"
+        self.timeline_canvas.update()
+        self._show_selected_scene(scene)
+        self.scenesChanged.emit(self.scenes())
+        self._remember_scene_snapshot()
+        self.append_activity(self.tr_text("storyboard_video_removed", "Video removed from scene {scene}.", scene=scene.scene_id))
+
+    def _request_video_edit(self) -> None:
+        scene = self.selected_scene()
+        if not self._scene_has_video(scene):
+            return
+        if self._video_edit_dialog is not None:
+            self._video_edit_dialog.show()
+            self._video_edit_dialog.raise_()
+            self._video_edit_dialog.activateWindow()
+            return
+        self.preview_player.pause()
+        self.scene_video_player.pause()
+        dialog = StoryboardVideoEditDialog(
+            self.tr_text, scene.scene_id, scene.video_path, self._ffmpeg_path, self,
+        )
+        self._video_edit_dialog = dialog
+        dialog.videoAccepted.connect(self._apply_edited_video)
+        dialog.destroyed.connect(lambda: setattr(self, "_video_edit_dialog", None))
+        dialog.open()
+
+    def _apply_edited_video(self, scene_id: str, path: str, duration: float) -> None:
+        scene = next((item for item in self._scenes if item.scene_id == scene_id), None)
+        if scene is None or not Path(path).is_file():
+            return
+        self.set_scene_video(scene_id, path, scene.video_prompt, scene.video_frame_role, duration)
+
+    def _build_video_context_menu(self, scene: StoryboardScene) -> QMenu:
+        menu = QMenu(self)
+        copy = menu.addAction(ui_icon("copy"), self.tr_text("storyboard_copy_last_frame", "Copy Last Frame"))
+        copy.setEnabled(self._video_copy_task is None)
+        copy.triggered.connect(self._copy_video_last_frame)
+        menu.addSeparator()
+        edit = menu.addAction(ui_icon("edit"), self.tr_text("storyboard_edit_video", "Edit Video"))
+        edit.triggered.connect(self._request_video_edit)
+        delete = menu.addAction(ui_icon("delete"), self.tr_text("storyboard_delete_video", "Delete Video"))
+        delete.triggered.connect(self._delete_selected_video)
+        regenerate = menu.addAction(ui_icon("regenerate"), self.tr_text("video_storyboard_regenerate_video", "Regenerate Video"))
+        regenerate.setEnabled(bool(scene.image_path and Path(scene.image_path).is_file()))
+        regenerate.triggered.connect(self._request_video_generation)
+        menu.addSeparator()
+        undo = menu.addAction(ui_icon("undo"), self.tr_text("video_storyboard_undo", "Undo"))
+        undo.setEnabled(bool(self._undo_stack))
+        undo.triggered.connect(self._undo_scene_edit)
+        redo = menu.addAction(ui_icon("redo"), self.tr_text("video_storyboard_redo", "Redo"))
+        redo.setEnabled(bool(self._redo_stack))
+        redo.triggered.connect(self._redo_scene_edit)
+        return menu
+
     def _build_frame_context_menu(self, scene_id: str) -> QMenu | None:
         scene = next(
             (item for item in self._scenes if item.scene_id == scene_id),
@@ -3362,7 +3587,24 @@ class VideoStoryboardPage(QWidget):
         if scene is None:
             return None
         self._select_scene(scene_id)
+        if self._scene_has_video(scene):
+            return self._build_video_context_menu(scene)
         menu = QMenu(self)
+        copy_action = menu.addAction(
+            ui_icon("copy"),
+            self.tr_text("video_storyboard_copy_frame", "Copy")
+        )
+        copy_action.setEnabled(
+            bool(scene.image_path and Path(scene.image_path).is_file())
+        )
+        paste_action = menu.addAction(
+            ui_icon("paste"),
+            self.tr_text("video_storyboard_paste_frame", "Paste")
+        )
+        paste_action.setEnabled(not QApplication.clipboard().image().isNull())
+        copy_action.triggered.connect(self._copy_selected_frame)
+        paste_action.triggered.connect(self._paste_selected_frame)
+        menu.addSeparator()
         replace_action = menu.addAction(
             ui_icon("replace_image"),
             self.tr_text("video_storyboard_replace_frame", "Replace frame with an image"),
@@ -3446,6 +3688,28 @@ class VideoStoryboardPage(QWidget):
         )
         self._regeneration_dialog = dialog
         dialog.open()
+
+    def _copy_selected_frame(self) -> None:
+        scene = self.selected_scene()
+        if scene is None or not scene.image_path:
+            return
+        image = QImage(scene.image_path)
+        if not image.isNull():
+            QApplication.clipboard().setImage(image)
+
+    def _paste_selected_frame(self) -> None:
+        scene = self.selected_scene()
+        if scene is None:
+            return
+        image = QApplication.clipboard().image()
+        if not image.isNull():
+            image = fit_pasted_image(
+                self.tr_text, image,
+                int(self._configuration.get("image", {}).get("width") or 1280),
+                int(self._configuration.get("image", {}).get("height") or 720), self,
+            )
+        if not image.isNull():
+            self.editFrameRequested.emit(scene.scene_id, image.copy())
 
     def _request_frame_replacement(self) -> None:
         scene = self.selected_scene()
@@ -3552,6 +3816,11 @@ class VideoStoryboardPage(QWidget):
             self,
         )
         dialog.generateRequested.connect(self._request_dialog_video_generation)
+        dialog.importRequested.connect(
+            lambda path, scene_id=scene.scene_id: self.importVideoRequested.emit(
+                {"scene_id": scene_id, "source_path": path}
+            )
+        )
         dialog.candidateAccepted.connect(self._accept_dialog_video_candidate)
         dialog.candidateRejected.connect(self._reject_dialog_video_candidate)
         dialog.destroyed.connect(
@@ -6007,11 +6276,22 @@ class VideoStoryboardPage(QWidget):
 
     def _zoom_in(self) -> None:
         self.timeline_canvas.zoom_in()
+        self._center_timeline_on_playhead()
         self._sync_zoom_controls()
 
     def _zoom_out(self) -> None:
         self.timeline_canvas.zoom_out()
+        self._center_timeline_on_playhead()
         self._sync_zoom_controls()
+
+    def _center_timeline_on_playhead(self) -> None:
+        self.timeline_canvas._text_hover.hide()
+        seconds = self.timeline_canvas.playhead_seconds
+        if seconds is None:
+            seconds = self.preview_player.position() / 1000.0
+        scrollbar = self.timeline_scroll.horizontalScrollBar()
+        target = round(seconds * self.timeline_canvas.pixels_per_second - self.timeline_scroll.viewport().width() / 2)
+        scrollbar.setValue(target)
 
     def _sync_zoom_controls(self) -> None:
         index = self.timeline_canvas.zoom_index

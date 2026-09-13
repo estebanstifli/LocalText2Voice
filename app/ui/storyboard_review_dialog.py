@@ -24,8 +24,10 @@ class StoryboardReviewDialog(QDialog):
         tabs = QTabWidget()
         self.editors = {}
         names = {"characters": "Personajes / resumen narrativo", "scenes": "Escenas y frases de inicio",
-                 "appearance": "Apariencia y vestuario", "story_summary": "Resumen global", "locations": "Lugares", "era": "Época manual (opcional)", "directions": "Enfoque visual y contexto"}
+                 "story_summary": "Resumen global", "locations": "Lugares", "era": "Época manual (opcional)"}
         for key, value in draft.get("edited", {}).items():
+            if key in {"appearance", "directions"}:
+                continue
             editor = QPlainTextEdit()
             editor.setPlainText(str(value))
             editor.textChanged.connect(lambda: self._autosave.start())
@@ -41,7 +43,7 @@ class StoryboardReviewDialog(QDialog):
 
     def _save_edits(self):
         if not self._submitted:
-            self.draft["edited"] = {k: e.toPlainText() for k, e in self.editors.items()}
+            self.draft.setdefault("edited", {}).update({k: e.toPlainText() for k, e in self.editors.items()})
             self.draft["status"] = "pending"
             self.draftChanged.emit(deepcopy(self.draft))
 
@@ -50,7 +52,7 @@ class StoryboardReviewDialog(QDialog):
             return
         self._submitted = True
         self._autosave.stop()
-        self.draft["edited"] = {k: e.toPlainText() for k, e in self.editors.items()}
+        self.draft.setdefault("edited", {}).update({k: e.toPlainText() for k, e in self.editors.items()})
         self.draft["status"] = "approved" if action == "continue" else "cancelled" if action == "cancel" else "pending"
         self.submitted.emit({"action": action, "draft": deepcopy(self.draft)})
         self.accept()
