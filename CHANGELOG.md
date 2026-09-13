@@ -7,23 +7,49 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-13
+
 ### Added
 
-- Import DRM-free EPUB 2/3 books in reading order, with navigation-based chapter
-  headings, original book metadata and a project-owned cover for M4B export.
-- Optional output beside an imported document and source-based audio names.
-  Both are off by default; the existing `_voice` / `_mix` suffixes and collision
-  numbering are preserved, and project names are not changed.
-- EPUB support adapts the contribution proposed by
-  [Tomas-Falcon in PR #23](https://github.com/estebanstifli/LocalText2Voice/pull/23)
-  to the current project storage and beta. It uses Python's built-in ZIP/XML/HTML
-  readers rather than adding EbookLib or BeautifulSoup.
+- Added DRM-free EPUB 2/3 import in reading order, with navigation-based
+  chapter headings, original book metadata, a project-owned cover and M4B
+  export options. The implementation uses Python's standard ZIP/XML/HTML
+  readers and adapts the contribution proposed by
+  [Tomas-Falcon in PR #23](https://github.com/estebanstifli/LocalText2Voice/pull/23).
+- Added Video Storyboard as a beta workflow for turning audiobook narration
+  into editable scenes, images, video clips and a final MP4.
+- Added conversational narration analysis, character and location discovery,
+  appearance states, continuity review, scene alignment and long-scene
+  subdivision.
+- Added 50 bundled visual style samples, custom styles, image generation and
+  import, image editing, reference images, camera controls and ComfyUI/Runpod
+  video workflows.
+- Added storyboard project persistence, atomic media references, temporary
+  storage controls, installation identity and optional S3/R2-compatible storage.
+- Added LiteLLM-compatible text analysis, Pillow image handling and new
+  Runpod image/video model configuration.
+
+### Changed
+
+- Video Storyboard is explicitly marked beta. AI continuity, scene timing and
+  generated media still require human review.
+- Review segment regeneration now uses the persistent Engine Host to reuse the
+  loaded TTS engine instead of creating a second local engine process.
+- Voice Library selection now applies the stored Qwen voice audio, transcript
+  and language consistently.
+- Project and storyboard paths are stored atomically and normalized so projects
+  can be moved between folders more reliably.
 
 ### Fixed
 
-- Preserve inline word spacing and text in lists, tables and generic blocks when
-  importing EPUB, and prevent imported metadata leaking into a subsequent book.
-
+- Fixed [#20](https://github.com/estebanstifli/LocalText2Voice/issues/20), where
+  selecting a Qwen voice from Voice Library did not always change the active
+  audio, transcript and language.
+- Fixed [#21](https://github.com/estebanstifli/LocalText2Voice/issues/21), where
+  Review segment regeneration could remain at 0% because it launched a second
+  local TTS path instead of using the persistent Engine Host.
+- Preserved inline word spacing and text in lists, tables and generic blocks
+  during EPUB import, and prevented imported metadata leaking into later books.
 
 ## [1.5.1] - 2026-08-21
 

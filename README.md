@@ -33,7 +33,7 @@ The goal is simple: paste or import a long text, choose a voice engine, generate
 
 ## Video Storyboard (Beta)
 
-**In development for the upcoming 2.0.1 release.**
+**Beta feature included in LocalText2Voice 2.0.1.**
 
 Turn narration into an editable visual timeline, generate or import images,
 create video clips, and render an MP4 with the audiobook audio. This beta includes
@@ -85,6 +85,22 @@ engine. Disk usage also grows with each optional engine because models and
 isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
+
+## What's New In 2.0.1
+
+- Import DRM-free EPUB 2/3 books in reading order, preserve book metadata and
+  cover art, and export structured M4B audiobooks.
+- Add the Video Storyboard beta: analyze narration, discover characters and
+  locations, generate or import images, create video clips, edit the timeline,
+  and render an MP4 with the audiobook audio.
+- Use 50 built-in visual styles, customizable prompts, scene review, continuity
+  profiles, image editing, ComfyUI workflows and optional Runpod providers.
+- Keep long-form projects portable with atomic storyboard persistence, project
+  media references, temporary storage controls and resumable workflows.
+- Reuse the persistent Engine Host when regenerating Review segments and fix
+  Qwen voice selection from the Voice Library.
+- Add LiteLLM-compatible analysis, optional Pillow image handling and S3/R2
+  compatible temporary reference storage.
 
 ## What's New In 1.5.1
 

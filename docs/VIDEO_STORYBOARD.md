@@ -12,8 +12,9 @@ video presentations, with a review step before export. AI can still confuse
 characters, invent details or place a scene at the wrong moment. The editor lets
 you correct the plan and individual results rather than regenerate everything.
 
-This guide describes the current development build. Features shown here may be
-newer than the latest stable release. Updated: 13 September 2026.
+This guide describes the Video Storyboard beta included in LocalText2Voice
+2.0.1. Features marked beta may still change as the workflow matures.
+Updated: 13 September 2026.
 
 ## What you can do
 

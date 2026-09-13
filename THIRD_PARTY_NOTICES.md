@@ -217,6 +217,17 @@ relevant Qt and PySide6 notices.
 
 ## Other Python Packages
 
+### LiteLLM, boto3 and Pillow
+
+- LiteLLM: https://github.com/BerriAI/litellm
+- boto3: https://github.com/boto/boto3
+- Pillow: https://github.com/python-pillow/Pillow
+
+These are optional application dependencies used for OpenAI-compatible text
+analysis, private reference storage integrations and image processing. Their
+installed package metadata, bundled license files and upstream terms are
+authoritative for the exact versions distributed.
+
 The main application includes `num2words` 0.5.14 for multilingual number and
 ordinal expansion. The package identifies its license as LGPL and its source
 headers permit redistribution under LGPL 2.1 or later. Upstream:

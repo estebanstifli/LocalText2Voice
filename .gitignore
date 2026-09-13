@@ -22,6 +22,8 @@ data/
 logs/
 output/**
 !output/.gitkeep
+projects/
+tmp/
 engines/piper/*
 !engines/piper/PIPER_RUNTIME_INFO.txt
 engines/kokoro/*.exe

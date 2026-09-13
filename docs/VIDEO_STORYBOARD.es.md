@@ -12,8 +12,9 @@ presentaciones en vídeo, revisando el resultado antes de exportarlo. La IA toda
 puede confundir personajes, inventar detalles o situar una escena en el momento
 equivocado. El editor permite corregir el plan y los resultados individuales.
 
-Esta guía describe la versión actual en desarrollo. Algunas funciones pueden ser
-posteriores a la última versión estable. Actualizada: 13 de septiembre de 2026.
+Esta guía describe la beta de Video Storyboard incluida en LocalText2Voice
+2.0.1. Las funciones marcadas como beta todavía pueden cambiar mientras el
+flujo madura. Actualizada: 13 de septiembre de 2026.
 
 ## Qué permite hacer
 
