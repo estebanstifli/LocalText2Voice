@@ -88,18 +88,14 @@ def test_new_public_flow_shared_history_and_offset(monkeypatch):
     assert [s["source_proposal_id"] for s in plan["scenes"]] == ["1-1", "1-1", "1-2"]
     assert plan["scenes"][0]["characters"] == ["character_ana_state_1"]
     character_instruction = next(system for schema, system, _ in requests if schema == c.CHARACTER_SCHEMA)
-    assert "Complete insufficient descriptions in about 8-12 words" in character_instruction
-    assert "Preserve known traits and each INITIAL visual design" in character_instruction
-    assert "Make characters visually distinct at a glance" in character_instruction
-    assert "when unspecified, choose a different bold clothing color per character if appropriate to the story" in character_instruction
-    assert "Do not dress natural wildlife" in character_instruction
-    assert "For humans, include hair length and color or baldness" in character_instruction
-    assert "Start each description with the character's species or kind" in character_instruction
-    assert "never assume human from clothing or a family role" in character_instruction
-    assert "for animals, describe their species-appropriate features instead" in character_instruction
+    assert character_instruction == c.PROFILE_INSTRUCTIONS["characters"]
+    assert '"character" is their name, never their species' in character_instruction
+    assert "hair length and color" in character_instruction
+    assert "clothing with a distinct color" in character_instruction
+    assert "Preserve stated traits" in character_instruction
     assert "4–5-line summary" in chats[0][0]["content"]
     assert "including unnamed relatives" in chats[0][0]["content"]
-    assert "do not invent actions or changes" in character_instruction
+    assert "without actions" in character_instruction
     assert all(s["image_path"] == "" for s in plan["scenes"])
     assert partials[-1]["scenes"] == plan["scenes"]
 

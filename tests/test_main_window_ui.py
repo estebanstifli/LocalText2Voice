@@ -1005,9 +1005,13 @@ class MainWindowUITests(unittest.TestCase):
         window.video_storyboard_settings.continuity_settings_button.click()
         self.assertTrue(window.continuity_settings_dialog.isVisible())
         window.continuity_settings_dialog.close()
-        window.continuity_analysis_settings.process.setCurrentIndex(1)
-        self.assertEqual(window.settings["video_storyboard"]["continuity_analysis"]["process"], "simple")
-        window.continuity_analysis_settings.process.setCurrentIndex(0)
+        self.assertEqual(window.continuity_analysis_settings.process.currentData(), "conversational")
+        self.assertFalse(window.continuity_analysis_settings.process.isEnabled())
+        window.continuity_analysis_settings.block_size.setCurrentIndex(
+            window.continuity_analysis_settings.block_size.findData("custom")
+        )
+        self.assertEqual(window.settings["video_storyboard"]["continuity_analysis"]["process"], "conversational")
+        self.assertEqual(window.settings["video_storyboard"]["continuity_analysis"]["block_size"], "custom")
         self.assertIs(
             window.settings_tabs.widget(6),
             window.video_storyboard_settings,
