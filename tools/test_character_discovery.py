@@ -12,7 +12,7 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.core.storyboard_analysis_settings import character_discovery_messages
+from app.core.storyboard_analysis_settings import PROMPTS
 
 
 def narration_from_log(path):
@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     text = args.text_file.read_text(encoding="utf-8-sig") if args.text_file else narration_from_log(args.input_log)
-    system, user = character_discovery_messages(text)
+    system, user = PROMPTS["conversation_report"][1], text
     if args.prompt_file:
         system = args.prompt_file.read_text(encoding="utf-8-sig")
     body = {"model": args.model, "stream": True, "think": True,

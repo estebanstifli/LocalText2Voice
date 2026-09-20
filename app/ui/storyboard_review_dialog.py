@@ -24,12 +24,15 @@ class StoryboardReviewDialog(QDialog):
         tabs = QTabWidget()
         self.editors = {}
         names = {"characters": "Personajes / resumen narrativo", "scenes": "Escenas y frases de inicio",
-                 "story_summary": "Resumen global", "locations": "Lugares", "era": "Época manual (opcional)"}
+                 "objects": "Objetos importantes", "story_summary": "Resumen global", "locations": "Lugares", "era": "Época manual (opcional)",
+                 "eras": "Épocas y contexto visual"}
         for key, value in draft.get("edited", {}).items():
             if key in {"appearance", "directions"}:
                 continue
             editor = QPlainTextEdit()
             editor.setPlainText(str(value))
+            if key == "eras":
+                editor.setToolTip(tr("storyboard_review_eras_help", "Correct or merge period descriptions. Keep the literal opening sentences: they determine where each period applies."))
             editor.textChanged.connect(lambda: self._autosave.start())
             self.editors[key] = editor
             tabs.addTab(editor, tr("storyboard_review_" + key, names.get(key, key)))

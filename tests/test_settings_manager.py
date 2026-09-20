@@ -268,11 +268,11 @@ def test_text_normalization_accepts_builtin_and_custom_language_codes(tmp_path):
     assert manager.settings["text_normalization"]["language"] == "auto"
 
 
-def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
+def test_video_storyboard_is_available_and_legacy_settings_are_sanitized(tmp_path):
     manager = SettingsManager(tmp_path / "config.json")
     defaults = manager.settings["video_storyboard"]
 
-    assert defaults["enabled"] is False
+    assert defaults["enabled"] is True
     assert defaults["image_provider"] == "comfyui"
     assert defaults["llm_provider"] == "ollama"
     assert defaults["image"]["width"] == 1280
@@ -286,7 +286,7 @@ def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
     assert defaults["comfyui_video"]["auth_token"] == ""
 
     manager.settings["video_storyboard"] = {
-        "enabled": True,
+        "enabled": False,
         "image_provider": "local_z_image",
         "llm_provider": "local_qwen3",
         "local_z_image": {"model_id": "obsolete"},
@@ -326,7 +326,7 @@ def test_video_storyboard_defaults_are_optional_and_sanitized(tmp_path):
         "mode": "semantic_bounded",
         "minimum_seconds": 4,
         "target_seconds": 4,
-        "maximum_seconds": 20,
+        "maximum_seconds": 15,
     }
     assert storyboard["image"]["width"] == 1280
     assert storyboard["image"]["height"] == 720

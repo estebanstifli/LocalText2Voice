@@ -195,13 +195,12 @@
   },
   "video_storyboard": {
     "continuity_analysis": {
-      "process": "compact",
+      "process": "conversational",
       "block_size": "medium",
       "custom_characters": 4000,
-      "era_mode": "detect",
       "prompts": {}
     },
-    "enabled": false,
+    "enabled": true,
     "installation": {
       "comfy_root": "",
       "comfy_python": ""
@@ -213,7 +212,7 @@
       "mode": "semantic_bounded",
       "minimum_seconds": 4,
       "target_seconds": 8,
-      "maximum_seconds": 20
+      "maximum_seconds": 15
     },
     "image": {
       "width": 1280,
@@ -333,6 +332,14 @@
     "active_profile": "local",
     "profiles": {},
     "video_provider": "comfyui",
+    "litellm_video": {
+      "model": "gemini/veo-3.1-fast-generate-preview",
+      "api_key": "",
+      "base_url": "",
+      "resolution": "720p",
+      "aspect_ratio": "16:9",
+      "timeout_seconds": 1800
+    },
     "runpod": {
       "api_key_encrypted": "",
       "image_endpoint": "z-image-turbo",

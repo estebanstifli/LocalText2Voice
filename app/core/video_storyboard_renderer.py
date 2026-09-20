@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.storyboard_clip_audio import build_clip_audio_track, probe_clip
 from app.utils.ffmpeg_utils import FFmpegCancelled, FFmpegError, find_ffmpeg
 
 
@@ -123,6 +124,10 @@ def render_storyboard_video(
                 clip_paths.append(clip)
                 generated_video = scene.get("generated_video")
                 if isinstance(generated_video, Path):
+                    if not scene.get("video_duration_seconds"):
+                        scene["video_duration_seconds"] = (
+                            probe_clip(executable, generated_video)[1] or default_generated_duration
+                        )
                     scene_filter = _generated_scene_video_filter(
                         scene,
                         extended,
@@ -189,11 +194,21 @@ def render_storyboard_video(
                     is_cancelled,
                 )
 
+            audio_track = None
+            if video.get("clip_audio_enabled", True) and float(video.get("clip_audio_volume", 1)) > 0:
+                audio_track = build_clip_audio_track(normalized, executable, temporary_dir,
+                    _run_ffmpeg_with_progress, is_cancelled,
+                    lambda _stage, _value: report("preparing", 45))
             arguments = ["-y", "-hide_banner", "-loglevel", "error"]
+            # Run the assembly inside its scratch directory: hundreds of
+            # absolute input paths can exceed Windows' command-line limit,
+            # even when the filter graph itself is stored in a file.
             for clip in clip_paths:
-                arguments.extend(["-i", str(clip)])
+                arguments.extend(["-i", clip.name])
             audio_input = len(clip_paths)
-            arguments.extend(["-i", str(audio_path)])
+            arguments.extend(["-i", str(audio_path.resolve())])
+            if audio_track:
+                arguments.extend(["-i", Path(audio_track).name])
             filters: list[str] = []
             video_output = "0:v:0"
             elapsed = normalized[0]["duration"]
@@ -231,9 +246,16 @@ def render_storyboard_video(
                 elapsed += normalized[index]["duration"]
             filters.append(
                 f"[{audio_input}:a]apad,atrim=duration={_decimal(total_duration)},"
-                "asetpts=PTS-STARTPTS[aout]"
+                f"asetpts=PTS-STARTPTS,volume={float(video.get('soundtrack_volume', 1)):.6f}[baseaudio]"
             )
-            arguments.extend(["-filter_complex", ";".join(filters)])
+            if audio_track:
+                filters.append(f"[{audio_input + 1}:a]volume={float(video.get('clip_audio_volume', 1)):.6f}[cliptrack]")
+                filters.append("[baseaudio][cliptrack]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:level=false:latency=1[aout]")
+            else:
+                filters.append("[baseaudio]anull[aout]")
+            filter_script = Path(temporary_dir) / "assembly.filters"
+            filter_script.write_text(";".join(filters), encoding="utf-8")
+            arguments.extend(["-filter_complex_script", filter_script.name])
             arguments.extend(
                 [
                     "-map",
@@ -259,7 +281,7 @@ def render_storyboard_video(
                     "-progress",
                     "pipe:1",
                     "-nostats",
-                    str(temporary_output),
+                    str(temporary_output.resolve()),
                 ]
             )
             _run_ffmpeg_with_progress(
@@ -270,6 +292,7 @@ def render_storyboard_video(
                     "rendering", min(98, 45 + round(value * 0.53))
                 ),
                 is_cancelled,
+                cwd=Path(temporary_dir),
             )
         if not temporary_output.is_file() or temporary_output.stat().st_size <= 0:
             raise FFmpegError("FFmpeg completed without creating the final video.")
@@ -340,7 +363,7 @@ def _generated_scene_video_filter(
     """Fit an accepted I2V clip to its scene and apply video-only motion."""
     target_duration = max(0.1, float(duration))
     original_duration = max(0.1, float(source_duration))
-    speed_factor = target_duration / original_duration
+    speed_factor = max(0.1, float(scene.get("duration_seconds") or target_duration)) / original_duration
     render_width = width * max(1, supersample)
     render_height = height * max(1, supersample)
     filters = [
@@ -444,6 +467,8 @@ def _run_ffmpeg_with_progress(
     total_duration: float,
     progress: RenderProgress,
     cancelled: Callable[[], bool],
+    *,
+    cwd: Path | None = None,
 ) -> None:
     creation_flags = (
         subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -451,13 +476,14 @@ def _run_ffmpeg_with_progress(
     with tempfile.TemporaryFile() as stderr_file:
         try:
             process = subprocess.Popen(
-                [str(executable), *arguments],
+                [str(executable.resolve()), *arguments],
                 stdout=subprocess.PIPE,
                 stderr=stderr_file,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creation_flags,
+                cwd=cwd,
             )
         except OSError as exc:
             raise FFmpegError(f"Could not start FFmpeg: {exc}") from exc

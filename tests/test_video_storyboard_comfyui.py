@@ -191,7 +191,7 @@ def test_default_workflow_and_prompt_use_locked_style_and_models() -> None:
         "CHARACTERS: Mara is a young woman with short dark hair and blue coat. "
         "STYLE: painted cinematic realism; palette: green and gold; lighting: soft morning light. "
         "SHOT AND COMPOSITION: wide shot from a low angle. "
-        "ERA AND MATERIAL CULTURE: late nineteenth century."
+        "ERA: late nineteenth century."
     )
     assert workflow["1"]["inputs"]["unet_name"] == "z_image_turbo_bf16.safetensors"
     assert workflow["2"]["inputs"]["type"] == "lumina2"
@@ -234,7 +234,7 @@ def test_prompt_omits_empty_optional_style_and_era_labels() -> None:
     assert "continuity:" not in prompt
     assert "palette:" not in prompt
     assert "lighting:" not in prompt
-    assert "ERA AND MATERIAL CULTURE" not in prompt
+    assert "ERA" not in prompt
     assert "CHARACTERS IN FRAME" not in prompt
 
 
@@ -251,6 +251,7 @@ def test_prompt_uses_only_character_states_selected_by_semantic_analysis() -> No
 
 def test_prompt_injects_exact_temporal_character_location_and_era_locks() -> None:
     plan, scene = _plan_and_scene()
+    plan.setdefault("narrative_context", {})["era_visual_context"] = True
     plan["continuity"] = {
         "characters": [
             {
@@ -308,7 +309,7 @@ def test_prompt_injects_exact_temporal_character_location_and_era_locks() -> Non
     assert "wool tunics, stone streets and oil lamps" in prompt
     assert prompt.index("SCENE:") < prompt.index("STYLE:")
     assert prompt.index("STYLE:") < prompt.index("SHOT AND COMPOSITION:")
-    assert prompt.index("SHOT AND COMPOSITION:") < prompt.index("ERA AND MATERIAL CULTURE:")
+    assert prompt.index("SHOT AND COMPOSITION:") < prompt.index("ERA:")
 
 
 def test_canonical_prompt_name_selects_only_the_active_character_state() -> None:

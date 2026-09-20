@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.core.storyboard_provider_label import active_provider_label
+
 import hashlib
 import math
 import json
@@ -4009,18 +4011,22 @@ class MainWindow(QMainWindow):
             ),
             "",
         )
-        self.video_storyboard_page.set_audiobook_source(
-            audiobook.id if audiobook is not None else None,
-            audiobook.title if audiobook is not None else self._current_project_title(),
-            self.text_editor.toPlainText(),
-            [cue.as_dict() for cue in narration_cues],
-            duration_seconds,
-            preview_audio_path,
-            voice_start_offset_seconds,
-            str(audiobook.project_dir) if audiobook is not None else "",
-        )
-        if audiobook is not None:
-            self._restore_video_storyboard_state(audiobook)
+        previous_blocked = self.video_storyboard_page.blockSignals(True)
+        try:
+            self.video_storyboard_page.set_audiobook_source(
+                audiobook.id if audiobook is not None else None,
+                audiobook.title if audiobook is not None else self._current_project_title(),
+                self.text_editor.toPlainText(),
+                [cue.as_dict() for cue in narration_cues],
+                duration_seconds,
+                preview_audio_path,
+                voice_start_offset_seconds,
+                str(audiobook.project_dir) if audiobook is not None else "",
+            )
+            if audiobook is not None:
+                self._restore_video_storyboard_state(audiobook)
+        finally:
+            self.video_storyboard_page.blockSignals(previous_blocked)
         self._show_page(
             7,
             "video_storyboard",
@@ -4037,6 +4043,10 @@ class MainWindow(QMainWindow):
         self.settings_tabs.setCurrentWidget(self.video_storyboard_settings)
 
     def _start_video_storyboard_analysis(self, source: object) -> None:
+        analysis_dialog = getattr(self, "video_storyboard_analysis_dialog", None)
+        if analysis_dialog is not None and analysis_dialog._reference_worker is not None:
+            analysis_dialog.show_and_raise()
+            return
         if self.video_storyboard_planner_thread is not None:
             return
         if (
@@ -4138,6 +4148,13 @@ class MainWindow(QMainWindow):
         # Upgrade the previous default while preserving other user choices.
         if saved_limits.get("max_input_characters") == 12000 and default_input == 17000:
             saved_limits = dict(saved_limits, max_input_characters=default_input)
+        current_narrative = self.video_storyboard_page.project_state().get("plan", {}).get("narrative_context", {})
+        configuration.setdefault("narrative_context", {})["era_visual_context"] = bool(current_narrative.get("era_visual_context", False))
+        selected_choices = dict(review_state.get("choices", {}))
+        selected_choices["era_mode"] = current_narrative.get("era_mode", selected_choices.get("era_mode", "manual"))
+        manual_era = saved_limits.get("audiobook_era", configuration.get("narrative_context", {}).get("era", ""))
+        if current_narrative.get("era_mode") == "manual":
+            manual_era = str(current_narrative.get("era") or "")
         dialog = VideoStoryboardAnalysisDialog(
             self.tr,
             self,
@@ -4147,7 +4164,9 @@ class MainWindow(QMainWindow):
             analysis_process=self.tr("continuity_conversational", "Conversational · scene-first"),
             max_output_tokens=saved_limits.get("max_output_tokens", default_output),
             replaces_existing=bool(self.video_storyboard_page.scenes()),
-            analysis_choices=review_state.get("choices", {}),
+            analysis_choices=selected_choices,
+            maximum_scene_seconds=configuration.get("scene", {}).get("maximum_seconds", 15),
+            audiobook_era=manual_era,
             resume_available=review_state.get("draft", {}).get("status") in {"pending", "approved"},
         )
         self.video_storyboard_analysis_dialog = dialog
@@ -4190,6 +4209,13 @@ class MainWindow(QMainWindow):
         limits = raw_limits if isinstance(raw_limits, dict) else {}
         from app.core.storyboard_analysis_review import choices, load_review, save_review
         configuration["analysis_choices"] = choices(limits.get("analysis_choices"))
+        if "audiobook_era" in limits:
+            configuration["narrative_context"] = {**configuration.get("narrative_context", {}), "era": str(limits["audiobook_era"] or "").strip()}
+        configuration["generate_character_references"] = bool(limits.get("generate_character_references", False))
+        scene_settings = configuration.setdefault("scene", {})
+        scene_settings["maximum_seconds"] = max(4, min(60, int(
+            limits.get("maximum_scene_seconds") or scene_settings.get("maximum_seconds") or 15
+        )))
         project_dir = configuration.get("review_project_dir")
         saved_review = load_review(project_dir) if project_dir else {}
         if limits.get("resume_review"):
@@ -4197,7 +4223,7 @@ class MainWindow(QMainWindow):
         if project_dir:
             try:
                 save_review(project_dir, {**saved_review, "choices": configuration["analysis_choices"],
-                    "limits": {k: limits.get(k) for k in ("max_input_characters", "max_output_tokens")}})
+                    "limits": {k: limits.get(k) for k in ("max_input_characters", "max_output_tokens", "audiobook_era")}})
             except OSError as exc:
                 dialog.set_finished(False, f"Could not save analysis choices: {exc}")
                 return
@@ -4413,6 +4439,7 @@ class MainWindow(QMainWindow):
             f"{scene_count} frames planned and saved.",
         )
         if self.video_storyboard_analysis_dialog is not None:
+            self.video_storyboard_analysis_dialog.update_plan(result, final=True)
             self.video_storyboard_analysis_dialog.set_finished(
                 True,
                 self.tr(
@@ -4421,6 +4448,32 @@ class MainWindow(QMainWindow):
                     count=scene_count,
                 ),
             )
+        dialog = self.video_storyboard_analysis_dialog
+        if dialog is not None and worker is not None and project_dir:
+            audiobook_id = self.current_audiobook_id
+            def save_reference(record):
+                if self.current_audiobook_id != audiobook_id:
+                    return
+                records = self.video_storyboard_page._plan_metadata.get("continuity", {}).get("characters", [])
+                for existing in records:
+                    if existing.get("id") == record.get("id"):
+                        existing.update({key: record[key] for key in ("reference_image_path", "reference_image_prompt")})
+                        self.video_storyboard_page._sync_continuity_trees()
+                        self.video_storyboard_page._commit_continuity_changes()
+                        self._persist_video_storyboard_state()
+                        break
+            dialog.referenceReady.connect(save_reference)
+            dialog.reference_start_allowed = lambda: (
+                self.current_audiobook_id == audiobook_id
+                and self.video_storyboard_analysis_dialog is dialog
+                and self.video_storyboard_frame_thread is None
+                and getattr(self, "video_storyboard_image_edit_thread", None) is None
+                and self.video_storyboard_video_thread is None
+                and self.video_storyboard_render_thread is None
+            )
+            dialog.configure_references(result, worker.settings, project_dir)
+            if worker.settings.get("generate_character_references"):
+                dialog.start_references()
         self.log_view.append_event(
             self.tr(
                 "video_storyboard_plan_created",
@@ -4551,6 +4604,7 @@ class MainWindow(QMainWindow):
                 ),
                 locations=len(locations) if isinstance(locations, list) else 0,
             )
+            self.video_storyboard_analysis_dialog.update_plan(result)
 
     def _persist_video_storyboard_state(
         self,
@@ -4650,11 +4704,10 @@ class MainWindow(QMainWindow):
             )
             return
         config = self.settings.get("video_storyboard", {})
-        if config.get("image_provider") == "runpod" or config.get("image_edit_provider") == "runpod":
+        if config.get("image_provider") == "runpod":
             selected = [scene for scene in payload.get("scenes", []) if isinstance(scene, dict) and not Path(str(scene.get("image_path") or "")).is_file()]
-            references = sum(bool((scene.get("generation_overrides") or {}).get("reference_images")) for scene in selected)
             from app.core.video_storyboard_runpod import estimate_cost
-            cost = estimate_cost(config, images=len(selected) - references if config.get("image_provider") == "runpod" else 0, edits=references if config.get("image_edit_provider") == "runpod" else 0)
+            cost = estimate_cost(config, images=len(selected))
             if not self._confirm_runpod_batch_cost(cost):
                 self.video_storyboard_page.set_frame_generation_failed(self.tr("cancelled", "Cancelled"))
                 return
@@ -4716,39 +4769,42 @@ class MainWindow(QMainWindow):
         candidate: bool,
     ) -> None:
         configuration = deepcopy(self.settings.get("video_storyboard", {}))
-        scenes = payload.get("scenes", [])
-        uses_references = any(
-            isinstance(scene, dict)
-            and isinstance(scene.get("generation_overrides"), dict)
-            and bool(scene["generation_overrides"].get("reference_images"))
-            for scene in scenes
-        ) if isinstance(scenes, list) else False
-        if uses_references and configuration.get("image_edit_provider") == "runpod" and not self._confirm_runpod_storage(configuration):
+        from app.core.runpod_image_models import image_model_id
+        if (configuration.get("image_provider") == "runpod"
+                and image_model_id(configuration.get("runpod", {})) == "qwen-image-edit-2511"
+                and not self._confirm_runpod_storage(configuration)):
+            message = self.tr("cancelled", "Cancelled")
             if candidate:
-                scene_id = str(scenes[0].get("scene_id") or scenes[0].get("id") or "")
-                self.video_storyboard_page.set_regeneration_failed(scene_id, self.tr("cancelled", "Cancelled"))
+                scenes = payload.get("scenes", [])
+                scene = scenes[0] if scenes else {}
+                self.video_storyboard_page.set_regeneration_failed(str(scene.get("scene_id") or scene.get("id") or ""), message)
             else:
-                self.video_storyboard_page.set_frame_generation_failed(self.tr("cancelled", "Cancelled"))
+                self.video_storyboard_page.set_frame_generation_failed(message)
             return
-        if (
-            str(configuration.get("image_provider") or "comfyui") in {"comfyui", "custom_comfyui"}
-            or (
-                uses_references
-                and str(configuration.get("image_edit_provider") or "disabled") == "comfyui"
-            )
-        ):
+        if str(configuration.get("image_provider") or "comfyui") in {"comfyui", "custom_comfyui"}:
             self._release_storyboard_local_vram("frame generation")
+        audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id) if self.current_audiobook_id is not None else None
+        checkpoint_state = self.video_storyboard_page.project_state()
+        if audiobook is not None and not candidate:
+            try:
+                save_storyboard_state(audiobook.project_dir, checkpoint_state, analysis_status=self.video_storyboard_analysis_status)
+            except OSError as exc:
+                self.video_storyboard_page.set_frame_generation_failed(f"Cannot save storyboard before generation: {exc}")
+                return
         thread = QThread(self)
         worker = VideoStoryboardFrameWorker(
             payload,
             configuration,
             output_dir,
             candidate=candidate,
+            checkpoint_project_dir=audiobook.project_dir if audiobook else None,
+            checkpoint_state=checkpoint_state,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_video_storyboard_frame_progress)
         worker.frameReady.connect(self._on_video_storyboard_frame_ready)
+        worker.frameFailed.connect(self._on_video_storyboard_frame_scene_failed)
         worker.finished.connect(self._on_video_storyboard_frames_finished)
         worker.failed.connect(self._on_video_storyboard_frames_failed)
         worker.finished.connect(thread.quit)
@@ -4820,14 +4876,14 @@ class MainWindow(QMainWindow):
             ),
             "queue": self.tr(
                 "video_storyboard_queueing_scene",
-                "Sending scene {scene} to ComfyUI ({current}/{total})...",
+                "Sending scene {scene} for generation ({current}/{total})...",
                 scene=scene_id,
                 current=current,
                 total=total,
             ),
             "generating": self.tr(
                 "video_storyboard_comfy_generating_scene",
-                "ComfyUI is generating scene {scene} ({current}/{total})...",
+                "Generating scene {scene} ({current}/{total})...",
                 scene=scene_id,
                 current=current,
                 total=total,
@@ -4847,6 +4903,10 @@ class MainWindow(QMainWindow):
                 total=total,
             ),
         }
+        stage_messages["retrying"] = self.tr(
+            "video_storyboard_frame_retrying",
+            "Temporary provider error in scene {scene}. Retrying shortly...", scene=scene_id,
+        )
         message = stage_messages.get(stage, stage)
         if stage.startswith("upload_reference_"):
             message = self.tr(
@@ -4855,6 +4915,7 @@ class MainWindow(QMainWindow):
                 number=stage.rsplit("_", 1)[-1],
                 scene=scene_id,
             )
+        message = f"{active_provider_label(self)} — {message}"
         progress = (
             round((current - 1) / max(1, total) * 100)
             if current and total
@@ -4897,6 +4958,8 @@ class MainWindow(QMainWindow):
             self.video_storyboard_page.append_activity(message)
 
     def _on_video_storyboard_frame_ready(self, raw_result: object) -> None:
+        if not self._frame_generation_matches_current_project():
+            return
         if not isinstance(raw_result, dict):
             return
         scene_id = str(raw_result.get("scene_id") or "")
@@ -4913,17 +4976,34 @@ class MainWindow(QMainWindow):
                 image_path,
             )
 
-    def _on_video_storyboard_frames_finished(self, _results: object) -> None:
+    def _on_video_storyboard_frame_scene_failed(self, failure: object) -> None:
+        if not self._frame_generation_matches_current_project():
+            return
+        self.video_storyboard_page.set_frame_generation_scene_failed(failure)
+        self.log_view.append_event(
+            f"Scene {failure['scene_id']} · {failure.get('provider', '')}: {failure.get('error', '')}"
+        )
+
+    def _on_video_storyboard_frames_finished(self, results: object) -> None:
+        if not self._frame_generation_matches_current_project():
+            return
         if self.video_storyboard_frame_mode == "batch":
-            self.video_storyboard_page.set_frame_generation_finished()
-            self.log_view.append_event(
-                self.tr(
-                    "video_storyboard_frames_complete",
-                    "All storyboard frames have been generated.",
-                )
-            )
+            message = self.video_storyboard_page.set_frame_generation_finished(results)
+            self.log_view.append_event(message)
+            worker = self.video_storyboard_frame_worker
+            if worker is not None and worker.checkpoint is not None:
+                if worker.payload.get("source", {}).get("project_id") == self.current_audiobook_id:
+                    try:
+                        save_storyboard_state(worker.checkpoint_project_dir, self.video_storyboard_page.project_state(),
+                                              analysis_status=self.video_storyboard_analysis_status)
+                        worker.checkpoint.finish()
+                    except OSError as exc:
+                        self.log_view.append_event(f"Progress remains in the recovery journal: {exc}")
+
 
     def _on_video_storyboard_frames_failed(self, error: str) -> None:
+        if not self._frame_generation_matches_current_project():
+            return
         if self.video_storyboard_frame_mode == "candidate":
             self.video_storyboard_page.set_regeneration_failed(
                 self.video_storyboard_frame_scene_id or "?",
@@ -4934,10 +5014,15 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(
             self.tr(
                 "video_storyboard_comfy_failed_log",
-                "ComfyUI frame generation failed: {error}",
+                "{provider} — Frame generation failed: {error}",
+                provider=active_provider_label(self),
                 error=error,
             )
         )
+
+    def _frame_generation_matches_current_project(self) -> bool:
+        worker = self.video_storyboard_frame_worker
+        return worker is None or worker.payload.get("source", {}).get("project_id") == self.current_audiobook_id
 
     def _clear_video_storyboard_frame_worker(self) -> None:
         self.video_storyboard_frame_worker = None
@@ -5059,7 +5144,10 @@ class MainWindow(QMainWindow):
         configuration = deepcopy(self.settings.get("video_storyboard", {}))
         if configuration.get("video_provider", "comfyui") == "comfyui":
             self._release_storyboard_local_vram("scene video generation")
-        elif configuration.get("video_provider") == "runpod" and not self._confirm_runpod_storage(configuration):
+        elif (configuration.get("video_provider") == "runpod"
+              and (request.get("frame_role", "start") != "none"
+                   or (scene.get("generation_overrides") or {}).get("video_reference_images"))
+              and not self._confirm_runpod_storage(configuration)):
             self.video_storyboard_page.set_video_generation_failed(scene_id, self.tr("cancelled", "Cancelled"))
             return
         configuration["ffmpeg_path"] = self.settings.get(
@@ -5225,12 +5313,12 @@ class MainWindow(QMainWindow):
             ),
             "queue_video": self.tr(
                 "video_storyboard_queueing_video",
-                "Sending scene {scene} to the ComfyUI video workflow...",
+                "Sending scene {scene} for video generation...",
                 scene=scene_id,
             ),
             "generating_video": self.tr(
                 "video_storyboard_comfy_generating_video",
-                "ComfyUI is generating the video for scene {scene}...",
+                "Generating the video for scene {scene}...",
                 scene=scene_id,
             ),
             "downloading_video": self.tr(
@@ -5259,8 +5347,8 @@ class MainWindow(QMainWindow):
             "reversing_video": 95,
             "retiming_video": 97,
         }.get(stage, 0)
-        message = messages.get(stage, stage)
-        if stage.startswith("Runpod ·"):
+        message = f"{active_provider_label(self, 'video')} — {messages.get(stage, stage)}"
+        if stage.startswith(("Runpod ·", "LiteLLM ·")):
             progress = -1
         self.video_storyboard_page.set_video_generation_progress(
             scene_id,
@@ -5306,7 +5394,8 @@ class MainWindow(QMainWindow):
         self.log_view.append_event(
             self.tr(
                 "video_storyboard_video_generation_failed",
-                "ComfyUI video generation failed: {error}",
+                "{provider} — Video generation failed: {error}",
+                provider=active_provider_label(self, "video"),
                 error=error,
             )
         )
@@ -5606,6 +5695,7 @@ class MainWindow(QMainWindow):
                 "editing": (self.tr("video_storyboard_editing_image", "Generating edited image..."), 45),
                 "downloading_edit": (self.tr("video_storyboard_downloading_image_edit", "Downloading edited image..."), 92),
             }.get(stage, (stage, -1))
+        message = f"{active_provider_label(self, 'edit')} — {message}"
         self.video_storyboard_page.set_image_edit_progress(scene_id, message, percentage)
 
     @Slot(object)
@@ -5747,7 +5837,10 @@ class MainWindow(QMainWindow):
             {
                 key: value
                 for key, value in self.video_storyboard_page.render_overrides().items()
-                if key in {"zoom_percent", "transition_seconds"}
+                if key in {
+                    "zoom_percent", "transition_seconds", "clip_audio_enabled",
+                    "clip_audio_volume", "soundtrack_volume",
+                }
             }
         )
         render_settings["ffmpeg_path"] = self.settings.get(
@@ -20356,6 +20449,11 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        analysis_dialog = getattr(self, "video_storyboard_analysis_dialog", None)
+        if analysis_dialog is not None and analysis_dialog._reference_worker is not None:
+            analysis_dialog.show_and_raise()
+            event.ignore()
+            return
         if self.asset_storage_thread is not None:
             QMessageBox.warning(
                 self,
@@ -20408,8 +20506,9 @@ class MainWindow(QMainWindow):
                 ),
                 self.tr(
                     "video_storyboard_generation_running_close_message",
-                    "ComfyUI is generating storyboard frames. Wait for the "
+                    "{provider} is generating storyboard frames. Wait for the "
                     "current frame to finish before closing LocalText2Voice.",
+                    provider=active_provider_label(self),
                 ),
             )
             event.ignore()
@@ -20437,7 +20536,8 @@ class MainWindow(QMainWindow):
                 ),
                 self.tr(
                     "video_storyboard_video_generation_running_close_message",
-                    "ComfyUI is generating a storyboard scene video. Wait for the candidate to finish before closing LocalText2Voice.",
+                    "{provider} is generating a storyboard scene video. Wait for the candidate to finish before closing LocalText2Voice.",
+                    provider=active_provider_label(self, "video"),
                 ),
             )
             event.ignore()

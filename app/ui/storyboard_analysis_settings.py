@@ -18,27 +18,19 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         self._loading = False
         self._prompts = {}
         layout = QVBoxLayout(self)
-        help_text = QLabel(tr("continuity_conversation_help",
-            "Three short conversational questions discover characters, propose scenes with their starting sentences, and describe appearance. The app then saves profiles and aligns scenes to the audiobook. The model and token budget are configured in Video Storyboard."))
+        help_text = QLabel(tr("continuity_conversation_help_v2",
+            "Conversational analysis discovers selected entities and historical periods, proposes scenes, and aligns them to the audiobook. Choose manual or automatic periods before each analysis."))
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         form = QFormLayout()
-        self.process = QComboBox()
-        self.process.addItem(tr("continuity_conversational", "Conversational · scene-first"), "conversational")
-        self.process.setEnabled(False)
-        form.addRow(tr("continuity_process", "Analysis process"), self.process)
         self.block_size = QComboBox()
-        for key, label in (("small", "Small · 4,000 characters"), ("medium", "Medium · 12,000 characters"), ("custom", "Custom")):
+        for key, label in (("small", "Small · 4,000 characters"), ("medium", "Medium · 17,000 characters"), ("custom", "Custom")):
             self.block_size.addItem(tr("continuity_conversation_block_" + key, label), key)
         form.addRow(tr("continuity_block_size", "Text per block"), self.block_size)
         self.characters = QSpinBox()
         self.characters.setRange(1000, 100000)
         self.characters.setSingleStep(1000)
         form.addRow(tr("continuity_custom_size", "Custom character limit"), self.characters)
-        self.era = QComboBox()
-        self.era.addItem(tr("continuity_era_detect", "Detect when not specified by the project"), "detect")
-        self.era.addItem(tr("continuity_era_provided", "Use only the project's historical period"), "provided")
-        form.addRow(tr("continuity_era", "Historical period"), self.era)
         layout.addLayout(form)
         self.flow = QLabel()
         self.flow.setWordWrap(True)
@@ -53,7 +45,7 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
         layout.addStretch()
-        for control in (self.process, self.block_size, self.era):
+        for control in (self.block_size,):
             control.currentIndexChanged.connect(self._changed)
         self.characters.valueChanged.connect(self._changed)
         self.set_configuration({})
@@ -62,21 +54,21 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         self._loading = True
         config = normalize(config)
         self._prompts = deepcopy(config["prompts"])
-        for widget, key in ((self.process, "process"), (self.block_size, "block_size"), (self.era, "era_mode")):
+        for widget, key in ((self.block_size, "block_size"),):
             widget.setCurrentIndex(max(0, widget.findData(config[key])))
         self.characters.setValue(config["custom_characters"])
         self._loading = False
         self._refresh()
 
     def configuration(self):
-        return normalize({"process": self.process.currentData(), "block_size": self.block_size.currentData(),
-                          "custom_characters": self.characters.value(), "era_mode": self.era.currentData(),
+        return normalize({"block_size": self.block_size.currentData(),
+                          "custom_characters": self.characters.value(),
                           "prompts": deepcopy(self._prompts)})
 
     def _refresh(self):
         self.characters.setEnabled(self.block_size.currentData() == "custom")
-        self.flow.setText(self.tr("continuity_flow_conversational",
-            "Characters + summary → Scenes + source sentences → Appearance → Optional review → Save profiles → Align to audio → Image prompts. Scenes longer than 20 seconds receive shots of approximately 10 seconds."))
+        self.flow.setText(self.tr("continuity_flow_conversational_v2",
+            "Discover periods and entities → Propose scenes → Optional review → Structure profiles and periods → Align to audio → Image prompts. Scene duration follows your selected maximum."))
         self.status.setText(self.tr("continuity_custom_prompts", "Customized instruction stages: {count}", count=len(self._prompts)))
 
     def _changed(self, *_):
@@ -90,7 +82,7 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         dialog.resize(980, 740)
         layout = QVBoxLayout(dialog)
         stages = QComboBox()
-        keys = ["conversation_report", "conversation_additions", "conversation_scenes"]
+        keys = list(prompt_catalog())
         catalog = prompt_catalog()
         for key in keys:
             stages.addItem(catalog[key][0], key)
@@ -144,8 +136,8 @@ class StoryboardAnalysisSettingsWidget(QWidget):
             text.setPlainText(json.dumps({
                 "example_only": True, "stage": current[0],
                 "instructions": editor.toPlainText(), "protected_contract": contract_for(current[0]),
-                "runtime_input": "Original plain text in turn 1; previous user questions and assistant answers remain in chat history.",
-                "response_schema": "No JSON schema for these three questions. The full request and response are available in the analysis raw log.",
+                "runtime_input": "Source passage or discovery report, with known entities/periods where applicable.",
+                "response_schema": "Plain-text discovery; structured JSON conversion follows review. Full requests are recorded in the analysis log.",
             }, indent=2, ensure_ascii=False))
             preview_layout.addWidget(text)
             preview_dialog.exec()

@@ -181,6 +181,140 @@ def test_wan26_payload_and_existing_postprocessing(settings, tmp_path, saved_siz
     assert rp.estimate_cost(settings, durations=[8]) == cost
 
 
+def test_explicit_video_regeneration_and_download_recovery(settings, tmp_path):
+    calls = []
+    def request(config, endpoint, operation, payload=None):
+        calls.append(operation)
+        return {'id': f'job-{len(calls)}', 'status': 'COMPLETED',
+                'output': {'video_url': 'https://video.runpod.ai/result.mp4'}}
+    target = tmp_path / 'candidate.mp4'
+    with patch.object(rp, 'request', side_effect=request), patch.object(rp, 'download') as download:
+        first = rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+        rp.consume_result(first)
+        download.side_effect = rp.RunpodError('Interrupted download')
+        with pytest.raises(rp.RunpodError, match='Interrupted'):
+            rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+        assert calls == ['run', 'run']
+        download.side_effect = None
+        recovered = rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+        assert recovered['prompt_id'] == 'job-2'
+        assert calls == ['run', 'run']
+        rp.consume_result(recovered)
+        third = rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+        assert third['prompt_id'] == 'job-3'
+
+
+def test_legacy_accepted_video_starts_new_job(settings, tmp_path):
+    with patch.object(rp, 'request', return_value={'id': 'old', 'status': 'COMPLETED', 'output': {'video_url': 'https://video.runpod.ai/old.mp4'}}), patch.object(rp, 'download'):
+        old = rp.execute(settings, 'video', {'prompt': 'same'}, tmp_path / 'old.mp4')
+    path = Path(old['job_record'])
+    record = json.loads(path.read_text())
+    record.pop('consumed')
+    path.write_text(json.dumps(record))
+    with patch.object(rp, 'request', return_value={'id': 'new', 'status': 'COMPLETED', 'output': {'video_url': 'https://video.runpod.ai/new.mp4'}}) as submit, patch.object(rp, 'download'):
+        new = rp.execute(settings, 'video', {'prompt': 'same'}, tmp_path / 'new.mp4', regenerate=True, legacy_result_used=True)
+    assert new['prompt_id'] == 'new'
+    submit.assert_called_once()
+
+
+def test_accepted_video_does_not_poll_legacy_queued_job(settings, tmp_path):
+    from app.core import video_storyboard_video_comfyui as video
+    from app.core.runpod_video_models import video_parameters
+    image = tmp_path / 'image.png'
+    png(image)
+    identity = {**video_parameters(rp.configuration(settings), 'motion', 8, 5),
+                'image': rp.file_digest(image), 'frame_role': 'start'}
+    with patch.object(rp, 'request', side_effect=[{'id': 'old-queue', 'status': 'IN_QUEUE'}, rp.RunpodError('Connection lost')]):
+        with pytest.raises(rp.RunpodError, match='Connection lost'):
+            rp.execute(settings, 'video', {'prompt': 'motion'}, tmp_path / 'old.mp4', identity=identity)
+    accepted = tmp_path / 'accepted.mp4'
+    accepted.write_bytes(b'accepted video')
+    scene = {'scene_id': '003', 'duration_seconds': 8, 'image_path': str(image), 'video_path': str(accepted)}
+    def request(config, endpoint, operation, payload=None):
+        assert operation == 'run', 'Regeneration must never query the old queued job'
+        return {'id': 'new-job', 'status': 'COMPLETED', 'output': {'video_url': 'https://video.runpod.ai/new.mp4'}}
+    with patch.object(rp, 'request', side_effect=request) as submit, patch.object(rp, 'source_url', return_value='https://image.runpod.ai/ref.png'), patch.object(rp, 'download', side_effect=lambda url, path, cancelled: path.write_bytes(b'video')), patch.object(video, '_probe_media_duration', return_value=10), patch.object(video, '_retime_video'):
+        result = video.generate_storyboard_scene_video(scene, {'base_seed': 5}, settings, tmp_path / 'candidate.mp4', prompt='motion')
+    submit.assert_called_once()
+    record = json.loads(Path(result['job_record']).read_text())
+    assert record['input_snapshot']['accepted_video'] == str(accepted)
+    assert record['input_snapshot']['scene_id'] == '003'
+    assert accepted.read_bytes() == b'accepted video'
+
+
+@pytest.mark.parametrize('http_status,detail,restart', [(404, 'job not found', True), (404, 'endpoint not found', False), (401, 'unauthorized', False), (503, 'unavailable', False)])
+def test_expired_pending_video_restarts_once_but_other_errors_do_not(settings, tmp_path, http_status, detail, restart):
+    target = tmp_path / 'candidate.mp4'
+    with patch.object(rp, 'request', side_effect=[{'id': 'pending', 'status': 'IN_QUEUE'}, rp.RunpodError('Connection lost')]):
+        with pytest.raises(rp.RunpodError):
+            rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+    error = rp.RunpodError(detail)
+    error.status_code, error.response_detail = http_status, detail
+    responses = [error, {'id': 'replacement', 'status': 'COMPLETED', 'output': {'video_url': 'https://video.runpod.ai/new.mp4'}}]
+    with patch.object(rp, 'request', side_effect=responses) as request, patch.object(rp, 'download'):
+        if restart:
+            result = rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+            assert result['prompt_id'] == 'replacement'
+            assert [call.args[2] for call in request.call_args_list] == ['status/pending', 'run']
+        else:
+            with pytest.raises(rp.RunpodError):
+                rp.execute(settings, 'video', {'prompt': 'same'}, target, regenerate=True)
+            assert [call.args[2] for call in request.call_args_list] == ['status/pending']
+
+
+def test_new_video_job_404_does_not_loop_submissions(settings, tmp_path):
+    error = rp.RunpodError('job not found')
+    error.status_code, error.response_detail = 404, 'job not found'
+    with patch.object(rp, 'request', side_effect=[{'id': 'just-submitted', 'status': 'IN_QUEUE'}, error]) as request:
+        with pytest.raises(rp.RunpodError):
+            rp.execute(settings, 'video', {'prompt': 'same'}, tmp_path / 'candidate.mp4', regenerate=True)
+    assert [call.args[2] for call in request.call_args_list] == ['run', 'status/just-submitted']
+
+
+def test_retry_of_current_regeneration_keeps_pending_job(settings, tmp_path):
+    from app.core import video_storyboard_video_comfyui as video
+    image = tmp_path / 'frame.png'
+    png(image)
+    scene = {'scene_id': '003', 'duration_seconds': 8, 'image_path': str(image),
+             'video_path': str(tmp_path / 'accepted.mp4')}
+    with patch.object(rp, 'source_url', return_value='https://image.runpod.ai/ref.png'), patch.object(rp, 'request', side_effect=[{'id': 'current-regeneration', 'status': 'IN_QUEUE'}, rp.RunpodError('Connection lost')]):
+        with pytest.raises(video.VideoStoryboardVideoError, match='Connection lost'):
+            video.generate_storyboard_scene_video(scene, {}, settings, tmp_path / 'attempt-1.mp4', prompt='storm')
+    with patch.object(rp, 'request', return_value={'id': 'current-regeneration', 'status': 'COMPLETED', 'output': {'video_url': 'https://video.runpod.ai/new.mp4'}}) as request, patch.object(rp, 'download', side_effect=lambda url, path, cancelled: path.write_bytes(b'video')), patch.object(video, '_probe_media_duration', return_value=10), patch.object(video, '_retime_video'):
+        result = video.generate_storyboard_scene_video(scene, {}, settings, tmp_path / 'attempt-2.mp4', prompt='storm')
+    assert result['prompt_id'] == 'current-regeneration'
+    assert [call.args[2] for call in request.call_args_list] == ['status/current-regeneration']
+
+
+@pytest.mark.parametrize('endpoint,role,reference_count', [('wan-2-6-i2v','none',0), ('kling-video-o1-r2v','none',3)])
+def test_text_only_and_multi_reference_video_payloads(settings, tmp_path, endpoint, role, reference_count):
+    from app.core import video_storyboard_video_comfyui as video
+    settings['runpod']['video_endpoint'] = endpoint
+    refs = []
+    for i in range(reference_count):
+        path = tmp_path / f'ref-{i}.png'
+        png(path)
+        refs.append({'path': str(path), 'label': f'Ref {i}'})
+    scene = {'duration_seconds': 8, 'generation_overrides': {'video_reference_images': refs}}
+    def execute(config, kind, payload, target, **kwargs):
+        values = payload()
+        assert kwargs['regenerate'] is True
+        if reference_count:
+            assert config['runpod']['video_endpoint'] == 'kling-video-o1-r2v'
+            assert len(values['images']) == 3
+            assert 'image' not in values and 'size' not in values
+            assert values['aspect_ratio'] == '16:9'
+        else:
+            assert config['runpod']['video_endpoint'] == 'wan-2-6-t2v'
+            assert 'image' not in values and 'images' not in values
+        target.write_bytes(b'video')
+        return {'prompt_id': 'job'}
+    with patch.object(rp, 'execute', side_effect=execute), patch.object(rp, 'source_url', return_value='https://image.runpod.ai/ref.png') as upload, patch.object(video, '_probe_media_duration', return_value=8), patch.object(video, '_retime_video'):
+        result = video.generate_storyboard_scene_video(scene, {}, settings, tmp_path / 'out.mp4', prompt='storm', frame_role=role)
+    assert upload.call_count == reference_count
+    assert result['video_frame_role'] == 'none'
+
+
 @pytest.mark.parametrize("immediate", [True, False])
 def test_failed_job_surfaces_server_validation_error_on_first_attempt_and_retry(settings, tmp_path, immediate, caplog):
     # The real WAN 2.6 response: HTTP submission succeeds, job validation fails.

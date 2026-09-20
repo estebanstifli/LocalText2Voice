@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+import re
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
+    QRadioButton,
+    QLineEdit,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -22,12 +25,25 @@ from app.ui.icons import ui_icon
 Translate = Callable[..., str]
 
 
+def parse_scene_selection(text: str, total: int) -> list[int]:
+    """Return unique zero-based indices in timeline order; reject invalid ranges."""
+    selected = set()
+    for part in text.split(','):
+        match = re.fullmatch(r'\s*(\d+)\s*(?:-\s*(\d+)\s*)?', part)
+        if not match:
+            raise ValueError('Invalid scene selection')
+        first, last = int(match[1]), int(match[2] or match[1])
+        if not 1 <= first <= last <= total:
+            raise ValueError('Scene out of range')
+        selected.update(range(first - 1, last))
+    return sorted(selected)
+
+
 class VideoStoryboardFrameBatchDialog(QDialog):
     """Confirmation and live progress for a batch of storyboard frames."""
 
     startRequested = Signal(bool)
     cancelRequested = Signal()
-    settingsRequested = Signal()
 
     def __init__(
         self,
@@ -43,6 +59,7 @@ class VideoStoryboardFrameBatchDialog(QDialog):
         self.mode = "regenerate" if mode == "regenerate" else "generate"
         self.total_count = max(0, int(total_count))
         self.existing_count = max(0, int(existing_count))
+        self.selected_scene_indices = list(range(self.total_count))
         self._running = False
         self._finished = False
         self._cancel_requested = False
@@ -82,12 +99,12 @@ class VideoStoryboardFrameBatchDialog(QDialog):
         if self.mode == "regenerate":
             explanation = self.tr_text(
                 "video_storyboard_regenerate_all_dialog_info",
-                "Images will use Project visual and video overrides. Any value not overridden by this project falls back to Video Storyboard settings.",
+                "Generate images using Project visual direction and each scene’s prompt and frame overrides. Missing project values use the configured defaults. Select overwrite to replace existing images in the selected scenes.",
             )
         else:
             explanation = self.tr_text(
                 "video_storyboard_generate_frames_dialog_info",
-                "Images will be created for the planned scenes using the image provider and generation parameters configured in Video Storyboard settings.",
+                "Generate images for the planned scenes using Project visual direction: visual style, characters, locations, objects and project overrides. Each scene keeps its own prompt and frame overrides. Missing project values use the configured defaults. Existing images in the selection are kept unless overwrite is enabled.",
             )
         info = QLabel(explanation)
         info.setWordWrap(True)
@@ -104,26 +121,30 @@ class VideoStoryboardFrameBatchDialog(QDialog):
             )
         )
         summary.setObjectName("helperLabel")
-        self.settings_button = QPushButton(
-            self.tr_text(
-                "video_storyboard_open_settings",
-                "Open Video Storyboard settings",
-            )
-        )
-        self.settings_button.setIcon(ui_icon("settings"))
-        self.settings_button.setFlat(True)
         settings_row.addWidget(summary, 1)
-        settings_row.addWidget(self.settings_button)
         layout.addLayout(settings_row)
+
+        selection_row = QHBoxLayout()
+        self.all_radio = QRadioButton(self.tr_text("video_storyboard_frames_all", "All"))
+        self.scenes_radio = QRadioButton(self.tr_text("video_storyboard_frames_scenes", "Scenes:"))
+        self.scene_selection_edit = QLineEdit()
+        self.scene_selection_edit.setPlaceholderText("3-10, 12, 15-18")
+        self.scene_selection_edit.setAccessibleName(self.scenes_radio.text())
+        self.all_radio.setChecked(True)
+        self.scene_selection_edit.setEnabled(False)
+        self.scenes_radio.toggled.connect(self.scene_selection_edit.setEnabled)
+        selection_row.addWidget(self.all_radio)
+        selection_row.addWidget(self.scenes_radio)
+        selection_row.addWidget(self.scene_selection_edit, 1)
+        layout.addLayout(selection_row)
 
         self.overwrite_checkbox = QCheckBox(
             self.tr_text(
-                "video_storyboard_overwrite_all_frames",
-                "Overwrite all existing frames",
+                "video_storyboard_overwrite_selected_frames",
+                "Overwrite existing frames in selection",
             )
         )
         self.overwrite_checkbox.setChecked(self.mode == "regenerate")
-        self.overwrite_checkbox.setVisible(self.existing_count > 0)
         layout.addWidget(self.overwrite_checkbox)
 
         self.progress_bar = QProgressBar()
@@ -188,7 +209,6 @@ class VideoStoryboardFrameBatchDialog(QDialog):
         buttons.addWidget(self.cancel_process_button)
         layout.addLayout(buttons)
 
-        self.settings_button.clicked.connect(self._open_settings)
         self.start_button.clicked.connect(self._start)
         self.cancel_button.clicked.connect(self.reject)
         self.close_button.clicked.connect(self._close_or_hide)
@@ -197,12 +217,26 @@ class VideoStoryboardFrameBatchDialog(QDialog):
     def _start(self) -> None:
         if self._running or self._finished:
             return
+        try:
+            self.selected_scene_indices = (list(range(self.total_count)) if self.all_radio.isChecked()
+                                           else parse_scene_selection(self.scene_selection_edit.text(), self.total_count))
+            if not self.selected_scene_indices:
+                raise ValueError()
+        except ValueError:
+            self.status_label.setText(self.tr_text(
+                "video_storyboard_frames_selection_error",
+                "Enter scenes between 1 and {total}, for example: 3-10 or 3,7,8,10.",
+                total=self.total_count))
+            self.scene_selection_edit.setFocus()
+            return
+        self.all_radio.setEnabled(False)
+        self.scenes_radio.setEnabled(False)
+        self.scene_selection_edit.setEnabled(False)
         self._running = True
         self.start_button.hide()
         self.cancel_button.hide()
         self.close_button.show()
         self.cancel_process_button.show()
-        self.settings_button.setEnabled(False)
         self.overwrite_checkbox.setEnabled(False)
         message = self.tr_text(
             "video_storyboard_frame_batch_starting",
@@ -211,10 +245,6 @@ class VideoStoryboardFrameBatchDialog(QDialog):
         self.status_label.setText(message)
         self.append_log(message)
         self.startRequested.emit(self.overwrite_checkbox.isChecked())
-
-    def _open_settings(self) -> None:
-        self.hide()
-        self.settingsRequested.emit()
 
     def _close_or_hide(self) -> None:
         if self._running:
@@ -296,3 +326,9 @@ class VideoStoryboardFrameBatchDialog(QDialog):
             self.hide()
             return
         super().closeEvent(event)
+
+    def reject(self) -> None:
+        if self._running:
+            self.hide()
+            return
+        super().reject()

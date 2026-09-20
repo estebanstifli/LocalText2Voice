@@ -1,0 +1,263 @@
+{
+  "1": {
+    "class_type": "LoadBackgroundRemovalModel",
+    "inputs": {
+      "bg_removal_name": "birefnet.safetensors"
+    }
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "settings-cards/ltv-settings-general.png"
+    }
+  },
+  "11": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "10",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "11",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "10",
+        0
+      ],
+      "alpha": [
+        "12",
+        0
+      ]
+    }
+  },
+  "14": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "13",
+        0
+      ],
+      "filename_prefix": "ltv-settings-transparent/general"
+    }
+  },
+  "20": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "settings-cards/ltv-settings-llm.png"
+    }
+  },
+  "21": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "20",
+        0
+      ]
+    }
+  },
+  "22": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "21",
+        0
+      ]
+    }
+  },
+  "23": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "20",
+        0
+      ],
+      "alpha": [
+        "22",
+        0
+      ]
+    }
+  },
+  "24": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "23",
+        0
+      ],
+      "filename_prefix": "ltv-settings-transparent/llm"
+    }
+  },
+  "30": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "settings-cards/ltv-settings-image.png"
+    }
+  },
+  "31": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "30",
+        0
+      ]
+    }
+  },
+  "32": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "31",
+        0
+      ]
+    }
+  },
+  "33": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "30",
+        0
+      ],
+      "alpha": [
+        "32",
+        0
+      ]
+    }
+  },
+  "34": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "33",
+        0
+      ],
+      "filename_prefix": "ltv-settings-transparent/image"
+    }
+  },
+  "40": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "settings-cards/ltv-settings-video.png"
+    }
+  },
+  "41": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "40",
+        0
+      ]
+    }
+  },
+  "42": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "41",
+        0
+      ]
+    }
+  },
+  "43": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "40",
+        0
+      ],
+      "alpha": [
+        "42",
+        0
+      ]
+    }
+  },
+  "44": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "43",
+        0
+      ],
+      "filename_prefix": "ltv-settings-transparent/video"
+    }
+  },
+  "50": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "settings-cards/ltv-settings-edit.png"
+    }
+  },
+  "51": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "1",
+        0
+      ],
+      "image": [
+        "50",
+        0
+      ]
+    }
+  },
+  "52": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "51",
+        0
+      ]
+    }
+  },
+  "53": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "50",
+        0
+      ],
+      "alpha": [
+        "52",
+        0
+      ]
+    }
+  },
+  "54": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "53",
+        0
+      ],
+      "filename_prefix": "ltv-settings-transparent/edit"
+    }
+  }
+}

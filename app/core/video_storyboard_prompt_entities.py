@@ -26,7 +26,7 @@ def decorate_storyboard_prompt(text: str, plan: dict[str, Any]) -> str:
     result = str(text or "")
     names = {
         str(value.get("name") or "").strip()
-        for collection in ("characters", "locations")
+        for collection in ("characters", "locations", "objects")
         for value in storyboard_prompt_entities(plan, collection)
         if str(value.get("name") or "").strip()
     }
@@ -45,7 +45,7 @@ def strip_storyboard_prompt_markers(text: str, plan: dict[str, Any]) -> str:
     result = str(text or "")
     names = {
         str(value.get("name") or "").strip()
-        for collection in ("characters", "locations")
+        for collection in ("characters", "locations", "objects")
         for value in storyboard_prompt_entities(plan, collection)
         if str(value.get("name") or "").strip()
     }

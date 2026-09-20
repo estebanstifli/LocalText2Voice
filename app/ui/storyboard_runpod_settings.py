@@ -44,6 +44,7 @@ class RunpodSettingsWidget(QWidget):
         self.thread = None
         self._secret_cache = {}
         self._restoring = False
+        self._role = None
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         form = QFormLayout()
@@ -60,6 +61,9 @@ class RunpodSettingsWidget(QWidget):
             self.image_model.addItem(model["name"], endpoint)
         self.image_model.addItem(tr("runpod_custom_endpoint", "Custom endpoint (Advanced)"), "custom")
         form.addRow(tr("runpod_image_model", "Image model"), self.image_model)
+        image_help = QLabel(tr("runpod_qwen_generation_help", "Qwen Image Edit 2511 uses 1–3 character, location or object references. Add references before generating; text-only scenes need a T2I model. Output uses the nearest supported size (1536 × 1080 for a 16:9 preset). Local images use the reference storage selected below."))
+        image_help.setWordWrap(True)
+        form.addRow(image_help)
         self.image_model.setToolTip(tr("runpod_image_model_help", "P-Image uses the nearest supported aspect ratio, not an exact pixel resolution."))
         self.video_model = QComboBox()
         for endpoint, model in VIDEO_MODELS.items():
@@ -73,7 +77,7 @@ class RunpodSettingsWidget(QWidget):
         self.cost_label = QLabel(tr("runpod_rates", "Estimated rates: image $0.005 · edit $0.02 · video $0.10/s at 720p or $0.15/s at 1080p. Video is generated in 5, 10 or 15 seconds. Verify current Runpod prices; retries may add cost."))
         self.cost_label.setWordWrap(True)
         form.addRow(self.cost_label)
-        note = QLabel(tr("runpod_reference_storage_help", "Runpod-generated images can be reused directly. Choose temporary storage below for local references. Analysis uses the LLM selected below; final video assembly runs on this computer."))
+        note = QLabel(tr("runpod_reference_storage_category_help", "Runpod-generated images can be reused directly. Choose storage below for local references. Configure analysis in the LLM card; final video assembly runs on this computer."))
         note.setWordWrap(True)
         form.addRow(note)
         links = QLabel('<a href="https://console.runpod.io/user/settings">Runpod API keys</a> · <a href="https://docs.runpod.io/public-endpoints/reference">Models and prices</a>')
@@ -167,7 +171,21 @@ class RunpodSettingsWidget(QWidget):
         self.fields["image_endpoint"].textChanged.connect(self._sync_image_model)
         self.fields["video_endpoint"].textChanged.connect(self._sync_video_model)
         self.size.currentIndexChanged.connect(self._update_cost)
+        self._role_forms = (
+            (form, {"image": [self.image_model, image_help], "video": [self.video_model, self.size]}),
+            (advanced, {"image": [self.fields["image_endpoint"]], "video": [self.fields["video_endpoint"], self.expansion],
+                        "edit": [self.fields["edit_endpoint"], self.edit_size, self.preserve_size]}),
+        )
         self.set_configuration({})
+
+    def set_role(self, role):
+        """Share credentials and storage, showing only the selected engine's fields."""
+        self._role = role
+        for form, roles in self._role_forms:
+            for field_role, fields in roles.items():
+                for field in fields:
+                    form.setRowVisible(field, role is None or role == field_role)
+        self._update_cost()
 
     def _image_model_changed(self, *_):
         endpoint = self.image_model.currentData()
@@ -203,6 +221,10 @@ class RunpodSettingsWidget(QWidget):
         self.size.clear()
         for size in sizes:
             self.size.addItem("720p" if size == "1280*720" else "1080p", size)
+        if endpoint == "kling-video-o1-r2v":
+            self.size.clear()
+            self.size.addItem(self.tr("storyboard_video_model_resolution", "Model default (16:9)"), "1280*720")
+        self.size.setEnabled(endpoint != "kling-video-o1-r2v")
         self.size.setCurrentIndex(max(0, self.size.findData(previous)))
         self.size.blockSignals(False)
         self._update_cost()
@@ -215,6 +237,14 @@ class RunpodSettingsWidget(QWidget):
         amount = f"${rate:.2f}/s · 5s ≈ ${rate * 5:.2f}" if rate else self.tr("runpod_cost_unknown", "Depends on the endpoint")
         image_price = f"${image['price']:.3f}" if image else self.tr("runpod_cost_unknown", "Depends on the endpoint")
         self.cost_label.setText(self.tr("runpod_selected_model_rates", "Image {image_price} · edit $0.02 · selected video: {price}. Indicative prices; verify current Runpod prices.", image_price=image_price, price=amount))
+        if self._role:
+            label, price = {
+                "image": (image.get("name", "Custom image"), image_price),
+                "video": (model["name"] if model else "Custom video", amount),
+                "edit": (self.fields["edit_endpoint"].text(), "$0.02"),
+            }[self._role]
+            self.model_note.setText(label)
+            self.cost_label.setText(self.tr("runpod_role_rate", "Indicative price: {price}. Verify current Runpod prices.", price=price))
 
     def _storage_changed(self, *_):
         mode = self.reference_storage.currentData()

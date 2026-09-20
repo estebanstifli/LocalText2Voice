@@ -1005,8 +1005,9 @@ class MainWindowUITests(unittest.TestCase):
         window.video_storyboard_settings.continuity_settings_button.click()
         self.assertTrue(window.continuity_settings_dialog.isVisible())
         window.continuity_settings_dialog.close()
-        self.assertEqual(window.continuity_analysis_settings.process.currentData(), "conversational")
-        self.assertFalse(window.continuity_analysis_settings.process.isEnabled())
+        self.assertEqual(window.continuity_analysis_settings.configuration()["process"], "conversational")
+        self.assertFalse(hasattr(window.continuity_analysis_settings, "process"))
+        self.assertFalse(hasattr(window.continuity_analysis_settings, "era"))
         window.continuity_analysis_settings.block_size.setCurrentIndex(
             window.continuity_analysis_settings.block_size.findData("custom")
         )
@@ -1341,13 +1342,14 @@ class MainWindowUITests(unittest.TestCase):
         )
         self.assertIn("OpenAI", window.header_engine_label.text())
 
-        window.video_storyboard_settings.enabled_checkbox.setChecked(True)
+        self.assertFalse(hasattr(window.video_storyboard_settings, "enabled_checkbox"))
+        window.video_storyboard_settings.scene_maximum_spin.setValue(16)
         self.assertTrue(
             SettingsManager(config_path).settings["video_storyboard"]["enabled"]
         )
         window._show_video_storyboard_page()
         self.assertEqual(window.page_stack.currentIndex(), 7)
-        self.assertIn("Enabled", window.video_storyboard_page.status_label.text())
+        self.assertIn("Beta", window.video_storyboard_page.status_label.text())
         self.assertFalse(
             hasattr(window.video_storyboard_page, "open_settings_button")
         )

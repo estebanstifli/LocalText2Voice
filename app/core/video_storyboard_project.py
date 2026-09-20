@@ -17,6 +17,19 @@ STORYBOARD_ANALYSIS_LOG_DIR = Path("storyboard") / "debug"
 _WRITE_LOCK = threading.RLock()
 
 
+def _atomic_json(target, document):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(document, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def create_storyboard_analysis_request_log(
     project_dir: Path,
     *,
@@ -210,26 +223,46 @@ def save_storyboard_state(
     document = _migrate_storyboard_document(document)
     target = root / STORYBOARD_PROJECT_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    payload = json.dumps(document, ensure_ascii=False, indent=2)
     with _WRITE_LOCK:
-        temporary.write_text(payload, encoding="utf-8")
-        try:
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+        if target.is_file():
+            try:
+                previous = json.loads(target.read_text(encoding="utf-8-sig"))
+                if previous.get("schema") == "localtext2voice.video-storyboard":
+                    _atomic_json(target.with_suffix(".json.bak"), previous)
+            except (ValueError, AttributeError):
+                pass
+        _atomic_json(target, document)
     return target
 
 
 def load_storyboard_state(project_dir: Path) -> dict[str, Any] | None:
     root = project_dir.resolve()
     path = root / STORYBOARD_PROJECT_FILE
-    if not path.is_file():
-        return None
-    try:
-        document = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    document = None
+    using_backup = False
+    for candidate in (path, path.with_suffix(".json.bak")):
+        try:
+            loaded = json.loads(candidate.read_text(encoding="utf-8-sig"))
+            if isinstance(loaded, dict) and loaded.get("schema") == "localtext2voice.video-storyboard":
+                document = loaded
+                using_backup = candidate != path
+                break
+        except (OSError, ValueError):
+            continue
+    from app.core.storyboard_frame_checkpoint import recover
+    with _WRITE_LOCK:
+        recovered_document, recovered = recover(root, None if using_backup else document)
+        if recovered_document is not None:
+            document = recovered_document
+        if recovered:
+            # Commit before consuming the journal. If interrupted, replay is safe.
+            try:
+                save_storyboard_state(root, document, analysis_status=document.get("analysis_status", "ready"))
+                (root / "storyboard" / "frame-checkpoint.json").unlink(missing_ok=True)
+            except OSError:
+                # The journal still owns a durable copy; allow viewing recovered
+                # work even when a full disk prevents consolidating it right now.
+                pass
     if not isinstance(document, dict):
         return None
     if document.get("schema") != "localtext2voice.video-storyboard":
@@ -266,7 +299,13 @@ def load_storyboard_state(project_dir: Path) -> dict[str, Any] | None:
 
 def storyboard_matches_source(state: dict[str, Any], text: str) -> bool:
     expected = hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
-    return str(state.get("source_hash") or "") == expected
+    if str(state.get("source_hash") or "") == expected:
+        return True
+    saved = state.get("source", {}).get("text")
+    if not isinstance(saved, str):
+        return False
+    normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return normalize(saved) == normalize(str(text or ""))
 
 
 def _migrate_storyboard_document(document: dict[str, Any]) -> dict[str, Any]:

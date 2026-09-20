@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -55,6 +56,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.storyboard_entity_scenes import SceneImagePreview, timestamp
+from app.ui.storyboard_thumbnail_cache import StoryboardThumbnailCache
 from app.ui.icons import ui_icon
 from app.ui.storyboard_text_hover import StoryboardTextHover
 from app.ui.storyboard_video_clipboard import VideoLastFrameCopy
@@ -147,6 +150,8 @@ class StoryboardScene:
     video_prompt: str = ""
     video_frame_role: str = "start"
     video_duration_seconds: float = 0.0
+    video_audio_enabled: bool = True
+    video_audio_volume: float = 1.0
     video_motion_in: str = "none"
     video_motion_out: str = "none"
     status: str = "ready"
@@ -196,14 +201,12 @@ class StoryboardScene:
             image_path=str(value.get("image_path") or value.get("frame") or ""),
             video_path=str(value.get("video_path") or ""),
             video_prompt=str(value.get("video_prompt") or ""),
-            video_frame_role=(
-                "end"
-                if str(value.get("video_frame_role") or "start").casefold() == "end"
-                else "start"
-            ),
+            video_frame_role=(str(value.get("video_frame_role") or "start") if value.get("video_frame_role") in {"start", "end", "none"} else "start"),
             video_duration_seconds=max(
                 0.0, float(value.get("video_duration_seconds") or 0.0)
             ),
+            video_audio_enabled=bool(value.get("video_audio_enabled", True)),
+            video_audio_volume=max(0.0, min(4.0, float(value.get("video_audio_volume", 1.0)))),
             video_motion_in=str(value.get("video_motion_in") or "none"),
             video_motion_out=str(value.get("video_motion_out") or "none"),
             status=str(value.get("status") or "ready"),
@@ -269,6 +272,8 @@ class StoryboardScene:
             "video_prompt": self.video_prompt,
             "video_frame_role": self.video_frame_role,
             "video_duration_seconds": self.video_duration_seconds,
+            "video_audio_enabled": self.video_audio_enabled,
+            "video_audio_volume": self.video_audio_volume,
             "video_motion_in": self.video_motion_in,
             "video_motion_out": self.video_motion_out,
             "status": self.status,
@@ -332,6 +337,15 @@ class StoryboardNarrationCue:
 
 
 class _PixmapPreview(QLabel):
+    doubleClicked = Signal()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._source.isNull():
+            self.doubleClicked.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._source = QPixmap()
@@ -410,6 +424,7 @@ class StoryboardTimelineCanvas(QWidget):
     transitionSelected = Signal(int)
     selectionCleared = Signal()
     frameContextMenuRequested = Signal(str, QPoint)
+    viewImageRequested = Signal(str)
 
     RULER_HEIGHT = 30
     VIDEO_TOP = 34
@@ -419,7 +434,8 @@ class StoryboardTimelineCanvas(QWidget):
     CANVAS_HEIGHT = 232
     HANDLE_WIDTH = 8
     MIN_SCENE_SECONDS = 1.0
-    ZOOM_LEVELS = (20, 30, 45, 65, 90, 125, 170)
+    BASE_PIXELS_PER_SECOND = 45
+    ZOOM_LEVELS = (4.5, 9, 15, 20, 30, 45, 65, 90, 125, 170)
 
     def __init__(self, tr: Translate, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -428,14 +444,15 @@ class StoryboardTimelineCanvas(QWidget):
         self.narration_cues: list[StoryboardNarrationCue] = []
         self.source_duration_seconds = 0.0
         self.selected_scene_id = ""
-        self.zoom_index = 2
+        self.zoom_index = self.ZOOM_LEVELS.index(self.BASE_PIXELS_PER_SECOND)
         self.viewport_width = 700
         self._drag_boundary: int | None = None
         self._drag_origin_x = 0.0
         self._drag_durations: tuple[float, float | None] = (0.0, None)
         self._boundary_drag_started = False
         self._dragging_playhead = False
-        self._pixmap_cache: dict[str, QPixmap] = {}
+        self.thumbnail_cache = StoryboardThumbnailCache(self)
+        self.thumbnail_cache.changed.connect(self.update)
         self.playhead_seconds: float | None = None
         self._text_hover = StoryboardTextHover(self)
         self.selected_transition_index: int | None = None
@@ -445,7 +462,7 @@ class StoryboardTimelineCanvas(QWidget):
         self._update_width()
 
     @property
-    def pixels_per_second(self) -> int:
+    def pixels_per_second(self) -> float:
         return self.ZOOM_LEVELS[self.zoom_index]
 
     @property
@@ -471,7 +488,6 @@ class StoryboardTimelineCanvas(QWidget):
             and not 0 <= self.selected_transition_index < len(scenes) - 1
         ):
             self.selected_transition_index = None
-        self._pixmap_cache.clear()
         self._update_width()
         self.update()
 
@@ -573,6 +589,7 @@ class StoryboardTimelineCanvas(QWidget):
         )
 
     def paintEvent(self, _event) -> None:  # noqa: ANN001
+        self._paint_visible_rect = _event.rect()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.palette()
@@ -611,6 +628,10 @@ class StoryboardTimelineCanvas(QWidget):
 
         for index, scene in enumerate(self.scenes):
             left = round(scene.start_seconds * self.pixels_per_second)
+            if left > self._paint_visible_rect.right() + 2:
+                break
+            if (scene.start_seconds + scene.duration_seconds) * self.pixels_per_second < self._paint_visible_rect.left() - 2:
+                continue
             width = max(2, round(scene.duration_seconds * self.pixels_per_second))
             video_rect = QRect(
                 left + 1,
@@ -710,6 +731,8 @@ class StoryboardTimelineCanvas(QWidget):
                 max(1, width - 2),
                 self.TEXT_HEIGHT - 6,
             )
+            if not rect.intersects(self._paint_visible_rect):
+                continue
             dark = self.palette().color(self.palette().ColorRole.Base).lightness() < 128
             if cue.timing_ready:
                 fill = QColor("#102d35") if dark else QColor("#dbeafe")
@@ -741,13 +764,15 @@ class StoryboardTimelineCanvas(QWidget):
             else 2
             if self.pixels_per_second >= 45
             else 5
+            if self.pixels_per_second >= 20
+            else 10
+            if self.pixels_per_second >= 9
+            else 20
         )
-        total = max(
-            self.total_seconds,
-            self.width() / max(1, self.pixels_per_second),
-        )
+        visible = self._paint_visible_rect
+        total = visible.right() / self.pixels_per_second
         painter.setPen(QPen(muted, 1))
-        second = 0
+        second = max(0, int((visible.left() - 74) / self.pixels_per_second / step) * step)
         while second <= total + step:
             x = round(second * self.pixels_per_second)
             painter.drawLine(x, self.RULER_HEIGHT - 7, x, self.RULER_HEIGHT)
@@ -780,7 +805,7 @@ class StoryboardTimelineCanvas(QWidget):
         painter.drawRoundedRect(video_rect, 6, 6)
 
         image_rect = video_rect.adjusted(4, 23, -4, -22)
-        pixmap = self._scene_pixmap(scene.image_path)
+        pixmap = self._scene_pixmap(scene.image_path) if image_rect.width() > 8 else QPixmap()
         if not pixmap.isNull() and image_rect.width() > 8:
             tile_width = max(24, round(image_rect.height() * 16 / 9))
             scaled = pixmap.scaled(
@@ -793,8 +818,8 @@ class StoryboardTimelineCanvas(QWidget):
             source_y = max(0, (scaled.height() - image_rect.height()) // 2)
             painter.save()
             painter.setClipRect(image_rect)
-            x = image_rect.left()
-            while x <= image_rect.right():
+            x = image_rect.left() + max(0, (self._paint_visible_rect.left() - image_rect.left()) // tile_width) * tile_width
+            while x <= min(image_rect.right(), self._paint_visible_rect.right()):
                 visible_width = min(tile_width, image_rect.right() - x + 1)
                 painter.drawPixmap(
                     QRect(x, image_rect.top(), visible_width, image_rect.height()),
@@ -1045,6 +1070,8 @@ class StoryboardTimelineCanvas(QWidget):
         index = self._scene_index_at(event.position().x(), event.position().y())
         if index is not None:
             self.select_scene(self.scenes[index].scene_id, emit=True)
+            if event.button() == Qt.MouseButton.LeftButton and self.VIDEO_TOP <= event.position().y() <= self.VIDEO_TOP + self.VIDEO_HEIGHT:
+                self.viewImageRequested.emit(self.scenes[index].scene_id)
 
     def _scene_index_at(self, x: float, y: float) -> int | None:
         if not (self.VIDEO_TOP <= y <= self.TEXT_TOP + self.TEXT_HEIGHT):
@@ -1075,11 +1102,7 @@ class StoryboardTimelineCanvas(QWidget):
         return None
 
     def _scene_pixmap(self, path: str) -> QPixmap:
-        if not path or not Path(path).is_file():
-            return QPixmap()
-        if path not in self._pixmap_cache:
-            self._pixmap_cache[path] = QPixmap(path)
-        return self._pixmap_cache[path]
+        return self.thumbnail_cache.request(path)
 
     def _apply_boundary_delta(
         self,
@@ -1129,6 +1152,8 @@ class _TimelineScrollArea(QScrollArea):
     ) -> None:
         super().__init__(parent)
         self.canvas = canvas
+        from app.ui.storyboard_timeline_navigation import TimelineScrollBar
+        self.setHorizontalScrollBar(TimelineScrollBar(self))
         self.setWidget(canvas)
         self.setWidgetResizable(False)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -1297,6 +1322,7 @@ class VideoStoryboardPage(QWidget):
         self._frame_batch_dialog: VideoStoryboardFrameBatchDialog | None = None
         self._frame_batch_mode = ""
         self._frame_batch_completed = 0
+        self._frame_batch_total = 0
         self._image_edit_dialog: VideoStoryboardImageEditDialog | None = None
         self._ffmpeg_path = "ffmpeg/ffmpeg.exe"
         self._regeneration_dialog: VideoStoryboardRegenerationDialog | None = None
@@ -1489,6 +1515,11 @@ class VideoStoryboardPage(QWidget):
         self.transition_label.hide()
         self.transition_combo.hide()
         heading_row.addWidget(heading)
+        self.frame_errors_button = QPushButton(self.tr_text("storyboard_error_details", "View generation errors"))
+        self.frame_errors_button.setIcon(ui_icon("warning", color="#dc2626"))
+        self.frame_errors_button.hide()
+        self.frame_errors_button.clicked.connect(self._show_frame_errors)
+        heading_row.addWidget(self.frame_errors_button)
         heading_row.addSpacing(12)
         heading_row.addWidget(self.transition_label)
         heading_row.addWidget(self.transition_combo)
@@ -1534,13 +1565,15 @@ class VideoStoryboardPage(QWidget):
             self.tr_text("stop", "Stop")
         )
         self.preview_stop_button.setIcon(ui_icon("stop"))
-        self.preview_time_label = QLabel("00:00 / 00:00")
+        from app.ui.storyboard_timeline_navigation import TimelineTimeEdit
+        self.preview_time_label = TimelineTimeEdit(self.tr_text)
+        self.preview_time_label.seekRequested.connect(self._goto_preview_time)
         self.preview_time_label.setObjectName("helperLabel")
         playback_row.addWidget(self.preview_play_button)
         playback_row.addWidget(self.preview_pause_button)
+        playback_row.addWidget(self.preview_time_label)
         playback_row.addWidget(self.preview_stop_button)
         playback_row.addSpacing(8)
-        playback_row.addWidget(self.preview_time_label)
         playback_row.addStretch(1)
         playback_row.addWidget(self.zoom_out_button)
         playback_row.addWidget(self.zoom_label)
@@ -1606,6 +1639,7 @@ class VideoStoryboardPage(QWidget):
         self.timeline_canvas.selectionCleared.connect(
             self._clear_timeline_selection
         )
+        self.timeline_canvas.viewImageRequested.connect(self._view_scene_image)
         self.timeline_canvas.frameContextMenuRequested.connect(
             self._open_frame_context_menu
         )
@@ -1739,6 +1773,9 @@ class VideoStoryboardPage(QWidget):
         self.style_palette_edit = QLineEdit()
         self.style_lighting_edit = QLineEdit()
         self.style_negative_edit = QLineEdit()
+        self.illustration_context_edit = QPlainTextEdit()
+        self.illustration_context_edit.setMaximumHeight(95)
+        self.illustration_context_edit.textChanged.connect(self._project_controls_changed)
         self.seed_edit = QLineEdit()
         self.seed_edit.setPlaceholderText(
             self.tr_text(
@@ -1755,8 +1792,8 @@ class VideoStoryboardPage(QWidget):
         self.story_era_edit = QLineEdit()
         self.story_era_edit.setPlaceholderText(
             self.tr_text(
-                "video_storyboard_era_automatic",
-                "Automatic (present day when the text gives no historical clues)",
+                "video_storyboard_era_optional",
+                "Optional fixed period; automatic periods are configured before analysis",
             )
         )
         style_form.addRow(
@@ -1779,6 +1816,10 @@ class VideoStoryboardPage(QWidget):
             self.tr_text("video_storyboard_seed", "Seed"),
             self.seed_edit,
         )
+        style_form.addRow(
+            self.tr_text("video_storyboard_illustration_context", "Illustration context"),
+            self.illustration_context_edit,
+        )
         style_page_layout.addLayout(style_form)
         style_page_layout.addStretch(1)
         tabs.addTab(
@@ -1793,13 +1834,31 @@ class VideoStoryboardPage(QWidget):
         narrative_layout = QVBoxLayout(narrative_page)
         narrative_layout.setContentsMargins(8, 8, 8, 8)
         narrative_form = QFormLayout()
+        era_row = QHBoxLayout()
+        era_row.addWidget(self.story_era_edit, 1)
+        self.era_visual_context_check = QCheckBox(self.tr_text(
+            "storyboard_era_visual_context", "Include visual context"))
+        self.era_visual_context_check.setStyleSheet(
+            "QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid palette(mid);"
+            " border-radius: 3px; background: palette(base); }"
+            "QCheckBox::indicator:checked { background: palette(highlight); border-color: palette(highlight); }")
+        self.era_visual_context_check.setToolTip(self.tr_text(
+            "storyboard_era_visual_context_help",
+            "Add period-specific clothing, architecture and technology to image prompts. Off: period name only. Present day adds no era instructions."))
+        era_row.addWidget(self.era_visual_context_check, 0, Qt.AlignmentFlag.AlignRight)
+        self.era_visual_context_check.toggled.connect(self._project_controls_changed)
         narrative_form.addRow(
             self.tr_text("video_storyboard_story_era", "Historical period / era"),
-            self.story_era_edit,
+            era_row,
         )
         narrative_layout.addLayout(narrative_form)
         self.continuity_eras_tree = self._continuity_tree()
+        self.continuity_eras_tree.itemDoubleClicked.connect(
+            lambda item, _column: self.edit_storyboard_era((item.data(0, Qt.ItemDataRole.UserRole) or {}).get("id", "")))
         narrative_layout.addWidget(self.continuity_eras_tree, 1)
+        era_help = QLabel(self.tr_text("analysis_era_open", "Double-click a period to review its context and scenes."))
+        era_help.setWordWrap(True)
+        narrative_layout.addWidget(era_help)
         tabs.addTab(
             narrative_page,
             self.tr_text(
@@ -1942,6 +2001,10 @@ class VideoStoryboardPage(QWidget):
             self.tr_text("video_storyboard_locations_tab", "Locations"),
         )
 
+        from app.ui.video_storyboard_objects_panel import VideoStoryboardObjectsPanel
+        self.objects_panel = VideoStoryboardObjectsPanel(self)
+        tabs.addTab(self.objects_panel, self.tr_text("video_storyboard_objects_tab", "Objects"))
+
         video_page = QWidget()
         video_page_layout = QVBoxLayout(video_page)
         video_page_layout.setContentsMargins(8, 8, 8, 8)
@@ -1994,26 +2057,27 @@ class VideoStoryboardPage(QWidget):
             ),
             self.default_motion_combo,
         )
+        self.clip_audio_check = QCheckBox(self.tr_text("storyboard_clip_audio", "Video audio track (preview and export)"))
+        self.clip_audio_check.setChecked(True)
+        render_form.addRow(self.clip_audio_check)
+        self.clip_audio_volume = QDoubleSpinBox()
+        self.soundtrack_volume = QDoubleSpinBox()
+        for control in (self.clip_audio_volume, self.soundtrack_volume):
+            control.setRange(0, 400 if control is self.clip_audio_volume else 100)
+            control.setValue(100)
+            control.setSuffix(" %")
+            control.valueChanged.connect(self._project_controls_changed)
+        render_form.addRow(self.tr_text("storyboard_clip_volume", "Video audio volume"), self.clip_audio_volume)
+        render_form.addRow(self.tr_text("storyboard_soundtrack_volume", "Audiobook mix volume"), self.soundtrack_volume)
+        self.clip_audio_check.toggled.connect(self._project_controls_changed)
         video_page_layout.addLayout(render_form)
 
         video_page_layout.addStretch(1)
         tabs.addTab(
             video_page,
-            self.tr_text("video_storyboard_video_motion", "Video motion"),
+            self.tr_text("storyboard_video_audio_tab", "Video & audio"),
         )
         outer.addWidget(tabs)
-        regenerate_row = QHBoxLayout()
-        regenerate_row.addStretch(1)
-        self.regenerate_all_button = QPushButton(
-            self.tr_text(
-                "video_storyboard_regenerate_all",
-                "Regenerate all frames",
-            )
-        )
-        self.regenerate_all_button.setIcon(ui_icon("regenerate"))
-        regenerate_row.addWidget(self.regenerate_all_button)
-        outer.addLayout(regenerate_row)
-
         for editor in (
             self.style_medium_edit,
             self.style_palette_edit,
@@ -2037,9 +2101,6 @@ class VideoStoryboardPage(QWidget):
         )
         self.default_motion_combo.currentIndexChanged.connect(
             self._project_controls_changed
-        )
-        self.regenerate_all_button.clicked.connect(
-            self._request_regenerate_all
         )
         return group
 
@@ -2114,6 +2175,16 @@ class VideoStoryboardPage(QWidget):
         video_playback.addWidget(self.scene_video_pause_button)
         video_playback.addWidget(self.scene_video_stop_button)
         video_layout.addLayout(video_playback)
+        self.scene_audio_check = QCheckBox(self.tr_text("storyboard_scene_audio", "Use this clip's audio"))
+        self.scene_audio_volume = QDoubleSpinBox()
+        self.scene_audio_volume.setRange(0, 400)
+        self.scene_audio_volume.setSuffix(" %")
+        audio_row = QHBoxLayout()
+        audio_row.addWidget(self.scene_audio_check)
+        audio_row.addWidget(self.scene_audio_volume)
+        video_layout.addLayout(audio_row)
+        self.scene_audio_check.toggled.connect(self._scene_audio_changed)
+        self.scene_audio_volume.valueChanged.connect(self._scene_audio_changed)
 
         video_motion_row = QHBoxLayout()
         video_motion_row.addWidget(
@@ -2163,6 +2234,7 @@ class VideoStoryboardPage(QWidget):
         frame_layout = QVBoxLayout(self.frame_inspector_tab)
         frame_layout.setContentsMargins(8, 10, 8, 8)
         self.current_preview = _PixmapPreview()
+        self.current_preview.doubleClicked.connect(lambda: self._view_scene_image(self._selected_scene_id))
         frame_layout.addWidget(self.current_preview)
         for preview in (self.current_preview, self.scene_video_widget):
             preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2325,22 +2397,7 @@ class VideoStoryboardPage(QWidget):
 
     def set_configuration(self, settings: dict[str, Any] | None) -> None:
         self._configuration = dict(settings) if isinstance(settings, dict) else {}
-        enabled = (
-            bool(settings.get("enabled", False))
-            if isinstance(settings, dict)
-            else False
-        )
-        self.status_label.setText(
-            self.tr_text(
-                "video_storyboard_enabled_status",
-                "Enabled · Ollama + ComfyUI",
-            )
-            if enabled
-            else self.tr_text(
-                "video_storyboard_disabled_status",
-                "Not enabled",
-            )
-        )
+        self.status_label.setText(self.tr_text("storyboard_beta_status", "Video Storyboard · Beta"))
         self._sync_rendered_header()
         self._sync_project_controls()
 
@@ -2367,6 +2424,20 @@ class VideoStoryboardPage(QWidget):
         self.scene_video_audio_output.setMuted(True)
         self.scene_video_player.setAudioOutput(self.scene_video_audio_output)
         self.scene_video_player.setVideoOutput(self.scene_video_widget)
+        from app.ui.storyboard_audio_preview import AmplifiedVideoPreview
+        self._amplified_video_preview = AmplifiedVideoPreview(self.scene_video_player, self.scene_video_audio_output, self)
+        self._amplified_video_preview.failed.connect(self.append_activity)
+        self._amplified_video_preview.failed.connect(
+            lambda message: self._record_storyboard_error("video_preview", message, self._selected_scene_id or "")
+        )
+        self.preview_player.playbackStateChanged.connect(
+            lambda state: self._clear_storyboard_error("audio_preview")
+            if state == QMediaPlayer.PlaybackState.PlayingState else None
+        )
+        self.scene_video_player.playbackStateChanged.connect(
+            lambda state: self._clear_storyboard_error("video_preview", self._selected_scene_id or "")
+            if state == QMediaPlayer.PlaybackState.PlayingState else None
+        )
         self.scene_video_widget.videoSink().videoFrameChanged.connect(
             self._on_scene_video_frame_changed
         )
@@ -2406,6 +2477,7 @@ class VideoStoryboardPage(QWidget):
         )
         self._source_project_id = project_id
         self._source_project_dir = str(project_dir or "")
+        self.timeline_canvas.thumbnail_cache.set_project_dir(self._source_project_dir)
         self._source_title = str(title or "")
         self._audiobook_text = source_text
         previous_offset = self._voice_start_offset_seconds
@@ -2513,7 +2585,6 @@ class VideoStoryboardPage(QWidget):
         self.timeline_canvas.set_scenes(self._scenes)
         self.generate_frames_button.setEnabled(bool(self._scenes))
         self.generate_all_videos_button.setEnabled(bool(self._scenes))
-        self.regenerate_all_button.setEnabled(bool(self._scenes))
         self._sync_output_actions()
         self._sync_preview_controls()
         if self._scenes:
@@ -2530,17 +2601,24 @@ class VideoStoryboardPage(QWidget):
         self,
         values: Iterable[StoryboardScene | dict[str, Any]] | dict[str, Any],
     ) -> None:
+        self._clear_storyboard_error("analysis")
         self.analyze_button.setEnabled(bool(self._audiobook_text.strip()))
         if isinstance(values, dict):
             previous_video_overrides = self._plan_metadata.get(
                 "video_overrides"
             )
+            previous_objects = deepcopy(self._plan_metadata.get("continuity", {}).get("objects", []))
+            previous_narrative = deepcopy(self._plan_metadata.get("narrative_context", {}))
             raw_scenes = values.get("scenes", [])
             self._plan_metadata = {
                 key: value
                 for key, value in values.items()
                 if key != "scenes"
             }
+            self._plan_metadata.setdefault("continuity", {}).setdefault("objects", previous_objects)
+            for key in ("illustration_context", "era_visual_context"):
+                if key in previous_narrative:
+                    self._plan_metadata.setdefault("narrative_context", {})[key] = previous_narrative[key]
             self._sync_prompt_markup_plan()
             self._rendered_output_path = str(
                 self._plan_metadata.get("rendered_output_path") or ""
@@ -2577,10 +2655,16 @@ class VideoStoryboardPage(QWidget):
         previous_video_overrides = self._plan_metadata.get(
             "video_overrides"
         )
+        previous_objects = deepcopy(self._plan_metadata.get("continuity", {}).get("objects", []))
+        previous_narrative = deepcopy(self._plan_metadata.get("narrative_context", {}))
         raw_scenes = values.get("scenes", [])
         self._plan_metadata = {
             key: value for key, value in values.items() if key != "scenes"
         }
+        self._plan_metadata.setdefault("continuity", {}).setdefault("objects", previous_objects)
+        for key in ("illustration_context", "era_visual_context"):
+            if key in previous_narrative:
+                self._plan_metadata.setdefault("narrative_context", {})[key] = previous_narrative[key]
         self._sync_prompt_markup_plan()
         self._rendered_output_path = ""
         if isinstance(previous_video_overrides, dict):
@@ -2675,6 +2759,7 @@ class VideoStoryboardPage(QWidget):
             self.projectChanged.emit(self.project_state())
 
     def set_analysis_failed(self, error: str) -> None:
+        self._record_storyboard_error("analysis", error)
         self.analyze_button.setEnabled(bool(self._audiobook_text.strip()))
         message = self.tr_text(
             "video_storyboard_analysis_failed",
@@ -2722,7 +2807,7 @@ class VideoStoryboardPage(QWidget):
         era = self.story_era_edit.text().strip()
         era_source = (
             "detected"
-            if era and era == self._detected_era_value
+            if era == self._detected_era_value and self._plan_metadata.get("narrative_context", {}).get("era_source") == "detected"
             else "user"
         )
         return {
@@ -2730,10 +2815,16 @@ class VideoStoryboardPage(QWidget):
             "style_mode": style_mode,
             "style": style,
             "narrative": {
+                **self._plan_metadata.get("narrative_context", {}),
                 "era": era,
                 "era_source": era_source,
+                "era_visual_context": self.era_visual_context_check.isChecked(),
+                "illustration_context": self.illustration_context_edit.toPlainText().strip(),
             },
             "video": {
+                "clip_audio_enabled": self.clip_audio_check.isChecked(),
+                "clip_audio_volume": self.clip_audio_volume.value() / 100,
+                "soundtrack_volume": self.soundtrack_volume.value() / 100,
                 "zoom_percent": self.video_zoom_spin.value(),
                 "transition_seconds": self.video_transition_spin.value(),
                 "motion": str(
@@ -2795,8 +2886,8 @@ class VideoStoryboardPage(QWidget):
                     if str(value).strip()
                 ]
             narrative = overrides.get("narrative", {})
-            if isinstance(narrative, dict) and narrative.get("era"):
-                scene["era"] = str(narrative["era"])
+            if isinstance(narrative, dict) and "era" in narrative:
+                scene["era"] = str(narrative["era"] or "")
                 scene["era_state_id"] = ""
         return {
             "source": self.source_payload(),
@@ -2846,6 +2937,13 @@ class VideoStoryboardPage(QWidget):
         )
 
     def set_regeneration_failed(self, scene_id: str, error: str) -> None:
+        from app.core.storyboard_generation_errors import generation_error_details, redact_generation_error
+        failure = generation_error_details(RuntimeError(error))
+        failure["error"] = redact_generation_error(failure["error"], self._configuration)
+        failure["scene_id"] = scene_id
+        self._plan_metadata.setdefault("frame_generation_errors", {})[scene_id] = failure
+        self._refresh_frame_errors()
+        self.projectChanged.emit(self.project_state())
         self.regenerate_button.setEnabled(True)
         message = self.tr_text(
             "video_storyboard_regeneration_failed",
@@ -2902,9 +3000,10 @@ class VideoStoryboardPage(QWidget):
         ):
             self._push_undo_snapshot(self._frame_generation_start_snapshot)
             self._frame_generation_history_recorded = True
+        self._plan_metadata.get("frame_generation_errors", {}).pop(scene_id, None)
         scene.image_path = image_path
         scene.status = "generated"
-        self.timeline_canvas._pixmap_cache.clear()
+        self._refresh_frame_errors()
         self.timeline_canvas.update()
         if self._selected_scene_id == scene_id:
             self.current_preview.set_image(
@@ -2932,18 +3031,123 @@ class VideoStoryboardPage(QWidget):
             self._frame_batch_dialog.frame_ready(
                 scene_id,
                 self._frame_batch_completed,
-                len(self._scenes),
+                self._frame_batch_total or len(self._scenes),
             )
 
-    def set_frame_generation_finished(self) -> None:
+    def set_frame_generation_scene_failed(self, failure: dict[str, Any]) -> None:
+        scene_id = str(failure["scene_id"])
+        self._plan_metadata.setdefault("frame_generation_errors", {})[scene_id] = deepcopy(failure)
+        for scene in self._scenes:
+            if scene.scene_id == scene_id:
+                scene.status = "generation_failed"
+        self._refresh_frame_errors()
+        message = self.tr_text(
+            "video_storyboard_frame_scene_failed",
+            "Scene {scene} failed ({provider}): {error}. Continuing with the next scene.",
+            scene=scene_id, provider=failure.get("provider", ""), error=failure.get("error") or failure.get("code", "generation_failed"),
+        )
+        self.append_activity(message)
+        if self._frame_batch_dialog is not None:
+            self._frame_batch_completed += 1
+            self._frame_batch_dialog.set_progress(
+                self._frame_batch_completed, self._frame_batch_total or len(self._scenes), message,
+                round(self._frame_batch_completed / max(1, self._frame_batch_total or len(self._scenes)) * 100),
+            )
+        self.scenesChanged.emit(self.scenes())
+        self.projectChanged.emit(self.project_state())
+
+    def _storyboard_errors(self) -> list[dict[str, Any]]:
+        errors = []
+        frames = self._plan_metadata.get("frame_generation_errors", {})
+        other = self._plan_metadata.get("storyboard_errors", {})
+        for number, scene in enumerate(self._scenes, 1):
+            failures = []
+            if frames.get(scene.scene_id):
+                failures.append({**frames[scene.scene_id], "operation": "frames"})
+            failures.extend(value for value in other.values() if value.get("scene_id") == scene.scene_id)
+            errors.extend({**value, "scene_id": scene.scene_id, "number": number} for value in failures)
+        errors.extend(value for value in other.values() if not value.get("scene_id"))
+        return errors
+
+    def _record_storyboard_error(self, operation: str, error: str, scene_id: str = "") -> None:
+        if error.strip() == self.tr_text("cancelled", "Cancelled"):
+            return
+        from app.core.storyboard_generation_errors import generation_error_details, redact_generation_error
+        failure = generation_error_details(RuntimeError(error))
+        failure.update(operation=operation, scene_id=scene_id)
+        failure["error"] = redact_generation_error(failure["error"], self._configuration)
+        self._plan_metadata.setdefault("storyboard_errors", {})[f"{operation}:{scene_id}"] = failure
+        self._refresh_frame_errors()
+        self.projectChanged.emit(self.project_state())
+
+    def _clear_storyboard_error(self, operation: str, scene_id: str = "") -> None:
+        if self._plan_metadata.get("storyboard_errors", {}).pop(f"{operation}:{scene_id}", None) is not None:
+            self._refresh_frame_errors()
+            self.projectChanged.emit(self.project_state())
+
+    def _storyboard_error_summary(self) -> str:
+        errors = self._storyboard_errors()
+        scenes = list(dict.fromkeys(f"{item['number']} ({item['scene_id']})" for item in errors if item.get("scene_id")))
+        return self.tr_text(
+            "storyboard_errors_summary",
+            "{count} errors · {failed} failed scenes: {scenes} · {general} general errors",
+            count=len(errors), failed=len(scenes), scenes=", ".join(scenes) or "—",
+            general=sum(not item.get("scene_id") for item in errors),
+        )
+
+    def _show_frame_errors(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr_text("storyboard_error_details", "View generation errors"))
+        dialog.resize(950, 650)
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(self._storyboard_error_summary())
+        summary.setObjectName("storyboardErrorsSummary")
+        summary.setWordWrap(True)
+        summary.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(summary)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        from app.core.storyboard_generation_errors import redact_generation_error
+        blocks = []
+        for failure in self._storyboard_errors():
+            scope = self.tr_text("storyboard_error_general", "General")
+            if failure.get("scene_id"):
+                scope = self.tr_text("storyboard_error_scene", "Scene {number} ({scene})", number=failure["number"], scene=failure["scene_id"])
+            operation = failure.get("operation", "frames")
+            operation = self.tr_text(f"storyboard_error_operation_{operation}", operation.replace("_", " ").capitalize())
+            blocks.append(f"{scope} · {operation} · {failure.get('provider', '')}\n"
+                          f"Code: {failure.get('code', 'unknown')} · HTTP: {failure.get('http_status') or '—'}\n"
+                          f"Request ID: {failure.get('request_id') or '—'}\n\n"
+                          f"{failure.get('error', '')}\n\nPrompt:\n{failure.get('compiled_prompt', '')}")
+        details.setPlainText(redact_generation_error(("\n\n" + "─" * 60 + "\n\n").join(blocks), self._configuration))
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy_button = buttons.addButton(self.tr_text("copy", "Copy"), QDialogButtonBox.ButtonRole.ActionRole)
+        copy_button.clicked.connect(lambda: QApplication.clipboard().setText(summary.text() + "\n\n" + details.toPlainText()))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _refresh_frame_errors(self) -> None:
+        self.frame_errors_button.setVisible(bool(self._storyboard_errors()))
+        self.frame_errors_button.setToolTip(self._storyboard_error_summary())
+
+    def set_frame_generation_finished(self, results: object = None) -> str:
+        self._clear_storyboard_error("frames")
         self._finish_frame_generation_history()
         self.generate_frames_button.setEnabled(bool(self._scenes))
-        self.regenerate_all_button.setEnabled(bool(self._scenes))
         self._sync_output_actions()
         message = self.tr_text(
-            "video_storyboard_frames_complete",
-            "All storyboard frames have been generated.",
+            "video_storyboard_selected_frames_complete",
+            "Generation of the selected storyboard frames is complete.",
         )
+        failed_count = sum(item.get("status") == "failed" for item in (results or []))
+        if failed_count:
+            message = self.tr_text(
+                "video_storyboard_frames_partial",
+                "Frame generation finished: {ready} ready, {failed} failed. See the scene warnings.",
+                ready=len(results) - failed_count, failed=failed_count,
+            )
         self.finish_operation(message)
         self.append_activity(message)
         if self._frame_batch_dialog is not None:
@@ -2951,11 +3155,12 @@ class VideoStoryboardPage(QWidget):
             self._frame_batch_dialog = None
             dialog.set_finished(True, message)
         self._frame_batch_mode = ""
+        return message
 
     def set_frame_generation_failed(self, error: str) -> None:
+        self._record_storyboard_error("frames", error)
         self._finish_frame_generation_history()
         self.generate_frames_button.setEnabled(bool(self._scenes))
-        self.regenerate_all_button.setEnabled(bool(self._scenes))
         self._sync_output_actions()
         message = self.tr_text(
             "video_storyboard_frames_failed",
@@ -2971,6 +3176,7 @@ class VideoStoryboardPage(QWidget):
         self._frame_batch_mode = ""
 
     def set_render_finished(self, output_path: str) -> None:
+        self._clear_storyboard_error("render")
         self._rendered_output_path = str(output_path or "")
         self._plan_metadata["rendered_output_path"] = self._rendered_output_path
         self._sync_output_actions()
@@ -3021,6 +3227,7 @@ class VideoStoryboardPage(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
 
     def set_render_failed(self, error: str) -> None:
+        self._record_storyboard_error("render", error)
         self._sync_output_actions()
         message = self.tr_text(
             "video_storyboard_render_failed",
@@ -3057,6 +3264,32 @@ class VideoStoryboardPage(QWidget):
         self.timeline_canvas.select_scene(scene_id)
         self._show_selected_scene(self.selected_scene())
 
+    def _scene_audio_changed(self, *_):
+        scene = self.selected_scene()
+        if scene is None:
+            return
+        self._record_scene_edit()
+        scene.video_audio_enabled = self.scene_audio_check.isChecked()
+        scene.video_audio_volume = self.scene_audio_volume.value() / 100
+        self._sync_clip_audio(scene)
+        self.scenesChanged.emit(self.scenes())
+        self._remember_scene_snapshot()
+
+    def _sync_clip_audio(self, scene=None):
+        if not hasattr(self, "scene_video_audio_output"):
+            return
+        scene = scene or self.selected_scene()
+        self.preview_audio_output.setVolume(self.soundtrack_volume.value() / 100)
+        enabled = self.clip_audio_check.isChecked() and scene is not None and scene.video_audio_enabled
+        self.scene_video_audio_output.setMuted(not enabled or self._scene_video_pause_on_first_frame)
+        gain = (scene.video_audio_volume if scene else 1) * self.clip_audio_volume.value() / 100
+        if scene and self._loaded_scene_video_path == scene.video_path and scene.video_path:
+            from app.utils.paths import large_assets_root
+            cache = (Path(self._source_project_dir) / "storyboard" if self._source_project_dir else large_assets_root()) / "audio_previews"
+            self._amplified_video_preview.apply(scene.video_path, gain, self._ffmpeg_path, cache)
+        else:
+            self.scene_video_audio_output.setVolume(min(1, gain))
+
     def _show_selected_scene(self, scene: StoryboardScene | None) -> None:
         enabled = scene is not None
         self._sync_video_action_visibility(scene)
@@ -3069,6 +3302,14 @@ class VideoStoryboardPage(QWidget):
         self.motion_in_combo.setEnabled(enabled)
         self.motion_out_combo.setEnabled(enabled)
         self.regenerate_button.setEnabled(enabled)
+        for control in (self.scene_audio_check, self.scene_audio_volume):
+            control.blockSignals(True)
+            control.setEnabled(self._scene_has_video(scene))
+        self.scene_audio_check.setChecked(scene.video_audio_enabled if scene else True)
+        self.scene_audio_volume.setValue((scene.video_audio_volume if scene else 1) * 100)
+        for control in (self.scene_audio_check, self.scene_audio_volume):
+            control.blockSignals(False)
+        self._sync_clip_audio(scene)
         frame_edit_enabled = bool(
             scene is not None
             and scene.image_path
@@ -3076,7 +3317,7 @@ class VideoStoryboardPage(QWidget):
         )
         self.inspector_edit_frame_button.setEnabled(frame_edit_enabled)
         self.inspector_generate_video_button.setVisible(bool(scene is not None and not (scene.video_path and Path(scene.video_path).is_file())))
-        self.inspector_generate_video_button.setEnabled(frame_edit_enabled)
+        self.inspector_generate_video_button.setEnabled(self._can_generate_scene_video(scene))
         self.edit_frame_button.setEnabled(frame_edit_enabled)
         self.regenerate_video_button.setEnabled(enabled)
         self.timeline_regenerate_button.setEnabled(enabled)
@@ -3412,7 +3653,6 @@ class VideoStoryboardPage(QWidget):
                 self._show_selected_scene(None)
             self.generate_frames_button.setEnabled(bool(self._scenes))
             self.generate_all_videos_button.setEnabled(bool(self._scenes))
-            self.regenerate_all_button.setEnabled(bool(self._scenes))
             self._sync_output_actions()
         finally:
             self._history_restoring = False
@@ -3557,8 +3797,22 @@ class VideoStoryboardPage(QWidget):
             return
         self.set_scene_video(scene_id, path, scene.video_prompt, scene.video_frame_role, duration)
 
+    def _view_scene_image(self, scene_id):
+        row = next(((i + 1, s.start_seconds, s.as_dict()) for i, s in enumerate(self._scenes) if s.scene_id == scene_id), None)
+        if row is None or not Path(row[2]["image_path"]).is_file():
+            return
+        dialog = SceneImagePreview(self, row, self.tr_text,
+            lambda r: self.tr_text("video_storyboard_scene_number", "Scene {number}", number=r[0]) + " · " + timestamp(r[1]))
+        dialog.open()
+
+    def _add_view_image_action(self, menu, scene):
+        action = menu.addAction(self.tr_text("storyboard_view_image", "View Image"))
+        action.setEnabled(bool(scene.image_path and Path(scene.image_path).is_file()))
+        action.triggered.connect(lambda: self._view_scene_image(scene.scene_id))
+
     def _build_video_context_menu(self, scene: StoryboardScene) -> QMenu:
         menu = QMenu(self)
+        self._add_view_image_action(menu, scene)
         copy = menu.addAction(ui_icon("copy"), self.tr_text("storyboard_copy_last_frame", "Copy Last Frame"))
         copy.setEnabled(self._video_copy_task is None)
         copy.triggered.connect(self._copy_video_last_frame)
@@ -3568,7 +3822,7 @@ class VideoStoryboardPage(QWidget):
         delete = menu.addAction(ui_icon("delete"), self.tr_text("storyboard_delete_video", "Delete Video"))
         delete.triggered.connect(self._delete_selected_video)
         regenerate = menu.addAction(ui_icon("regenerate"), self.tr_text("video_storyboard_regenerate_video", "Regenerate Video"))
-        regenerate.setEnabled(bool(scene.image_path and Path(scene.image_path).is_file()))
+        regenerate.setEnabled(self._can_generate_scene_video(scene))
         regenerate.triggered.connect(self._request_video_generation)
         menu.addSeparator()
         undo = menu.addAction(ui_icon("undo"), self.tr_text("video_storyboard_undo", "Undo"))
@@ -3590,6 +3844,7 @@ class VideoStoryboardPage(QWidget):
         if self._scene_has_video(scene):
             return self._build_video_context_menu(scene)
         menu = QMenu(self)
+        self._add_view_image_action(menu, scene)
         copy_action = menu.addAction(
             ui_icon("copy"),
             self.tr_text("video_storyboard_copy_frame", "Copy")
@@ -3636,9 +3891,7 @@ class VideoStoryboardPage(QWidget):
                 "Generate scene video",
             ),
         )
-        convert_action.setEnabled(
-            bool(scene.image_path and Path(scene.image_path).is_file())
-        )
+        convert_action.setEnabled(self._can_generate_scene_video(scene))
         menu.addSeparator()
         undo_action = menu.addAction(
             ui_icon("undo"), self.tr_text("video_storyboard_undo", "Undo")
@@ -3677,6 +3930,7 @@ class VideoStoryboardPage(QWidget):
             dict(self._plan_metadata),
             self,
             project_dir=self._source_project_dir,
+            settings=self._configuration,
         )
         dialog.generateRequested.connect(self._request_dialog_regeneration)
         dialog.candidateAccepted.connect(self._accept_dialog_candidate)
@@ -3780,11 +4034,13 @@ class VideoStoryboardPage(QWidget):
             dialog.set_edit_progress(message, percentage)
 
     def set_image_edit_candidate(self, scene_id: str, image_path: str) -> None:
+        self._clear_storyboard_error("image_edit", scene_id)
         dialog = self._image_edit_dialog
         if dialog is not None and dialog.scene_id == str(scene_id):
             dialog.set_edit_candidate(image_path)
 
     def set_image_edit_failed(self, scene_id: str, error: str) -> None:
+        self._record_storyboard_error("image_edit", error, scene_id)
         dialog = self._image_edit_dialog
         if dialog is not None and dialog.scene_id == str(scene_id):
             dialog.set_edit_failed(error)
@@ -3796,15 +4052,25 @@ class VideoStoryboardPage(QWidget):
         if self._image_edit_dialog is dialog:
             self._image_edit_dialog = None
 
+    def _can_generate_scene_video(self, scene):
+        if scene is None:
+            return False
+        if scene.image_path and Path(scene.image_path).is_file():
+            return True
+        from app.core.runpod_video_models import model_id
+        return self._configuration.get("video_provider") == "litellm" or (self._configuration.get("video_provider") == "runpod" and model_id(self._configuration.get("runpod", {})) in {"wan-2-6-i2v", "wan-2-6-t2v", "kling-video-o1-r2v"})
+
     def _request_video_generation(self) -> None:
         scene = self.selected_scene()
-        if scene is None or not scene.image_path or not Path(scene.image_path).is_file():
+        if not self._can_generate_scene_video(scene):
             return
         if self._video_dialog is not None:
             self._video_dialog.show_and_raise()
             return
         scene_value = scene.as_dict()
+        scene_value["_project_dir"] = self._source_project_dir
         scene_value["_video_provider"] = self._configuration.get("video_provider", "comfyui")
+        scene_value["_litellm_video_config"] = {k: v for k, v in self._configuration.get("litellm_video", {}).items() if k in {"model", "resolution", "aspect_ratio"}}
         scene_value["_runpod_config"] = {k: v for k, v in self._configuration.get("runpod", {}).items() if k in {"video_size", "video_endpoint", "image_endpoint", "edit_endpoint"}}
         video_config = self._configuration.get("comfyui_video", {})
         if isinstance(video_config, dict):
@@ -3995,6 +4261,14 @@ class VideoStoryboardPage(QWidget):
         )
         if scene is None:
             return
+        references = [dict(r) for r in request.get("reference_images", [])]
+        scene.setdefault("generation_overrides", {})["video_reference_images"] = references
+        stored = next((item for item in self._scenes if item.scene_id == scene_id), None)
+        if stored is not None:
+            stored.generation_overrides["video_reference_images"] = references
+            stored.video_frame_role = str(request.get("frame_role") or "start")
+            stored.video_prompt = str(request.get("prompt") or "")
+            self.scenesChanged.emit(self.scenes())
         operation = self.tr_text(
             "video_storyboard_generating_scene_video",
             "Generating video for scene {scene}...",
@@ -4027,6 +4301,7 @@ class VideoStoryboardPage(QWidget):
         path: str,
         duration_seconds: float = 0.0,
     ) -> None:
+        self._clear_storyboard_error("video", scene_id)
         if self._video_dialog is None or self._video_dialog.scene_id != scene_id:
             return
         self._video_dialog.set_candidate(path, duration_seconds)
@@ -4038,6 +4313,7 @@ class VideoStoryboardPage(QWidget):
         )
 
     def set_video_generation_failed(self, scene_id: str, error: str) -> None:
+        self._record_storyboard_error("video", error, scene_id)
         if self._video_dialog is not None and self._video_dialog.scene_id == scene_id:
             self._video_dialog.set_failed(error)
         self.finish_operation(error)
@@ -4070,6 +4346,7 @@ class VideoStoryboardPage(QWidget):
         duration_seconds: float = 0.0,
         *, continuation_frame: str = "",
     ) -> None:
+        self._clear_storyboard_error("video", scene_id)
         scene = next(
             (item for item in self._scenes if item.scene_id == scene_id),
             None,
@@ -4095,7 +4372,7 @@ class VideoStoryboardPage(QWidget):
         had_video = bool(scene.video_path)
         scene.video_path = str(video_path)
         scene.video_prompt = str(prompt).strip()
-        scene.video_frame_role = "end" if frame_role == "end" else "start"
+        scene.video_frame_role = frame_role if frame_role in {"start", "end", "none"} else "start"
         scene.video_duration_seconds = max(
             0.0,
             float(duration_seconds or scene.duration_seconds),
@@ -4190,10 +4467,8 @@ class VideoStoryboardPage(QWidget):
         else:
             self._selected_scene_id = ""
             self._show_selected_scene(None)
-        self.timeline_canvas._pixmap_cache.clear()
         self.timeline_canvas.update()
         self.generate_frames_button.setEnabled(bool(self._scenes))
-        self.regenerate_all_button.setEnabled(bool(self._scenes))
         self._sync_output_actions()
         self.scenesChanged.emit(self.scenes())
         self._remember_scene_snapshot()
@@ -4228,9 +4503,7 @@ class VideoStoryboardPage(QWidget):
                 and isinstance(scenes[0], dict)
                 and isinstance(plan, dict)
             ):
-                self._regeneration_dialog.set_compiled_prompt(
-                    compile_effective_scene_prompt(plan, scenes[0])
-                )
+                self._regeneration_dialog._refresh_composed_prompt()
         operation = self.tr_text(
             "video_storyboard_generating_scene",
             "Generating frame for scene {scene}...",
@@ -4282,10 +4555,9 @@ class VideoStoryboardPage(QWidget):
                 if str(value).split(":", 1)[0].strip()
             ]
         narrative = scene.generation_overrides.get("narrative", {})
-        if isinstance(narrative, dict) and narrative.get("era"):
-            scene.era = str(narrative["era"])
+        if isinstance(narrative, dict) and "era" in narrative:
+            scene.era = str(narrative["era"] or "")
             scene.era_state_id = ""
-        self.timeline_canvas._pixmap_cache.clear()
         self.timeline_canvas.update()
         self.current_preview.set_image(
             image_path,
@@ -4360,10 +4632,10 @@ class VideoStoryboardPage(QWidget):
             lambda overwrite, selected_mode=mode: self._start_frame_batch(
                 selected_mode,
                 overwrite,
+                dialog.selected_scene_indices,
             )
         )
         dialog.cancelRequested.connect(self.cancelFrameGenerationRequested.emit)
-        dialog.settingsRequested.connect(self.storyboardSettingsRequested.emit)
         dialog.destroyed.connect(
             lambda _object=None, selected=dialog: self._clear_frame_batch_dialog(
                 selected
@@ -4372,7 +4644,7 @@ class VideoStoryboardPage(QWidget):
         self._frame_batch_dialog = dialog
         dialog.open()
 
-    def _start_frame_batch(self, mode: str, overwrite: bool) -> None:
+    def _start_frame_batch(self, mode: str, overwrite: bool, selected_indices: list[int] | None = None) -> None:
         if not self._scenes:
             return
         payload = self.frame_generation_payload()
@@ -4386,13 +4658,19 @@ class VideoStoryboardPage(QWidget):
                 plan["narrative_context"] = deepcopy(effective["narrative"])
                 plan["video_overrides"] = deepcopy(effective["video"])
         scenes = payload.get("scenes", [])
+        if selected_indices is not None:
+            chosen = set(selected_indices)
+            scenes = [scene for index, scene in enumerate(scenes) if index in chosen]
+            payload["scenes"] = scenes
+        if not scenes:
+            return
+        self._frame_batch_total = len(scenes)
         if overwrite and isinstance(scenes, list):
             for scene in scenes:
                 if isinstance(scene, dict):
                     scene["image_path"] = ""
                     scene["status"] = "planned"
-        self.generate_frames_button.setEnabled(False)
-        self.regenerate_all_button.setEnabled(False)
+        self.generate_frames_button.setEnabled(True)
         self._frame_generation_history_active = True
         self._frame_generation_history_recorded = False
         self._frame_generation_start_snapshot = self._scene_snapshot()
@@ -4431,7 +4709,6 @@ class VideoStoryboardPage(QWidget):
         self._record_scene_edit()
         scene.image_path = self._candidate_path
         scene.status = "generated"
-        self.timeline_canvas._pixmap_cache.clear()
         self.timeline_canvas.update()
         self.current_preview.set_image(
             scene.image_path,
@@ -4496,6 +4773,7 @@ class VideoStoryboardPage(QWidget):
         self.renderRequested.emit(self._effective_render_scenes())
 
     def set_frame_replaced(self, scene_id: str, image_path: str) -> None:
+        self._clear_storyboard_error("replacement")
         scene = next(
             (item for item in self._scenes if item.scene_id == scene_id),
             None,
@@ -4505,7 +4783,6 @@ class VideoStoryboardPage(QWidget):
         self._record_scene_edit()
         scene.image_path = str(image_path)
         scene.status = "replaced"
-        self.timeline_canvas._pixmap_cache.clear()
         self.timeline_canvas.update()
         if self._selected_scene_id == scene_id:
             self.current_preview.set_image(
@@ -4527,6 +4804,7 @@ class VideoStoryboardPage(QWidget):
         )
 
     def set_frame_replacement_failed(self, error: str) -> None:
+        self._record_storyboard_error("replacement", error)
         self.append_activity(
             self.tr_text(
                 "video_storyboard_frame_replace_failed",
@@ -4542,6 +4820,7 @@ class VideoStoryboardPage(QWidget):
         )
 
     def _sync_output_actions(self) -> None:
+        self._refresh_frame_errors()
         frames_ready = self._all_frames_ready()
         self.render_button.setVisible(frames_ready)
         self.render_button.setEnabled(frames_ready)
@@ -4602,6 +4881,7 @@ class VideoStoryboardPage(QWidget):
         )
         catalog_style = storyboard_style(style_mode)
         widgets = (
+            self.era_visual_context_check,
             self.style_gallery,
             self.style_medium_edit,
             self.style_palette_edit,
@@ -4613,6 +4893,7 @@ class VideoStoryboardPage(QWidget):
             self.video_zoom_spin,
             self.video_transition_spin,
             self.default_motion_combo,
+            self.illustration_context_edit,
         )
         self._updating_project_controls = True
         for widget in widgets:
@@ -4643,6 +4924,7 @@ class VideoStoryboardPage(QWidget):
                 else ""
             )
             self.story_era_edit.setText(str(narrative.get("era") or ""))
+            self.era_visual_context_check.setChecked(bool(narrative.get("era_visual_context", False)))
             characters = style.get("characters", [])
             self.style_characters_edit.setPlainText(
                 "\n".join(str(value) for value in characters)
@@ -4650,6 +4932,11 @@ class VideoStoryboardPage(QWidget):
                 else ""
             )
             self.style_negative_edit.setText(str(style.get("negative") or ""))
+            from app.core.storyboard_illustration_context import illustration_context
+            self.illustration_context_edit.setPlainText(illustration_context(self._plan_metadata))
+            self.clip_audio_check.setChecked(bool(overrides.get("clip_audio_enabled", True)))
+            self.clip_audio_volume.setValue(float(overrides.get("clip_audio_volume", 1.0)) * 100)
+            self.soundtrack_volume.setValue(float(overrides.get("soundtrack_volume", 1.0)) * 100)
             self.video_zoom_spin.setValue(
                 float(
                     (
@@ -4677,9 +4964,11 @@ class VideoStoryboardPage(QWidget):
             for widget in widgets:
                 widget.blockSignals(False)
             self._updating_project_controls = False
+        self._sync_clip_audio()
         self._sync_continuity_trees()
 
     def _sync_continuity_trees(self) -> None:
+        self.objects_panel.refresh()
         if not hasattr(self, "continuity_characters_tree"):
             return
         continuity = self._plan_metadata.get("continuity", {})
@@ -4809,7 +5098,7 @@ class VideoStoryboardPage(QWidget):
             for era in eras:
                 era_item = QTreeWidgetItem(
                     [
-                        str(era.get("description") or era.get("id") or ""),
+                        str(era.get("name") or era.get("description") or era.get("id") or ""),
                         self._continuity_time(era.get("from_seconds")),
                         self._continuity_time(era.get("to_seconds")),
                         str(era.get("material_culture") or ""),
@@ -4821,6 +5110,11 @@ class VideoStoryboardPage(QWidget):
                     {"kind": "era", "id": era.get("id", "")},
                 )
                 era_item.setFlags(era_item.flags() | Qt.ItemFlag.ItemIsEditable)
+                occurrences = era.get("occurrences", [])
+                if len(occurrences) > 1:
+                    era_item.setToolTip(0, "\n".join(
+                        self._continuity_time(a["from_seconds"]) + " – " + self._continuity_time(a["to_seconds"])
+                        for a in occurrences))
                 self.continuity_eras_tree.addTopLevelItem(era_item)
         finally:
             self._updating_continuity_trees = False
@@ -4897,7 +5191,7 @@ class VideoStoryboardPage(QWidget):
     def _new_character(self) -> None:
         total = self._entity_total_duration()
         dialog = VideoStoryboardEntityDialog(
-            self.tr_text, "character", total, parent=self
+            self.tr_text, "character", total, parent=self, settings=self._configuration, storyboard_page=self
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4923,6 +5217,7 @@ class VideoStoryboardPage(QWidget):
                 "aliases": list(values["aliases"]),
                 "identity_description": str(values["identity_description"]),
                 "reference_image_path": reference,
+                "reference_image_prompt": str(values.get("reference_image_prompt") or ""),
                 "user_authored": True,
                 "states": [
                     {
@@ -4949,6 +5244,7 @@ class VideoStoryboardPage(QWidget):
             self._entity_total_duration(),
             character,
             self,
+            settings=self._configuration, storyboard_page=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4958,6 +5254,7 @@ class VideoStoryboardPage(QWidget):
         character["name"] = str(values["name"])
         character["aliases"] = list(values["aliases"])
         character["identity_description"] = str(values["identity_description"])
+        character["reference_image_prompt"] = str(values.get("reference_image_prompt") or "")
         character["reference_image_path"] = self._import_entity_reference(
             str(values.get("reference_image_path") or ""),
             "characters",
@@ -5191,7 +5488,7 @@ class VideoStoryboardPage(QWidget):
 
     def _new_location(self) -> None:
         dialog = VideoStoryboardEntityDialog(
-            self.tr_text, "location", self._entity_total_duration(), parent=self
+            self.tr_text, "location", self._entity_total_duration(), parent=self, settings=self._configuration, storyboard_page=self
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5206,6 +5503,7 @@ class VideoStoryboardPage(QWidget):
             continuity["locations"] = locations
         location_id = self._unique_continuity_id(str(values["name"]), locations, "location")
         locations.append({
+            "reference_image_prompt": str(values.get("reference_image_prompt") or ""),
             "id": location_id,
             "name": str(values["name"]),
             "aliases": list(values["aliases"]),
@@ -5233,7 +5531,7 @@ class VideoStoryboardPage(QWidget):
         if location is None:
             return
         dialog = VideoStoryboardEntityDialog(
-            self.tr_text, "location", self._entity_total_duration(), location, self
+            self.tr_text, "location", self._entity_total_duration(), location, self, settings=self._configuration, storyboard_page=self
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5243,6 +5541,7 @@ class VideoStoryboardPage(QWidget):
         location["name"] = str(values["name"])
         location["aliases"] = list(values["aliases"])
         location["identity_description"] = str(values["identity_description"])
+        location["reference_image_prompt"] = str(values.get("reference_image_prompt") or "")
         location["reference_image_path"] = self._import_entity_reference(
             str(values.get("reference_image_path") or ""),
             "locations",
@@ -5867,15 +6166,17 @@ class VideoStoryboardPage(QWidget):
         if self._updating_project_controls:
             return
         overrides = self.project_overrides()
+        era_changed = str(overrides["narrative"].get("era") or "") != str(self._plan_metadata.get("narrative_context", {}).get("era") or "")
         self._plan_metadata["base_seed"] = overrides["seed"]
         self._plan_metadata["style_mode"] = overrides["style_mode"]
         self._plan_metadata["style"] = overrides["style"]
         self._plan_metadata["narrative_context"] = overrides["narrative"]
         self._plan_metadata["video_overrides"] = overrides["video"]
-        if overrides["narrative"].get("era_source") == "user":
+        if era_changed and overrides["narrative"].get("era_source") == "user":
             self._apply_user_era_override(
                 str(overrides["narrative"].get("era") or "")
             )
+        self._sync_clip_audio()
         self.projectChanged.emit(self.project_state())
 
     def _apply_user_era_override(self, era: str) -> None:
@@ -5883,6 +6184,10 @@ class VideoStoryboardPage(QWidget):
         if not isinstance(continuity, dict):
             return
         description = str(era or "").strip()
+        continuity["era_mode"] = "manual"
+        continuity.pop("era_assignments", None)
+        self._plan_metadata.setdefault("narrative_context", {})["era_mode"] = "manual"
+        self._plan_metadata["narrative_context"]["era_source"] = "user"
         continuity["era_locked"] = bool(description)
         assignments = continuity.get("assignments", [])
         if not description:
@@ -5921,6 +6226,28 @@ class VideoStoryboardPage(QWidget):
             scene.era = description
             scene.era_state_id = period_id
         self._sync_continuity_trees()
+
+    def edit_storyboard_era(self, identifier):
+        if not any(r.get("id") == identifier for r in self._plan_metadata.get("continuity", {}).get("eras", [])):
+            return
+        from app.ui.storyboard_era_dialog import StoryboardEraDialog
+        dialog = StoryboardEraDialog(self.tr_text, {**self._plan_metadata, "scenes": self.scenes()},
+                                     identifier, self, page=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = dialog.revised_plan()
+        self._plan_metadata["continuity"] = result["continuity"]
+        self._plan_metadata["narrative_context"] = result["narrative_context"]
+        for scene, revised in zip(self._scenes, result["scenes"]):
+            scene.era = revised.get("era", "")
+            scene.era_state_id = revised.get("era_state_id", "")
+        self._detected_era_value = str(result["narrative_context"].get("era") or "")
+        self.story_era_edit.blockSignals(True)
+        self.story_era_edit.setText(self._detected_era_value)
+        self.story_era_edit.blockSignals(False)
+        self._sync_continuity_trees()
+        self._commit_continuity_changes()
+        self.scenesChanged.emit(self.scenes())
 
     def _style_gallery_item(self, identifier: object) -> QListWidgetItem | None:
         normalized = normalize_storyboard_style_id(identifier)
@@ -5978,6 +6305,10 @@ class VideoStoryboardPage(QWidget):
             self._scene_at_seconds(seconds),
             seconds,
         )
+
+    def _goto_preview_time(self, seconds: float) -> None:
+        self._seek_preview(seconds)
+        self._center_timeline_on_playhead()
 
     def _seek_preview(self, seconds: float) -> None:
         target_seconds = max(
@@ -6061,13 +6392,16 @@ class VideoStoryboardPage(QWidget):
         self.scene_video_player.stop()
         self._loaded_scene_video_path = path
         self._scene_video_pause_on_first_frame = not autoplay
+        self._amplified_video_preview.reset()
         self.scene_video_player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
+        self._sync_clip_audio(scene)
         QTimer.singleShot(0, self.scene_video_player.play)
 
     def _clear_scene_video_source(self) -> None:
         if not hasattr(self, "scene_video_player"):
             return
         self._scene_video_pause_on_first_frame = False
+        self._amplified_video_preview.reset()
         self.scene_video_player.stop()
         if self._loaded_scene_video_path:
             self.scene_video_player.setSource(QUrl())
@@ -6084,6 +6418,7 @@ class VideoStoryboardPage(QWidget):
             self.scene_video_player.setPosition(0)
         self._set_scene_video_playback_rate(scene)
         self._scene_video_pause_on_first_frame = False
+        self._sync_clip_audio(scene)
         self.scene_video_player.play()
 
     def _pause_scene_video(self) -> None:
@@ -6100,6 +6435,7 @@ class VideoStoryboardPage(QWidget):
         self.scene_video_player.pause()
         self.scene_video_player.setPosition(0)
         self._scene_video_pause_on_first_frame = True
+        self._sync_clip_audio()
         QTimer.singleShot(0, self.scene_video_player.play)
 
     def _set_scene_video_playback_rate(self, scene: StoryboardScene) -> None:
@@ -6140,6 +6476,7 @@ class VideoStoryboardPage(QWidget):
             self._set_scene_video_playback_rate(scene)
         if playing:
             self._scene_video_pause_on_first_frame = False
+            self._sync_clip_audio(scene)
             self.scene_video_player.play()
         else:
             self.scene_video_player.pause()
@@ -6170,6 +6507,7 @@ class VideoStoryboardPage(QWidget):
         self.scene_video_player.pause()
         self.scene_video_player.setPosition(0)
         self._scene_video_pause_on_first_frame = True
+        self._sync_clip_audio()
         QTimer.singleShot(0, self.scene_video_player.play)
 
     def _on_scene_video_duration_changed(self, _duration: int) -> None:
@@ -6192,6 +6530,7 @@ class VideoStoryboardPage(QWidget):
         message: str,
     ) -> None:
         if message:
+            self._record_storyboard_error("video_preview", message, self._selected_scene_id or "")
             self.append_activity(
                 self.tr_text(
                     "video_storyboard_preview_error",
@@ -6234,10 +6573,7 @@ class VideoStoryboardPage(QWidget):
             media_duration / 1000.0,
             self.timeline_canvas.total_seconds,
         )
-        self.preview_time_label.setText(
-            f"{StoryboardTimelineCanvas._format_time(position_ms / 1000.0)} / "
-            f"{StoryboardTimelineCanvas._format_time(duration_seconds)}"
-        )
+        self.preview_time_label.set_time(position_ms / 1000.0, duration_seconds)
 
     def _sync_preview_controls(self, *_args: object) -> None:
         available = self._preview_available()
@@ -6265,6 +6601,7 @@ class VideoStoryboardPage(QWidget):
     ) -> None:
         if not message:
             return
+        self._record_storyboard_error("audio_preview", message)
         self.append_activity(
             self.tr_text(
                 "video_storyboard_preview_error",
@@ -6299,7 +6636,7 @@ class VideoStoryboardPage(QWidget):
         self.zoom_in_button.setEnabled(
             index < len(self.timeline_canvas.ZOOM_LEVELS) - 1
         )
-        base = self.timeline_canvas.ZOOM_LEVELS[2]
+        base = self.timeline_canvas.BASE_PIXELS_PER_SECOND
         self.zoom_label.setText(
             f"{round(self.timeline_canvas.pixels_per_second / base * 100)}%"
         )

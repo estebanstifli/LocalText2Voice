@@ -12,6 +12,9 @@ def test_model_contracts_and_prices(endpoint):
     assert endpoint in rp.PUBLIC_ENDPOINTS
     if endpoint == "p-image-t2i":
         assert values == {"prompt": "Scene", "seed": 42, "aspect_ratio": "16:9"}
+    elif endpoint == "qwen-image-edit-2511":
+        assert values["size"] == "1536*1080"
+        assert values["output_format"] == "png"
     else:
         assert values["size"] == f"{width}*{height}"
         assert ("output_format" in values) == (endpoint == "z-image-turbo")
@@ -31,7 +34,7 @@ def test_z_image_restrictions_do_not_apply_to_other_models(endpoint):
         image_parameters({"image_endpoint": "z-image-turbo"}, "Scene", 1, 2048, 2048)
 
 
-@pytest.mark.parametrize("endpoint", IMAGE_MODELS)
+@pytest.mark.parametrize("endpoint", [k for k in IMAGE_MODELS if k != "qwen-image-edit-2511"])
 def test_frame_generation_sends_selected_model_contract(endpoint, tmp_path, monkeypatch):
     from app.core.video_storyboard_comfyui import generate_storyboard_frame
     calls = []

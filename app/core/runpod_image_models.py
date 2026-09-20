@@ -5,6 +5,7 @@ IMAGE_MODELS = {
     "z-image-turbo": {"name": "Z-Image Turbo", "price": 0.005},
     "qwen-image-t2i": {"name": "Qwen Image", "price": 0.02},
     "p-image-t2i": {"name": "P-Image T2I", "price": 0.005},
+    "qwen-image-edit-2511": {"name": "Qwen Image Edit 2511 (references)", "price": 0.02},
 }
 
 
@@ -21,7 +22,13 @@ def image_parameters(config, prompt, seed, width, height):
         raise ValueError("Image dimensions must be positive.")
     values = {"prompt": prompt, "seed": int(seed)}
     size = f"{width}*{height}"
-    if endpoint == "p-image-t2i":
+    if endpoint == "qwen-image-edit-2511":
+        sizes = ((1024, 1024), (1024, 1280), (1280, 1024), (1280, 1280), (1280, 1536), (1536, 1080))
+        # Public endpoint accepts a fixed set: prefer aspect ratio, then area.
+        chosen = min(sizes, key=lambda s: (abs(math.log((width / height) / (s[0] / s[1]))),
+                                           abs(s[0] * s[1] - width * height)))
+        values.update(size=f"{chosen[0]}*{chosen[1]}", output_format="png")
+    elif endpoint == "p-image-t2i":
         ratios = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
         def distance(ratio):
             a, b = map(int, ratio.split(":"))

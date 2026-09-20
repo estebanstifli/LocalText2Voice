@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.storyboard_clip_audio import tempo_filter
 from app.core.comfyui_http import comfyui_request_headers
 from app.core.video_storyboard_comfyui import (
     VideoStoryboardImageError,
@@ -124,6 +125,12 @@ def prepare_video_runtime(
             return rp.prepare(settings, "video")
         except rp.RunpodError as exc:
             raise VideoStoryboardVideoError(str(exc)) from exc
+    if settings.get("video_provider") == "litellm":
+        from app.core.video_storyboard_video_litellm import prepare
+        try:
+            return prepare(settings)
+        except ValueError as exc:
+            raise VideoStoryboardVideoError(str(exc)) from exc
     config = _video_config(settings)
     root = _normalize_url(config.get("base_url"), "http://127.0.0.1:8188")
     headers = _authorization_headers(config)
@@ -222,6 +229,9 @@ def generate_storyboard_scene_video(
     status: StatusCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> dict[str, Any]:
+    if settings.get("video_provider") == "litellm":
+        from app.core.video_storyboard_video_litellm import generate
+        return generate(scene, plan, settings, target, prompt=prompt, frame_role=frame_role, status=status, cancelled=cancelled)
     if settings.get("video_provider") == "runpod":
         return _generate_runpod_video(scene, plan, settings, target, prompt=prompt, frame_role=frame_role, status=status, cancelled=cancelled)
     if settings.get("video_provider") == "disabled":
@@ -229,11 +239,13 @@ def generate_storyboard_scene_video(
     config = _video_config(settings)
     root = _normalize_url(config.get("base_url"), "http://127.0.0.1:8188")
     headers = _authorization_headers(config)
-    image_path = Path(str(scene.get("image_path") or ""))
-    if not image_path.is_file():
-        raise VideoStoryboardVideoError(
-            "Generate or import the scene frame before creating its video."
-        )
+    from app.core.storyboard_video_references import single_video_reference
+    try:
+        image_path = single_video_reference(scene, frame_role)
+    except ValueError as exc:
+        raise VideoStoryboardVideoError(str(exc)) from exc
+    if frame_role == "none" or image_path is None:
+        raise VideoStoryboardVideoError("None requires a text-to-video model. Choose Runpod Wan 2.6, or use Frame at start/end with this ComfyUI workflow.")
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
         raise VideoStoryboardVideoError("The video prompt is empty.")
@@ -950,7 +962,7 @@ def _download_video(
 
 
 def _reverse_video(source: Path, target: Path, settings: dict[str, Any]) -> None:
-    temporary = target.with_suffix(target.suffix + ".part")
+    temporary = target.with_name(f".{target.stem}.reverse-part.mp4")
     temporary.unlink(missing_ok=True)
     try:
         runner = FFmpegRunner(
@@ -966,7 +978,8 @@ def _reverse_video(source: Path, target: Path, settings: dict[str, Any]) -> None
                 str(source),
                 "-vf",
                 "reverse,setpts=PTS-STARTPTS",
-                "-an",
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-af", "areverse,asetpts=PTS-STARTPTS", "-c:a", "aac",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -1039,7 +1052,9 @@ def _retime_video(
                 f"{fps:.12g}",
                 "-fps_mode",
                 "cfr",
-                "-an",
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-af", f"{tempo_filter(source_duration / target_duration)},apad,atrim=duration={target_duration:.6f}",
+                "-c:a", "aac",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -1094,19 +1109,45 @@ def _probe_media_duration(source: Path, settings: dict[str, Any]) -> float:
 
 def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role, status, cancelled):
     from app.core import video_storyboard_runpod as rp
-    image_path = Path(str(scene.get("image_path") or ""))
-    if not image_path.is_file() or not str(prompt).strip():
-        raise VideoStoryboardVideoError("Choose a source frame and enter a video prompt.")
-    config = rp.configuration(settings)
+    from app.core.storyboard_video_references import resolve_runpod_video_references
+    from app.core.runpod_video_models import video_parameters, model_id
+    if not str(prompt).strip():
+        raise VideoStoryboardVideoError("The video prompt is empty.")
+    try:
+        role = frame_role
+        config, references = resolve_runpod_video_references(scene, role, rp.configuration(settings))
+    except ValueError as exc:
+        raise VideoStoryboardVideoError(str(exc)) from exc
+    effective_settings = {**settings, "runpod": config}
     duration = max(0.1, float(scene.get("duration_seconds") or 0.1))
     seed = int(plan.get("base_seed") or 0)
-    role = "end" if frame_role == "end" else "start"
     source = target.with_name(f".{target.stem}.runpod-source.mp4")
     try:
-        from app.core.runpod_video_models import video_parameters
         parameters = video_parameters(config, prompt, duration, seed)
-        identity = {**parameters, "image": rp.file_digest(image_path), "frame_role": role}
-        result = rp.execute(settings, "video", lambda: {**parameters, "image": rp.source_url(image_path, config)}, source, identity=identity, status=status, cancelled=cancelled)
+        multiple = model_id(config) == "kling-video-o1-r2v"
+        # Acceptance gives the scene a new clip path. Scope recovery to that
+        # accepted version, so an older queued/completed job cannot replace it.
+        # Retries before accepting another clip retain the same recovery key.
+        identity = {**parameters, "frame_role": role}
+        if scene.get("video_path"):
+            identity.update(
+                scene_id=str(scene.get("scene_id") or scene.get("id") or ""),
+                accepted_video=str(scene["video_path"]),
+            )
+        if multiple:
+            identity["images"] = [rp.file_digest(path) for path in references]
+        else:
+            identity["image"] = rp.file_digest(references[0]) if references else None
+        def payload():
+            values = dict(parameters)
+            if multiple:
+                values["images"] = [rp.source_url(path, config) for path in references]
+            elif references:
+                values["image"] = rp.source_url(references[0], config)
+            return values
+        result = rp.execute(effective_settings, "video", payload, source, identity=identity,
+                            status=status, cancelled=cancelled, regenerate=True,
+                            legacy_result_used=bool(scene.get("video_path")))
         measured = _probe_media_duration(source, settings)
         if not measured:
             raise VideoStoryboardVideoError("Runpod returned an unreadable video.")
@@ -1116,6 +1157,7 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
             import shutil
             shutil.copyfile(source, target)
         _retime_video(target, duration, settings, source_duration_seconds=measured)
+        rp.consume_result(result)
     except (rp.RunpodError, ValueError) as exc:
         raise VideoStoryboardVideoError(str(exc)) from exc
     finally:

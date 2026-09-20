@@ -72,6 +72,20 @@ def fake_backend(monkeypatch):
     return chats, requests
 
 
+@pytest.mark.parametrize("characters,locations", [(False, True), (True, False), (False, False)])
+def test_entity_selections_skip_unrequested_llm_calls(monkeypatch, characters, locations):
+    chats, requests = fake_backend(monkeypatch)
+    plan = p.plan_video_storyboard(SOURCE, {"analysis_choices": {
+        "plan": "basic", "characters": characters, "locations": locations}})
+    assert bool(plan["continuity"]["characters"]) == characters
+    assert bool(plan["continuity"]["locations"]) == locations
+    assert any(schema == c.CHARACTER_SCHEMA for schema, _, _ in requests) == characters
+    assert any(schema == c.LOCATION_SCHEMA for schema, _, _ in requests) == locations
+    assert any(c.CHARACTERS in chat[0]["content"] for chat in chats) == characters
+    assert any(c.LOCATIONS in chat[0]["content"] for chat in chats) == locations
+    assert all(scene["duration"] <= 15 for scene in plan["scenes"])
+
+
 def test_new_public_flow_shared_history_and_offset(monkeypatch):
     chats, requests = fake_backend(monkeypatch)
     partials = []
@@ -188,7 +202,7 @@ def test_multiple_first_phase_summaries_are_unified_once_and_resume(monkeypatch,
         return draft
     settings = {"review_project_dir": str(tmp_path), "analysis_choices": {"plan": "basic", "review": True}}
     result = p.plan_video_storyboard(SOURCE, settings, review=review)
-    assert len(chats) == 6 and len(unifications) == 1
+    assert len(chats) == 7 and len(unifications) == 1
     scene_questions = [chat[0]["content"] for chat in chats if "Number them" in chat[0]["content"]]
     assert len(scene_questions) == 2
     assert "Number them 1-1, 1-2, etc." in scene_questions[0]

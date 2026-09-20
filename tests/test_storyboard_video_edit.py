@@ -123,7 +123,7 @@ class VideoActionsTests(unittest.TestCase):
         menu = self.page._build_frame_context_menu("001")
         self.addCleanup(menu.deleteLater)
         self.assertEqual([a.text() for a in menu.actions() if not a.isSeparator()],
-                         ["Copy Last Frame", "Edit Video", "Delete Video", "Regenerate Video", "Undo", "Redo"])
+                         ["View Image", "Copy Last Frame", "Edit Video", "Delete Video", "Regenerate Video", "Undo", "Redo"])
         self.assertTrue(self.page.copy_frame_button.isHidden())
         self.assertFalse(self.page.copy_last_frame_button.isHidden())
         self.assertFalse(self.page.inspector_edit_video_button.isHidden())

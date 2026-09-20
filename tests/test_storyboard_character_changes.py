@@ -1,6 +1,6 @@
 from copy import deepcopy
 from app.core.storyboard_character_changes import build_character_states
-from app.core.storyboard_conversation import add_simple_profiles, APPEARANCE
+from app.core.storyboard_conversation import add_simple_profiles, PROFILE_INSTRUCTIONS
 
 
 TEXT = "Ana waits. Ana puts on a red coat. Ana walks away."
@@ -60,6 +60,6 @@ def test_same_time_changes_share_one_state_and_empty_portrait_is_safe():
 
 
 def test_hair_instruction_is_human_only_and_allows_baldness():
-    assert "For humans only" in APPEARANCE
-    assert "hair length and color, or baldness" in APPEARANCE
-    assert "choose them once" in APPEARANCE
+    assert "species" in PROFILE_INSTRUCTIONS["characters"]
+    assert "hair length and color" in PROFILE_INSTRUCTIONS["characters"]
+    assert "consistent storyboard design" in PROFILE_INSTRUCTIONS["characters"]

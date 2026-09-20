@@ -10,6 +10,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QGroupBox,
@@ -34,6 +35,7 @@ from app.core.video_storyboard_video_comfyui import (
     video_workflow_profile,
 )
 from app.ui.icons import ui_icon
+from app.ui.video_storyboard_reference_picker_dialog import VideoStoryboardReferencePickerDialog
 from app.ui.video_storyboard_prompt_highlighter import (
     VideoStoryboardPromptHighlighter,
 )
@@ -103,6 +105,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self._generating = False
         self._resolved = False
         self._pause_on_first_frame = False
+        self._reference_images = [dict(r) for r in (self.scene.get("generation_overrides") or {}).get("video_reference_images", [])]
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setWindowTitle(
@@ -207,7 +210,16 @@ class VideoStoryboardVideoDialog(QDialog):
             ),
             "end",
         )
+        self.frame_role_combo.addItem(self.tr_text("storyboard_video_reference_none", "None (no scene frame)"), "none")
         stored_role = str(self.scene.get("video_frame_role") or "start")
+        if not self.scene.get("image_path") and self.scene.get("_video_provider") in {"runpod", "litellm"}:
+            stored_role = "none"
+        if self.scene.get("_video_provider") == "litellm":
+            self.frame_role_combo.model().item(self.frame_role_combo.findData("end")).setEnabled(False)
+            if stored_role == "end":
+                stored_role = "start" if self.scene.get("image_path") else "none"
+        if self.scene.get("_runpod_config", {}).get("video_endpoint") in {"kling-video-o1-r2v", "wan-2-6-t2v"}:
+            stored_role = "none"
         self.frame_role_combo.setCurrentIndex(
             max(0, self.frame_role_combo.findData(stored_role))
         )
@@ -244,7 +256,11 @@ class VideoStoryboardVideoDialog(QDialog):
             description = f"Runpod · {model_name(config)} · {config.get('video_size', '1280*720')} · {seconds}s generated → {scene_duration:.1f}s scene · {price}"
         elif self.scene.get("_video_provider") == "disabled":
             description = self.tr_text("storyboard_video_unconfigured", "Select a video provider in Settings > Video Storyboard.")
-        info = QLabel(description)
+        self._model_description = description
+        self.model_info = QLabel(description)
+        info = self.model_info
+        self.frame_role_combo.currentIndexChanged.connect(self._update_model_description)
+        self._update_model_description()
         info.setWordWrap(True)
         options.addWidget(info)
         layout.addLayout(options)
@@ -266,6 +282,22 @@ class VideoStoryboardVideoDialog(QDialog):
         )
         layout.addWidget(prompt_label)
         layout.addWidget(self.prompt_edit)
+        reference_row = QHBoxLayout()
+        self.reference_button = QPushButton(self.tr_text("video_storyboard_add_image_reference", "+ Img Ref"))
+        self.reference_button.setIcon(ui_icon("replace_image"))
+        self.reference_button.clicked.connect(self._choose_reference_images)
+        self.reference_summary = QLabel()
+        self.reference_summary.setWordWrap(True)
+        reference_row.addWidget(self.reference_button)
+        reference_row.addWidget(self.reference_summary, 1)
+        layout.addLayout(reference_row)
+        self.reference_help = QLabel(self.tr_text("storyboard_video_reference_help", "Start/end uses the scene frame. None omits it. Added images are sent as separate references when the model supports them. Wan: one image; Kling O1: multiple references, no fixed frame or audio."))
+        if self.scene.get("_video_provider") == "litellm":
+            self.reference_help.setText(self.tr_text("veo_reference_help", "Veo: Frame at start uses the scene image. For character, location or object references choose None + Img Ref with Veo 3.1 or Fast. Google documents up to 3 references; all selected images are sent. Lite only supports a starting image. Audio is preserved."))
+        self.reference_help.setWordWrap(True)
+        self.reference_help.setObjectName("helperLabel")
+        layout.addWidget(self.reference_help)
+        self._refresh_reference_summary()
 
         self.progress_bar = QProgressBar()
         self.progress_bar.hide()
@@ -318,7 +350,13 @@ class VideoStoryboardVideoDialog(QDialog):
         layout.addLayout(buttons)
 
         self.audio_output = QAudioOutput(self)
-        self.audio_output.setMuted(True)
+        self.audio_output.setMuted(False)
+        self.candidate_audio_check = QCheckBox(self.tr_text("storyboard_candidate_audio", "Play clip audio"))
+        self.candidate_audio_check.setChecked(True)
+        self.candidate_audio_check.toggled.connect(
+            lambda enabled: self.audio_output.setMuted(not enabled or self._pause_on_first_frame)
+        )
+        buttons.insertWidget(2, self.candidate_audio_check)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
@@ -342,7 +380,40 @@ class VideoStoryboardVideoDialog(QDialog):
                 self.prompt_edit.toPlainText(), self.plan
             ).strip(),
             "frame_role": str(self.frame_role_combo.currentData() or "start"),
+            "reference_images": [dict(r) for r in self._reference_images],
         }
+
+    def _update_model_description(self, *_):
+        text = self._model_description
+        if self.scene.get("_video_provider") == "litellm":
+            from app.core.litellm_video_models import configuration, generation_seconds
+            config = configuration({"litellm_video": self.scene.get("_litellm_video_config", {})})
+            seconds = generation_seconds(self.scene, config, self.frame_role_combo.currentData() == "none" and bool(self._reference_images))
+            duration = float(self.scene.get("duration_seconds") or 0)
+            text = f"LiteLLM · {config['model']} · {config['resolution']} · {config['aspect_ratio']} · {seconds}s → {duration:.1f}s"
+        if self.scene.get("_video_provider") == "runpod":
+            from app.core.runpod_video_models import model_id
+            model = model_id(self.scene.get("_runpod_config", {}))
+            if model in {"wan-2-6-i2v", "wan-2-6-t2v"}:
+                text = text.replace("Wan 2.6 I2V", "Wan 2.6").replace("Wan 2.6 T2V", "Wan 2.6")
+                text += " · " + ("T2V" if self.frame_role_combo.currentData() == "none" else "I2V")
+            elif model == "kling-video-o1-r2v":
+                text = text.replace(str(self.scene.get("_runpod_config", {}).get("video_size", "1280*720")), "16:9")
+        self.model_info.setText(text)
+
+    def _choose_reference_images(self):
+        dialog = VideoStoryboardReferencePickerDialog(self.tr_text, self.plan, self._reference_images,
+            project_dir=self.scene.get("_project_dir", ""), parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._reference_images = dialog.selected_references()
+            self._refresh_reference_summary()
+
+    def _refresh_reference_summary(self):
+        self._update_model_description()
+        self.reference_summary.setText(
+            ", ".join(str(r.get("label") or Path(r["path"]).stem) for r in self._reference_images)
+            or self.tr_text("video_storyboard_no_image_references", "No image references"))
+        self.reference_summary.setToolTip("\n".join(str(r.get("path") or "") for r in self._reference_images))
 
     def _request_generation(self) -> None:
         prompt = strip_storyboard_prompt_markers(
@@ -350,6 +421,22 @@ class VideoStoryboardVideoDialog(QDialog):
         ).strip()
         if self._generating or not prompt:
             return
+        if self.scene.get("_video_provider") == "litellm":
+            from app.core.litellm_video_models import configuration, reference_mode
+            scene = {**self.scene, "generation_overrides": {"video_reference_images": self._reference_images}}
+            try:
+                reference_mode(scene, self.frame_role_combo.currentData(), configuration({"litellm_video": self.scene.get("_litellm_video_config", {})}))
+            except ValueError as exc:
+                self.set_failed(str(exc))
+                return
+        if self.scene.get("_video_provider") == "runpod":
+            from app.core.storyboard_video_references import resolve_runpod_video_references
+            scene = {**self.scene, "generation_overrides": {"video_reference_images": self._reference_images}}
+            try:
+                resolve_runpod_video_references(scene, self.frame_role_combo.currentData(), self.scene.get("_runpod_config", {}))
+            except ValueError as exc:
+                self.set_failed(str(exc))
+                return
         rejected_path = self._candidate_path
         self._candidate_path = ""
         self._release_player()
@@ -370,6 +457,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self.accept_button.hide()
         self.discard_button.hide()
         self.frame_role_combo.setEnabled(False)
+        self.reference_button.setEnabled(False)
         self.prompt_edit.setEnabled(False)
         self.progress_bar.show()
         self.progress_bar.setRange(0, 0)
@@ -398,6 +486,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self.generate_button.setEnabled(False)
         self.open_video_button.setEnabled(False)
         self.frame_role_combo.setEnabled(False)
+        self.reference_button.setEnabled(False)
         self.prompt_edit.setEnabled(False)
         self.accept_button.hide()
         self.discard_button.hide()
@@ -431,6 +520,7 @@ class VideoStoryboardVideoDialog(QDialog):
         )
         self.video_stack.setCurrentWidget(self.video_placeholder)
         self._pause_on_first_frame = bool(self._candidate_path)
+        self.audio_output.setMuted(True)
         self.player.setSource(QUrl.fromLocalFile(self._candidate_path))
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
@@ -442,6 +532,7 @@ class VideoStoryboardVideoDialog(QDialog):
         )
         self.generate_button.setEnabled(True)
         self.frame_role_combo.setEnabled(True)
+        self.reference_button.setEnabled(True)
         self.prompt_edit.setEnabled(True)
         self.accept_button.setVisible(bool(self._candidate_path))
         self.discard_button.setVisible(bool(self._candidate_path))
@@ -459,6 +550,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self.log_edit.appendPlainText(str(error))
         self.generate_button.setEnabled(True)
         self.frame_role_combo.setEnabled(True)
+        self.reference_button.setEnabled(True)
         self.prompt_edit.setEnabled(True)
         self.accept_button.setVisible(bool(self._candidate_path))
         self.discard_button.setVisible(bool(self._candidate_path))
@@ -502,6 +594,7 @@ class VideoStoryboardVideoDialog(QDialog):
         self.player.pause()
         self.player.setPosition(0)
         self._pause_on_first_frame = True
+        self.audio_output.setMuted(True)
         self.video_stack.setCurrentWidget(self.video_placeholder)
         QTimer.singleShot(0, self.player.play)
 
@@ -509,6 +602,7 @@ class VideoStoryboardVideoDialog(QDialog):
         if not self._candidate_path:
             return
         self._pause_on_first_frame = False
+        self.audio_output.setMuted(not self.candidate_audio_check.isChecked())
         self.video_stack.setCurrentWidget(self.video_widget)
         self.player.play()
 

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QMenu,
     QPushButton,
     QPlainTextEdit,
     QProgressBar,
@@ -269,6 +270,8 @@ class VideoStoryboardImageEditDialog(QDialog):
         clipboard_help.setWordWrap(True)
         image_layout.addWidget(clipboard_help)
         self.preview = _EditedImagePreview()
+        self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.preview.customContextMenuRequested.connect(self._image_context_menu)
         self.preview.set_image(self._working)
         image_layout.addWidget(self.preview, 1)
 
@@ -502,7 +505,7 @@ class VideoStoryboardImageEditDialog(QDialog):
 
     def _choose_references(self) -> None:
         dialog = VideoStoryboardReferencePickerDialog(
-            self.tr_text, self.plan, self._reference_images, maximum=2,
+            self.tr_text, self.plan, self._reference_images,
             project_dir=self.project_dir, parent=self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -512,7 +515,7 @@ class VideoStoryboardImageEditDialog(QDialog):
 
     def _refresh_references(self) -> None:
         self.reference_summary.setText(self.tr_text(
-            "storyboard_edit_references_hint", "Image 1: current frame · {count}/2 extra references",
+            "storyboard_edit_references_unlimited_hint", "Image 1: current frame · {count} extra references",
             count=len(self._reference_images)))
         while self.reference_thumbnails.count():
             item = self.reference_thumbnails.takeAt(0)
@@ -688,6 +691,14 @@ class VideoStoryboardImageEditDialog(QDialog):
             not (self._generating_edit if busy is None else busy)
             and not QApplication.clipboard().image().isNull()
         )
+
+    def _image_context_menu(self, position):
+        menu = QMenu(self)
+        for button in (self.copy_button, self.paste_button):
+            action = menu.addAction(button.icon(), button.text())
+            action.setEnabled(button.isEnabled())
+            action.triggered.connect(button.click)
+        menu.exec(self.preview.mapToGlobal(position))
 
     def _copy_image(self) -> None:
         if not self._working.isNull():

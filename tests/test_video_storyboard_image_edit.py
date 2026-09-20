@@ -255,14 +255,14 @@ def test_comfyui_edit_uploads_references_and_downloads_result(
     assert target.read_bytes() == b"edited"
 
 
-def test_reference_validation_is_bounded_to_three(tmp_path: Path) -> None:
+def test_reference_validation_keeps_all_images(tmp_path: Path) -> None:
     paths = []
     for index in range(4):
         path = tmp_path / f"{index}.png"
         path.write_bytes(b"x")
         paths.append({"path": str(path), "label": str(index)})
-    # Normalization deliberately truncates the picker/API contract to three.
-    assert len(image_edit._normalize_references(paths)) == 3
+    # The provider decides its image limit; normalization must not truncate.
+    assert len(image_edit._normalize_references(paths)) == 4
 
 
 def test_reference_prompt_roles_are_visible_and_not_duplicated() -> None:

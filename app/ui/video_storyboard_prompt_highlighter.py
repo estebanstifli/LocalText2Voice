@@ -17,11 +17,13 @@ class VideoStoryboardPromptHighlighter(QSyntaxHighlighter):
         self._location_patterns: list[re.Pattern[str]] = []
         self._character_format = self._format("#6d28d9")
         self._location_format = self._format("#0f766e")
+        self._object_format = self._format("#b45309")
         self.set_plan(plan or {})
 
     def set_plan(self, plan: dict[str, Any]) -> None:
         self._character_patterns = self._patterns(plan, "characters")
         self._location_patterns = self._patterns(plan, "locations")
+        self._object_patterns = self._patterns(plan, "objects")
         self.rehighlight()
 
     @staticmethod
@@ -40,6 +42,9 @@ class VideoStoryboardPromptHighlighter(QSyntaxHighlighter):
         ]
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802 - Qt API
+        for pattern in self._object_patterns:
+            for match in pattern.finditer(text):
+                self.setFormat(match.start(), match.end() - match.start(), self._object_format)
         for pattern in self._location_patterns:
             for match in pattern.finditer(text):
                 self.setFormat(match.start(), match.end() - match.start(), self._location_format)

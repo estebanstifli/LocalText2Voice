@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.core.storyboard_generation_errors import missing_image_error
+
 import hashlib
 import base64
 import json
@@ -15,8 +17,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.comfyui_http import comfyui_request_headers
+from app.core.storyboard_illustration_context import contextualize_prompt
 from app.core.video_storyboard_visual_traits import compact_visual_description
 from app.core.video_storyboard_appearance import selected_appearance
+from app.core.storyboard_reference_images import scene_with_references, referenced_entity
 from app.core.video_storyboard_prompt_entities import (
     strip_storyboard_prompt_markers,
 )
@@ -31,6 +35,38 @@ StatusCallback = Callable[[str], None]
 CancelCallback = Callable[[], bool]
 
 
+def validate_generation_references(scene: dict[str, Any], settings: dict[str, Any]) -> None:
+    references = (scene.get("generation_overrides") or {}).get("reference_images") or []
+    from app.core.runpod_image_models import image_model_id
+    runpod_edit = (settings.get("image_provider") == "runpod"
+                   and image_model_id(settings.get("runpod", {})) == "qwen-image-edit-2511")
+    if runpod_edit and not references:
+        raise VideoStoryboardImageError("Qwen Image Edit 2511 requires at least one reference image. Add character, location or object references, or choose a text-to-image model in the Runpod profile. No request was sent.")
+    if not references:
+        return
+    for ref in references:
+        if not isinstance(ref, dict) or not Path(str(ref.get("path") or "")).is_file():
+            raise VideoStoryboardImageError("A selected reference image is missing. Choose an existing reference file.")
+    provider = str(settings.get("image_provider") or "comfyui")
+    if provider == "litellm_image" or runpod_edit:
+        return
+    if provider == "custom_comfyui":
+        try:
+            workflow = json.loads(Path(str(settings.get("comfyui", {}).get("workflow_path") or "")).read_text(encoding="utf-8"))
+            loaders = [n for n in workflow.values() if isinstance(n, dict) and n.get("class_type") == "LoadImage"]
+        except (OSError, ValueError, AttributeError) as exc:
+            raise VideoStoryboardImageError("Select a valid generation workflow with reference image inputs.") from exc
+        if len(loaders) == len(references):
+            return
+        raise VideoStoryboardImageError(
+            f"The selected generation workflow needs exactly {len(references)} LoadImage reference inputs; it has {len(loaders)}."
+        )
+    raise VideoStoryboardImageError(
+        f"The selected generation provider ({provider}) uses a text-only model/workflow that does not accept reference images. "
+        "Choose a generation model that supports references, or remove the references and disable automatic character references."
+    )
+
+
 def generate_storyboard_frame(
     scene: dict[str, Any],
     plan: dict[str, Any],
@@ -40,35 +76,17 @@ def generate_storyboard_frame(
     status: StatusCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> dict[str, Any]:
+    scene = scene_with_references(scene, plan, settings)
     overrides = scene.get("generation_overrides", {})
     reference_images = (
         overrides.get("reference_images", [])
         if isinstance(overrides, dict)
         else []
     )
-    if isinstance(reference_images, list) and reference_images:
-        from app.core.video_storyboard_image_edit import (
-            generate_edited_storyboard_image,
-        )
-
-        effective_plan = _effective_frame_plan(plan, scene)
-        prompt = compile_effective_scene_prompt(plan, scene)
-        edit_prompt = compile_reference_edit_prompt(prompt, reference_images)
-        image = settings.get("image", {})
-        result = generate_edited_storyboard_image(
-            reference_images,
-            edit_prompt,
-            settings,
-            target,
-            seed=int(effective_plan.get("base_seed") or 0),
-            width=int(image.get("width") or 1280),
-            height=int(image.get("height") or 720),
-            scene_id=str(scene.get("scene_id") or scene.get("id") or ""),
-            status=status,
-            cancelled=cancelled,
-        )
-        result["compiled_prompt"] = edit_prompt
-        return result
+    validate_generation_references(scene, settings)
+    if reference_images:
+        prompt = compile_reference_edit_prompt(compile_effective_scene_prompt(plan, scene), reference_images)
+        scene["generation_overrides"]["raw_prompt"] = prompt
     if settings.get("image_provider") == "runpod":
         from app.core import video_storyboard_runpod as rp
         effective = _effective_frame_plan(plan, scene)
@@ -80,7 +98,16 @@ def generate_storyboard_frame(
             parameters = image_parameters(rp.configuration(settings), prompt, seed,
                                           image.get("width") or 1280, image.get("height") or 720)
             seed = parameters["seed"]
-            result = rp.execute(settings, "image", parameters, target, status=status, cancelled=cancelled)
+            if reference_images:
+                config = rp.configuration(settings)
+                identity = {**parameters, "sources": [rp.file_digest(ref["path"]) for ref in reference_images]}
+                def payload():
+                    return {**parameters, "images": [rp.source_url(ref["path"], config) for ref in reference_images]}
+                if status:
+                    status(f"Runpod · Qwen Image Edit 2511 · {parameters['size']}")
+                result = rp.execute(settings, "image", payload, target, identity=identity, status=status, cancelled=cancelled)
+            else:
+                result = rp.execute(settings, "image", parameters, target, status=status, cancelled=cancelled)
         except (rp.RunpodError, ValueError) as exc:
             raise VideoStoryboardImageError(str(exc)) from exc
         return {**result, "scene_id": str(scene.get("scene_id") or scene.get("id") or ""), "image_path": str(target), "compiled_prompt": prompt, "seed": seed, "seed_applied": True}
@@ -120,6 +147,13 @@ def generate_storyboard_frame(
         if not isinstance(template, dict):
             raise VideoStoryboardImageError("The custom ComfyUI workflow is not an object.")
         workflow = build_custom_image_workflow(template, values, comfy.get("bindings")) if custom else customize_workflow(template, values)
+        if reference_images:
+            from app.core.video_storyboard_image_edit import _upload_image
+            loaders = [n for n in workflow.values() if isinstance(n, dict) and n.get("class_type") == "LoadImage"]
+            for node, reference in zip(loaders, reference_images):
+                if cancelled and cancelled():
+                    raise VideoStoryboardImageError("Frame generation was cancelled.")
+                node.setdefault("inputs", {})["image"] = _upload_image(root, Path(reference["path"]), 120, headers)
     else:
         workflow = build_z_image_workflow(prompt, seed, settings, prefix)
     if cancelled and cancelled():
@@ -183,8 +217,8 @@ def compile_effective_scene_prompt(
     if isinstance(overrides, dict):
         raw_prompt = str(overrides.get("raw_prompt") or "").strip()
         if raw_prompt:
-            return raw_prompt
-    return compile_scene_prompt(_effective_frame_plan(plan, scene), scene)
+            return contextualize_prompt(strip_storyboard_prompt_markers(raw_prompt, plan), plan)
+    return contextualize_prompt(compile_scene_prompt(_effective_frame_plan(plan, scene), scene), plan)
 
 
 def compile_reference_edit_prompt(
@@ -193,8 +227,10 @@ def compile_reference_edit_prompt(
 ) -> str:
     """Add the exact Qwen multi-reference roles once, in stable image order."""
     base_prompt = str(prompt or "").strip()
-    if "Image 1 is the visual reference for " in base_prompt:
-        return base_prompt
+    # Rebuild role numbering if automatic references extend a manual selection.
+    instruction = "Create the requested storyboard scene while preserving the referenced identities and visual traits."
+    if base_prompt.startswith("Image 1 is the visual reference for ") and instruction in base_prompt:
+        base_prompt = base_prompt.split(instruction, 1)[1].strip()
     labels = [
         str(value.get("label") or "reference").strip()
         for value in reference_images
@@ -313,6 +349,18 @@ def _generate_litellm_storyboard_frame(
         raise VideoStoryboardImageError("Frame generation was cancelled.")
     effective_plan = _effective_frame_plan(plan, scene)
     prompt = compile_effective_scene_prompt(plan, scene)
+    # GPT Image has no separate negative_prompt parameter. Keep exclusions in
+    # the required prompt so SDK parameter filtering and proxy retries cannot
+    # drop them. This also covers generation with reference images.
+    negative = str(effective_plan.get("style", {}).get("negative") or "").strip()
+    prompt += (
+        "\n\nOUTPUT COMPOSITION: Generate one full-frame image of the requested scene, "
+        "at a single moment. Use background context only for visual consistency; "
+        "do not illustrate other events or turn these instructions into a storyboard sheet. "
+        "No collage, split screen, multiple panels, captions, labels or rendered prompt text."
+    )
+    if negative:
+        prompt += "\nEXCLUDE FROM THE IMAGE (negative prompt): " + negative
     seed = int(effective_plan.get("base_seed") or 0)
     image = settings.get("image", {})
     width = int(image.get("width") or 1280)
@@ -322,7 +370,11 @@ def _generate_litellm_storyboard_frame(
     api_key = str(config.get("api_key") or "").strip()
     if status:
         status("generating")
-    if root:
+    references = scene.get("generation_overrides", {}).get("reference_images", [])
+    if references:
+        from app.core.storyboard_generation_references import litellm_reference_generation
+        response = litellm_reference_generation(references, config, prompt, width, height)
+    elif root:
         response = _litellm_image_proxy(
             root,
             model=model,
@@ -471,6 +523,9 @@ def _rejected_image_parameter_message(
     message: str,
     parameters: dict[str, Any],
 ) -> str:
+    from app.core.storyboard_generation_errors import is_moderation_error
+    if is_moderation_error(ValueError(message)):
+        return ""
     normalized = message.casefold()
     rejection_markers = (
         "unsupported", "not supported", "unknown parameter",
@@ -515,7 +570,7 @@ def _save_litellm_image(response: dict[str, Any], target: Path, timeout: float) 
     data = response.get("data", [])
     item = data[0] if isinstance(data, list) and data else None
     if not isinstance(item, dict):
-        raise VideoStoryboardImageError("LiteLLM returned no generated image.")
+        raise VideoStoryboardImageError(missing_image_error(response, "LiteLLM returned no generated image."))
     encoded = str(item.get("b64_json") or "").strip()
     if encoded:
         try:
@@ -542,7 +597,7 @@ def _save_litellm_image(response: dict[str, Any], target: Path, timeout: float) 
         _download(url, target, timeout=min(timeout, 300))
         return
     raise VideoStoryboardImageError(
-        "LiteLLM returned neither b64_json nor an image URL."
+        missing_image_error(response, "LiteLLM returned neither b64_json nor an image URL.")
     )
 
 
@@ -603,6 +658,10 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
             if not isinstance(character, dict):
                 continue
             name = str(character.get("name") or "").strip()
+            if referenced_entity(character, scene):
+                resolved_character_state_ids.update(str(s.get("id") or "").casefold() for s in character.get("states", []) if isinstance(s, dict))
+                resolved_character_state_ids.add(name.casefold())
+                continue
             identity = str(character.get("identity_description") or "").strip()
             for state in character.get("states", []):
                 if not isinstance(state, dict):
@@ -647,6 +706,8 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
     for location in continuity.get("locations", []):
         if not isinstance(location, dict):
             continue
+        if referenced_entity(location, scene):
+            continue
         name = str(location.get("name") or "").strip()
         identity = str(location.get("identity_description") or "").strip()
         for state in location.get("states", []):
@@ -674,30 +735,9 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
         clean_scene,
         descriptions,
     )
-    narrative_context = (
-        plan.get("narrative_context", {})
-        if isinstance(plan.get("narrative_context"), dict)
-        else {}
-    )
-    era = ""
-    era_state_id = str(scene.get("era_state_id") or "").strip().casefold()
-    if era_state_id:
-        for value in continuity.get("eras", []):
-            if not isinstance(value, dict):
-                continue
-            if str(value.get("id") or "").strip().casefold() != era_state_id:
-                continue
-            era = "; ".join(
-                part for part in (
-                    str(value.get("description") or "").strip(),
-                    str(value.get("material_culture") or "").strip(),
-                ) if part
-            )
-            break
-    if not era:
-        era = str(
-            scene.get("era") or narrative_context.get("era") or ""
-        ).strip()
+    from app.core.storyboard_eras import scene_era, scene_era_visual_context
+    era = scene_era(plan, scene)
+    era_visual = scene_era_visual_context(plan, scene)
     medium = str(style.get("medium") or "").strip()
     palette = str(style.get("palette") or "").strip()
     lighting = str(style.get("lighting") or "").strip()
@@ -708,6 +748,25 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
         style_parts.append(f"lighting: {lighting}")
     style_prompt = "; ".join(style_parts)
     scene_parts = [scene_prompt]
+    object_locks = []
+    from app.core.storyboard_entity_names import mentioned_records
+    objects = [r for r in continuity.get("objects", []) if isinstance(r, dict)]
+    mentioned_objects = mentioned_records(scene_prompt, objects)
+    for record in continuity.get("objects", []):
+        if not isinstance(record, dict) or referenced_entity(record, scene):
+            continue
+        name = str(record.get("name") or "")
+        if name and record in mentioned_objects:
+            from app.core.video_storyboard_prompt_entities import active_entity_state_id
+            state_id = active_entity_state_id(record, float(scene.get("start_seconds") or 0) + float(scene.get("duration_seconds") or 0) / 2)
+            explicit = (scene.get("generation_overrides") or {}).get("object_state_ids", [])
+            state_id = next((s.get("id") for s in record.get("states", []) if s.get("id") in explicit), state_id)
+            state = next((s for s in record.get("states", []) if s.get("id") == state_id), {})
+            details = compact_visual_description(str(record.get("identity_description") or ""), str(state.get("description") or ""))
+            if details:
+                object_locks.append(f"{name}: {details}")
+    if object_locks:
+        scene_parts.append("Object continuity: " + " | ".join(object_locks))
     if character_locks:
         scene_parts.append("CHARACTERS: " + ". ".join(part.rstrip(". ") for part in character_locks))
     if location_locks:
@@ -727,10 +786,11 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
             f"STYLE: {style_prompt.rstrip('. ')}." if style_prompt else "",
             f"SHOT AND COMPOSITION: {scene_shot.rstrip('. ')}." if scene_shot else "",
             (
-                f"ERA AND MATERIAL CULTURE: {era.rstrip('. ')}."
+                f"ERA: {era.rstrip('. ')}."
                 if era
                 else ""
             ),
+            f"ERA VISUAL CONTEXT: {era_visual.rstrip('. ')}." if era and era_visual else "",
         )
         if part
     )

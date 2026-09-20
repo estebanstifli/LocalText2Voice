@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.storyboard_profiles import RUNPOD_DEFAULTS, PROFILE_IDS, infer_profile
+from app.core.litellm_video_models import LITELLM_VIDEO_DEFAULTS
 
 import json
 import re
@@ -284,12 +285,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "completed_at": "",
     },
     "video_storyboard": {
+        "auto_character_references": True,
         "continuity_analysis": continuity_defaults(),
-        "enabled": False,
+        "enabled": True,
         "installation": {"comfy_root": "", "comfy_python": ""},
         "active_profile": "local",
         "profiles": {},
         "video_provider": "comfyui",
+        "litellm_video": deepcopy(LITELLM_VIDEO_DEFAULTS),
         "runpod": deepcopy(RUNPOD_DEFAULTS),
         "image_provider": "comfyui",
         "image_edit_provider": "disabled",
@@ -298,7 +301,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "mode": "semantic_bounded",
             "minimum_seconds": 4,
             "target_seconds": 8,
-            "maximum_seconds": 20,
+            "maximum_seconds": 15,
         },
         "image": {
             "width": 1280,
@@ -763,11 +766,12 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
 def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     storyboard["continuity_analysis"] = normalize_continuity_settings(storyboard.get("continuity_analysis"))
     defaults = DEFAULT_SETTINGS["video_storyboard"]
-    storyboard["enabled"] = bool(storyboard.get("enabled", False))
+    # Storyboard is always available; retain the legacy key for project compatibility.
+    storyboard["enabled"] = True
     storyboard["active_profile"] = infer_profile(storyboard)
     snapshots = storyboard.get("profiles", {})
     storyboard["profiles"] = {k: v for k, v in snapshots.items() if k in PROFILE_IDS and isinstance(v, dict)} if isinstance(snapshots, dict) else {}
-    storyboard["video_provider"] = _choice_value(storyboard.get("video_provider"), {"comfyui", "runpod", "disabled"}, "comfyui")
+    storyboard["video_provider"] = _choice_value(storyboard.get("video_provider"), {"comfyui", "runpod", "litellm", "disabled"}, "comfyui")
     runpod = storyboard.get("runpod", {})
     runpod = runpod if isinstance(runpod, dict) else {}
     storyboard["runpod"] = {key: str(runpod.get(key) or fallback).strip() if isinstance(fallback, str) else runpod.get(key, fallback) for key, fallback in RUNPOD_DEFAULTS.items()}
@@ -798,6 +802,7 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         "comfyui_image_edit",
         "litellm_image",
         "litellm_image_edit",
+        "litellm_video",
         "ollama",
         "litellm",
         "video",
@@ -805,13 +810,19 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         if not isinstance(storyboard.get(section_name), dict):
             storyboard[section_name] = deepcopy(defaults[section_name])
 
+    video_litellm = storyboard["litellm_video"]
+    for key in ("model", "base_url", "api_key"):
+        video_litellm[key] = str(video_litellm.get(key) or LITELLM_VIDEO_DEFAULTS[key]).strip()
+    video_litellm["resolution"] = _choice_value(video_litellm.get("resolution"), {"720p", "1080p"}, "720p")
+    video_litellm["aspect_ratio"] = _choice_value(video_litellm.get("aspect_ratio"), {"16:9", "9:16"}, "16:9")
+    video_litellm["timeout_seconds"] = _bounded_int(video_litellm.get("timeout_seconds"), 60, 7200, 1800)
     scene = storyboard["scene"]
     scene["mode"] = _choice_value(
         scene.get("mode"),
         {"semantic_bounded", "fixed"},
         "semantic_bounded",
     )
-    maximum = _bounded_int(scene.get("maximum_seconds"), 4, 60, 20)
+    maximum = _bounded_int(scene.get("maximum_seconds"), 4, 60, 15)
     minimum = _bounded_int(scene.get("minimum_seconds"), 4, maximum, 4)
     target = _bounded_int(
         scene.get("target_seconds"), minimum, maximum, min(maximum, max(minimum, 8))

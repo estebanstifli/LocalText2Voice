@@ -1,0 +1,458 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Premium friendly 3D clay illustration for a creative desktop app, a rounded control console with three chunky sliders, a tiny gear and coral knobs. Single cohesive iconic composition, centered large clear silhouette, generous empty margin, seamless solid deep navy background, soft studio light, rounded matte shapes, limited teal coral cream palette, square image. No letters, no words, no watermark, no collage.",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "5": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "7": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "7",
+        0
+      ],
+      "seed": 827320,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "denoise": 1.0
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "9",
+        0
+      ],
+      "filename_prefix": "ltv_settings_general"
+    }
+  },
+  "24": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Premium friendly 3D clay illustration for a creative desktop app, a friendly artificial intelligence brain of rounded teal lobes above an open cream storybook, with one small coral speech bubble. Single cohesive iconic composition, centered large clear silhouette, generous empty margin, seamless solid deep navy background, soft studio light, rounded matte shapes, limited teal coral cream palette, square image. No letters, no words, no watermark, no collage.",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "25": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "24",
+        0
+      ]
+    }
+  },
+  "26": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "27": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "28": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "27",
+        0
+      ],
+      "seed": 827321,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "24",
+        0
+      ],
+      "negative": [
+        "25",
+        0
+      ],
+      "latent_image": [
+        "26",
+        0
+      ],
+      "denoise": 1.0
+    }
+  },
+  "29": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "28",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "30": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "29",
+        0
+      ],
+      "filename_prefix": "ltv_settings_llm"
+    }
+  },
+  "44": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Premium friendly 3D clay illustration for a creative desktop app, a miniature framed picture of teal mountains and a coral sun, with a golden sparkle. Single cohesive iconic composition, centered large clear silhouette, generous empty margin, seamless solid deep navy background, soft studio light, rounded matte shapes, limited teal coral cream palette, square image. No letters, no words, no watermark, no collage.",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "45": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "44",
+        0
+      ]
+    }
+  },
+  "46": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "47": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "48": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "47",
+        0
+      ],
+      "seed": 827322,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "44",
+        0
+      ],
+      "negative": [
+        "45",
+        0
+      ],
+      "latent_image": [
+        "46",
+        0
+      ],
+      "denoise": 1.0
+    }
+  },
+  "49": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "48",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "50": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "49",
+        0
+      ],
+      "filename_prefix": "ltv_settings_image"
+    }
+  },
+  "64": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Premium friendly 3D clay illustration for a creative desktop app, a miniature teal cinema camera with two rounded film reels and a coral play triangle on its side. Single cohesive iconic composition, centered large clear silhouette, generous empty margin, seamless solid deep navy background, soft studio light, rounded matte shapes, limited teal coral cream palette, square image. No letters, no words, no watermark, no collage.",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "65": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "64",
+        0
+      ]
+    }
+  },
+  "66": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "68": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "67",
+        0
+      ],
+      "seed": 827323,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "64",
+        0
+      ],
+      "negative": [
+        "65",
+        0
+      ],
+      "latent_image": [
+        "66",
+        0
+      ],
+      "denoise": 1.0
+    }
+  },
+  "69": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "68",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "70": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "69",
+        0
+      ],
+      "filename_prefix": "ltv_settings_video"
+    }
+  },
+  "84": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Premium friendly 3D clay illustration for a creative desktop app, a coral paintbrush touching a framed teal landscape picture, with a golden sparkle at its tip. Single cohesive iconic composition, centered large clear silhouette, generous empty margin, seamless solid deep navy background, soft studio light, rounded matte shapes, limited teal coral cream palette, square image. No letters, no words, no watermark, no collage.",
+      "clip": [
+        "2",
+        0
+      ]
+    }
+  },
+  "85": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "84",
+        0
+      ]
+    }
+  },
+  "86": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "87": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3.0
+    }
+  },
+  "88": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "87",
+        0
+      ],
+      "seed": 827324,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "positive": [
+        "84",
+        0
+      ],
+      "negative": [
+        "85",
+        0
+      ],
+      "latent_image": [
+        "86",
+        0
+      ],
+      "denoise": 1.0
+    }
+  },
+  "89": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "88",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "90": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "89",
+        0
+      ],
+      "filename_prefix": "ltv_settings_edit"
+    }
+  }
+}

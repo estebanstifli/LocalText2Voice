@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import wave
 import subprocess
+import io
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,55 @@ from app.core.video_storyboard_renderer import (
     render_storyboard_video,
 )
 from app.utils.ffmpeg_utils import FFmpegError
+
+
+def test_207_scene_assembly_stays_below_windows_command_limit(tmp_path, monkeypatch):
+    from app.core import video_storyboard_renderer as renderer
+
+    project = tmp_path / ("Proyecto largo con espacios y acentos áé " + "x" * 65)
+    project.mkdir()
+    frame = project / "imagen.ppm"
+    audio = project / "narración.wav"
+    output = project / "documental.mp4"
+    _write_ppm(frame, 180, 90, 30)
+    _write_silent_wav(audio, 1)
+    assemblies = []
+
+    def fake_popen(command, **kwargs):
+        # Count UTF-16 units, including the terminating NUL, as CreateProcessW does.
+        units = len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2 + 1
+        assert units < 32767
+        assert Path(command[0]).is_absolute()
+        if "-filter_complex_script" in command:
+            cwd = Path(kwargs["cwd"])
+            script_index = command.index("-filter_complex_script")
+            script = cwd / command[script_index + 1]
+            graph = script.read_text(encoding="utf-8")
+            assert graph.count("xfade=") == 206
+            assert "[207:a]" in graph and "[aout]" in graph
+            legacy = command[:]
+            legacy[script_index:script_index + 2] = ["-filter_complex", graph]
+            for i, value in enumerate(command):
+                if value == "-i":
+                    path = Path(command[i + 1])
+                    assert (cwd / path).is_file()
+                    legacy[i + 1] = str(cwd / path)
+            assert len(subprocess.list2cmdline(legacy).encode("utf-16-le")) // 2 > 32767
+            assert Path(command[-1]).is_absolute()
+            assemblies.append((cwd, units))
+        Path(command[-1]).write_bytes(b"mock encoded video")
+        return SimpleNamespace(stdout=io.StringIO("out_time=00:00:01.000000\n"), wait=lambda: 0)
+
+    monkeypatch.setattr(renderer.subprocess, "Popen", fake_popen)
+    result = render_storyboard_video(
+        [{"image_path": str(frame), "duration_seconds": 1, "transition": "fade"}] * 207,
+        audio, output,
+        {"video": {"transition_seconds": .1}},
+    )
+    assert result["scene_count"] == 207 and output.is_file()
+    assert len(assemblies) == 1
+    assert assemblies[0][1] < 8000
+    assert not assemblies[0][0].exists()
 
 
 def _write_ppm(path: Path, red: int, green: int, blue: int) -> None:

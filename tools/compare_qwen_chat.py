@@ -9,13 +9,13 @@ import re
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.core.storyboard_analysis_settings import character_discovery_messages
+from app.core.storyboard_analysis_settings import PROMPTS
 
 
 def main():
     sys.stdout.reconfigure(errors="backslashreplace")
     text = Path(sys.argv[1]).read_text(encoding="utf-8-sig")
-    system, user = character_discovery_messages(text)
+    system, user = PROMPTS["conversation_report"][1], text
     basic = {"model": "qwen3:8b", "stream": True, "think": False,
              "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
              "options": {"num_ctx": 8192, "num_predict": 8096, "seed": 42,

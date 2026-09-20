@@ -1,13 +1,6 @@
 from unittest.mock import patch
 import json
 from app.core.video_storyboard_planner import _request_plan
-from app.core.storyboard_analysis_settings import story_synopsis
-
-
-def test_synopsis_extraction_keeps_original_report_independent():
-    report = '**Protagonists:** Three pigs.\n\n**Summary:**\nA wolf threatens their houses.'
-    assert story_synopsis(report) == 'A wolf threatens their houses.'
-    assert story_synopsis('A plain answer without headings.') == 'A plain answer without headings.'
 
 
 def test_discovery_is_a_single_conversational_message_with_thinking():

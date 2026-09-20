@@ -398,6 +398,7 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.assertEqual(
             labels,
             [
+                "View Image",
                 "Copy",
                 "Paste",
                 "Replace frame with an image",
@@ -653,10 +654,10 @@ class VideoStoryboardPageTests(unittest.TestCase):
         self.assertTrue(dialog.accept_button.isHidden())
         self.assertTrue(dialog.ignore_button.isHidden())
         self.assertIn("SCENE:", dialog.raw_prompt_edit.toPlainText())
-        self.assertEqual(dialog.tabs.count(), 4)
+        self.assertEqual(dialog.tabs.count(), 3)
         self.assertEqual(
             [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())],
-            ["Styles", "Style details", "Narrative context", "Characters"],
+            ["Styles", "Style details", "Narrative context"],
         )
         watercolor_item = dialog._style_gallery_item("watercolor")
         dialog.style_gallery.setCurrentItem(watercolor_item)
@@ -920,6 +921,14 @@ class VideoStoryboardPageTests(unittest.TestCase):
                 [{"id": "001", "duration": 6, "image_path": str(frame_path)}]
             )
             canvas = self.page.timeline_canvas
+            canvas._scene_pixmap(str(frame_path))
+            for _ in range(200):
+                self.application.processEvents()
+                if not canvas.thumbnail_cache._pending:
+                    break
+                QTest.qWait(10)
+            self.assertFalse(canvas.thumbnail_cache._pending)
+            self.assertFalse(canvas._scene_pixmap(str(frame_path)).isNull())
             rendered = QImage(
                 canvas.size(),
                 QImage.Format.Format_RGB32,
@@ -949,6 +958,7 @@ class VideoStoryboardPageTests(unittest.TestCase):
                 image_rect.left() + tile_width + 20,
                 image_rect.center().y(),
             )
+            self.assertEqual(first, QColor("#e11d48"))
             self.assertEqual(first, repeated)
 
     def test_track_icons_are_raised_and_background_matches_dark_tracks(self) -> None:
@@ -1051,7 +1061,7 @@ class VideoStoryboardPageTests(unittest.TestCase):
             self.application.processEvents()
 
     def test_project_direction_persists_and_overrides_regeneration_and_render(self) -> None:
-        self.assertEqual(self.page.project_tabs.count(), 6)
+        self.assertEqual(self.page.project_tabs.count(), 7)
         self.assertEqual(
             [
                 self.page.project_tabs.tabText(index)
@@ -1063,7 +1073,8 @@ class VideoStoryboardPageTests(unittest.TestCase):
                 "Historical periods",
                 "Characters",
                 "Locations",
-                "Video motion",
+                "Objects",
+                "Video & audio",
             ],
         )
         self.page.set_configuration(
@@ -1162,8 +1173,9 @@ class VideoStoryboardPageTests(unittest.TestCase):
                 all(scene["motion"] == "zoom_out" for scene in renders[0])
             )
 
-        self.page.regenerate_all_button.click()
+        self.page.generate_frames_button.click()
         assert self.page._frame_batch_dialog is not None
+        self.page._frame_batch_dialog.overwrite_checkbox.setChecked(True)
         self.page._frame_batch_dialog.start_button.click()
         self.assertTrue(
             all(
@@ -1176,11 +1188,8 @@ class VideoStoryboardPageTests(unittest.TestCase):
             "desaturated blue and gold",
         )
         self.assertEqual(generations[0]["plan"]["base_seed"], 987654321)
-        self.assertFalse(
-            self.page.project_tabs.widget(3).isAncestorOf(
-                self.page.regenerate_all_button
-            )
-        )
+        self.assertFalse(hasattr(self.page, "regenerate_all_button"))
+        self.assertFalse(hasattr(self.page._frame_batch_dialog, "settings_button"))
 
     def test_continuity_entities_and_periods_are_visible_and_editable(self) -> None:
         self.page.set_analysis_result(

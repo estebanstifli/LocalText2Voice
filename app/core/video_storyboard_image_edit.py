@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.core.storyboard_generation_errors import missing_image_error
+
 import base64
 import json
 import mimetypes
@@ -124,9 +126,9 @@ def generate_edited_storyboard_image(
     camera: object = None,
 ) -> dict[str, Any]:
     references = _normalize_references(reference_images)
-    if not 1 <= len(references) <= 3:
+    if not references:
         raise VideoStoryboardImageEditError(
-            "Image editing requires between one and three reference images."
+            "Image editing requires at least one reference image."
         )
     instruction = str(prompt or "").strip()
     if settings.get("image_edit_provider") == "runpod":
@@ -303,7 +305,8 @@ def _generate_remote_edit(
     fields = {"model": model, "prompt": prompt, "response_format": "b64_json"}
     if width and height:
         fields["size"] = f"{int(width)}x{int(height)}"
-    files = [("image", Path(value["path"])) for value in references]
+    field = "image[]" if len(references) > 1 else "image"
+    files = [(field, Path(value["path"])) for value in references]
     api_key = str(config.get("api_key") or "").strip()
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     if status:
@@ -388,6 +391,9 @@ def _litellm_direct_edit(
                     )
                 return value
             except Exception as exc:
+                from app.core.storyboard_generation_errors import is_moderation_error
+                if is_moderation_error(exc):
+                    raise VideoStoryboardImageEditError(str(exc)) from exc
                 message = str(exc).casefold()
                 rejected = next(
                     (name for name in tuple(optional) if name.casefold() in message),
@@ -418,6 +424,10 @@ def _load_workflow(config: dict[str, Any], count: int) -> dict[str, Any]:
     return _builtin_qwen_workflow(count)
 
 
+def _reference_load_nodes(count: int) -> tuple[str, ...]:
+    return tuple(("78", "106", "108")[i] if i < 3 else str(1000 + i) for i in range(count))
+
+
 def _builtin_qwen_workflow(count: int) -> dict[str, Any]:
     workflow: dict[str, Any] = {
         "115": {"inputs": {"unet_name": "Qwen-Image-Edit-2509-Q3_K_S.gguf"}, "class_type": "UnetLoaderGGUF"},
@@ -433,7 +443,7 @@ def _builtin_qwen_workflow(count: int) -> dict[str, Any]:
     }
     positive: dict[str, Any] = {"prompt": "", "clip": ["38", 0], "vae": ["39", 0]}
     negative: dict[str, Any] = {"prompt": "", "clip": ["38", 0], "vae": ["39", 0]}
-    for index, node_id in enumerate(("78", "106", "108")[:count], start=1):
+    for index, node_id in enumerate(_reference_load_nodes(count), start=1):
         scaled_id = "93" if index == 1 else node_id
         workflow[node_id] = {"inputs": {"image": f"reference_{index}.png"}, "class_type": "LoadImage"}
         if index == 1:
@@ -450,7 +460,7 @@ def _configure_qwen_workflow(
     config: dict[str, Any], *, seed: int, width: int, height: int, prefix: str,
     camera: object = None,
 ) -> None:
-    load_nodes = ("78", "106", "108")
+    load_nodes = _reference_load_nodes(len(uploads))
     required_nodes = {
         "111", "110", "115", "117", "38", "39", "112", "3", "60",
         *load_nodes[: len(uploads)],
@@ -512,7 +522,7 @@ def _normalize_references(values: list[dict[str, Any] | str]) -> list[dict[str, 
             continue
         seen.add(key)
         result.append({"path": resolved, "label": label})
-    return result[:3]
+    return result
 
 
 def _upload_image(root: str, path: Path, timeout: float, headers: dict[str, str]) -> str:
@@ -622,7 +632,7 @@ def _save_remote_image(response: dict[str, Any], target: Path, timeout: float) -
     if url:
         _download(url, target, timeout)
         return
-    raise VideoStoryboardImageEditError("The remote image editor returned no image.")
+    raise VideoStoryboardImageEditError(missing_image_error(response, "The remote image editor returned no image."))
 
 
 def _section(settings: dict[str, Any], name: str) -> dict[str, Any]:

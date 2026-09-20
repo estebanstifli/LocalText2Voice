@@ -24,6 +24,8 @@ Updated: 13 September 2026.
 - Build editable character and location profiles, including visual descriptions.
 - In full analysis, look for explicit appearance changes and create timed states.
 - Review the initial reports before continuing, when review is enabled.
+- Use a manual historical setting or detect one/multiple periods automatically,
+  review their visual context, and assign them to scenes. See [Historical periods](HISTORICAL_PERIODS.md).
 - Set a maximum image duration; longer proposed scenes are divided into shots.
 - Inspect the narration alongside the images and adjust scene boundaries.
 

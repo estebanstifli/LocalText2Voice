@@ -4,7 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer, QPoint
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
@@ -40,6 +40,8 @@ from app.core.video_storyboard_install import ROLES, load_manifest, endpoint_for
 from app.ui.video_storyboard_install_dialog import StoryboardInstallDialog
 from app.workers.video_storyboard_install_worker import StoryboardInstallWorker
 from app.ui.icons import ui_icon
+from app.ui.storyboard_settings_card import StoryboardSettingsCard
+from app.utils.paths import resource_root
 
 
 Translate = Callable[..., str]
@@ -102,6 +104,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         self._engine_probe_key = None
         self._installation_settings = {}
         self._checked_on_show = False
+        self._selected_category = "general"
         self.detection_threads: dict[str, QThread] = {}
         self.detection_workers: dict[str, VideoStoryboardServiceDetectionWorker] = {}
         self._build_ui()
@@ -133,12 +136,8 @@ class VideoStoryboardSettingsWidget(QWidget):
         description.setObjectName("helperLabel")
         description.setWordWrap(True)
         self.runtime_description_label = description
-        self.enabled_checkbox = QCheckBox(
-            self.tr_text("video_storyboard_enable", "Enable Video Storyboard")
-        )
         intro_layout.addWidget(title)
         intro_layout.addWidget(description)
-        intro_layout.addWidget(self.enabled_checkbox)
         profile_form = QFormLayout()
         self.profile_combo = QComboBox()
         for label, value in ((self.tr_text("storyboard_local_profile_gpu", "Local · Default · min. 8 GB GPU VRAM"), "local"), (self.tr_text("storyboard_runpod_profile_paid", "Runpod · Pro · Recommended, paid"), "runpod"), ("Custom ComfyUI", "custom_comfyui"), ("LiteLLM", "litellm")):
@@ -146,46 +145,37 @@ class VideoStoryboardSettingsWidget(QWidget):
         profile_form.addRow(self.tr_text("storyboard_profile", "Generation profile"), self.profile_combo)
         intro_layout.addLayout(profile_form)
         self.runpod_settings = RunpodSettingsWidget(self.tr_text)
-        intro_layout.addWidget(self.runpod_settings)
+        self.runpod_settings.setParent(content)
         self.runpod_settings.hide()
-        self.visual_advanced = QCheckBox(self.tr_text("storyboard_visual_advanced", "Show visual engine settings"))
-        intro_layout.addWidget(self.visual_advanced)
         self.engine_cards = {}
+        self.category_cards = {}
         self.engine_sections = {}
         cards = QGridLayout()
-        for column, (role, label, icon) in enumerate((
-            ("llm", self.tr_text("storyboard_card_llm", "LLM provider"), "file"),
-            ("image", self.tr_text("storyboard_card_image", "Image generation"), "replace_image"),
-            ("video", self.tr_text("storyboard_card_video", "Video generation"), "video_track"),
-            ("edit", self.tr_text("storyboard_card_edit", "Image editing"), "edit"),
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.setSpacing(8)
+        for column, (role, label) in enumerate((
+            ("general", self.tr_text("storyboard_card_general", "General")),
+            ("llm", self.tr_text("storyboard_card_llm", "LLM provider")),
+            ("image", self.tr_text("storyboard_card_image", "Image generation")),
+            ("video", self.tr_text("storyboard_card_video", "Video generation")),
+            ("edit", self.tr_text("storyboard_card_edit", "Image editing")),
         )):
-            frame = QFrame()
-            frame.setObjectName("card")
-            box = QVBoxLayout(frame)
-            heading = QLabel(label)
-            heading.setObjectName("sectionTitle")
-            box.addWidget(heading)
-            model = QLabel()
-            model.setTextFormat(Qt.TextFormat.PlainText)
-            model.setWordWrap(True)
-            model.setMinimumHeight(46)
-            box.addWidget(model)
-            status = QLabel()
-            status.setWordWrap(True)
-            status.setTextFormat(Qt.TextFormat.PlainText)
-            status.setObjectName("helperLabel")
-            box.addWidget(status)
-            install = QPushButton()
+            art = resource_root() / "assets" / "storyboard_settings" / f"{role}.png"
+            frame = StoryboardSettingsCard(label, art)
+            model, status, install = frame.model, frame.status, frame.install
             install.setIcon(ui_icon("download"))
             install.clicked.connect(lambda _checked=False, selected=role: self._open_engine_install(selected))
-            settings = QPushButton(self.tr_text("settings", "Settings"))
-            settings.setIcon(ui_icon("settings"))
-            settings.clicked.connect(lambda _checked=False, selected=role: self._focus_engine_section(selected))
-            box.addWidget(install)
-            box.addWidget(settings)
+            frame.selected.connect(lambda selected=role: self._select_category(selected))
+            frame.stepRequested.connect(lambda step, selected=role: self._step_category(selected, step))
             cards.addWidget(frame, 0, column)
             cards.setColumnStretch(column, 1)
-            self.engine_cards[role] = {"model": model, "status": status, "install": install, "settings": settings, "frame": frame}
+            self.category_cards[role] = frame
+            if role == "general":
+                model.setText(self.tr_text("storyboard_general_summary", "Style, continuity & output"))
+                status.setText(self.tr_text("storyboard_general_shared", "Shared project settings"))
+                install.hide()
+            else:
+                self.engine_cards[role] = {"model": model, "status": status, "install": install, "frame": frame}
         self.engine_cards_widget = QWidget()
         self.engine_cards_widget.setLayout(cards)
         intro_layout.addWidget(self.engine_cards_widget)
@@ -193,10 +183,14 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.engine_refresh_button.setIcon(ui_icon("refresh"))
         self.engine_refresh_button.clicked.connect(self._refresh_engine_inventory)
         intro_layout.addWidget(self.engine_refresh_button)
-        layout.addWidget(intro)
-        layout.addWidget(self._build_scene_settings())
-        layout.addWidget(self._build_image_preset_settings())
-        layout.addWidget(self._build_video_settings())
+        root_layout.addWidget(intro)
+        self.general_section = QWidget()
+        general_layout = QVBoxLayout(self.general_section)
+        general_layout.setContentsMargins(0, 0, 0, 0)
+        general_layout.addWidget(self._build_scene_settings())
+        general_layout.addWidget(self._build_image_preset_settings())
+        general_layout.addWidget(self._build_video_settings())
+        layout.addWidget(self.general_section)
 
         llm_group = QGroupBox(
             self.tr_text("video_storyboard_llm_provider", "Storyboard LLM provider")
@@ -218,7 +212,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             "continuity_settings_open_help", "Configure the analysis process, block size and instructions."
         ))
         self.continuity_settings_button.clicked.connect(self.continuitySettingsRequested.emit)
-        llm_layout.addWidget(self.continuity_settings_button)
+        general_layout.itemAt(0).widget().layout().addRow(self.continuity_settings_button)
         layout.addWidget(llm_group)
         self.engine_sections["llm"] = llm_group
 
@@ -250,7 +244,7 @@ class VideoStoryboardSettingsWidget(QWidget):
 
         layout.addStretch(1)
         scroll.setWidget(content)
-        root_layout.addWidget(scroll)
+        root_layout.addWidget(scroll, 1)
 
     def _build_comfyui_settings(self) -> QWidget:
         widget = QFrame()
@@ -377,14 +371,14 @@ class VideoStoryboardSettingsWidget(QWidget):
         group = QGroupBox(
             self.tr_text(
                 "video_storyboard_image_edit_provider",
-                "Image editing and reference provider",
+                "Image editing provider",
             )
         )
         layout = QVBoxLayout(group)
         help_label = QLabel(
             self.tr_text(
                 "video_storyboard_image_edit_help",
-                "Optional. Enables natural-language frame edits and generation from 1–3 character/location reference images.",
+                "Used only by Edit image. Generate frames always uses the image-generation provider, including when reference images are attached.",
             )
         )
         help_label.setObjectName("helperLabel")
@@ -522,8 +516,8 @@ class VideoStoryboardSettingsWidget(QWidget):
         outer = QVBoxLayout(group)
         description = QLabel(
             self.tr_text(
-                "video_storyboard_video_generation_help",
-                "Choose a built-in or custom ComfyUI API workflow. The app supplies the scene image, prompt, seed, resolution, duration, FPS and output name.",
+                "storyboard_video_providers_help",
+                "Choose ComfyUI, Runpod or LiteLLM for scene videos. Each provider offers its own models and reference modes.",
             )
         )
         description.setObjectName("helperLabel")
@@ -534,9 +528,20 @@ class VideoStoryboardSettingsWidget(QWidget):
         generic.setObjectName("card")
         form = QFormLayout(generic)
         self.video_provider_combo = QComboBox()
-        for label, provider in (("ComfyUI", "comfyui"), ("Runpod · Wan 2.6", "runpod"), (self.tr_text("disabled", "Disabled"), "disabled")):
+        for label, provider in (("ComfyUI", "comfyui"), ("Runpod", "runpod"), ("LiteLLM · Veo", "litellm"), (self.tr_text("disabled", "Disabled"), "disabled")):
             self.video_provider_combo.addItem(label, provider)
         form.addRow(self.tr_text("storyboard_video_provider", "Video provider"), self.video_provider_combo)
+        outer.addWidget(generic)
+        self.comfyui_video_fields = QWidget()
+        form = QFormLayout(self.comfyui_video_fields)
+        outer.addWidget(self.comfyui_video_fields)
+        from app.ui.storyboard_litellm_video_settings import LiteLLMVideoSettings
+        self.litellm_video_settings = LiteLLMVideoSettings(self.tr_text)
+        self.litellm_video_settings.changed.connect(self._emit_changed)
+        outer.addWidget(self.litellm_video_settings)
+        self.runpod_video_hint = QLabel(self.tr_text("runpod_video_settings_hint", "Configure Runpod video models and credentials in the Runpod profile."))
+        self.runpod_video_hint.setWordWrap(True)
+        outer.addWidget(self.runpod_video_hint)
         self.comfyui_video_profile_combo = QComboBox()
         for profile, label in VIDEO_WORKFLOW_PROFILES.items():
             self.comfyui_video_profile_combo.addItem(label, profile)
@@ -592,8 +597,6 @@ class VideoStoryboardSettingsWidget(QWidget):
         )
         form.addRow("FPS", self.comfyui_video_fps_spin)
         form.addRow(self.tr_text("timeout", "Timeout"), self.comfyui_video_timeout_spin)
-        outer.addWidget(generic)
-
         self.comfyui_video_profile_stack = QStackedWidget()
 
         wan_widget = QFrame()
@@ -798,7 +801,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         return widget
 
     def _build_scene_settings(self) -> QGroupBox:
-        group = QGroupBox(self.tr_text("video_storyboard_scene_timing", "Scene timing"))
+        group = QGroupBox(self.tr_text("video_storyboard_scene_timing", "Continuity"))
         form = QFormLayout(group)
         explanation = QLabel(
             self.tr_text(
@@ -819,6 +822,11 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.scene_minimum_spin.hide()
         self.scene_target_spin.hide()
         form.addRow(self.tr_text("video_storyboard_maximum", "Maximum scene"), self.scene_maximum_spin)
+        self.auto_character_references_checkbox = QCheckBox(self.tr_text(
+            "video_storyboard_auto_character_references", "Use character reference images automatically when available"))
+        self.auto_character_references_checkbox.setChecked(True)
+        self.auto_character_references_checkbox.toggled.connect(self._emit_changed)
+        form.addRow(self.auto_character_references_checkbox)
         return group
 
     def _build_image_preset_settings(self) -> QGroupBox:
@@ -826,8 +834,8 @@ class VideoStoryboardSettingsWidget(QWidget):
         form = QFormLayout(group)
         preset_hint = QLabel(
             self.tr_text(
-                "video_storyboard_image_basic_help",
-                "Choose the image resolution and visual style. Advanced sampling settings are at the bottom of this page.",
+                "storyboard_image_preset_help",
+                "Choose the default image resolution and visual style for your storyboard.",
             )
         )
         preset_hint.setObjectName("helperLabel")
@@ -925,7 +933,6 @@ class VideoStoryboardSettingsWidget(QWidget):
     def _connect_signals(self) -> None:
         self.wan_behavior_combo.currentIndexChanged.connect(self._emit_changed)
         self.profile_combo.currentIndexChanged.connect(self._change_profile)
-        self.visual_advanced.toggled.connect(self._sync_profile_ui)
         self.runpod_settings.changed.connect(self._emit_changed)
         self.video_provider_combo.currentIndexChanged.connect(self._video_provider_changed)
         self.image_provider_combo.currentIndexChanged.connect(self._sync_image_provider)
@@ -936,7 +943,6 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.comfyui_video_profile_combo.currentIndexChanged.connect(
             self._video_workflow_profile_changed
         )
-        self.enabled_checkbox.toggled.connect(self._emit_changed)
         for combo in (
             self.image_provider_combo,
             self.image_edit_provider_combo,
@@ -1039,7 +1045,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             self._select(self.video_provider_combo, self._video_provider)
             self._select(self.profile_combo, self._active_profile)
             self.runpod_settings.set_configuration(config.get("runpod", {}))
-            self.enabled_checkbox.setChecked(bool(config.get("enabled", False)))
+            self.litellm_video_settings.set_configuration(config.get("litellm_video", {}))
             self._select(self.image_provider_combo, config.get("image_provider"))
             self._select(
                 self.image_edit_provider_combo,
@@ -1162,7 +1168,8 @@ class VideoStoryboardSettingsWidget(QWidget):
             scene = config["scene"]
             self.scene_minimum_spin.setValue(int(scene.get("minimum_seconds", 4)))
             self.scene_target_spin.setValue(int(scene.get("target_seconds", 8)))
-            self.scene_maximum_spin.setValue(int(scene.get("maximum_seconds", 20)))
+            self.scene_maximum_spin.setValue(int(scene.get("maximum_seconds", 15)))
+            self.auto_character_references_checkbox.setChecked(bool(config.get("auto_character_references", True)))
             image = config["image"]
             self.image_width_spin.setValue(int(image.get("width", 1280)))
             self.image_height_spin.setValue(int(image.get("height", 720)))
@@ -1188,12 +1195,14 @@ class VideoStoryboardSettingsWidget(QWidget):
 
     def configuration(self) -> dict[str, Any]:
         return {
+            "auto_character_references": self.auto_character_references_checkbox.isChecked(),
             "active_profile": self._active_profile,
             "profiles": deepcopy(self._profiles),
             "video_provider": self._video_provider,
+            "litellm_video": self.litellm_video_settings.configuration(),
             "runpod": self.runpod_settings.configuration(),
             "installation": deepcopy(self._installation_settings),
-            "enabled": self.enabled_checkbox.isChecked(),
+            "enabled": True,
             "image_provider": self.image_provider_combo.currentData() or "comfyui",
             "image_edit_provider": self.image_edit_provider_combo.currentData() or "disabled",
             "llm_provider": self.llm_provider_combo.currentData() or "ollama",
@@ -1376,7 +1385,15 @@ class VideoStoryboardSettingsWidget(QWidget):
 
     def _video_provider_changed(self, *_args):
         self._video_provider = self.video_provider_combo.currentData()
+        self._sync_video_provider_ui()
         self._emit_changed()
+
+    def _sync_video_provider_ui(self):
+        provider = self.video_provider_combo.currentData()
+        self.comfyui_video_fields.setVisible(provider == "comfyui")
+        self.comfyui_video_profile_stack.setVisible(provider == "comfyui")
+        self.litellm_video_settings.setVisible(provider == "litellm")
+        self.runpod_video_hint.hide()
 
     def _change_profile(self, *_args):
         if self._restoring:
@@ -1389,15 +1406,38 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.settingsChanged.emit()
 
     def _sync_profile_ui(self, *_args):
-        remote = self._active_profile == "runpod"
-        self.wan_behavior_panel.setVisible(not remote and self.comfyui_video_profile_combo.currentData() == WAN_VIDEO_PROFILE)
-        self.runpod_settings.setVisible(remote)
-        advanced = self.visual_advanced.isChecked()
-        for role in ("image", "video", "edit"):
-            self.engine_sections[role].setVisible(not remote and (advanced or self._active_profile != "local"))
-        self.engine_cards_widget.setVisible(not remote)
-        self.engine_refresh_button.setVisible(not remote)
-        self.visual_advanced.setVisible(not remote)
+        self._sync_video_provider_ui()
+        self.wan_behavior_panel.setVisible(self.comfyui_video_profile_combo.currentData() == WAN_VIDEO_PROFILE)
+        self.general_section.setVisible(self._selected_category == "general")
+        for role, section in self.engine_sections.items():
+            section.setVisible(role == self._selected_category)
+        for role, card in self.category_cards.items():
+            card.set_selected(role == self._selected_category)
+        providers = {"image": self.image_provider_combo.currentData(), "video": self._video_provider, "edit": self.image_edit_provider_combo.currentData()}
+        self.image_provider_stack.setVisible(providers["image"] != "runpod")
+        self.image_edit_provider_stack.setVisible(providers["edit"] != "runpod")
+        role = self._selected_category
+        if providers.get(role) == "runpod":
+            section = self.engine_sections[role]
+            if self.runpod_settings.parentWidget() is not section:
+                section.layout().addWidget(self.runpod_settings)
+            self.runpod_settings.set_role(role)
+            self.runpod_settings.show()
+        else:
+            self.runpod_settings.hide()
+
+    def _select_category(self, role):
+        if role not in self.category_cards:
+            return
+        self._selected_category = role
+        self._sync_profile_ui()
+        self.settings_scroll.verticalScrollBar().setValue(0)
+
+    def _step_category(self, role, step):
+        roles = list(self.category_cards)
+        selected = roles[(roles.index(role) + step) % len(roles)]
+        self._select_category(selected)
+        self.category_cards[selected].setFocus(Qt.FocusReason.TabFocusReason)
 
     def _sync_image_provider(self, *_args) -> None:
         provider = self.image_provider_combo.currentData()
@@ -1503,6 +1543,7 @@ class VideoStoryboardSettingsWidget(QWidget):
 
     def _emit_changed(self, *_args: object) -> None:
         if not self._restoring:
+            self._sync_profile_ui()
             self._refresh_engine_cards()
             self.settingsChanged.emit()
 
@@ -1513,13 +1554,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             QTimer.singleShot(0, self._refresh_engine_inventory)
 
     def _focus_engine_section(self, role: str):
-        self.visual_advanced.setChecked(True)
-        section = self.engine_sections[role]
-        y = section.mapTo(self.settings_content, QPoint(0, 0)).y()
-        self.settings_scroll.verticalScrollBar().setValue(max(0, y - 14))
-        target = {"llm": self.llm_provider_combo, "image": self.image_provider_combo,
-                  "video": self.comfyui_video_url_edit, "edit": self.image_edit_provider_combo}[role]
-        target.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._select_category(role)
 
     def _refresh_engine_cards(self):
         config = self.configuration()
@@ -1530,12 +1565,27 @@ class VideoStoryboardSettingsWidget(QWidget):
         models = {
             "llm": config["ollama"]["model"] if config["llm_provider"] == "ollama" else config["litellm"]["model"],
             "image": config["comfyui"]["diffusion_model"] if config["image_provider"] == "comfyui" else "Custom ComfyUI" if config["image_provider"] == "custom_comfyui" else config["litellm_image"]["model"],
-            "video": config["comfyui_video"].get("unet_model") if config["comfyui_video"].get("workflow_profile") == WAN_VIDEO_PROFILE else self.comfyui_video_profile_combo.currentText(),
+            "video": config["litellm_video"]["model"] if config["video_provider"] == "litellm" else config["comfyui_video"].get("unet_model") if config["comfyui_video"].get("workflow_profile") == WAN_VIDEO_PROFILE else self.comfyui_video_profile_combo.currentText(),
             "edit": config["comfyui_image_edit"]["unet_model"] if config["image_edit_provider"] == "comfyui" else config["litellm_image_edit"]["model"] if config["image_edit_provider"] == "litellm_image" else "",
         }
         for role, card in self.engine_cards.items():
             manifest = load_manifest(role)
             card["model"].setText(str(models[role] or manifest["name"]))
+            provider = config[{"llm": "llm_provider", "image": "image_provider", "video": "video_provider", "edit": "image_edit_provider"}[role]]
+            active = self._engine_thread is not None and self._engine_role == role
+            local = provider in {"ollama", "comfyui", "custom_comfyui"}
+            card["install"].setVisible(local or active)
+            if not local and not active:
+                from app.core.storyboard_provider_label import provider_label
+                label = "LiteLLM" if role == "llm" else provider_label(config, role)
+                if provider == "runpod":
+                    card["model"].setText(str(config["runpod"].get(f"{role}_endpoint", "")))
+                elif provider == "disabled":
+                    card["model"].setText(self.tr_text("disabled", "Disabled"))
+                card["status"].setText(self.tr_text("disabled", "Disabled") if provider == "disabled" else label.split(" · ")[0])
+                card["status"].setToolTip("")
+                card["model"].setToolTip(card["model"].text())
+                continue
             result = self._engine_inventory.get(role, {})
             state = result.get("state", "unchecked")
             status = {
@@ -1553,10 +1603,15 @@ class VideoStoryboardSettingsWidget(QWidget):
                                     self.tr_text("storyboard_install_default", "Install default"))
             card["install"].setToolTip(manifest["name"])
             card["install"].setEnabled(self._engine_thread is None or active)
-        self.engine_refresh_button.setEnabled(self._engine_thread is None)
+            card["model"].setToolTip(card["model"].text())
+        has_local_engine = any(
+            config[key] in {"ollama", "comfyui", "custom_comfyui"}
+            for key in ("llm_provider", "image_provider", "video_provider", "image_edit_provider")
+        )
+        self.engine_refresh_button.setEnabled(self._engine_thread is None and has_local_engine)
 
     def _refresh_engine_inventory(self):
-        if self._active_profile == "runpod":
+        if not self.engine_refresh_button.isEnabled():
             return
         if self._engine_thread is None:
             self._refresh_engine_cards()

@@ -34,22 +34,19 @@ class VideoStoryboardReferencePickerDialog(QDialog):
         plan: dict[str, Any],
         initial: list[dict[str, Any]] | None = None,
         *,
-        maximum: int = 3,
         project_dir: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.tr_text = tr
-        self.maximum = max(1, int(maximum))
         self.project_dir = str(project_dir or "")
         self.setWindowTitle(self.tr_text("video_storyboard_reference_images", "Reference images"))
         self.resize(760, 560)
         layout = QVBoxLayout(self)
         hint = QLabel(
             self.tr_text(
-                "video_storyboard_reference_images_help",
-                "Select up to {maximum} character or location references. Image order is preserved for the editing model.",
-                maximum=self.maximum,
+                "video_storyboard_reference_images_unlimited_help",
+                "Select character, location or object references. They are sent in this order; the selected model determines how many it accepts.",
             )
         )
         hint.setObjectName("helperLabel")
@@ -61,11 +58,10 @@ class VideoStoryboardReferencePickerDialog(QDialog):
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.list_widget.setIconSize(QSize(128, 128))
         self.list_widget.setGridSize(QSize(165, 175))
-        self.list_widget.itemSelectionChanged.connect(self._limit_selection)
         layout.addWidget(self.list_widget, 1)
         continuity = plan.get("continuity", {}) if isinstance(plan, dict) else {}
         if isinstance(continuity, dict):
-            for collection, kind in (("characters", "Character"), ("locations", "Location")):
+            for collection, kind in (("characters", "Character"), ("locations", "Location"), ("objects", "Object")):
                 for record in continuity.get(collection, []):
                     if not isinstance(record, dict):
                         continue
@@ -96,7 +92,7 @@ class VideoStoryboardReferencePickerDialog(QDialog):
 
     def selected_references(self) -> list[dict[str, str]]:
         selected = sorted(self.list_widget.selectedItems(), key=self.list_widget.row)
-        return [dict(item.data(Qt.ItemDataRole.UserRole) or {}) for item in selected[: self.maximum]]
+        return [dict(item.data(Qt.ItemDataRole.UserRole) or {}) for item in selected]
 
     def _add_item(self, path: str, label: str, kind: str, *, selected: bool = False) -> None:
         item = QListWidgetItem(QIcon(path), f"{label}\n{kind}")
@@ -114,19 +110,6 @@ class VideoStoryboardReferencePickerDialog(QDialog):
                 return item
         return None
 
-    def _limit_selection(self) -> None:
-        selected = self.list_widget.selectedItems()
-        if len(selected) <= self.maximum:
-            return
-        self.list_widget.blockSignals(True)
-        selected[-1].setSelected(False)
-        self.list_widget.blockSignals(False)
-        QMessageBox.information(
-            self,
-            self.tr_text("video_storyboard_reference_limit", "Reference limit"),
-            self.tr_text("video_storyboard_reference_limit_detail", "This editor supports a maximum of {maximum} reference images.", maximum=self.maximum),
-        )
-
     def _browse(self) -> None:
         selected, _filter = QFileDialog.getOpenFileName(
             self,
@@ -142,7 +125,6 @@ class VideoStoryboardReferencePickerDialog(QDialog):
             self._add_item(selected, Path(selected).stem, "External", selected=True)
         else:
             item.setSelected(True)
-        self._limit_selection()
 
     def _persist_external_reference(self, source: str) -> str:
         path = Path(source)

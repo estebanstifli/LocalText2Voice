@@ -192,7 +192,9 @@ def test_summary_cards_follow_provider_settings_and_focus_sections():
     assert "qwen3:8b" in widget.engine_cards["llm"]["model"].text()
     widget._focus_engine_section("edit")
     APP.processEvents()
-    assert widget.settings_scroll.verticalScrollBar().value() > 0
+    assert widget._selected_category == "edit"
+    assert not widget.engine_sections["edit"].isHidden()
+    assert widget.general_section.isHidden()
     widget.llm_provider_combo.setCurrentIndex(widget.llm_provider_combo.findData("litellm"))
     widget.litellm_custom_model_edit.setText("provider/test-model")
     assert "test-model" in widget.engine_cards["llm"]["model"].text()

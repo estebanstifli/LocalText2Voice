@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest, QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from app.ui.video_storyboard_settings import VideoStoryboardSettingsWidget
@@ -22,12 +25,80 @@ class VideoStoryboardSettingsUITests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_category_navigation_preserves_settings_and_only_shows_selected_section(self):
+        widget = VideoStoryboardSettingsWidget(_translate)
+        self.addCleanup(widget.deleteLater)
+        widget._checked_on_show = True
+        widget.resize(1100, 850)
+        widget.show()
+        self.application.processEvents()
+        self.assertEqual(widget._selected_category, "general")
+        self.assertFalse(hasattr(widget, "enabled_checkbox"))
+        self.assertFalse(hasattr(widget, "visual_advanced"))
+        self.assertTrue(widget.configuration()["enabled"])
+        changes = QSignalSpy(widget.settingsChanged)
+        sections = {"general": widget.general_section, **widget.engine_sections}
+        before = widget.configuration()
+        with patch.object(sys, "excepthook") as errors:
+            for role, card in widget.category_cards.items():
+                self.assertFalse(card.art.pixmap().isNull())
+                QTest.mouseClick(card, Qt.MouseButton.LeftButton, pos=card.art.geometry().center())
+                self.application.processEvents()
+                for key, section in sections.items():
+                    self.assertEqual(section.isVisible(), key == role)
+                    self.assertEqual(widget.category_cards[key].property("selected"), key == role)
+                self.assertEqual(widget.configuration(), before)
+            QTest.keyClick(widget.category_cards["edit"], Qt.Key.Key_Right)
+            self.assertEqual(widget._selected_category, "general")
+            QTest.keyClick(widget.category_cards["general"], Qt.Key.Key_Left)
+            self.assertEqual(widget._selected_category, "edit")
+            errors.assert_not_called()
+        self.assertEqual(changes.count(), 0)
+
+    def test_runpod_category_fields_and_install_buttons_follow_provider(self):
+        widget = VideoStoryboardSettingsWidget(_translate)
+        self.addCleanup(widget.deleteLater)
+        widget._checked_on_show = True
+        widget.profile_combo.setCurrentIndex(widget.profile_combo.findData("runpod"))
+        widget.runpod_settings.advanced_toggle.setChecked(True)
+        widget.show()
+        self.application.processEvents()
+        runpod = widget.runpod_settings
+        runpod.key.setText("private-test-key")
+        before = widget.configuration()
+        fields = {"image": runpod.image_model, "video": runpod.video_model, "edit": runpod.edit_size}
+        changes = QSignalSpy(widget.settingsChanged)
+        with patch.object(sys, "excepthook") as errors:
+            for role, card in widget.category_cards.items():
+                QTest.mouseClick(card, Qt.MouseButton.LeftButton)
+                self.application.processEvents()
+                self.assertEqual(runpod.isVisible(), role in fields)
+                for key, field in fields.items():
+                    self.assertEqual(field.isVisible(), role == key)
+                self.assertEqual(widget.configuration(), before)
+            errors.assert_not_called()
+        self.assertEqual(changes.count(), 0)
+        self.assertNotIn("private-test-key", str(before))
+        for role in fields:
+            self.assertTrue(widget.engine_cards[role]["install"].isHidden())
+        widget.llm_provider_combo.setCurrentIndex(widget.llm_provider_combo.findData("ollama"))
+        with patch.object(widget, "_open_engine_install") as install:
+            widget.category_cards["llm"].install.click()
+            install.assert_called_once_with("llm")
+        self.assertEqual(widget._selected_category, "edit")
+        widget.video_provider_combo.setCurrentIndex(widget.video_provider_combo.findData("litellm"))
+        widget._select_category("video")
+        self.assertFalse(runpod.isVisible())
+        self.assertTrue(widget.litellm_video_settings.isVisible())
+        self.assertTrue(widget.category_cards["video"].install.isHidden())
+
     def test_runpod_profile_switch_preserves_custom_and_secrets(self) -> None:
         widget = VideoStoryboardSettingsWidget(_translate)
         widget.profile_combo.setCurrentIndex(widget.profile_combo.findData("custom_comfyui"))
         widget.comfyui_workflow_picker.set_path("my-workflow.json")
         widget.comfyui_binding_edits["prompt"].setText("45.text")
         widget.profile_combo.setCurrentIndex(widget.profile_combo.findData("runpod"))
+        widget._select_category("video")
         self.assertFalse(widget.runpod_settings.isHidden())
         self.assertTrue(widget.engine_sections["image"].isHidden())
         widget.runpod_settings.key.setText("private-test-key")
@@ -100,10 +171,10 @@ class VideoStoryboardSettingsUITests(unittest.TestCase):
         self.assertIn("maximum duration", widget.scene_timing_help_label.text())
         self.assertEqual(widget.image_preset_help_label.parentWidget().title(), "Image preset")
         self.assertIn("resolution", widget.image_preset_help_label.text())
-        layout = widget.settings_content.layout()
-        self.assertEqual(layout.itemAt(1).widget().title(), "Scene timing")
-        self.assertEqual(layout.itemAt(2).widget().title(), "Image preset")
-        self.assertEqual(layout.itemAt(3).widget().title(), "Final video output")
+        layout = widget.general_section.layout()
+        self.assertEqual(layout.itemAt(0).widget().title(), "Continuity")
+        self.assertEqual(layout.itemAt(1).widget().title(), "Image preset")
+        self.assertEqual(layout.itemAt(2).widget().title(), "Final video output")
         self.assertFalse(hasattr(widget, "image_steps_spin"))
         saved = widget.configuration()
         saved["image"].update(steps=12, cfg=1.7, sampler="euler", scheduler="normal", denoise=0.8, auraflow_shift=2.5)

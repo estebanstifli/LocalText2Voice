@@ -24,7 +24,7 @@ from app.core.storyboard_profiles import RUNPOD_DEFAULTS
 from app.core.runpod_video_models import VIDEO_MODELS, duration_for, model_id
 
 API_ROOT = "https://api.runpod.ai/v2"
-TERMINAL = {"FAILED", "CANCELLED", "TIMED_OUT"}
+TERMINAL = {"FAILED", "CANCELLED", "TIMED_OUT", "EXPIRED"}
 _temporary_uploads = ContextVar("runpod_temporary_uploads", default=None)
 logger = logging.getLogger(__name__)
 from app.core.runpod_image_models import IMAGE_MODELS, image_model_id
@@ -321,7 +321,8 @@ def download(url, target, cancelled=None):
         temp.unlink(missing_ok=True)
 
 
-def execute(settings, role, payload, target, *, identity=None, status=None, cancelled=None):
+def execute(settings, role, payload, target, *, identity=None, status=None, cancelled=None,
+            regenerate=False, legacy_result_used=False, _retry_expired=True):
     config = configuration(settings)
     endpoint = endpoint_id(config[f"{role}_endpoint"])
     account = hashlib.sha256(api_key(config).encode()).hexdigest()
@@ -330,11 +331,19 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
     record = _read(record_path)
     if cancelled and cancelled():
         raise RunpodError("Runpod generation cancelled.")
+    # An explicit video regeneration must not recover a result already delivered
+    # to the editor. Keep pending jobs and failed downloads resumable instead.
+    consumed = record.get("consumed", legacy_result_used)
+    if regenerate and (record.get("status") in TERMINAL or
+                       (record.get("status") == "COMPLETED" and consumed)):
+        _write(record_path.with_stem(record_path.stem + "-history-" + uuid.uuid4().hex), record)
+        record = {}
     if record.get("status") == "SUBMITTING" and not record.get("id"):
         raise RunpodError("Runpod submission outcome is unknown. Check your Runpod requests, then use Settings > Runpod > Jobs to allow a new submission.")
     if record.get("status") in TERMINAL:
         _release_temporary(record, config, record_path)
         raise job_error(record, config)
+    resuming = bool(record.get("id"))
     if not record.get("id"):
         uploads = []
         scope = _temporary_uploads.set(uploads)
@@ -347,7 +356,7 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
             raise
         finally:
             _temporary_uploads.reset(scope)
-        record = {"status": "SUBMITTING", "endpoint": endpoint, "role": role, "created": time.time(), "target": str(target), "account": account, "input_snapshot": identity or payload,
+        record = {"status": "SUBMITTING", "consumed": False, "endpoint": endpoint, "role": role, "created": time.time(), "target": str(target), "account": account, "input_snapshot": identity or payload,
                   "temporary_assets": [{key: value for key, value in asset.items() if key != "url"} for asset in uploads]}
         _write(record_path, record)
         try:
@@ -377,7 +386,21 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
             raise RunpodError("Stopped waiting for Runpod. The job may still be running; retry to resume it or cancel it in Runpod.")
         if status:
             status("Runpod · " + ("In queue" if record.get("status") == "IN_QUEUE" else "Generating"))
-        record.update(request(config, endpoint, f"status/{record['id']}"))
+        try:
+            update = request(config, endpoint, f"status/{record['id']}")
+        except RunpodError as exc:
+            if (role == "video" and regenerate and resuming and _retry_expired
+                    and exc.status_code == 404
+                    and exc.response_detail.strip().lower() == "job not found"):
+                record["status"] = "EXPIRED"
+                _release_temporary(record, config, record_path)
+                if status:
+                    status("Runpod · Previous job expired; starting a new generation")
+                return execute(settings, role, payload, target, identity=identity,
+                               status=status, cancelled=cancelled, regenerate=True,
+                               legacy_result_used=legacy_result_used, _retry_expired=False)
+            raise
+        record.update(update)
         _write(record_path, record)
         if record.get("status") in TERMINAL:
             _release_temporary(record, config, record_path)
@@ -399,6 +422,17 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
         remember_asset(target, url, float(record.get("created", time.time())) + 6 * 86400)
     return {"provider": "runpod", "prompt_id": record["id"], "model": endpoint,
             "cost_usd": output.get("cost"), "remote_url": url, "job_record": str(record_path)}
+
+
+def consume_result(result):
+    """Called only after local video post-processing succeeds."""
+    if not result.get("job_record"):
+        return
+    path = Path(result["job_record"])
+    record = _read(path)
+    if record.get("id") == result.get("prompt_id"):
+        record["consumed"] = True
+        _write(path, record)
 
 
 def manage_job(settings, path, action):

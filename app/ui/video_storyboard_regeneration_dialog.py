@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.icons import ui_icon
+from app.core.storyboard_eras import scene_era
 from app.core.video_storyboard_comfyui import (
     canonical_character_lines_for_prompt,
     compile_effective_scene_prompt,
@@ -111,11 +112,13 @@ class VideoStoryboardRegenerationDialog(QDialog):
         parent: QWidget | None = None,
         *,
         project_dir: str = "",
+        settings: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(parent)
         self.tr_text = tr
         self.scene = dict(scene)
         self.plan = dict(plan)
+        self.settings = dict(settings or {})
         self.project_dir = str(project_dir or "")
         self.scene_id = str(scene.get("scene_id") or scene.get("id") or "")
         self._candidate_path = ""
@@ -128,6 +131,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
         self._explicit_character_ids: set[str] = set()
         self._explicit_location_ids: set[str] = set()
         self._explicit_location_state_ids: list[str] = []
+        self._object_state_ids: list[str] = []
         self._reference_images: list[dict[str, str]] = []
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(
@@ -199,6 +203,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
             self.tr_text("video_storyboard_no_image_references", "No image references")
         )
         self.reference_summary.setObjectName("helperLabel")
+        self.reference_summary.setWordWrap(True)
         reference_row.addWidget(self.reference_button)
         reference_row.addWidget(self.reference_summary, 1)
         normal_prompt_layout.addLayout(reference_row)
@@ -246,6 +251,9 @@ class VideoStoryboardRegenerationDialog(QDialog):
         )
         prompt_insert_buttons.addWidget(self.insert_character_button)
         prompt_insert_buttons.addWidget(self.insert_location_button)
+        self.insert_object_button = QPushButton(self.tr_text("video_storyboard_insert_object", "Object"))
+        prompt_insert_buttons.addWidget(self.insert_object_button)
+        self.insert_object_button.clicked.connect(lambda: self._show_entity_menu(self.insert_object_button, "objects"))
         prompt_modes_row.addLayout(prompt_insert_buttons)
         layout.addLayout(prompt_modes_row)
         self._build_entity_menus()
@@ -325,19 +333,10 @@ class VideoStoryboardRegenerationDialog(QDialog):
         narrative_form.addRow(self.tr_text("video_storyboard_story_era", "Historical period / era"), self.era_edit)
         self.tabs.addTab(narrative_page, self.tr_text("video_storyboard_narrative_context", "Narrative context"))
 
-        characters_page = QWidget()
-        characters_layout = QVBoxLayout(characters_page)
-        characters_layout.addWidget(
-            QLabel(
-                self.tr_text(
-                    "video_storyboard_style_characters",
-                    "Character definitions (one per line)",
-                )
-            )
-        )
-        self.characters_edit = QPlainTextEdit()
-        characters_layout.addWidget(self.characters_edit)
-        self.tabs.addTab(characters_page, self.tr_text("video_storyboard_characters_tab", "Characters"))
+        # Preserve internal prompt binding and existing overrides without exposing
+        # a competing scene-local character editor.
+        self.characters_edit = QPlainTextEdit(self)
+        self.characters_edit.hide()
         layout.addWidget(self.tabs)
 
         self.status_label = QLabel(
@@ -420,15 +419,13 @@ class VideoStoryboardRegenerationDialog(QDialog):
         if isinstance(override_style, dict):
             style.update(override_style)
         stored_references = overrides.get("reference_images", [])
+        self._object_state_ids = list(overrides.get("object_state_ids") or [])
         if isinstance(stored_references, list):
             self._reference_images = [
                 dict(value) for value in stored_references
                 if isinstance(value, dict) and value.get("path")
-            ][:3]
+            ]
         self._refresh_reference_summary()
-        narrative = self.plan.get("narrative_context", {})
-        if not isinstance(narrative, dict):
-            narrative = {}
         override_narrative = overrides.get("narrative", {})
         if not isinstance(override_narrative, dict):
             override_narrative = {}
@@ -477,14 +474,9 @@ class VideoStoryboardRegenerationDialog(QDialog):
             else ""
         )
         self._sync_prompt_characters()
-        self.era_edit.setText(
-            str(
-                override_narrative.get("era")
-                or self.scene.get("era")
-                or narrative.get("era")
-                or ""
-            )
-        )
+        self._initial_era = scene_era(self.plan, self.scene, include_visual_context=False)
+        self._has_era_override = "era" in override_narrative
+        self.era_edit.setText(self._initial_era)
         self.seed_edit.setText(
             str(overrides.get("seed", self.plan.get("base_seed", 0)))
         )
@@ -510,6 +502,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
             self._raw_prompt_customized = True
         else:
             self._refresh_composed_prompt()
+        self._refresh_reference_summary()
         QTimer.singleShot(0, self._center_selected_style)
 
     def request_payload(self, *, include_raw: bool = True) -> dict[str, Any]:
@@ -572,10 +565,15 @@ class VideoStoryboardRegenerationDialog(QDialog):
                 "negative": self.negative_edit.text().strip(),
                 "characters": character_lines,
             },
-            "narrative": {"era": self.era_edit.text().strip()},
+            "narrative": {},
             "location_state_ids": location_state_ids,
+            "object_state_ids": list(self._object_state_ids),
             "reference_images": [dict(value) for value in self._reference_images],
         }
+        era = self.era_edit.text().strip()
+        # Displaying inherited context must not detach the scene from its period.
+        if self._has_era_override or era != self._initial_era:
+            overrides["narrative"]["era"] = era
         if include_raw and self._raw_prompt_customized:
             raw_prompt = self.raw_prompt_edit.toPlainText().strip()
             if raw_prompt:
@@ -592,7 +590,6 @@ class VideoStoryboardRegenerationDialog(QDialog):
             self.tr_text,
             self.plan,
             self._reference_images,
-            maximum=3,
             project_dir=self.project_dir,
             parent=self,
         )
@@ -605,18 +602,28 @@ class VideoStoryboardRegenerationDialog(QDialog):
     def _refresh_reference_summary(self) -> None:
         if not hasattr(self, "reference_summary"):
             return
-        labels = [str(value.get("label") or Path(str(value.get("path") or "")).stem) for value in self._reference_images]
-        self.reference_summary.setText(
-            ", ".join(labels)
-            if labels
-            else self.tr_text("video_storyboard_no_image_references", "No image references")
-        )
-        self.reference_summary.setToolTip(
-            "\n".join(str(value.get("path") or "") for value in self._reference_images)
-        )
+        references = self._reference_images
+        if not self._loading_values:
+            from app.core.storyboard_reference_images import scene_with_references
+            try:
+                resolved = scene_with_references(self._scene_for_prompt(include_raw=True), self.plan, self.settings)
+                references = resolved["generation_overrides"]["reference_images"]
+            except ValueError as exc:
+                self.reference_summary.setText(str(exc))
+                self.reference_summary.setToolTip(str(exc))
+                return
+        manual_paths = {str(Path(str(r.get("path") or "")).resolve()).casefold() for r in self._reference_images}
+        labels = []
+        for reference in references:
+            label = str(reference.get("label") or Path(str(reference.get("path") or "")).stem)
+            if str(Path(str(reference.get("path") or "")).resolve()).casefold() not in manual_paths:
+                label = self.tr_text("storyboard_automatic_reference_label", "{name} (automatic)", name=label)
+            labels.append(label)
+        self.reference_summary.setText(", ".join(labels) if labels else self.tr_text("video_storyboard_no_image_references", "No image references"))
+        self.reference_summary.setToolTip("\n".join(str(r.get("path") or "") for r in references))
 
-    def _compose_structured_prompt(self) -> str:
-        payload = self.request_payload(include_raw=False)
+    def _scene_for_prompt(self, *, include_raw: bool = False) -> dict[str, Any]:
+        payload = self.request_payload(include_raw=include_raw)
         scene = dict(self.scene)
         scene["prompt"] = payload["prompt"]
         scene["shot"] = payload["shot"]
@@ -631,12 +638,22 @@ class VideoStoryboardRegenerationDialog(QDialog):
         ]
         scene["locations"] = list(overrides.get("location_state_ids", []))
         narrative = overrides.get("narrative", {})
-        if isinstance(narrative, dict) and narrative.get("era"):
-            scene["era"] = str(narrative["era"])
+        if isinstance(narrative, dict) and "era" in narrative:
+            scene["era"] = str(narrative["era"] or "")
             scene["era_state_id"] = ""
+        return scene
+
+    def _compose_structured_prompt(self) -> str:
+        scene = self._scene_for_prompt()
+        from app.core.storyboard_reference_images import scene_with_references
+        try:
+            scene = scene_with_references(scene, self.plan, self.settings)
+        except ValueError as exc:
+            return str(exc)
         prompt = compile_effective_scene_prompt(self.plan, scene)
-        if self._reference_images:
-            prompt = compile_reference_edit_prompt(prompt, self._reference_images)
+        references = scene["generation_overrides"]["reference_images"]
+        if references:
+            prompt = compile_reference_edit_prompt(prompt, references)
         return prompt
 
     def _set_raw_prompt(self, prompt: str) -> None:
@@ -647,6 +664,8 @@ class VideoStoryboardRegenerationDialog(QDialog):
             self._updating_raw_prompt = False
 
     def _refresh_composed_prompt(self) -> None:
+        if not self._loading_values:
+            self._refresh_reference_summary()
         if self._loading_values or self._raw_prompt_customized:
             return
         self._set_raw_prompt(self._compose_structured_prompt())
@@ -655,6 +674,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
         if self._loading_values or self._updating_raw_prompt:
             return
         self._raw_prompt_customized = True
+        self._refresh_reference_summary()
 
     def _structured_field_changed(self) -> None:
         if self._loading_values:
@@ -703,6 +723,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
             self.characters_edit.setPlainText("\n".join(lines))
 
     def _build_entity_menus(self) -> None:
+        self.insert_object_button.setEnabled(bool(storyboard_prompt_entities(self.plan, "objects")))
         self.insert_character_button.setEnabled(
             bool(storyboard_prompt_entities(self.plan, "characters"))
         )
@@ -799,7 +820,7 @@ class VideoStoryboardRegenerationDialog(QDialog):
                 if state_id:
                     lines.append(f"{state_id}: {details}" if details else state_id)
                 self.characters_edit.setPlainText("\n".join(lines))
-        else:
+        elif collection == "locations":
             self._explicit_location_ids.add(entity_id)
             if state is None:
                 state = self._active_state(entity)
@@ -811,6 +832,12 @@ class VideoStoryboardRegenerationDialog(QDialog):
             ]
             if state_id:
                 self._explicit_location_state_ids.append(state_id)
+        elif collection == "objects":
+            ids = {s.get("id") for s in entity.get("states", [])}
+            self._object_state_ids = [v for v in self._object_state_ids if v not in ids]
+            state = state or self._active_state(entity)
+            if state and state.get("id"):
+                self._object_state_ids.append(state["id"])
         self._structured_field_changed()
 
     def _active_state(self, entity: dict[str, Any]) -> dict[str, Any] | None:

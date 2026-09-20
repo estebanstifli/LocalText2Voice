@@ -4,7 +4,7 @@ from copy import deepcopy
 PROFILE_IDS = ("local", "custom_comfyui", "litellm", "runpod")
 VISUAL_KEYS = (
     "image_provider", "image_edit_provider", "video_provider", "comfyui",
-    "comfyui_video", "comfyui_image_edit", "litellm_image", "litellm_image_edit", "runpod",
+    "comfyui_video", "comfyui_image_edit", "litellm_image", "litellm_image_edit", "litellm_video", "runpod",
 )
 RUNPOD_DEFAULTS = {
     "api_key_encrypted": "", "image_endpoint": "z-image-turbo",
@@ -41,7 +41,7 @@ def switch_profile(config, profile, defaults):
             result["image_provider"] = "custom_comfyui"
             result["comfyui_video"]["workflow_profile"] = "custom"
         elif profile == "litellm":
-            result.update(image_provider="litellm_image", image_edit_provider="litellm_image", video_provider="disabled")
+            result.update(image_provider="litellm_image", image_edit_provider="litellm_image", video_provider="litellm")
         elif profile == "runpod":
             result.update(image_provider="runpod", image_edit_provider="runpod", video_provider="runpod")
     result["active_profile"] = profile
