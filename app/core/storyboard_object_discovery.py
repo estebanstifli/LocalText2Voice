@@ -20,7 +20,7 @@ def object_addition_text(answer):
     return re.split(r"(?im)^\s*\**(?:note|nota)\**\s*:", clean)[0].strip()
 
 
-def unify_object_reports(reports, ask, publish=None):
+def unify_object_reports(reports, ask, publish=None, *, instruction=OBJECT_ADDITIONS):
     """Keep raw reports intact; compare each passage against all accepted objects."""
     summary = ""
     for number, report in enumerate(reports, 1):
@@ -28,7 +28,7 @@ def unify_object_reports(reports, ask, publish=None):
         if not candidate:
             continue
         addition = candidate if not summary else object_addition_text(ask(
-            [], OBJECT_ADDITIONS + "\n\nFIRST TEXT:\n" + summary + "\n\nSECOND TEXT:\n" + candidate,
+            [], instruction + "\n\nFIRST TEXT:\n" + summary + "\n\nSECOND TEXT:\n" + candidate,
             f"conversation: new important objects from block {number}/{len(reports)}"))
         if addition:
             summary = "\n\n".join(filter(None, (summary, addition)))
@@ -48,7 +48,7 @@ LOCATION_ADDITIONS = (
 )
 
 
-def unify_location_reports(reports, ask, publish=None):
+def unify_location_reports(reports, ask, publish=None, *, instruction=LOCATION_ADDITIONS):
     """Reuse the same cumulative identity comparison for physical places."""
     summary = ""
     for number, report in enumerate(reports, 1):
@@ -56,7 +56,7 @@ def unify_location_reports(reports, ask, publish=None):
         if not candidate:
             continue
         addition = candidate if not summary else location_addition_text(ask(
-            [], LOCATION_ADDITIONS + "\n\nFIRST TEXT:\n" + summary + "\n\nSECOND TEXT:\n" + candidate,
+            [], instruction + "\n\nFIRST TEXT:\n" + summary + "\n\nSECOND TEXT:\n" + candidate,
             f"conversation: new locations from block {number}/{len(reports)}"))
         if addition:
             summary = "\n\n".join(filter(None, (summary, addition)))

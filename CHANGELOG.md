@@ -7,6 +7,38 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-21
+
+### Added
+
+- Expanded Video Storyboard into a long-form audio-to-video workflow for
+  documentaries, films, illustrated lessons and animated stories.
+- Added structured storyboard analysis for scenes, characters, locations, eras
+  and important objects, including reviewable context and appearance states.
+- Added persistent visual references, richer prompt construction, image editing,
+  scene continuity improvements, batch image/video generation, cancellation and
+  recovery for long-running provider jobs.
+- Added direct video provider adapters for Alibaba Cloud Wan, LTX, MiniMax H3
+  and BytePlus Seedance, alongside ComfyUI, Runpod and LiteLLM routes.
+- Added shared asynchronous job handling, provider capability validation, media
+  fitting, audio preservation and clearer diagnostics for video failures.
+
+### Changed
+
+- Refreshed Video Storyboard settings, dialogs, transitions, scene controls and
+  localization strings for the larger production workflow.
+- Updated the application and local HTTP/MCP service version metadata to 2.1.0.
+
+### Fixed
+
+- Hardened Qwen3 TTS model loading by registering its Transformers architecture
+  before model inspection and falling back to the official loader when the
+  accelerated loader cannot recognize the model.
+- Added Qwen runtime package/version/path diagnostics to make incompatible local
+  runtime installations easier to identify.
+- Improved storyboard FFmpeg tail handling and preserved full render diagnostics
+  outside temporary directories.
+
 ## [2.0.2] - 2026-09-13
 
 ### Fixed

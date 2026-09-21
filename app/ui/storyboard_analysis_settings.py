@@ -1,12 +1,12 @@
 from copy import deepcopy
-import json
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QLabel, QComboBox, QSpinBox,
-    QPushButton, QDialog, QHBoxLayout, QPlainTextEdit, QDialogButtonBox, QMessageBox,
+    QPushButton, QDialog, QDialogButtonBox,
 )
-from app.core.storyboard_analysis_settings import normalize, prompt_catalog, instruction, contract_for
+from app.core.storyboard_analysis_settings import normalize
+from app.ui.storyboard_instruction_editor import StoryboardInstructionEditor
 
 
 class StoryboardAnalysisSettingsWidget(QWidget):
@@ -37,14 +37,17 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         layout.addWidget(self.flow)
         self.edit = QPushButton(tr("continuity_edit_prompts", "View / edit instructions…"))
         self.edit.clicked.connect(self._edit)
-        layout.addWidget(self.edit)
+        self.edit.hide()
         self.status = QLabel()
         layout.addWidget(self.status)
+        self.instruction_editor = StoryboardInstructionEditor(tr)
+        self.instruction_editor.changed.connect(self._instructions_changed)
+        layout.addWidget(self.instruction_editor, 1)
         note = QLabel(tr("continuity_settings_note",
             "Changes apply to the next analysis, not to existing scenes. The project records the instructions used. Editing instructions creates a customized version of the selected process; step dependencies and JSON contracts remain fixed."))
         note.setWordWrap(True)
         layout.addWidget(note)
-        layout.addStretch()
+
         for control in (self.block_size,):
             control.currentIndexChanged.connect(self._changed)
         self.characters.valueChanged.connect(self._changed)
@@ -54,6 +57,7 @@ class StoryboardAnalysisSettingsWidget(QWidget):
         self._loading = True
         config = normalize(config)
         self._prompts = deepcopy(config["prompts"])
+        self.instruction_editor.set_prompts(self._prompts)
         for widget, key in ((self.block_size, "block_size"),):
             widget.setCurrentIndex(max(0, widget.findData(config[key])))
         self.characters.setValue(config["custom_characters"])
@@ -76,78 +80,24 @@ class StoryboardAnalysisSettingsWidget(QWidget):
             self._refresh()
             self.settingsChanged.emit()
 
+    def _instructions_changed(self):
+        self._prompts = self.instruction_editor.prompts()
+        self._changed()
+
     def _edit(self):
+        # Reusable draft editor for callers that need explicit Save / Cancel.
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("continuity_instructions", "Continuity analysis instructions"))
-        dialog.resize(980, 740)
+        dialog.resize(1380, 900)
         layout = QVBoxLayout(dialog)
-        stages = QComboBox()
-        keys = list(prompt_catalog())
-        catalog = prompt_catalog()
-        for key in keys:
-            stages.addItem(catalog[key][0], key)
-        layout.addWidget(stages)
-        editor = QPlainTextEdit()
-        editor.setObjectName("continuityInstructionEditor")
-        layout.addWidget(editor, 3)
-        layout.addWidget(QLabel(self.tr("continuity_contract", "Protected technical contract (not editable)")))
-        contract = QPlainTextEdit(contract_for(stages.currentData()))
-        contract.setReadOnly(True)
-        contract.setMaximumHeight(105)
-        layout.addWidget(contract)
-        row = QHBoxLayout()
-        restore = QPushButton(self.tr("restore_defaults", "Restore default"))
-        example = QPushButton(self.tr("continuity_example", "Preview request structure"))
-        row.addWidget(restore)
-        row.addWidget(example)
-        row.addStretch()
-        layout.addLayout(row)
+        editor = StoryboardInstructionEditor(self.tr)
+        editor.set_prompts(self._prompts)
+        layout.addWidget(editor)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         layout.addWidget(buttons)
-        draft = deepcopy(self._prompts)
-        current = [stages.currentData()]
-        editor.setPlainText(instruction({"prompts": draft}, current[0]))
-
-        def capture():
-            text = editor.toPlainText().strip()
-            if text and text != catalog[current[0]][1].strip():
-                draft[current[0]] = text
-            else:
-                draft.pop(current[0], None)
-
-        def switch(*_):
-            capture()
-            current[0] = stages.currentData()
-            editor.setPlainText(instruction({"prompts": draft}, current[0]))
-            contract.setPlainText(contract_for(current[0]))
-
-        def reset():
-            if QMessageBox.question(dialog, self.tr("restore_defaults", "Restore default"),
-                    self.tr("continuity_restore_confirm", "Discard edits to this stage and restore its default instructions?")) == QMessageBox.StandardButton.Yes:
-                editor.setPlainText(catalog[current[0]][1])
-
-        def preview():
-            preview_dialog = QDialog(dialog)
-            preview_dialog.setWindowTitle(self.tr("continuity_example", "Preview request structure"))
-            preview_dialog.resize(900, 600)
-            preview_layout = QVBoxLayout(preview_dialog)
-            text = QPlainTextEdit()
-            text.setReadOnly(True)
-            text.setPlainText(json.dumps({
-                "example_only": True, "stage": current[0],
-                "instructions": editor.toPlainText(), "protected_contract": contract_for(current[0]),
-                "runtime_input": "Source passage or discovery report, with known entities/periods where applicable.",
-                "response_schema": "Plain-text discovery; structured JSON conversion follows review. Full requests are recorded in the analysis log.",
-            }, indent=2, ensure_ascii=False))
-            preview_layout.addWidget(text)
-            preview_dialog.exec()
-
-        stages.currentIndexChanged.connect(switch)
-        restore.clicked.connect(reset)
-        example.clicked.connect(preview)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            capture()
-            self._prompts = draft
+            self._prompts = editor.prompts()
+            self.instruction_editor.set_prompts(self._prompts)
             self._changed()

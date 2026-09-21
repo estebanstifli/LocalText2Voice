@@ -1,8 +1,9 @@
 """Conversational analysis configuration; old process selectors are migrated on load."""
 from copy import deepcopy
 from app.core.storyboard_eras import DISCOVERY
+from app.core.storyboard_analysis_prompt_catalog import EXTRA_PROMPTS
 
-VERSION = 2
+VERSION = 3
 PROMPTS = {
     "conversation_report": (
         "Characters, appearance, changes and story summary",
@@ -22,6 +23,8 @@ PROMPTS = {
     "conversation_eras": ("Historical periods and visual context", DISCOVERY),
 }
 
+
+PROMPTS.update(EXTRA_PROMPTS)
 
 def defaults():
     return {"process": "conversational", "block_size": "medium", "custom_characters": 4000, "prompts": {}}
@@ -60,6 +63,8 @@ CONTRACT = "Plain-text discovery followed by schema-validated JSON. The applicat
 
 
 def contract_for(stage):
+    if stage in {"characters_profiles", "locations_profiles", "objects_profiles", "era_structure", "scene_structure", "scene_visuals", "character_changes", "character_portraits"}:
+        return "Schema-validated JSON. Field names, required arrays, source-quote validation and narration alignment are fixed by the application. Edit visual/extraction instructions, not the output structure."
     return "Plain-text report; no JSON or invented timestamps. Preserve source quotes and distinguish evidence from inference." if stage == "conversation_eras" else "Plain-text conversational discovery. Structured conversion and narration alignment are handled separately."
 
 

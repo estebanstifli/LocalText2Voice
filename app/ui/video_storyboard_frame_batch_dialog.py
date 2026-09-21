@@ -93,6 +93,7 @@ class VideoStoryboardFrameBatchDialog(QDialog):
                 else "Generate the storyboard images",
             )
         )
+        self.heading_label = title
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
@@ -107,6 +108,7 @@ class VideoStoryboardFrameBatchDialog(QDialog):
                 "Generate images for the planned scenes using Project visual direction: visual style, characters, locations, objects and project overrides. Each scene keeps its own prompt and frame overrides. Missing project values use the configured defaults. Existing images in the selection are kept unless overwrite is enabled.",
             )
         info = QLabel(explanation)
+        self.info_label = info
         info.setWordWrap(True)
         info.setObjectName("helperLabel")
         layout.addWidget(info)
@@ -120,6 +122,7 @@ class VideoStoryboardFrameBatchDialog(QDialog):
                 existing=self.existing_count,
             )
         )
+        self.summary_label = summary
         summary.setObjectName("helperLabel")
         settings_row.addWidget(summary, 1)
         layout.addLayout(settings_row)
@@ -238,13 +241,13 @@ class VideoStoryboardFrameBatchDialog(QDialog):
         self.close_button.show()
         self.cancel_process_button.show()
         self.overwrite_checkbox.setEnabled(False)
-        message = self.tr_text(
-            "video_storyboard_frame_batch_starting",
-            "Starting image generation...",
-        )
+        message = self._starting_message()
         self.status_label.setText(message)
         self.append_log(message)
         self.startRequested.emit(self.overwrite_checkbox.isChecked())
+
+    def _starting_message(self) -> str:
+        return self.tr_text("video_storyboard_frame_batch_starting", "Starting image generation...")
 
     def _close_or_hide(self) -> None:
         if self._running:

@@ -286,7 +286,7 @@ def test_retry_of_current_regeneration_keeps_pending_job(settings, tmp_path):
     assert [call.args[2] for call in request.call_args_list] == ['status/current-regeneration']
 
 
-@pytest.mark.parametrize('endpoint,role,reference_count', [('wan-2-6-i2v','none',0), ('kling-video-o1-r2v','none',3)])
+@pytest.mark.parametrize('endpoint,role,reference_count', [('kling-video-o1-r2v','none',3)])
 def test_text_only_and_multi_reference_video_payloads(settings, tmp_path, endpoint, role, reference_count):
     from app.core import video_storyboard_video_comfyui as video
     settings['runpod']['video_endpoint'] = endpoint
@@ -415,3 +415,13 @@ def test_credentials_are_encrypted_and_survive_settings_roundtrip(tmp_path):
     assert stored["runpod"]["video_endpoint"] == "wan-2-6-i2v"
     assert reveal(stored["runpod"]["api_key_encrypted"]) == "example-secret"
     assert "example-secret" not in (tmp_path / "config.json").read_text(encoding="utf-8")
+
+
+def test_removed_runpod_text_only_model_does_not_submit(settings, tmp_path):
+    from app.core import video_storyboard_video_comfyui as video
+    from app.core.runpod_video_models import VIDEO_MODELS
+    assert 'wan-2-6-t2v' not in VIDEO_MODELS
+    with patch.object(rp, 'execute') as execute:
+        with pytest.raises(video.VideoStoryboardVideoError, match='Text-to-video is no longer'):
+            video.generate_storyboard_scene_video({'duration_seconds': 8}, {}, settings, tmp_path / 'out.mp4', prompt='storm', frame_role='none')
+        execute.assert_not_called()

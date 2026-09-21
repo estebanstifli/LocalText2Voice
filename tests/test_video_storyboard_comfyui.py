@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import base64
+import io
+from PIL import Image
+
+def _test_png():
+    buffer = io.BytesIO()
+    Image.new("RGB", (1280, 720)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
 from unittest.mock import patch
 
 from app.core.video_storyboard_comfyui import (
@@ -51,7 +59,7 @@ def test_litellm_image_provider_generates_and_saves_base64_image(tmp_path: Path)
         "api_key": "secret",
         "timeout_seconds": 120,
     }
-    png = b"\x89PNG\r\n\x1a\nmock-image"
+    png = _test_png()
 
     class Response:
         def model_dump(self):
@@ -75,7 +83,7 @@ def test_litellm_image_provider_generates_and_saves_base64_image(tmp_path: Path)
     kwargs = generation.call_args.kwargs
     assert kwargs["model"] == "openai/gpt-image-1"
     assert kwargs["n"] == 1
-    assert kwargs["size"] == "1280x720"
+    assert kwargs["size"] == "1536x1024"
     assert "seed" not in kwargs
     assert result["seed_applied"] is False
 
@@ -92,7 +100,7 @@ def test_litellm_image_retries_without_a_rejected_optional_parameter(
         "api_key": "secret",
         "timeout_seconds": 120,
     }
-    png = b"\x89PNG\r\n\x1a\nmock-image"
+    png = _test_png()
 
     class UnsupportedSeedError(RuntimeError):
         status_code = 400

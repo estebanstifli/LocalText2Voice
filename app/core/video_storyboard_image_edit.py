@@ -361,7 +361,8 @@ def _litellm_direct_edit(
         ) from exc
     optional: dict[str, Any] = {"response_format": "b64_json"}
     if width and height:
-        optional["size"] = f"{int(width)}x{int(height)}"
+        from app.core.storyboard_image_sizes import image_parameters
+        optional.update(image_parameters(model, int(width), int(height)))
     with ExitStack() as stack:
         handles = [
             stack.enter_context(Path(value["path"]).open("rb"))

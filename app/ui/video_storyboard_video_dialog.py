@@ -212,13 +212,21 @@ class VideoStoryboardVideoDialog(QDialog):
         )
         self.frame_role_combo.addItem(self.tr_text("storyboard_video_reference_none", "None (no scene frame)"), "none")
         stored_role = str(self.scene.get("video_frame_role") or "start")
-        if not self.scene.get("image_path") and self.scene.get("_video_provider") in {"runpod", "litellm"}:
+        from app.core.direct_video_models import PROVIDERS, MODELS, configuration
+        direct_provider = self.scene.get("_video_provider")
+        if not self.scene.get("image_path") and direct_provider in {"runpod", "litellm", "dashscope", *PROVIDERS}:
             stored_role = "none"
-        if self.scene.get("_video_provider") == "litellm":
+        if self.scene.get("_video_provider") in {"litellm", "dashscope"}:
             self.frame_role_combo.model().item(self.frame_role_combo.findData("end")).setEnabled(False)
             if stored_role == "end":
                 stored_role = "start" if self.scene.get("image_path") else "none"
-        if self.scene.get("_runpod_config", {}).get("video_endpoint") in {"kling-video-o1-r2v", "wan-2-6-t2v"}:
+        if direct_provider in PROVIDERS:
+            config = configuration({direct_provider + "_video": self.scene.get("_direct_video_config", {})}, direct_provider)
+            if not MODELS[direct_provider][config["model"]].end_frame:
+                self.frame_role_combo.model().item(self.frame_role_combo.findData("end")).setEnabled(False)
+                if stored_role == "end":
+                    stored_role = "start" if self.scene.get("image_path") else "none"
+        if self.scene.get("_runpod_config", {}).get("video_endpoint") == "kling-video-o1-r2v":
             stored_role = "none"
         self.frame_role_combo.setCurrentIndex(
             max(0, self.frame_role_combo.findData(stored_role))
@@ -294,6 +302,13 @@ class VideoStoryboardVideoDialog(QDialog):
         self.reference_help = QLabel(self.tr_text("storyboard_video_reference_help", "Start/end uses the scene frame. None omits it. Added images are sent as separate references when the model supports them. Wan: one image; Kling O1: multiple references, no fixed frame or audio."))
         if self.scene.get("_video_provider") == "litellm":
             self.reference_help.setText(self.tr_text("veo_reference_help", "Veo: Frame at start uses the scene image. For character, location or object references choose None + Img Ref with Veo 3.1 or Fast. Google documents up to 3 references; all selected images are sent. Lite only supports a starting image. Audio is preserved."))
+        if self.scene.get("_video_provider") == "dashscope":
+            self.reference_help.setText(self.tr_text("wan_reference_help", "Wan: one starting image. Generated audio uses the scene audio controls. Use Frame at start, or None + one image reference. End frames and multiple references are not supported."))
+        if direct_provider in PROVIDERS:
+            text = {"ltx": ("ltx_reference_help", "LTX: Start uses the scene frame. None + one image animates that image; None without images generates from text. End-only and multiple references are not supported."),
+                    "minimax": ("minimax_reference_help", "MiniMax: Start/end uses the scene frame. None supports up to 9 separate references or text only. Native audio is preserved."),
+                    "byteplus": ("byteplus_reference_help", "Seedance: Start uses one scene frame. None supports up to 30 separate references or text only. End-only is not supported here.")}[direct_provider]
+            self.reference_help.setText(self.tr_text(*text))
         self.reference_help.setWordWrap(True)
         self.reference_help.setObjectName("helperLabel")
         layout.addWidget(self.reference_help)
@@ -385,6 +400,11 @@ class VideoStoryboardVideoDialog(QDialog):
 
     def _update_model_description(self, *_):
         text = self._model_description
+        if self.scene.get("_video_provider") == "dashscope":
+            from app.core.video_storyboard_video_dashscope import generation_seconds, configuration
+            config = configuration({"dashscope_video": self.scene.get("_dashscope_video_config", {})})
+            resolution, model = config["resolution"], config["model"]
+            text = f"Alibaba Cloud · {model} · {resolution} · {generation_seconds(self.scene, model)}s → {float(self.scene.get('duration_seconds') or 0):.1f}s"
         if self.scene.get("_video_provider") == "litellm":
             from app.core.litellm_video_models import configuration, generation_seconds
             config = configuration({"litellm_video": self.scene.get("_litellm_video_config", {})})
@@ -396,10 +416,16 @@ class VideoStoryboardVideoDialog(QDialog):
             model = model_id(self.scene.get("_runpod_config", {}))
             if model in {"wan-2-6-i2v", "wan-2-6-t2v"}:
                 text = text.replace("Wan 2.6 I2V", "Wan 2.6").replace("Wan 2.6 T2V", "Wan 2.6")
-                text += " · " + ("T2V" if self.frame_role_combo.currentData() == "none" else "I2V")
+                text += " · I2V"
             elif model == "kling-video-o1-r2v":
                 text = text.replace(str(self.scene.get("_runpod_config", {}).get("video_size", "1280*720")), "16:9")
         self.model_info.setText(text)
+        from app.core.direct_video_models import PROVIDERS, configuration, generation_seconds
+        provider = self.scene.get("_video_provider")
+        if provider in PROVIDERS:
+            config = configuration({provider + "_video": self.scene.get("_direct_video_config", {})}, provider)
+            seconds = generation_seconds(self.scene, provider, config)
+            self.model_info.setText(f"{PROVIDERS[provider][0]} · {config['model']} · {config['resolution'].upper()} · {seconds}s → {float(self.scene.get('duration_seconds') or 0):.1f}s")
 
     def _choose_reference_images(self):
         dialog = VideoStoryboardReferencePickerDialog(self.tr_text, self.plan, self._reference_images,
@@ -434,6 +460,25 @@ class VideoStoryboardVideoDialog(QDialog):
             scene = {**self.scene, "generation_overrides": {"video_reference_images": self._reference_images}}
             try:
                 resolve_runpod_video_references(scene, self.frame_role_combo.currentData(), self.scene.get("_runpod_config", {}))
+            except ValueError as exc:
+                self.set_failed(str(exc))
+                return
+        if self.scene.get("_video_provider") == "dashscope":
+            from app.core.video_storyboard_video_dashscope import reference_image
+            scene = {**self.scene, "generation_overrides": {"video_reference_images": self._reference_images}}
+            try:
+                reference_image(scene, self.frame_role_combo.currentData())
+            except ValueError as exc:
+                self.set_failed(str(exc))
+                return
+        from app.core.direct_video_models import PROVIDERS, configuration
+        provider = self.scene.get("_video_provider")
+        if provider in PROVIDERS:
+            from app.core.video_provider_media import reference_paths
+            scene = {**self.scene, "generation_overrides": {"video_reference_images": self._reference_images}}
+            config = configuration({provider + "_video": self.scene.get("_direct_video_config", {})}, provider)
+            try:
+                reference_paths(scene, self.frame_role_combo.currentData(), provider, config)
             except ValueError as exc:
                 self.set_failed(str(exc))
                 return

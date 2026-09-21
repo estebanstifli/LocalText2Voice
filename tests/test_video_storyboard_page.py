@@ -491,21 +491,18 @@ class VideoStoryboardPageTests(unittest.TestCase):
         queued: list[object] = []
         self.page.generateAllVideosRequested.connect(queued.append)
 
-        with patch.object(
-            self.page,
-            "_choose_generate_all_videos_scope",
-            return_value="missing",
-        ) as choose_scope:
-            self.page.generate_all_videos_button.click()
+        self.page.generate_all_videos_button.click()
+        dialog = self.page._video_batch_dialog
+        self.assertFalse(dialog.overwrite_checkbox.isChecked())
+        dialog.start_button.click()
 
-        choose_scope.assert_called_once_with(1, 2, 1)
         assert len(queued) == 1
         request = queued[0]
         assert isinstance(request, list)
         assert len(request) == 1
         assert request[0]["scene"]["scene_id"] == "001"
         assert request[0]["automatic"] is True
-        self.assertFalse(self.page.generate_all_videos_button.isEnabled())
+        self.assertTrue(self.page.generate_all_videos_button.isEnabled())
 
     def test_generate_all_videos_can_overwrite_existing_scene_videos(self) -> None:
         temporary = TemporaryDirectory()
@@ -522,12 +519,10 @@ class VideoStoryboardPageTests(unittest.TestCase):
         queued: list[object] = []
         self.page.generateAllVideosRequested.connect(queued.append)
 
-        with patch.object(
-            self.page,
-            "_choose_generate_all_videos_scope",
-            return_value="all",
-        ):
-            self.page.generate_all_videos_button.click()
+        self.page.generate_all_videos_button.click()
+        dialog = self.page._video_batch_dialog
+        dialog.overwrite_checkbox.setChecked(True)
+        dialog.start_button.click()
 
         assert len(queued) == 1
         request = queued[0]
@@ -544,12 +539,8 @@ class VideoStoryboardPageTests(unittest.TestCase):
         queued: list[object] = []
         self.page.generateAllVideosRequested.connect(queued.append)
 
-        with patch.object(
-            self.page,
-            "_choose_generate_all_videos_scope",
-            return_value=None,
-        ):
-            self.page.generate_all_videos_button.click()
+        self.page.generate_all_videos_button.click()
+        self.page._video_batch_dialog.cancel_button.click()
 
         self.assertEqual(queued, [])
         self.assertTrue(self.page.generate_all_videos_button.isEnabled())

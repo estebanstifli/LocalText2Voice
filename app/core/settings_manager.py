@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.core.storyboard_profiles import RUNPOD_DEFAULTS, PROFILE_IDS, infer_profile
 from app.core.litellm_video_models import LITELLM_VIDEO_DEFAULTS
+from app.core.video_storyboard_video_dashscope import DASHSCOPE_DEFAULTS, WAN_MODELS
+from app.core.direct_video_models import DEFAULTS as DIRECT_VIDEO_DEFAULTS, normalize as normalize_direct_video
 
 import json
 import re
@@ -293,6 +295,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "profiles": {},
         "video_provider": "comfyui",
         "litellm_video": deepcopy(LITELLM_VIDEO_DEFAULTS),
+        "dashscope_video": deepcopy(DASHSCOPE_DEFAULTS),
+        **{provider + "_video": deepcopy(config) for provider, config in DIRECT_VIDEO_DEFAULTS.items()},
         "runpod": deepcopy(RUNPOD_DEFAULTS),
         "image_provider": "comfyui",
         "image_edit_provider": "disabled",
@@ -301,7 +305,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "mode": "semantic_bounded",
             "minimum_seconds": 4,
             "target_seconds": 8,
-            "maximum_seconds": 15,
+            "maximum_seconds": 8,
         },
         "image": {
             "width": 1280,
@@ -771,7 +775,9 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     storyboard["active_profile"] = infer_profile(storyboard)
     snapshots = storyboard.get("profiles", {})
     storyboard["profiles"] = {k: v for k, v in snapshots.items() if k in PROFILE_IDS and isinstance(v, dict)} if isinstance(snapshots, dict) else {}
-    storyboard["video_provider"] = _choice_value(storyboard.get("video_provider"), {"comfyui", "runpod", "litellm", "disabled"}, "comfyui")
+    storyboard["video_provider"] = _choice_value(storyboard.get("video_provider"), {"comfyui", "runpod", "litellm", "dashscope", "disabled", *DIRECT_VIDEO_DEFAULTS}, "comfyui")
+    for provider in DIRECT_VIDEO_DEFAULTS:
+        storyboard[provider + "_video"] = normalize_direct_video(storyboard.get(provider + "_video"), provider)
     runpod = storyboard.get("runpod", {})
     runpod = runpod if isinstance(runpod, dict) else {}
     storyboard["runpod"] = {key: str(runpod.get(key) or fallback).strip() if isinstance(fallback, str) else runpod.get(key, fallback) for key, fallback in RUNPOD_DEFAULTS.items()}
@@ -803,6 +809,7 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         "litellm_image",
         "litellm_image_edit",
         "litellm_video",
+        "dashscope_video",
         "ollama",
         "litellm",
         "video",
@@ -810,6 +817,13 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         if not isinstance(storyboard.get(section_name), dict):
             storyboard[section_name] = deepcopy(defaults[section_name])
 
+    wan = storyboard["dashscope_video"]
+    wan["audio"] = bool(wan.get("audio", False))
+    wan["model"] = _choice_value(wan.get("model"), set(WAN_MODELS), DASHSCOPE_DEFAULTS["model"])
+    for key in ("api_key", "base_url"):
+        wan[key] = str(wan.get(key) or DASHSCOPE_DEFAULTS[key]).strip()
+    wan["resolution"] = _choice_value(str(wan.get("resolution", "")).upper(), {"720P", "1080P"}, "720P")
+    wan["timeout_seconds"] = _bounded_int(wan.get("timeout_seconds"), 60, 7200, 1800)
     video_litellm = storyboard["litellm_video"]
     for key in ("model", "base_url", "api_key"):
         video_litellm[key] = str(video_litellm.get(key) or LITELLM_VIDEO_DEFAULTS[key]).strip()
@@ -822,7 +836,7 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         {"semantic_bounded", "fixed"},
         "semantic_bounded",
     )
-    maximum = _bounded_int(scene.get("maximum_seconds"), 4, 60, 15)
+    maximum = _bounded_int(scene.get("maximum_seconds"), 4, 60, 8)
     minimum = _bounded_int(scene.get("minimum_seconds"), 4, maximum, 4)
     target = _bounded_int(
         scene.get("target_seconds"), minimum, maximum, min(maximum, max(minimum, 8))
@@ -1044,7 +1058,7 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     video["transition"] = _choice_value(
         video.get("transition"),
         {
-            "fade", "dissolve", "wipeleft", "wiperight",
+            "none", "fade", "dissolve", "wipeleft", "wiperight",
             "smoothleft", "smoothright", "circleopen", "circleclose",
         },
         "fade",

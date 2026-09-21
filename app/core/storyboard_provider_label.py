@@ -5,10 +5,15 @@ from urllib.parse import urlsplit
 
 
 def provider_label(settings, role="image"):
+    from app.core.direct_video_models import PROVIDERS, configuration
     key = "image_edit" if role == "edit" else role
     provider = str(settings.get(f"{key}_provider") or ("disabled" if role == "edit" else "comfyui"))
     names = {"litellm_image": "LiteLLM", "comfyui": "ComfyUI", "custom_comfyui": "ComfyUI", "runpod": "Runpod", "disabled": "Disabled"}
     model = ""
+    if provider in PROVIDERS and role == "video":
+        return PROVIDERS[provider][0] + " · " + configuration(settings, provider)["model"]
+    if provider == "dashscope" and role == "video":
+        return "Alibaba Cloud · " + str(settings.get("dashscope_video", {}).get("model") or "wan2.6-i2v-flash")
     if provider == "litellm" and role == "video":
         return "LiteLLM · " + str(settings.get("litellm_video", {}).get("model") or "Veo")
     if provider == "runpod":

@@ -117,6 +117,7 @@ import os
 import sys
 import time
 import warnings
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 
@@ -137,6 +138,13 @@ def emit_info(message: str) -> None:
 
 def emit_fatal(message: str) -> None:
     emit({"type": "fatal", "message": message})
+
+
+def runtime_package_version(distribution: str, module) -> str:
+    try:
+        return package_version(distribution)
+    except PackageNotFoundError:
+        return str(getattr(module, "__version__", "unknown"))
 
 
 def configure_environment(cache_dir: str, deps_dir: str) -> None:
@@ -279,42 +287,49 @@ def configure_model_network_access(allow_download: bool) -> None:
         os.environ[variable] = "1"
 
 
-def load_model(model_repo: str, selected_device: str, dtype_name: str):
-    import torch
+def register_qwen3_tts_architecture() -> None:
+    """Register Qwen's custom Transformers architecture before any config lookup.
 
-    dtype, resolved_dtype = resolve_dtype(torch, selected_device, dtype_name)
-    configure_torch_runtime(torch, selected_device)
-    if selected_device == "cuda":
-        from faster_qwen3_tts import FasterQwen3TTS
+    ``qwen-tts`` normally performs this registration inside
+    ``Qwen3TTSModel.from_pretrained``.  Some loader/runtime combinations inspect
+    ``config.json`` earlier, however, which produces the misleading
+    ``Unrecognized model: qwen3_tts`` error.  Registration is idempotent in
+    Transformers, so doing it here is safe with both the official and faster
+    loaders.
+    """
+    from transformers import AutoConfig, AutoModel, AutoProcessor
+    from qwen_tts.core.models import (
+        Qwen3TTSConfig,
+        Qwen3TTSForConditionalGeneration,
+        Qwen3TTSProcessor,
+    )
 
-        emit_info(
-            "Qwen load options: "
-            f"backend=faster-qwen3-tts, device=cuda, "
-            f"dtype={resolved_dtype}, attention=sdpa"
-        )
-        load_started = time.perf_counter()
-        model = FasterQwen3TTS.from_pretrained(
-            model_repo,
-            device="cuda",
-            dtype=dtype,
-            attn_implementation="sdpa",
-            max_seq_len=2048,
-        )
-        emit_timing("model load", load_started)
-        return model, resolved_dtype, "faster-qwen3-tts/cuda"
+    AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
+    AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+    AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
 
+
+def is_unrecognized_qwen3_tts_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "qwen3_tts" in message and (
+        "unrecognized model" in message
+        or "does not recognize this architecture" in message
+        or "model type" in message
+    )
+
+
+def load_official_model(model_repo: str, device: str, dtype, resolved_dtype: str):
     from qwen_tts import Qwen3TTSModel
 
     kwargs = {
-        "device_map": "cpu",
+        "device_map": device,
         "dtype": dtype,
         "attn_implementation": "sdpa",
     }
     emit_info(
         "Qwen load options: "
-        f"backend=official-qwen-tts, device={kwargs['device_map']}, "
-        f"dtype={resolved_dtype}, "
-        "attention=sdpa"
+        f"backend=official-qwen-tts, device={device}, "
+        f"dtype={resolved_dtype}, attention=sdpa"
     )
     load_started = time.perf_counter()
     try:
@@ -326,6 +341,45 @@ def load_model(model_repo: str, selected_device: str, dtype_name: str):
         kwargs.pop("attn_implementation", None)
         model = Qwen3TTSModel.from_pretrained(model_repo, **kwargs)
     emit_timing("model load", load_started)
+    return model
+
+
+def load_model(model_repo: str, selected_device: str, dtype_name: str):
+    import torch
+
+    dtype, resolved_dtype = resolve_dtype(torch, selected_device, dtype_name)
+    configure_torch_runtime(torch, selected_device)
+    register_qwen3_tts_architecture()
+    if selected_device == "cuda":
+        from faster_qwen3_tts import FasterQwen3TTS
+
+        emit_info(
+            "Qwen load options: "
+            f"backend=faster-qwen3-tts, device=cuda, "
+            f"dtype={resolved_dtype}, attention=sdpa"
+        )
+        load_started = time.perf_counter()
+        try:
+            model = FasterQwen3TTS.from_pretrained(
+                model_repo,
+                device="cuda",
+                dtype=dtype,
+                attn_implementation="sdpa",
+                max_seq_len=2048,
+            )
+            emit_timing("model load", load_started)
+            return model, resolved_dtype, "faster-qwen3-tts/cuda"
+        except Exception as exc:
+            if not is_unrecognized_qwen3_tts_error(exc):
+                raise
+            emit_info(
+                "faster-qwen3-tts could not recognize qwen3_tts; "
+                "retrying with the official qwen-tts loader."
+            )
+            model = load_official_model(model_repo, "cuda", dtype, resolved_dtype)
+            return model, resolved_dtype, "official-qwen-tts/cuda-fallback"
+
+    model = load_official_model(model_repo, "cpu", dtype, resolved_dtype)
     return model, resolved_dtype, "official-qwen-tts/cpu"
 
 
@@ -378,9 +432,22 @@ def main() -> int:
         import_started = time.perf_counter()
         import torch
         import soundfile as sf
+        import transformers
         import qwen_tts
         import faster_qwen3_tts
         emit_timing("dependency import", import_started)
+        emit_info(
+            "Qwen runtime packages: "
+            f"transformers={getattr(transformers, '__version__', 'unknown')}, "
+            f"qwen-tts={runtime_package_version('qwen-tts', qwen_tts)}, "
+            f"faster-qwen3-tts={runtime_package_version('faster-qwen3-tts', faster_qwen3_tts)}"
+        )
+        emit_info(
+            "Qwen runtime paths: "
+            f"transformers={getattr(transformers, '__file__', 'unknown')}, "
+            f"qwen-tts={getattr(qwen_tts, '__file__', 'unknown')}, "
+            f"faster-qwen3-tts={getattr(faster_qwen3_tts, '__file__', 'unknown')}"
+        )
     except Exception as exc:
         if args.cuda_info:
             print(json.dumps(cuda_info(), ensure_ascii=False), flush=True)

@@ -37,3 +37,23 @@ def test_settings_widget_roundtrip_and_editor_cancel_save():
         widget._edit()
     assert widget.configuration()["prompts"]["conversation_report"] == "Changed custom text"
     widget.deleteLater()
+
+
+def test_entity_and_phase_navigation_preserves_custom_instructions():
+    from app.ui.storyboard_instruction_editor import StoryboardInstructionEditor, GROUPS
+    from app.core.storyboard_analysis_settings import PROMPTS
+    app = QApplication.instance() or QApplication([])
+    editor = StoryboardInstructionEditor(lambda key, default, **kw: default.format(**kw))
+    assert {key for _, _, keys in GROUPS for key in keys} == set(PROMPTS)
+    editor.editor.setPlainText("Custom characters")
+    editor.phases.setCurrentIndex(2)
+    editor.editor.setPlainText("Custom portraits")
+    editor.entities.setCurrentRow(1)
+    editor.editor.setPlainText("Custom locations")
+    editor.entities.setCurrentRow(0)
+    assert editor.editor.toPlainText() == "Custom characters"
+    editor.phases.setCurrentIndex(2)
+    assert editor.editor.toPlainText() == "Custom portraits"
+    editor._restore()
+    assert editor.prompts() == {"conversation_report": "Custom characters", "conversation_locations": "Custom locations"}
+    editor.close()

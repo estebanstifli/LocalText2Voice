@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.0.2"
+  #define MyAppVersion "2.1.0"
 #endif
 
 #define MyAppName "LocalText2Voice"

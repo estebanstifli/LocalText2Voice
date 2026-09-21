@@ -25,7 +25,7 @@ def test_litellm_sends_effective_negative_in_required_prompt(tmp_path, route, ov
     }
     with patch(targets[route], return_value={}) as request, patch(
         "app.core.video_storyboard_comfyui._save_litellm_image"
-    ):
+    ), patch("app.core.storyboard_image_sizes.fit_frame"):
         result = _generate_litellm_storyboard_frame(
             scene, plan, settings, tmp_path / "frame.png", status=None, cancelled=None
         )

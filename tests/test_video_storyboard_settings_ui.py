@@ -55,6 +55,17 @@ class VideoStoryboardSettingsUITests(unittest.TestCase):
             errors.assert_not_called()
         self.assertEqual(changes.count(), 0)
 
+    def test_none_transition_survives_settings_normalization(self):
+        from app.core.settings_manager import _sanitize_video_storyboard
+        widget = VideoStoryboardSettingsWidget(_translate)
+        self.addCleanup(widget.deleteLater)
+        config = widget.configuration()
+        config["video"]["transition"] = "none"
+        _sanitize_video_storyboard(config)
+        widget.set_configuration(config)
+        self.assertEqual(widget.configuration()["video"]["transition"], "none")
+        self.assertEqual(widget.configuration()["scene"]["maximum_seconds"], 8)
+
     def test_runpod_category_fields_and_install_buttons_follow_provider(self):
         widget = VideoStoryboardSettingsWidget(_translate)
         self.addCleanup(widget.deleteLater)

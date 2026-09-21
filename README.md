@@ -5,8 +5,8 @@
 <h1 align="center">LocalText2Voice</h1>
 
 <p align="center">
-  <strong>Free, open-source AI voice and audio production for long-form text.</strong><br>
-  Turn books, lessons, articles, notes, and courses into audiobooks and podcast-style audio on Windows and Linux.
+  <strong>Free, open-source AI production for long-form audio and video.</strong><br>
+  Turn books, lessons, articles, notes, and scripts into audiobooks, podcasts, documentaries, films, and animated videos.
 </p>
 
 <p align="center">
@@ -27,18 +27,64 @@
   <a href="https://andromedanova.com"><strong>AndromedaNova.com</strong></a>
 </p>
 
-LocalText2Voice is a desktop app for creating long-form spoken audio with AI text-to-speech. It can run fully local and offline with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and the optional non-commercial F5-TTS Russian engine, while also leaving room for optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, and Azure Speech.
+LocalText2Voice is a free desktop app for long-form AI voice and video production. It can run fully local and offline for narration with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and the optional non-commercial F5-TTS Russian engine, while also supporting optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, Azure Speech, and direct video providers.
 
-The goal is simple: paste or import a long text, choose a voice engine, generate clean narration, review the result, and optionally create a polished podcast mix with music, fades, ducking, and normalization.
+The workflow is designed for long projects: import or write a script, generate narration, review and correct segments, build an audio mix, then use Video Storyboard to plan scenes, generate visuals, assemble motion, and render a long-form MP4. Local engines keep data on the user's computer; cloud providers are optional and clearly configured.
+
+## See LocalText2Voice In Action
+
+LocalText2Voice has grown from a local long-form audio tool into a complete
+audio-to-video workflow. You can still create only narration, audiobooks and
+podcasts, or continue through Video Storyboard to produce documentaries, films,
+illustrated lessons and animated stories. Every project remains editable and
+human review is part of the workflow before final export.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://youtu.be/uyHqwL5sK5U">
+        <img src="https://i.ytimg.com/vi/uyHqwL5sK5U/hqdefault.jpg" alt="From Text to AI Documentary: A Complete Workflow with LocalText2Voice" width="480">
+      </a><br>
+      <strong><a href="https://youtu.be/uyHqwL5sK5U">From Text to AI Documentary: A Complete Workflow with LocalText2Voice</a></strong><br>
+      Complete tutorial: from source text to reviewed documentary.
+    </td>
+    <td align="center" width="50%">
+      <a href="https://youtu.be/zsbfCeDtteQ">
+        <img src="https://i.ytimg.com/vi/zsbfCeDtteQ/hqdefault.jpg" alt="From Text to a 14-Minute AI Documentary with GPT Image 2 and Wan 2.6 Flash" width="480">
+      </a><br>
+      <strong><a href="https://youtu.be/zsbfCeDtteQ">From Text to a 14-Minute AI Documentary | GPT Image 2 + Wan 2.6 Flash</a></strong><br>
+      A complete documentary produced as video.
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://youtu.be/0Fwr5YYWQ9I">
+        <img src="https://i.ytimg.com/vi/0Fwr5YYWQ9I/hqdefault.jpg" alt="Jack and the Beanstalk AI animated story VideoStoryboard demo" width="480">
+      </a><br>
+      <strong><a href="https://youtu.be/0Fwr5YYWQ9I">Jack and the Beanstalk – AI Animated Story | VideoStoryboard Demo</a></strong><br>
+      A 3D cartoon-style storyboard demonstration.
+    </td>
+    <td align="center" width="50%">
+      <a href="https://youtu.be/GkTR7Irh9qA">
+        <img src="https://i.ytimg.com/vi/GkTR7Irh9qA/hqdefault.jpg" alt="From Bible Text to an 18-Minute AI Video LocalText2Voice demo" width="480">
+      </a><br>
+      <strong><a href="https://youtu.be/GkTR7Irh9qA">From Bible Text to an 18-Minute AI Video | LocalText2Voice Demo</a></strong><br>
+      From biblical source text to a long-form narrated video.
+    </td>
+  </tr>
+</table>
 
 ## Video Storyboard (Beta)
 
-**Beta feature included in LocalText2Voice 2.0.1.**
+**Beta feature introduced in LocalText2Voice 2.0.1 and expanded in 2.1.0.**
 
-Turn narration into an editable visual timeline, generate or import images,
-create video clips, and render an MP4 with the audiobook audio. This beta includes
-character and location profiles, scene review, and local or optional remote
-visual providers. AI continuity and timing still need human review.
+Turn narration into an editable visual timeline, analyze scenes and reusable
+entities, generate or import images, create video clips, and render an MP4 with
+the narration audio. The 2.1.0 workflow adds richer character, location, era and
+object context, reference-aware prompts, batch video generation, recovery for
+long-running jobs, and direct video API adapters alongside ComfyUI and Runpod.
+This remains a beta: AI continuity, timing and generated media still need human
+review.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WSU09pJ0rXc">
@@ -85,6 +131,26 @@ engine. Disk usage also grows with each optional engine because models and
 isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
+
+## What's New In 2.1.0
+
+- Expand Video Storyboard from a narration visualizer into a broader long-form
+  video workflow for documentaries, films, educational videos and animation.
+- Add structured storyboard analysis for scenes, characters, locations, eras and
+  important objects, including reviewable context and appearance states.
+- Add persistent visual references, richer prompt construction, image editing,
+  scene continuity improvements, batch image/video generation, cancellation and
+  recovery for long-running provider jobs.
+- Add direct video provider integrations for Alibaba Cloud Wan, LTX, MiniMax
+  H3 and BytePlus Seedance, while retaining ComfyUI, Runpod and LiteLLM routes.
+- Add shared async job handling, provider capability validation, media fitting,
+  audio preservation and clearer diagnostics for video generation failures.
+- Fix a Qwen3 TTS runtime compatibility path by registering its Transformers
+  architecture before model loading, retrying safely with the official loader
+  when the accelerated loader cannot recognize the model, and logging package
+  versions and runtime paths.
+- Refresh Video Storyboard settings, dialogs, transitions, scene controls and
+  localization strings, with focused regression tests for the new workflow.
 
 ## What's New In 2.0.2
 
@@ -163,7 +229,9 @@ See the complete release history in the [changelog](CHANGELOG.md).
 
 ## Complete Workflow
 
-LocalText2Voice is no longer just "text to speech". It is becoming a complete local audiobook and podcast production pipeline.
+LocalText2Voice is no longer just text to speech. It is becoming a complete
+long-form audio and video production pipeline for audiobooks, podcasts,
+documentaries, films, illustrated lessons and animated stories.
 
 ```mermaid
 flowchart TD
@@ -721,7 +789,7 @@ Current languages:
 
 ## GitHub SEO Keywords
 
-`text-to-speech`, `tts`, `ai-voice`, `offline-tts`, `local-ai`, `piper-tts`, `kokoro-tts`, `chatterbox-tts`, `qwen-tts`, `faster-whisper`, `audiobook`, `podcast`, `mp3`, `python`, `pyside6`, `ffmpeg`, `open-source`, `education`, `course-generator`, `voice-ai`, `speech-synthesis`
+`text-to-speech`, `tts`, `ai-voice`, `offline-tts`, `local-ai`, `piper-tts`, `kokoro-tts`, `chatterbox-tts`, `qwen-tts`, `faster-whisper`, `audiobook`, `podcast`, `video-generation`, `video-storyboard`, `documentary`, `animated-video`, `comfyui`, `runpod`, `mp3`, `python`, `pyside6`, `ffmpeg`, `open-source`, `education`, `course-generator`, `voice-ai`, `speech-synthesis`
 
 Recommended GitHub topics:
 
@@ -738,6 +806,12 @@ qwen
 faster-whisper
 podcast
 audiobook
+video-generation
+video-storyboard
+documentary
+animated-video
+comfyui
+runpod
 mp3
 python
 pyside6
@@ -762,8 +836,8 @@ course-generator
 - [x] Word-level timestamps for future subtitle and timeline features.
 - [x] Sound effects and music timeline commands from markup.
 - [x] SRT and karaoke-style ASS subtitle export from Whisper timestamps.
+- [x] Video Storyboard beta with scene analysis, visual references, timeline editing, and MP4 rendering.
 - [ ] Video/audio cover workflow.
-- [ ] Visual chapter and segment editor.
 - [x] Windows installer with CPU/GPU setup profiles.
 - [x] Automatic update system with SHA-256 verification.
 - [ ] Signed Windows installer.

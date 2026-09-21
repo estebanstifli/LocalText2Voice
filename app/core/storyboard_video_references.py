@@ -40,11 +40,7 @@ def resolve_runpod_video_references(scene, frame_role, config):
             raise ValueError('Kling O1 requires reference images. Add them with + Img Ref.')
         return config, paths
     if frame_role == 'none':
-        if paths:
-            raise ValueError('Wan cannot use unanchored image references. Use Kling O1 for multiple references, or clear them for text-only generation.')
-        if endpoint not in {'wan-2-6-i2v', 'wan-2-6-t2v'}:
-            raise ValueError('None requires a text-to-video endpoint. Select Runpod Wan 2.6.')
-        config['video_endpoint'] = 'wan-2-6-t2v'
+        raise ValueError('Runpod Wan requires a starting or ending image. Text-to-video is no longer offered here. Use Kling O1 for unanchored references.')
     elif len(paths) > 1:
         raise ValueError('Wan accepts one image only. Use Kling O1 with None for multiple references, or remove the additional images.')
     elif endpoint == 'wan-2-6-t2v':

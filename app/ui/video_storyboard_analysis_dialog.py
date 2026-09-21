@@ -59,7 +59,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
         replaces_existing: bool = False,
         analysis_choices: dict | None = None,
         resume_available: bool = False,
-        maximum_scene_seconds: int = 15,
+        maximum_scene_seconds: int = 8,
         audiobook_era: str = "",
     ) -> None:
         super().__init__(parent)

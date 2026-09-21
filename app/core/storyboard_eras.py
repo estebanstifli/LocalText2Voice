@@ -171,7 +171,7 @@ def revise_period(plan, identifier, description, visual_context, scene_ids, merg
     return result
 
 
-def build_eras(reports, reviewed, original, mode, text, units, duration, request, warn, check):
+def build_eras(reports, reviewed, original, mode, text, units, duration, request, warn, check, *, instructions=None):
     """Structure reviewed reports; only locally validated source anchors set timing."""
     from app.core.storyboard_conversation import quote_offsets, source_chunks
     from app.core.video_storyboard_planner import _normalized_entity_id
@@ -194,7 +194,7 @@ def build_eras(reports, reviewed, original, mode, text, units, duration, request
                 "known_periods": [{k: r.get(k, "") for k in ("id", "name", "description")} for r in records]}
         # The report already contains literal source anchors. Validate them locally,
         # avoiding another full audiobook in every structuring request.
-        instruction = STRUCTURE
+        instruction = (instructions or {}).get("era_structure", STRUCTURE)
         if mode == "auto_single":
             instruction += " Identify the common visual period. If the passage truly spans different periods, preserve them so the app can flag this conflict."
         result = request(ERA_SCHEMA, instruction, data, f"conversation: convert eras report {index}/{len(batches)} to JSON")

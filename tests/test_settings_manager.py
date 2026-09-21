@@ -326,7 +326,7 @@ def test_video_storyboard_is_available_and_legacy_settings_are_sanitized(tmp_pat
         "mode": "semantic_bounded",
         "minimum_seconds": 4,
         "target_seconds": 4,
-        "maximum_seconds": 15,
+        "maximum_seconds": 8,
     }
     assert storyboard["image"]["width"] == 1280
     assert storyboard["image"]["height"] == 720

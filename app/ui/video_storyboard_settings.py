@@ -69,6 +69,8 @@ LITELLM_TEXT_MODELS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 
 LITELLM_IMAGE_MODELS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ("OpenAI", (
+        ("GPT Image 2.5 Flare", "openai/gpt-image-2.5-flare"),
+        ("GPT Image 2.5 Sunburst", "openai/gpt-image-2.5-sunburst"),
         ("GPT Image 2", "openai/gpt-image-2"),
         ("GPT Image 1", "openai/gpt-image-1"),
         ("GPT Image 1 Mini", "openai/gpt-image-1-mini"),
@@ -517,7 +519,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         description = QLabel(
             self.tr_text(
                 "storyboard_video_providers_help",
-                "Choose ComfyUI, Runpod or LiteLLM for scene videos. Each provider offers its own models and reference modes.",
+                "Choose a local or cloud video provider. Each provider offers its own models and reference modes.",
             )
         )
         description.setObjectName("helperLabel")
@@ -528,7 +530,8 @@ class VideoStoryboardSettingsWidget(QWidget):
         generic.setObjectName("card")
         form = QFormLayout(generic)
         self.video_provider_combo = QComboBox()
-        for label, provider in (("ComfyUI", "comfyui"), ("Runpod", "runpod"), ("LiteLLM · Veo", "litellm"), (self.tr_text("disabled", "Disabled"), "disabled")):
+        from app.core.direct_video_models import PROVIDERS
+        for label, provider in (("ComfyUI", "comfyui"), ("Runpod", "runpod"), ("LiteLLM · Veo", "litellm"), ("Alibaba Cloud · Wan", "dashscope"), *((info[0], key) for key, info in PROVIDERS.items()), (self.tr_text("disabled", "Disabled"), "disabled")):
             self.video_provider_combo.addItem(label, provider)
         form.addRow(self.tr_text("storyboard_video_provider", "Video provider"), self.video_provider_combo)
         outer.addWidget(generic)
@@ -539,6 +542,17 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.litellm_video_settings = LiteLLMVideoSettings(self.tr_text)
         self.litellm_video_settings.changed.connect(self._emit_changed)
         outer.addWidget(self.litellm_video_settings)
+        from app.ui.storyboard_dashscope_video_settings import DashScopeVideoSettings
+        self.dashscope_video_settings = DashScopeVideoSettings(self.tr_text)
+        self.dashscope_video_settings.changed.connect(self._emit_changed)
+        outer.addWidget(self.dashscope_video_settings)
+        from app.ui.storyboard_direct_video_settings import DirectVideoSettings
+        self.direct_video_settings = {}
+        for provider in PROVIDERS:
+            panel = DirectVideoSettings(provider, self.tr_text)
+            panel.changed.connect(self._emit_changed)
+            self.direct_video_settings[provider] = panel
+            outer.addWidget(panel)
         self.runpod_video_hint = QLabel(self.tr_text("runpod_video_settings_hint", "Configure Runpod video models and credentials in the Runpod profile."))
         self.runpod_video_hint.setWordWrap(True)
         outer.addWidget(self.runpod_video_hint)
@@ -823,10 +837,14 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.scene_target_spin.hide()
         form.addRow(self.tr_text("video_storyboard_maximum", "Maximum scene"), self.scene_maximum_spin)
         self.auto_character_references_checkbox = QCheckBox(self.tr_text(
-            "video_storyboard_auto_character_references", "Use character reference images automatically when available"))
+            "video_storyboard_auto_character_references", "Use character reference images automatically (only supported image models)"))
         self.auto_character_references_checkbox.setChecked(True)
         self.auto_character_references_checkbox.toggled.connect(self._emit_changed)
         form.addRow(self.auto_character_references_checkbox)
+        reference_note = QLabel(self.tr_text("storyboard_character_reference_note", "Characters are defined by text, which is included in scene prompts even without reference images. Enable image references only for models that support them; otherwise generation may fail."))
+        reference_note.setWordWrap(True)
+        reference_note.setObjectName("helperLabel")
+        form.addRow(reference_note)
         return group
 
     def _build_image_preset_settings(self) -> QGroupBox:
@@ -908,6 +926,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.video_fps_spin = QSpinBox()
         self.video_fps_spin.setRange(12, 60)
         self.video_transition_combo = QComboBox()
+        self.video_transition_combo.addItem(self.tr_text("none", "None"), "none")
         self.video_transition_combo.addItem("Fade", "fade")
         self.video_transition_combo.addItem("Dissolve", "dissolve")
         self.video_transition_combo.addItem("Wipe left", "wipeleft")
@@ -1046,6 +1065,9 @@ class VideoStoryboardSettingsWidget(QWidget):
             self._select(self.profile_combo, self._active_profile)
             self.runpod_settings.set_configuration(config.get("runpod", {}))
             self.litellm_video_settings.set_configuration(config.get("litellm_video", {}))
+            self.dashscope_video_settings.set_configuration(config.get("dashscope_video", {}))
+            for provider, panel in self.direct_video_settings.items():
+                panel.set_configuration(config.get(provider + "_video", {}))
             self._select(self.image_provider_combo, config.get("image_provider"))
             self._select(
                 self.image_edit_provider_combo,
@@ -1168,7 +1190,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             scene = config["scene"]
             self.scene_minimum_spin.setValue(int(scene.get("minimum_seconds", 4)))
             self.scene_target_spin.setValue(int(scene.get("target_seconds", 8)))
-            self.scene_maximum_spin.setValue(int(scene.get("maximum_seconds", 15)))
+            self.scene_maximum_spin.setValue(int(scene.get("maximum_seconds", 8)))
             self.auto_character_references_checkbox.setChecked(bool(config.get("auto_character_references", True)))
             image = config["image"]
             self.image_width_spin.setValue(int(image.get("width", 1280)))
@@ -1200,6 +1222,8 @@ class VideoStoryboardSettingsWidget(QWidget):
             "profiles": deepcopy(self._profiles),
             "video_provider": self._video_provider,
             "litellm_video": self.litellm_video_settings.configuration(),
+            "dashscope_video": self.dashscope_video_settings.configuration(),
+            **{provider + "_video": panel.configuration() for provider, panel in self.direct_video_settings.items()},
             "runpod": self.runpod_settings.configuration(),
             "installation": deepcopy(self._installation_settings),
             "enabled": True,
@@ -1393,6 +1417,9 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.comfyui_video_fields.setVisible(provider == "comfyui")
         self.comfyui_video_profile_stack.setVisible(provider == "comfyui")
         self.litellm_video_settings.setVisible(provider == "litellm")
+        self.dashscope_video_settings.setVisible(provider == "dashscope")
+        for key, panel in self.direct_video_settings.items():
+            panel.setVisible(provider == key)
         self.runpod_video_hint.hide()
 
     def _change_profile(self, *_args):
@@ -1407,7 +1434,10 @@ class VideoStoryboardSettingsWidget(QWidget):
 
     def _sync_profile_ui(self, *_args):
         self._sync_video_provider_ui()
-        self.wan_behavior_panel.setVisible(self.comfyui_video_profile_combo.currentData() == WAN_VIDEO_PROFILE)
+        self.wan_behavior_panel.setVisible(
+            self.video_provider_combo.currentData() == "comfyui"
+            and self.comfyui_video_profile_combo.currentData() == WAN_VIDEO_PROFILE
+        )
         self.general_section.setVisible(self._selected_category == "general")
         for role, section in self.engine_sections.items():
             section.setVisible(role == self._selected_category)
@@ -1565,7 +1595,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         models = {
             "llm": config["ollama"]["model"] if config["llm_provider"] == "ollama" else config["litellm"]["model"],
             "image": config["comfyui"]["diffusion_model"] if config["image_provider"] == "comfyui" else "Custom ComfyUI" if config["image_provider"] == "custom_comfyui" else config["litellm_image"]["model"],
-            "video": config["litellm_video"]["model"] if config["video_provider"] == "litellm" else config["comfyui_video"].get("unet_model") if config["comfyui_video"].get("workflow_profile") == WAN_VIDEO_PROFILE else self.comfyui_video_profile_combo.currentText(),
+            "video": config["dashscope_video"]["model"] if config["video_provider"] == "dashscope" else config["litellm_video"]["model"] if config["video_provider"] == "litellm" else config["comfyui_video"].get("unet_model") if config["comfyui_video"].get("workflow_profile") == WAN_VIDEO_PROFILE else self.comfyui_video_profile_combo.currentText(),
             "edit": config["comfyui_image_edit"]["unet_model"] if config["image_edit_provider"] == "comfyui" else config["litellm_image_edit"]["model"] if config["image_edit_provider"] == "litellm_image" else "",
         }
         for role, card in self.engine_cards.items():
@@ -1578,7 +1608,9 @@ class VideoStoryboardSettingsWidget(QWidget):
             if not local and not active:
                 from app.core.storyboard_provider_label import provider_label
                 label = "LiteLLM" if role == "llm" else provider_label(config, role)
-                if provider == "runpod":
+                if provider in self.direct_video_settings and role == "video":
+                    card["model"].setText(config[provider + "_video"]["model"])
+                elif provider == "runpod":
                     card["model"].setText(str(config["runpod"].get(f"{role}_endpoint", "")))
                 elif provider == "disabled":
                     card["model"].setText(self.tr_text("disabled", "Disabled"))

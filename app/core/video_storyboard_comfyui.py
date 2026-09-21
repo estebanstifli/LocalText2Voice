@@ -398,6 +398,11 @@ def _generate_litellm_storyboard_frame(
     if status:
         status("downloading")
     _save_litellm_image(response, target, timeout)
+    from app.core.storyboard_image_sizes import fit_frame
+    try:
+        fit_frame(target, width, height)
+    except (OSError, ValueError) as exc:
+        raise VideoStoryboardImageError(f"Cannot fit the generated image to the storyboard: {exc}") from exc
     return {
         "scene_id": str(scene.get("scene_id") or scene.get("id") or ""),
         "image_path": str(target),
@@ -498,11 +503,10 @@ def _litellm_image_optional_parameters(
     size: str,
     seed: int,
 ) -> dict[str, Any]:
-    parameters: dict[str, Any] = {
-        "n": 1,
-        "size": size,
-        "response_format": "b64_json",
-    }
+    from app.core.storyboard_image_sizes import image_parameters
+    width, height = (int(value) for value in size.split("x"))
+    parameters: dict[str, Any] = {"n": 1, "response_format": "b64_json",
+                                  **image_parameters(model, width, height)}
     provider = model.split("/", 1)[0].strip().casefold()
     if provider in {"stability", "fal_ai", "black_forest_labs"}:
         parameters["seed"] = seed

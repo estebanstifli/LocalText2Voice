@@ -21,7 +21,11 @@ def litellm_reference_generation(references, config, prompt, width, height):
         field = "image[]" if len(references) > 1 else "image"
         files = [(field, Path(ref["path"])) for ref in references]
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        fields = {"model": model, "prompt": prompt, "size": f"{width}x{height}", "response_format": "b64_json"}
+        from app.core.storyboard_image_sizes import image_parameters
+        import json
+        sizing = image_parameters(model, width, height)
+        fields = {"model": model, "prompt": prompt, "response_format": "b64_json",
+                  **{k: json.dumps(v) if isinstance(v, dict) else v for k, v in sizing.items()}}
         try:
             return _multipart_json(endpoint, fields, files, timeout, headers)
         except VideoStoryboardImageEditError as exc:

@@ -317,3 +317,36 @@ def test_renderer_retimes_generated_video_and_applies_video_motion(
     assert result["duration_seconds"] == pytest.approx(1.2)
     assert output.is_file()
     assert output.stat().st_size > 1_000
+
+def test_ffmpeg_keeps_root_error_and_complete_log(tmp_path, monkeypatch):
+    from app.core import video_storyboard_renderer as renderer
+    details = "ROOT CAUSE: invalid filter parameter\n" + ("huge filter graph;" * 700) + "\nFINAL DETAIL"
+    scratch = tmp_path / "storyboard-render-test"
+    scratch.mkdir()
+    def popen(*args, **kwargs):
+        kwargs["stderr"].write(details.encode())
+        return SimpleNamespace(stdout=io.StringIO(""), wait=lambda: 4294967274)
+    monkeypatch.setattr(renderer.subprocess, "Popen", popen)
+    with pytest.raises(FFmpegError) as error:
+        renderer._run_ffmpeg_with_progress(Path("ffmpeg"), ["-y", str(scratch / "scene.mp4")], 1, lambda *args: None, lambda: False)
+    assert "ROOT CAUSE" in str(error.value) and "FINAL DETAIL" in str(error.value)
+    report = tmp_path / "storyboard-ffmpeg-error.log"
+    assert details in report.read_text(encoding="utf-8")
+    assert str(report) in str(error.value)
+
+def test_renderer_preserves_a_one_frame_video_scene(tmp_path):
+    from app.utils.ffmpeg_utils import find_ffmpeg
+    executable = find_ffmpeg("ffmpeg/ffmpeg.exe")
+    frame, audio = tmp_path / "image.ppm", tmp_path / "audio.wav"
+    _write_ppm(frame, 60, 120, 180)
+    _write_silent_wav(audio, 1)
+    clip = tmp_path / "one-frame.mp4"
+    subprocess.run([str(executable), "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", "24", "-i", str(frame), "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)], check=True, capture_output=True)
+    result = render_storyboard_video([
+        {"image_path": str(frame), "duration_seconds": .4},
+        {"image_path": str(frame), "video_path": str(clip), "video_duration_seconds": .1, "duration_seconds": .021, "transition": "fade"},
+        {"image_path": str(frame), "duration_seconds": .4, "transition": "fade"},
+    ], audio, tmp_path / "render.mp4", {"image": {"width": 64, "height": 64}, "video": {"fps": 30, "transition_seconds": .75, "supersample": 1, "preset": "ultrafast", "clip_audio_enabled": False}})
+    assert Path(result["output_path"]).stat().st_size > 1000
+    check = subprocess.run([str(executable), "-v", "error", "-i", result["output_path"], "-map", "0:v:0", "-f", "null", "-"], capture_output=True)
+    assert check.returncode == 0, check.stderr

@@ -350,8 +350,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
         raise p.VideoStoryboardPlanningError("The audiobook text is empty.")
     selection = choices(settings.get("analysis_choices"))
     config = normalize(settings.get("continuity_analysis"))
-    prompts = {k: config["prompts"].get(k) or PROMPTS[k][1] for k in (
-        "conversation_report", "conversation_scenes", "conversation_additions")}
+    prompts = {k: config["prompts"].get(k) or PROMPTS[k][1] for k in PROMPTS}
     duration = float(source.get("duration_seconds") or max(4, len(text.split()) / 2.6))
     offset = max(0.0, float(source.get("voice_start_offset_seconds") or 0))
     warnings, conversations, scenes = [], [], []
@@ -545,10 +544,10 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                                    f"conversation {number}/{len(chunks)}: scenes and start sentences / global excerpt {excerpt_number} (part {part}/{len(excerpts)})"))
             report["scenes"] = "\n\n".join(answers)
             if selection["locations"]:
-                report["locations"] = ask([], LOCATIONS + "\n\n" + report["scenes"],
+                report["locations"] = ask([], prompts["conversation_locations"] + "\n\n" + report["scenes"],
                                           f"conversation {number}/{len(chunks)}: place summary")
             if selection["objects"]:
-                report["objects"] = ask([], OBJECTS + "\n\n" + report["text"],
+                report["objects"] = ask([], prompts["conversation_objects"] + "\n\n" + report["text"],
                                         f"conversation {number}/{len(chunks)}: important objects summary")
             continuity["discovery_reports"] = deepcopy(conversations)
             publish("discovery")
@@ -559,7 +558,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             continuity["unified_object_summary"] = summary
             publish("discovery")
 
-        unified_objects = unify_object_reports(conversations, ask, publish_objects)
+        unified_objects = unify_object_reports(conversations, ask, publish_objects, instruction=prompts["object_additions"])
     if selection["objects"]:
         continuity["unified_object_summary"] = unified_objects
     if selection["locations"] and not (resumable and "unified_locations" in checkpoint):
@@ -569,7 +568,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             continuity["unified_location_summary"] = summary
             publish("discovery")
 
-        unified_locations = unify_location_reports(conversations, ask, publish_locations)
+        unified_locations = unify_location_reports(conversations, ask, publish_locations, instruction=prompts["location_additions"])
     if selection["locations"]:
         continuity["unified_location_summary"] = unified_locations
     continuity["first_phase_summaries"] = [c.get("raw_report", c["characters"]) for c in conversations if c["characters"]]
@@ -607,7 +606,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     if automatic_eras:
         continuity["eras"], continuity["era_assignments"] = build_eras(
             conversations, str(sections.get("eras") or ""), str(checkpoint.get("original", {}).get("eras") or ""),
-            era_mode, text, units, duration, structured, warn, check)
+            era_mode, text, units, duration, structured, warn, check, instructions=prompts)
     else:
         era = str(sections.get("era") or "")
         p._seed_requested_era(continuity, era, duration)
@@ -636,7 +635,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                     if not summary_part.strip():
                         continue
                     historical_context = "\n".join(period_context(r) for r in continuity["eras"])
-                    instruction = PROFILE_INSTRUCTIONS[collection]
+                    instruction = prompts[collection + "_profiles"]
                     if historical_context:
                         instruction += "\nERA: " + historical_context + "\nRespect the applicable period. For a recurring entity use its initial appearance; do not mix technologies or clothing across periods."
                     result = structured(schema, instruction, summary_part,
@@ -656,7 +655,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             if sections.get("appearance") == checkpoint.get("original", {}).get("appearance"):
                 state_sections["appearance"] = "\n\n".join(c["appearance"] for c in conversations)
         build_character_states(continuity["characters"], conversations, state_sections,
-                               text, units, duration, structured, warn, check)
+                               text, units, duration, structured, warn, check, instructions=prompts)
     publish("continuity")
     proposals = {"scenes": []}
     proposal_summaries = ([sections.get("scenes", "")]
@@ -665,9 +664,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     for summary in proposal_summaries:
         for summary_part in source_chunks(summary, min(limit, 6000)):
             converted = structured(SCENE_SCHEMA,
-                "Convert these proposed scenes to JSON, in the same order. Copy each title and start sentence exactly. "
-                "Copy each fragment-scene label (e.g. 2-3) into source_proposal_id; use an empty string if absent. "
-                "Do not invent or rewrite scenes or quotes.",
+                prompts["scene_structure"],
                 summary_part, "conversation: convert scene summary to JSON")
             proposals["scenes"].extend(converted.get("scenes", []))
     aligned, issues = align_proposals(proposals.get("scenes", []), text, units)
@@ -729,7 +726,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
         text_end = aligned[i + 1]["unit"]["text_start"] if i + 1 < len(aligned) else len(text)
         # Split AI-proposed scenes using the user's maximum shot duration. Each prompt receives
         # only the narration currently spoken, so later actions cannot be pulled forward.
-        maximum = max(4, min(60, float(settings.get("scene", {}).get("maximum_seconds") or 15)))
+        maximum = max(4, min(60, float(settings.get("scene", {}).get("maximum_seconds") or 8)))
         count = max(1, math.ceil((end - start) / maximum))
         intervals = [(start + (end - start) * j / count, start + (end - start) * (j + 1) / count)
                      for j in range(count)]
@@ -752,10 +749,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                               if r["start"] <= proposal["quote_offset"] < r["start"] + len(r["text"])), "")
         if sections.get("characters") != checkpoint.get("original", {}).get("characters"):
             scene_context = sections.get("characters", "")
-        visual_instruction = ("Use concrete English visual descriptions of 25-55 words. Use canonical names from profiles "
-            "but do not repeat their appearance. List only visible characters and locations by canonical name. "
-            "Resolve pronouns using story context, not by inserting everyone. No style or zoom/motion instructions. "
-            "For repeated action vary framing or show an important existing detail; never anticipate later actions.")
+        visual_instruction = (prompts["scene_visuals"])
         visual_input = {"scene": proposal["title"], "intervals": [
             {"narration": a["narration"], **({"ERA": a["era"]} if a["era"] else {})} for a in assignments],
              "context": scene_context, "directions": sections.get("directions", ""),

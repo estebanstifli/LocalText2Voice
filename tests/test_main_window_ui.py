@@ -857,6 +857,21 @@ class MainWindowUITests(unittest.TestCase):
         self.assertTrue(hasattr(window, "app_menu_bar"))
         self.assertIs(window.menuBar(), window.app_menu_bar)
         self.assertGreaterEqual(len(window.app_menu_bar.actions()), 5)
+        menus = [action.text() for action in window.app_menu_bar.actions()]
+        self.assertIn("Tools", menus)
+        self.assertNotIn("Selection", menus)
+        tools = window.tools_menu
+        self.assertIs(tools.actions()[0], window.storyboard_all_transitions_action)
+        self.assertIn(window.selection_menu.menuAction(), tools.actions())
+        selection = window.selection_menu
+        self.assertEqual(selection.actions()[0].text(), "Select All")
+        self.assertEqual(selection.actions()[0].shortcut().toString(), "Ctrl+A")
+        tools.aboutToShow.emit()
+        self.assertFalse(window.storyboard_all_transitions_action.isEnabled())
+        window.video_storyboard_page.set_scenes([{"id": "1", "duration": 2}, {"id": "2", "duration": 2}])
+        tools.aboutToShow.emit()
+        self.assertTrue(window.storyboard_all_transitions_action.isEnabled())
+        window.video_storyboard_page.set_scenes([])
         self.assertTrue(hasattr(window, "check_updates_action"))
         self.assertTrue(window.check_updates_action.isEnabled())
         self.assertEqual(

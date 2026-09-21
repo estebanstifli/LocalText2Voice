@@ -1271,6 +1271,7 @@ class VideoStoryboardPage(QWidget):
     generateVideoRequested = Signal(object)
     importVideoRequested = Signal(object)
     generateAllVideosRequested = Signal(object)
+    cancelAllVideosRequested = Signal()
     videoCandidateAccepted = Signal(object)
     videoCandidateRejected = Signal(str, str)
     renderRequested = Signal(object)
@@ -1320,6 +1321,10 @@ class VideoStoryboardPage(QWidget):
         self._updating_continuity_trees = False
         self._detected_era_value = ""
         self._frame_batch_dialog: VideoStoryboardFrameBatchDialog | None = None
+        self._video_batch_dialog = None
+        self._video_batch_current = 0
+        self._video_batch_total = 0
+        self._video_batch_prompts = {}
         self._frame_batch_mode = ""
         self._frame_batch_completed = 0
         self._frame_batch_total = 0
@@ -2518,6 +2523,9 @@ class VideoStoryboardPage(QWidget):
             self._source_duration_seconds
         )
         if source_changed:
+            if self._video_batch_dialog is not None and not self._video_batch_total:
+                self._video_batch_dialog.close()
+                self._video_batch_dialog = None
             if self._frame_batch_dialog is not None and not self._frame_batch_mode:
                 dialog = self._frame_batch_dialog
                 self._frame_batch_dialog = None
@@ -3711,6 +3719,53 @@ class VideoStoryboardPage(QWidget):
         self.scenesChanged.emit(self.scenes())
         self._remember_scene_snapshot()
 
+    def request_all_transitions(self) -> None:
+        if len(self._scenes) < 2:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr_text("storyboard_all_transitions", "Change all storyboard transitions…"))
+        dialog.setMinimumWidth(440)
+        layout = QVBoxLayout(dialog)
+        info = QLabel(self.tr_text(
+            "storyboard_all_transitions_info",
+            "Apply one transition to all {count} cuts between scenes, including videos. None creates a direct cut. You can undo this change in the timeline.",
+            count=len(self._scenes) - 1,
+        ))
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        combo = QComboBox()
+        combo.setObjectName("allTransitionsCombo")
+        combo.setAccessibleName(self.tr_text("video_storyboard_transition", "Transition"))
+        for value, label in _TRANSITION_OPTIONS:
+            combo.addItem(self.tr_text(f"video_storyboard_transition_{value}", label), value)
+        transitions = {scene.transition for scene in self._scenes[1:]}
+        initial = next(iter(transitions)) if len(transitions) == 1 else "none"
+        combo.setCurrentIndex(max(0, combo.findData(initial)))
+        layout.addWidget(combo)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr_text("storyboard_apply_all_transitions", "Apply to all"))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._apply_all_transitions(str(combo.currentData()))
+        dialog.deleteLater()
+
+    def _apply_all_transitions(self, transition: str) -> None:
+        if transition not in {value for value, _label in _TRANSITION_OPTIONS}:
+            return
+        # Transitions belong to the incoming scene; the first has no preceding cut.
+        if not any(scene.transition != transition for scene in self._scenes[1:]):
+            return
+        self._record_scene_edit()
+        for scene in self._scenes[1:]:
+            scene.transition = transition
+        if self._selected_transition_index is not None:
+            self._select_transition(self._selected_transition_index)
+        self.timeline_canvas.update()
+        self.scenesChanged.emit(self.scenes())
+        self._remember_scene_snapshot()
+
     @staticmethod
     def _scene_has_video(scene: StoryboardScene | None) -> bool:
         return bool(scene and scene.video_path and Path(scene.video_path).is_file())
@@ -4058,7 +4113,8 @@ class VideoStoryboardPage(QWidget):
         if scene.image_path and Path(scene.image_path).is_file():
             return True
         from app.core.runpod_video_models import model_id
-        return self._configuration.get("video_provider") == "litellm" or (self._configuration.get("video_provider") == "runpod" and model_id(self._configuration.get("runpod", {})) in {"wan-2-6-i2v", "wan-2-6-t2v", "kling-video-o1-r2v"})
+        from app.core.direct_video_models import PROVIDERS
+        return self._configuration.get("video_provider") in {"litellm", "dashscope", *PROVIDERS} or (self._configuration.get("video_provider") == "runpod" and model_id(self._configuration.get("runpod", {})) in {"wan-2-6-i2v", "wan-2-6-t2v", "kling-video-o1-r2v"})
 
     def _request_video_generation(self) -> None:
         scene = self.selected_scene()
@@ -4070,6 +4126,10 @@ class VideoStoryboardPage(QWidget):
         scene_value = scene.as_dict()
         scene_value["_project_dir"] = self._source_project_dir
         scene_value["_video_provider"] = self._configuration.get("video_provider", "comfyui")
+        scene_value["_dashscope_video_config"] = {k: v for k, v in self._configuration.get("dashscope_video", {}).items() if k in {"model", "resolution", "audio"}}
+        from app.core.direct_video_models import PROVIDERS, configuration
+        if scene_value["_video_provider"] in PROVIDERS:
+            scene_value["_direct_video_config"] = {k: v for k, v in configuration(self._configuration).items() if k in {"model", "resolution", "audio"}}
         scene_value["_litellm_video_config"] = {k: v for k, v in self._configuration.get("litellm_video", {}).items() if k in {"model", "resolution", "aspect_ratio"}}
         scene_value["_runpod_config"] = {k: v for k, v in self._configuration.get("runpod", {}).items() if k in {"video_size", "video_endpoint", "image_endpoint", "edit_endpoint"}}
         video_config = self._configuration.get("comfyui_video", {})
@@ -4096,128 +4156,69 @@ class VideoStoryboardPage(QWidget):
         dialog.open()
 
     def _request_generate_all_videos(self) -> None:
+        if self._video_batch_dialog is not None:
+            self._video_batch_dialog.show_and_raise()
+            return
+        if not self._scenes:
+            return
+        from app.ui.video_storyboard_video_batch_dialog import VideoStoryboardVideoBatchDialog, DEFAULT_VIDEO_MOTION_PROMPT
+        dialog = VideoStoryboardVideoBatchDialog(
+            self.tr_text, total_count=len(self._scenes),
+            existing_count=sum(bool(scene.video_path and Path(scene.video_path).is_file()) for scene in self._scenes),
+            motion_prompt=self._plan_metadata.get("video_batch_motion_prompt", DEFAULT_VIDEO_MOTION_PROMPT), parent=self,
+        )
+        scene_ids = [scene.scene_id for scene in self._scenes]
+        dialog.startRequested.connect(lambda overwrite: self._start_video_batch(
+            overwrite, [scene_ids[index] for index in dialog.selected_scene_indices],
+            dialog.motion_prompt_edit.toPlainText().strip(),
+        ))
+        dialog.cancelRequested.connect(self.cancelAllVideosRequested.emit)
+        dialog.destroyed.connect(lambda _object=None: self._clear_video_batch_dialog(dialog))
+        self._video_batch_dialog = dialog
+        dialog.open()
+
+    def _clear_video_batch_dialog(self, dialog) -> None:
+        if self._video_batch_dialog is dialog:
+            self._video_batch_dialog = None
+
+    def _start_video_batch(self, overwrite: bool, selected_ids: list[str], motion_prompt: str) -> None:
+        self._plan_metadata["video_batch_motion_prompt"] = motion_prompt
+        self.projectChanged.emit(self.project_state())
         plan = dict(self._plan_metadata)
-        eligible: list[tuple[StoryboardScene, dict[str, Any], str]] = []
+        selected = set(selected_ids)
+        requests = []
+        self._video_batch_prompts = {}
         for scene in self._scenes:
+            if scene.scene_id not in selected:
+                continue
             if not scene.image_path or not Path(scene.image_path).is_file():
+                continue
+            if not overwrite and scene.video_path and Path(scene.video_path).is_file():
                 continue
             raw_scene = scene.as_dict()
             prompt = str(scene.video_prompt or "").strip()
+            previous_motion = str(scene.generation_overrides.get("video_batch_motion_prompt") or "").strip()
+            if previous_motion and prompt.endswith("\n\n" + previous_motion):
+                prompt = prompt[:-(len(previous_motion) + 2)].rstrip()
             if not prompt:
                 prompt = compile_effective_scene_prompt(plan, raw_scene)
             if not prompt:
                 continue
-            eligible.append((scene, raw_scene, prompt))
-        if not eligible:
-            self.append_activity(
-                self.tr_text(
-                    "video_storyboard_auto_video_no_eligible_scenes",
-                    "No scene with a generated frame is available for video generation.",
-                )
-            )
-            return
-
-        existing_count = sum(
-            1
-            for scene, _raw_scene, _prompt in eligible
-            if scene.video_path and Path(scene.video_path).is_file()
-        )
-        scope = self._choose_generate_all_videos_scope(
-            len(eligible) - existing_count,
-            len(eligible),
-            existing_count,
-        )
-        if scope is None:
-            return
-
-        requests: list[dict[str, Any]] = []
-        for scene, raw_scene, prompt in eligible:
-            if (
-                scope == "missing"
-                and scene.video_path
-                and Path(scene.video_path).is_file()
-            ):
-                continue
-            requests.append(
-                {
-                    "scene": raw_scene,
-                    "plan": plan,
-                    "prompt": prompt,
-                    # A scene with a missing clip can still retain the user's
-                    # preferred reference position from an earlier attempt.
-                    # New scenes default to the start frame.
-                    "frame_role": str(scene.video_frame_role or "start"),
-                    "automatic": True,
-                }
-            )
+            if motion_prompt:
+                prompt += "\n\n" + motion_prompt
+            self._video_batch_prompts[scene.scene_id] = motion_prompt
+            requests.append({"scene": raw_scene, "plan": plan, "prompt": prompt,
+                             "frame_role": str(scene.video_frame_role or "start"), "automatic": True})
+        self._video_batch_current = 0
+        self._video_batch_total = len(requests)
+        if self._video_batch_dialog is not None:
+            self._video_batch_dialog.append_log(self.tr_text(
+                "storyboard_video_batch_targets", "Selected: {selected} · To generate: {count} · Skipped: {skipped}",
+                selected=len(selected), count=len(requests), skipped=len(selected) - len(requests)))
         if not requests:
-            self.append_activity(
-                self.tr_text(
-                    "video_storyboard_auto_video_no_targets",
-                    "All eligible scenes already have a video.",
-                )
-            )
+            self.finish_auto_video_generation(0, 0, 0)
             return
-        self.generate_all_videos_button.setEnabled(False)
         self.generateAllVideosRequested.emit(requests)
-
-    def _choose_generate_all_videos_scope(
-        self,
-        missing_count: int,
-        total_count: int,
-        existing_count: int,
-    ) -> str | None:
-        dialog = QMessageBox(self)
-        dialog.setIcon(QMessageBox.Icon.Question)
-        dialog.setWindowTitle(
-            self.tr_text(
-                "video_storyboard_generate_all_videos_title",
-                "Generate scene videos",
-            )
-        )
-        dialog.setText(
-            self.tr_text(
-                "video_storyboard_generate_all_videos_message",
-                "Choose whether to generate only missing videos or regenerate every eligible scene.",
-            )
-        )
-        dialog.setInformativeText(
-            self.tr_text(
-                "video_storyboard_generate_all_videos_summary",
-                "Eligible scenes: {total} · Existing videos: {existing} · Missing videos: {missing}",
-                total=total_count,
-                existing=existing_count,
-                missing=missing_count,
-            )
-        )
-        missing_button = dialog.addButton(
-            self.tr_text(
-                "video_storyboard_generate_missing_videos",
-                "Only missing ({count})",
-                count=missing_count,
-            ),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        overwrite_button = dialog.addButton(
-            self.tr_text(
-                "video_storyboard_overwrite_all_videos",
-                "Overwrite all ({count})",
-                count=total_count,
-            ),
-            QMessageBox.ButtonRole.DestructiveRole,
-        )
-        dialog.addButton(QMessageBox.StandardButton.Cancel)
-        missing_button.setEnabled(missing_count > 0)
-        dialog.setDefaultButton(
-            missing_button if missing_count > 0 else overwrite_button
-        )
-        dialog.exec()
-        clicked = dialog.clickedButton()
-        if clicked is missing_button:
-            return "missing"
-        if clicked is overwrite_button:
-            return "all"
-        return None
 
     def set_auto_video_generation_progress(
         self,
@@ -4232,6 +4233,10 @@ class VideoStoryboardPage(QWidget):
             total=total,
             scene=scene_id,
         )
+        self._video_batch_current = current
+        self._video_batch_total = total
+        if self._video_batch_dialog is not None:
+            self._video_batch_dialog.set_progress(current, total, message)
         self.set_operation(message, 0)
         self.append_activity(message)
 
@@ -4243,11 +4248,14 @@ class VideoStoryboardPage(QWidget):
     ) -> None:
         self.generate_all_videos_button.setEnabled(bool(self._scenes))
         message = self.tr_text(
-            "video_storyboard_auto_video_complete",
-            "Automatic video generation finished: {completed}/{total} scenes accepted.",
-            completed=completed,
-            total=total,
+            "storyboard_video_batch_complete",
+            "Video generation finished: {completed}/{total} accepted · {failed} failed · {skipped} not generated.",
+            completed=completed, total=total, failed=failed, skipped=max(0, total - completed - failed),
         )
+        self._video_batch_prompts = {}
+        if self._video_batch_dialog is not None:
+            self._video_batch_dialog.set_finished(completed == total and failed == 0, message)
+        self._video_batch_current = self._video_batch_total = 0
         self.finish_operation(message)
         self.append_activity(message)
 
@@ -4291,6 +4299,9 @@ class VideoStoryboardPage(QWidget):
         message: str,
         percentage: int,
     ) -> None:
+        if self._video_batch_dialog is not None and self._video_batch_total:
+            overall = round(((self._video_batch_current - 1) + max(0, percentage) / 100) / self._video_batch_total * 100)
+            self._video_batch_dialog.set_progress(self._video_batch_current, self._video_batch_total, message, overall)
         self.set_operation(message, percentage)
         if self._video_dialog is not None and self._video_dialog.scene_id == scene_id:
             self._video_dialog.set_progress(message, percentage)
@@ -4316,6 +4327,8 @@ class VideoStoryboardPage(QWidget):
         self._record_storyboard_error("video", error, scene_id)
         if self._video_dialog is not None and self._video_dialog.scene_id == scene_id:
             self._video_dialog.set_failed(error)
+        if self._video_batch_dialog is not None and self._video_batch_total:
+            self._video_batch_dialog.append_log(self.tr_text("storyboard_video_batch_scene_failed", "Scene {scene} failed: {error}", scene=scene_id, error=error))
         self.finish_operation(error)
         self.append_activity(error)
 
@@ -4370,8 +4383,14 @@ class VideoStoryboardPage(QWidget):
             self._recalculate_starts()
             self.timeline_canvas.set_scenes(self._scenes)
         had_video = bool(scene.video_path)
+        if self._video_batch_dialog is not None and scene_id in self._video_batch_prompts:
+            self._video_batch_dialog.set_progress(self._video_batch_current, self._video_batch_total,
+                self.tr_text("storyboard_video_batch_scene_ready", "Scene {scene}: video accepted.", scene=scene_id),
+                round(self._video_batch_current / max(1, self._video_batch_total) * 100))
         scene.video_path = str(video_path)
         scene.video_prompt = str(prompt).strip()
+        if scene_id in self._video_batch_prompts:
+            scene.generation_overrides["video_batch_motion_prompt"] = self._video_batch_prompts.pop(scene_id)
         scene.video_frame_role = frame_role if frame_role in {"start", "end", "none"} else "start"
         scene.video_duration_seconds = max(
             0.0,

@@ -212,7 +212,7 @@
       "mode": "semantic_bounded",
       "minimum_seconds": 4,
       "target_seconds": 8,
-      "maximum_seconds": 15
+      "maximum_seconds": 8
     },
     "image": {
       "width": 1280,
@@ -358,6 +358,38 @@
       "reference_storage": "auto",
       "temporary_storage_url": "",
       "temporary_storage_token_encrypted": ""
+    },
+    "dashscope_video": {
+      "audio": false,
+      "model": "wan2.6-i2v-flash",
+      "api_key": "",
+      "base_url": "https://ws-l7a60zigulckx5xs.ap-southeast-1.maas.aliyuncs.com/api/v1",
+      "resolution": "720P",
+      "timeout_seconds": 1800
+    },
+    "ltx_video": {
+      "model": "ltx-2-3-fast",
+      "api_key": "",
+      "base_url": "https://api.ltx.io",
+      "resolution": "720p",
+      "audio": false,
+      "timeout_seconds": 1800
+    },
+    "minimax_video": {
+      "model": "MiniMax-H3",
+      "api_key": "",
+      "base_url": "https://api.minimax.io",
+      "resolution": "720p",
+      "audio": true,
+      "timeout_seconds": 1800
+    },
+    "byteplus_video": {
+      "model": "dreamina-seedance-2-5-260628",
+      "api_key": "",
+      "base_url": "https://operator.las.ap-southeast-1.bytepluses.com/api/v1",
+      "resolution": "720p",
+      "audio": false,
+      "timeout_seconds": 1800
     }
   },
   "custom_tts_engines": [

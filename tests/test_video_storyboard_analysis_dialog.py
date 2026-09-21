@@ -233,7 +233,7 @@ def test_analysis_dialog_confirms_model_and_per_run_limits_before_start() -> Non
     assert starts == [
         {"max_input_characters": 12000, "max_output_tokens": 32000,
          "analysis_choices": {"plan": "full", "review": False, "characters": True, "locations": True, "objects": False, "era_mode": "manual"},
-         "maximum_scene_seconds": 15, "audiobook_era": "1890, Victorian era", "generate_character_references": False, "resume_review": False}
+         "maximum_scene_seconds": 8, "audiobook_era": "1890, Victorian era", "generate_character_references": False, "resume_review": False}
     ]
     assert not dialog.setup_group.isVisible()
     assert dialog.tabs.isVisible()

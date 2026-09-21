@@ -137,9 +137,9 @@ def test_wan_reference_limit_reports_error_before_submission(tmp_path):
     assert dialog.generate_button.isEnabled()
     dialog._reference_images = []
     dialog.frame_role_combo.setCurrentIndex(dialog.frame_role_combo.findData('none'))
-    assert 'T2V' in dialog.model_info.text()
+    assert 'I2V' in dialog.model_info.text()
     dialog.generate_button.click()
-    assert requests[0]['frame_role'] == 'none'
-    dialog.set_failed('Test stopped before network submission')
+    assert not requests
+    assert 'Text-to-video is no longer offered' in dialog.status_label.text()
     dialog.close()
     dialog.deleteLater()

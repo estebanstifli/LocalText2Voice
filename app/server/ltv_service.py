@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from app import __version__
 from app.core.audio_formats import AUDIO_FORMATS, audio_format_spec
 from app.core.audio_mix import AudioMixSettings, render_audio_mix
 from app.core.audio_event_timeline import (
@@ -105,8 +106,8 @@ class LocalText2VoiceService:
         self.refresh_settings()
         return {
             "name": "LocalText2Voice",
-            "version": "1.0.0",
-            "description": "Local audiobook and podcast generation server.",
+            "version": __version__,
+            "description": "Local long-form audio and video production server.",
             "host": ENGINE_HOST_ADDRESS,
             "port": internal_engine_host_port(self.settings),
             "engines": self.list_engines(),

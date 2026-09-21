@@ -117,6 +117,13 @@ def prepare_video_runtime(
     status: StatusCallback | None = None,
 ) -> dict[str, Any]:
     """Release local AI models and validate the configured ComfyUI workflow."""
+    from app.core.direct_video_models import PROVIDERS
+    if settings.get("video_provider") in PROVIDERS:
+        from app.core.direct_video_models import prepare
+        try:
+            return prepare(settings)
+        except ValueError as exc:
+            raise VideoStoryboardVideoError(str(exc)) from exc
     if settings.get("video_provider") == "disabled":
         raise VideoStoryboardVideoError("Choose a video provider in Settings > Video Storyboard.")
     if settings.get("video_provider") == "runpod":
@@ -124,6 +131,12 @@ def prepare_video_runtime(
         try:
             return rp.prepare(settings, "video")
         except rp.RunpodError as exc:
+            raise VideoStoryboardVideoError(str(exc)) from exc
+    if settings.get("video_provider") == "dashscope":
+        from app.core.video_storyboard_video_dashscope import prepare
+        try:
+            return prepare(settings)
+        except ValueError as exc:
             raise VideoStoryboardVideoError(str(exc)) from exc
     if settings.get("video_provider") == "litellm":
         from app.core.video_storyboard_video_litellm import prepare
@@ -229,6 +242,13 @@ def generate_storyboard_scene_video(
     status: StatusCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> dict[str, Any]:
+    from app.core.direct_video_models import PROVIDERS
+    if settings.get("video_provider") in PROVIDERS:
+        from app.core.video_storyboard_video_direct import generate
+        return generate(scene, plan, settings, target, prompt=prompt, frame_role=frame_role, status=status, cancelled=cancelled)
+    if settings.get("video_provider") == "dashscope":
+        from app.core.video_storyboard_video_dashscope import generate
+        return generate(scene, plan, settings, target, prompt=prompt, frame_role=frame_role, status=status, cancelled=cancelled)
     if settings.get("video_provider") == "litellm":
         from app.core.video_storyboard_video_litellm import generate
         return generate(scene, plan, settings, target, prompt=prompt, frame_role=frame_role, status=status, cancelled=cancelled)
@@ -1006,6 +1026,8 @@ def _retime_video(
     *,
     source_frames: int | None = None,
     source_duration_seconds: float | None = None,
+    preserve_audio: bool = True,
+    frame_size: tuple[int, int] | None = None,
 ) -> None:
     """Stretch a generated clip over the complete storyboard scene."""
     config = _video_config(settings)
@@ -1027,6 +1049,8 @@ def _retime_video(
     )
     target_duration = max(0.1, float(duration_seconds))
     speed_factor = target_duration / source_duration
+    resize = (f"scale={frame_size[0]}:{frame_size[1]}:force_original_aspect_ratio=increase,"
+              f"crop={frame_size[0]}:{frame_size[1]},setsar=1,") if frame_size else ""
     temporary = source.with_name(f".{source.stem}.retimed-{uuid.uuid4().hex}.mp4")
     temporary.unlink(missing_ok=True)
     try:
@@ -1043,7 +1067,7 @@ def _retime_video(
                 str(source),
                 "-vf",
                 (
-                    f"setpts={speed_factor:.9f}*(PTS-STARTPTS),"
+                    resize + f"setpts={speed_factor:.9f}*(PTS-STARTPTS),"
                     f"fps={fps:g},"
                     f"tpad=stop_mode=clone:stop_duration={target_duration:.6f},"
                     f"trim=duration={target_duration:.6f},setpts=PTS-STARTPTS"
@@ -1052,9 +1076,10 @@ def _retime_video(
                 f"{fps:.12g}",
                 "-fps_mode",
                 "cfr",
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-af", f"{tempo_filter(source_duration / target_duration)},apad,atrim=duration={target_duration:.6f}",
-                "-c:a", "aac",
+                "-map", "0:v:0",
+                *(["-map", "0:a:0?", "-af",
+                   f"{tempo_filter(source_duration / target_duration)},apad,atrim=duration={target_duration:.6f}",
+                   "-c:a", "aac"] if preserve_audio else ["-an"]),
                 "-c:v",
                 "libx264",
                 "-preset",

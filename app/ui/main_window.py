@@ -1216,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.video_storyboard_page.cancelImageEditRequested.connect(
             self._cancel_video_storyboard_image_edit
         )
+        self.video_storyboard_page.cancelAllVideosRequested.connect(self._cancel_video_storyboard_automatic_videos)
         self.video_storyboard_page.cancelFrameGenerationRequested.connect(
             self._cancel_video_storyboard_frame_generation
         )
@@ -1333,9 +1334,19 @@ class MainWindow(QMainWindow):
         paste_action.triggered.connect(lambda: self.text_editor.paste())
         edit_menu.addAction(paste_action)
 
-        selection_menu = self.app_menu_bar.addMenu(
-            self.tr("menu_selection", "Selection")
+        self.tools_menu = tools_menu = self.app_menu_bar.addMenu(self.tr("menu_tools", "Tools"))
+        self.storyboard_all_transitions_action = QAction(
+            self.tr("storyboard_all_transitions", "Change all storyboard transitions…"), self,
         )
+        self.storyboard_all_transitions_action.triggered.connect(
+            lambda: self.video_storyboard_page.request_all_transitions()
+        )
+        tools_menu.addAction(self.storyboard_all_transitions_action)
+        tools_menu.aboutToShow.connect(lambda: self.storyboard_all_transitions_action.setEnabled(
+            len(self.video_storyboard_page.scenes()) > 1
+        ))
+        tools_menu.addSeparator()
+        self.selection_menu = selection_menu = tools_menu.addMenu(self.tr("menu_selection", "Selection"))
         select_all_action = QAction(self.tr("selection_select_all", "Select All"), self)
         select_all_action.setShortcut("Ctrl+A")
         select_all_action.triggered.connect(lambda: self.text_editor.selectAll())
@@ -3712,7 +3723,7 @@ class MainWindow(QMainWindow):
         self.continuity_analysis_settings.settingsChanged.connect(self._on_video_storyboard_settings_changed)
         self.continuity_settings_dialog = QDialog(self)
         self.continuity_settings_dialog.setWindowTitle(self.tr("continuity_settings_tab", "Continuity analysis"))
-        self.continuity_settings_dialog.resize(820, 650)
+        self.continuity_settings_dialog.resize(1380, 900)
         self.continuity_settings_dialog.setModal(True)
         continuity_layout = QVBoxLayout(self.continuity_settings_dialog)
         continuity_layout.addWidget(self.continuity_analysis_settings)
@@ -4165,7 +4176,7 @@ class MainWindow(QMainWindow):
             max_output_tokens=saved_limits.get("max_output_tokens", default_output),
             replaces_existing=bool(self.video_storyboard_page.scenes()),
             analysis_choices=selected_choices,
-            maximum_scene_seconds=configuration.get("scene", {}).get("maximum_seconds", 15),
+            maximum_scene_seconds=configuration.get("scene", {}).get("maximum_seconds", 8),
             audiobook_era=manual_era,
             resume_available=review_state.get("draft", {}).get("status") in {"pending", "approved"},
         )
@@ -4214,7 +4225,7 @@ class MainWindow(QMainWindow):
         configuration["generate_character_references"] = bool(limits.get("generate_character_references", False))
         scene_settings = configuration.setdefault("scene", {})
         scene_settings["maximum_seconds"] = max(4, min(60, int(
-            limits.get("maximum_scene_seconds") or scene_settings.get("maximum_seconds") or 15
+            limits.get("maximum_scene_seconds") or scene_settings.get("maximum_seconds") or 8
         )))
         project_dir = configuration.get("review_project_dir")
         saved_review = load_review(project_dir) if project_dir else {}
@@ -5229,6 +5240,12 @@ class MainWindow(QMainWindow):
         self.video_storyboard_auto_video_waiting = False
         self._start_next_video_storyboard_automatic_video()
 
+    def _cancel_video_storyboard_automatic_videos(self) -> None:
+        # Let the in-flight paid request finish and keep its result; stop the queue.
+        self.video_storyboard_auto_video_queue = []
+        if not self.video_storyboard_auto_video_waiting:
+            self._start_next_video_storyboard_automatic_video()
+
     def _start_next_video_storyboard_automatic_video(self) -> None:
         if self.video_storyboard_video_thread is not None:
             return
@@ -5280,6 +5297,7 @@ class MainWindow(QMainWindow):
             self.video_storyboard_auto_video_completed += 1
         else:
             self.video_storyboard_auto_video_failed += 1
+            self.video_storyboard_page.set_video_generation_failed(self.video_storyboard_video_scene_id or "?", error or "Unknown error")
             self.video_storyboard_page.append_activity(
                 self.tr(
                     "video_storyboard_auto_video_failed",

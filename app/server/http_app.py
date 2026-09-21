@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 
+from app import __version__
 from app.core.audio_formats import audio_format_from_path
 from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
@@ -364,7 +365,7 @@ def create_http_app(
 
     app = FastAPI(
         title="LocalText2Voice Local Server",
-        version="1.0.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.job_manager = manager

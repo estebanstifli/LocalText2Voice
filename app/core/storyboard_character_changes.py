@@ -2,7 +2,8 @@
 from copy import deepcopy
 
 
-def build_character_states(records, reports, sections, text, units, duration, request, warn, check):
+def build_character_states(records, reports, sections, text, units, duration, request, warn, check, *, instructions=None):
+    instructions = instructions or {}
     from app.core.storyboard_conversation import _object, _array, STRING, quote_offsets, source_chunks
     from app.core.storyboard_entity_names import resolve
 
@@ -23,11 +24,7 @@ def build_character_states(records, reports, sections, text, units, duration, re
         for passage in source_chunks(report["text"], 6000):
             check()
             result = request(schema,
-                "Find only actual changes to a named character's clothing, age, hair or lasting physical appearance. "
-                "The summary is guidance; verify each change in the original passage. No moods, actions, possessions, "
-                "newly revealed unchanged traits, hypothetical changes or initial descriptions. "
-                "Copy a unique sentence from the passage where the changed appearance starts. "
-                "Describe only the changed visual traits. Use supplied character names. Return changes: [] if none.",
+                instructions.get('character_changes', "Find only actual changes to a named character's clothing, age, hair or lasting physical appearance. The summary is guidance; verify each change in the original passage. No moods, actions, possessions, newly revealed unchanged traits, hypothetical changes or initial descriptions. Copy a unique sentence from the passage where the changed appearance starts. Describe only the changed visual traits. Use supplied character names. Return changes: [] if none."),
                 {"characters": [r["name"] for r in records], "summary": summary[:6000], "passage": passage},
                 "conversation: explicit character changes")
             rows = result.get("changes") if isinstance(result, dict) else None
@@ -69,10 +66,7 @@ def build_character_states(records, reports, sections, text, units, duration, re
             warn(f"{record['name']}: overlapping change left for manual review.")
             continue
         result = request(portrait_schema,
-            "Update this storyboard portrait using ONLY the explicit visual changes supplied. "
-            "Keep all unaffected traits exactly, including human hair length/color or baldness. "
-            "Replace superseded traits; do not concatenate conflicting outfits or ages. "
-            "Return one concise complete visual description, no actions, emotions or alternatives.",
+            instructions.get('character_portraits', 'Update this storyboard portrait using ONLY the explicit visual changes supplied. Keep all unaffected traits exactly, including human hair length/color or baldness. Replace superseded traits; do not concatenate conflicting outfits or ages. Return one concise complete visual description, no actions, emotions or alternatives.'),
             {"character": record["name"], "previous_portrait": previous["description"],
              "changes": [r["visual_change"] for r in rows]},
             "conversation: character state portrait")

@@ -1,4 +1,12 @@
 import base64
+import io
+from PIL import Image
+
+def generated_png():
+    buf = io.BytesIO()
+    Image.new("RGB", (1280, 720)).save(buf, format="PNG")
+    return buf.getvalue()
+
 import json
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +32,7 @@ def test_direct_generation_with_files_uses_generation_model_and_credentials(tmp_
     def send(**kwargs):
         observed.update(kwargs)
         observed["bytes"] = [f.read() for f in kwargs["image"]]
-        return {"data": [{"b64_json": base64.b64encode(b"generated").decode()}]}
+        return {"data": [{"b64_json": base64.b64encode(generated_png()).decode()}]}
     with patch("litellm.image_edit", side_effect=send), patch("litellm.image_generation") as text_only, patch(
         "app.core.video_storyboard_image_edit.generate_edited_storyboard_image"
     ) as edit_flow:
@@ -37,7 +45,7 @@ def test_direct_generation_with_files_uses_generation_model_and_credentials(tmp_
     assert all(f.closed for f in observed["image"])
     assert "Image 1 is the visual reference for Marco" in observed["prompt"]
     assert result["compiled_prompt"] == observed["prompt"]
-    assert (tmp_path / "result.png").read_bytes() == b"generated"
+    assert (tmp_path / "result.png").read_bytes() == generated_png()
     text_only.assert_not_called()
     edit_flow.assert_not_called()
 
@@ -45,7 +53,7 @@ def test_direct_generation_with_files_uses_generation_model_and_credentials(tmp_
 def test_proxy_generation_keeps_generation_url_and_uploads_files(tmp_path):
     scene, settings = request(tmp_path)
     settings["litellm_image"]["base_url"] = "https://generation.invalid/v1"
-    response = {"data": [{"b64_json": base64.b64encode(b"result").decode()}]}
+    response = {"data": [{"b64_json": base64.b64encode(generated_png()).decode()}]}
     with patch("app.core.video_storyboard_image_edit._multipart_json", return_value=response) as send:
         generate_storyboard_frame(scene, {}, settings, tmp_path / "result.png")
     url, fields, files, timeout, headers = send.call_args.args
@@ -62,7 +70,7 @@ def test_multiple_proxy_references_are_uploaded_as_an_ordered_array(tmp_path):
     second.write_bytes(b"bike-reference")
     scene["generation_overrides"]["reference_images"].append({"path": str(second), "label": "Bike"})
     settings["litellm_image"]["base_url"] = "https://generation.invalid/v1"
-    response = {"data": [{"b64_json": base64.b64encode(b"result").decode()}]}
+    response = {"data": [{"b64_json": base64.b64encode(generated_png()).decode()}]}
     with patch("app.core.video_storyboard_image_edit._multipart_json", return_value=response) as send:
         generate_storyboard_frame(scene, {}, settings, tmp_path / "result.png")
     files = send.call_args.args[2]

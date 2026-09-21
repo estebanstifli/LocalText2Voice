@@ -36,7 +36,7 @@ def test_omitted_opening_is_not_merged_into_later_scene(monkeypatch):
         return original(settings, schema, system, user, **kwargs)
     monkeypatch.setattr(p, "_request_plan", request)
     plan = p.plan_video_storyboard(SOURCE, {})
-    assert [s["start_seconds"] for s in plan["scenes"]] == [0, 12, 24]
+    assert [s["start_seconds"] for s in plan["scenes"]] == [0, 8, 16, 24]
     assert plan["scenes"][0]["semantic_title"] == "Opening narration"
     assert plan["scenes"][-1]["semantic_title"] == "Departure"
 
@@ -97,9 +97,9 @@ def test_new_public_flow_shared_history_and_offset(monkeypatch):
     assert all(m["role"] != "system" for m in chats[2])
     assert chats[2][0]["content"] == c.LOCATIONS + "\n\nArrival, sitting, departure."
     assert plan["base_seed"] == 123
-    assert [s["start_seconds"] for s in plan["scenes"]] == [0, 12, 24]
+    assert [s["start_seconds"] for s in plan["scenes"]] == [0, 8, 16, 24]
     assert sum(s["duration"] for s in plan["scenes"]) == 32
-    assert [s["source_proposal_id"] for s in plan["scenes"]] == ["1-1", "1-1", "1-2"]
+    assert [s["source_proposal_id"] for s in plan["scenes"]] == ["1-1", "1-1", "1-1", "1-2"]
     assert plan["scenes"][0]["characters"] == ["character_ana_state_1"]
     character_instruction = next(system for schema, system, _ in requests if schema == c.CHARACTER_SCHEMA)
     assert character_instruction == c.PROFILE_INSTRUCTIONS["characters"]
@@ -121,6 +121,18 @@ def test_quote_matching_is_literal_and_rejects_ambiguity():
              {"text_start": 11, "text_end": 21, "start_seconds": 10}]
     aligned, issues = c.align_proposals([{"start_quote": "Ana comes"}], "Ana comes. Ana comes.", units)
     assert not aligned and issues
+
+
+def test_custom_phase_instructions_reach_llm_with_protected_schemas(monkeypatch):
+    chats, requests = fake_backend(monkeypatch)
+    custom = {key: "Custom " + key for key in (
+        "conversation_locations", "characters_profiles", "locations_profiles", "scene_structure", "scene_visuals")}
+    plan = p.plan_video_storyboard(SOURCE, {"continuity_analysis": {"prompts": custom}})
+    assert any(custom["conversation_locations"] in message["content"] for chat in chats for message in chat)
+    for key, schema in (("characters_profiles", c.CHARACTER_SCHEMA), ("locations_profiles", c.LOCATION_SCHEMA), ("scene_structure", c.SCENE_SCHEMA)):
+        assert any(actual == schema and custom[key] in system for actual, system, _ in requests)
+    assert any(custom["scene_visuals"] in system for _, system, _ in requests)
+    assert sum(scene["duration"] for scene in plan["scenes"]) == 32
 
 
 def test_out_of_order_not_silently_sorted():

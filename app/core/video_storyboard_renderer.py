@@ -372,6 +372,10 @@ def _generated_scene_video_filter(
             "force_original_aspect_ratio=increase:flags=lanczos"
         ),
         f"crop={render_width}:{render_height}",
+        # A one/two-frame clip can disappear during CFR conversion when its
+        # final timestamp rounds down. Seed the conversion with a short held
+        # tail; the final trim still enforces the requested scene duration.
+        f"tpad=stop_mode=clone:stop_duration={_decimal(max(0.1, 2 / fps))}",
         f"fps={fps}",
     ]
     motion_in = str(scene.get("video_motion_in") or "none").lower()
@@ -513,11 +517,27 @@ def _run_ffmpeg_with_progress(
         if return_code != 0:
             stderr_file.seek(0)
             details = stderr_file.read().decode("utf-8", errors="replace").strip()
+            # FFmpeg may print the whole filter graph after its actual error.
+            # Keep the beginning too, and persist the complete diagnostic outside
+            # the temporary render directory so cleanup does not erase it.
+            diagnostic = ""
+            if details:
+                report_dir = Path(arguments[-1]).resolve().parent
+                if report_dir.name.startswith("storyboard-render-"):
+                    report_dir = report_dir.parent
+                report_path = report_dir / "storyboard-ffmpeg-error.log"
+                try:
+                    report_path.write_text(
+                        f"Exit code: {return_code}\n\n{details}\n", encoding="utf-8"
+                    )
+                    diagnostic = f"\nFull FFmpeg diagnostic: {report_path}"
+                except OSError:
+                    pass
             if len(details) > 4000:
-                details = details[-4000:]
+                details = details[:2000] + "\n… [middle omitted] …\n" + details[-2000:]
             raise FFmpegError(
                 f"FFmpeg failed with exit code {return_code}:\n"
-                f"{details or 'No error details were returned.'}"
+                f"{details or 'No error details were returned.'}{diagnostic}"
             )
 
 

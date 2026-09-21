@@ -4,7 +4,6 @@ import math
 RUNPOD_SIGNUP_URL = "https://runpod.io?ref=f09rps0f"
 VIDEO_MODELS = {
     "wan-2-6-i2v": {"name": "Wan 2.6 I2V", "rates": {"1280*720": 0.10, "1920*1080": 0.15}, "durations": (5, 10, 15)},
-    "wan-2-6-t2v": {"name": "Wan 2.6 T2V", "rates": {"1280*720": 0.10, "1920*1080": 0.15}, "durations": (5, 10, 15)},
     "kling-video-o1-r2v": {"name": "Kling O1 · Multi-reference (no audio)", "rates": {"1280*720": 0.112, "1920*1080": 0.112}, "durations": tuple(range(3, 11))},
     "wan-2-2-i2v-720": {"name": "Wan 2.2 I2V · 720p", "rates": {"1280*720": 0.06}, "durations": (5, 8, 10, 15)},
     "wan-2-1-i2v-720": {"name": "Wan 2.1 I2V · 720p", "rates": {"1280*720": 0.06}, "durations": (5, 10)},

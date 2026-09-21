@@ -1,10 +1,12 @@
 """Named visual-engine presets; creative settings and the LLM remain independent."""
 from copy import deepcopy
+from app.core.direct_video_models import PROVIDERS as DIRECT_VIDEO_PROVIDERS
 
 PROFILE_IDS = ("local", "custom_comfyui", "litellm", "runpod")
 VISUAL_KEYS = (
     "image_provider", "image_edit_provider", "video_provider", "comfyui",
-    "comfyui_video", "comfyui_image_edit", "litellm_image", "litellm_image_edit", "litellm_video", "runpod",
+    "comfyui_video", "comfyui_image_edit", "litellm_image", "litellm_image_edit", "litellm_video", "dashscope_video", "runpod",
+    *(provider + "_video" for provider in DIRECT_VIDEO_PROVIDERS),
 )
 RUNPOD_DEFAULTS = {
     "api_key_encrypted": "", "image_endpoint": "z-image-turbo",
