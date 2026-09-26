@@ -76,15 +76,16 @@ human review is part of the workflow before final export.
 
 ## Video Storyboard (Beta)
 
-**Beta feature introduced in LocalText2Voice 2.0.1 and expanded in 2.1.0.**
+**Beta feature introduced in LocalText2Voice 2.0.1 and expanded in 2.1.1.**
 
 Turn narration into an editable visual timeline, analyze scenes and reusable
 entities, generate or import images, create video clips, and render an MP4 with
 the narration audio. The 2.1.0 workflow adds richer character, location, era and
 object context, reference-aware prompts, batch video generation, recovery for
 long-running jobs, and direct video API adapters alongside ComfyUI and Runpod.
-This remains a beta: AI continuity, timing and generated media still need human
-review.
+Version 2.1.1 adds source-aware analysis safeguards, manual timed-prompt import,
+resumable work and clearer controls for long projects. This remains a beta: AI
+continuity, timing and generated media still need human review.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WSU09pJ0rXc">
@@ -131,6 +132,20 @@ engine. Disk usage also grows with each optional engine because models and
 isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
+
+## What's New In 2.1.1
+
+- Import or edit a complete timed storyboard from TXT, SRT or VTT prompts,
+  validate the timeline, preserve unchanged media, and undo or redo the edit.
+- Make long-form analysis safer with source-passage validation, reliable handling
+  of repeated dialogue, visible timing provenance and resumable analysis.
+- Resume interrupted visual work without regenerating already saved prompts or
+  media when the source and settings still match.
+- Configure cancellable retry budgets for temporary Ollama and LiteLLM failures.
+- Choose quality for supported image models and use a dedicated render dialog
+  with progress, cancellation and CPU-thread controls.
+- Improve local TTS chunking and optionally keep consecutive short dialogue
+  turns together so voices, pauses and line breaks feel more natural.
 
 ## What's New In 2.1.0
 

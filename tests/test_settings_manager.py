@@ -18,6 +18,16 @@ RUSSIAN_SAMPLE = (
 )
 
 
+def test_dialogue_grouping_defaults_on_and_preserves_opt_out(tmp_path):
+    path = tmp_path / 'config.json'
+    path.write_text('{}', encoding='utf-8')
+    manager = SettingsManager(path)
+    assert manager.settings['group_short_dialogue'] is True
+    manager.settings['group_short_dialogue'] = False
+    manager.save()
+    assert SettingsManager(path).settings['group_short_dialogue'] is False
+
+
 def test_distribution_metadata_matches_runtime_defaults() -> None:
     repository_root = Path(__file__).resolve().parents[1]
     example = json.loads(
@@ -111,7 +121,7 @@ def test_chunk_defaults_migrate_to_explicit_safe_engine_limits(tmp_path):
         "kokoro": 300,
         "chatterbox": 300,
         "qwen": 520,
-        "omnivoice": 300,
+        "omnivoice": 400,
         "f5_russian": 300,
     }
 

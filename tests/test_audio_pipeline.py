@@ -51,6 +51,83 @@ class FakeTTSEngine(BaseTTSEngine):
 
 
 class AudioPipelineMarkupConfigTests(unittest.TestCase):
+    def test_dialogue_grouping_option_reaches_every_engine(self) -> None:
+        source = '-Hola.\n\n-Adiós.'
+        for engine in ('piper', 'kokoro', 'omnivoice', 'f5_russian', 'qwen', 'chatterbox'):
+            for enabled in (True, False):
+                options = AudioGenerationOptions(
+                    output_dir=Path('unused'), voice_config={'engine': engine},
+                    ffmpeg_path='ffmpeg', group_short_dialogue=enabled,
+                )
+                chunks = AudioPipeline._split_tts_chunks(source, options)
+                self.assertEqual(len(chunks), 1 if enabled else 2)
+
+    def test_dialogue_respects_explicit_pause_and_voice_boundaries(self) -> None:
+        options = AudioGenerationOptions(
+            output_dir=Path('unused'), voice_config={'engine': 'qwen'}, ffmpeg_path='ffmpeg',
+        )
+        groups = AudioPipeline(FakeTTSEngine())._prepare_groups(
+            '-Hola.\n\n-¿Cómo estás? {{pause 700}} -Bien. {{voice Ryan}} -Adiós.', options,
+        )
+        chunks = [c for g in groups for c in g.chunks]
+        self.assertEqual([c.text for c in chunks], ['-Hola.\n-¿Cómo estás?', '-Bien.', '-Adiós.'])
+        self.assertEqual(chunks[0].markup_pause_after_ms, 700)
+        self.assertEqual(chunks[-1].markup_state['voice'], 'Ryan')
+
+    def test_all_engines_honor_configured_chunk_limit(self) -> None:
+        source = 'Inicio, ' + ('palabra ' * 90).strip() + '. Otra frase.'
+        for engine in ('piper', 'kokoro', 'omnivoice', 'f5_russian', 'qwen', 'chatterbox'):
+            for limit in (120, 300, 700):
+                with self.subTest(engine=engine, limit=limit):
+                    options = AudioGenerationOptions(
+                        output_dir=Path('unused'), voice_config={'engine': engine},
+                        ffmpeg_path='ffmpeg', chunk_size=limit,
+                    )
+                    chunks = AudioPipeline._split_tts_chunks(source, options)
+                    self.assertTrue(all(0 < len(c.text) <= limit for c in chunks))
+                    self.assertEqual(' '.join(c.text for c in chunks), source)
+
+    def test_generative_engines_allow_sentences_above_old_fixed_limit(self) -> None:
+        source = ('palabra ' * 80).strip() + '.'
+        for engine in ('qwen', 'chatterbox'):
+            options = AudioGenerationOptions(
+                output_dir=Path('unused'), voice_config={'engine': engine},
+                ffmpeg_path='ffmpeg', chunk_size=700,
+            )
+            self.assertEqual(
+                [c.text for c in AudioPipeline._split_tts_chunks(source, options)],
+                [source],
+            )
+
+    def test_normalization_precedes_chunking(self) -> None:
+        options = AudioGenerationOptions(
+            output_dir=Path('unused'), voice_config={'engine': 'qwen'},
+            ffmpeg_path='ffmpeg', chunk_size=120,
+        )
+        normalized = 'Inicio, ' + ('palabra ' * 60).strip() + '.'
+        with patch('app.core.audio_pipeline.normalize_text_for_speech', return_value=SimpleNamespace(
+            text=normalized, dictionary_applied=True, language='es', russian_silero_applied=False,
+        )):
+            groups = AudioPipeline(FakeTTSEngine())._prepare_groups('Texto original.', options)
+        chunks = [c for g in groups for c in g.chunks]
+        self.assertTrue(all(0 < len(c.text) <= 120 for c in chunks))
+        self.assertEqual(' '.join(c.text for c in chunks), normalized)
+
+    def test_markup_chunking_keeps_pause_on_last_piece(self) -> None:
+        options = AudioGenerationOptions(
+            output_dir=Path('unused'), voice_config={'engine': 'chatterbox'},
+            ffmpeg_path='ffmpeg', chunk_size=120,
+        )
+        source = 'Inicio, ' + ('palabra ' * 60).strip() + '.'
+        groups = AudioPipeline(FakeTTSEngine())._prepare_groups(
+            source + ' {{pause 700}} Final.', options,
+        )
+        chunks = [c for g in groups for c in g.chunks]
+        self.assertTrue(all(0 < len(c.text) <= 120 for c in chunks))
+        self.assertEqual(' '.join(c.text for c in chunks), source + ' Final.')
+        self.assertEqual(chunks[-2].markup_pause_after_ms, 700)
+        self.assertTrue(all(c.markup_pause_after_ms is None for c in chunks[:-2]))
+
     def test_qwen_display_voice_sets_speaker_and_language(self) -> None:
         from app.core.text_processor import TextChunk
 

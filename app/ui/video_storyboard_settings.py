@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.settings_manager import DEFAULT_SETTINGS
+from app.core.storyboard_image_quality import image_quality_options
 from app.core.storyboard_profiles import infer_profile, switch_profile
 from app.ui.storyboard_runpod_settings import RunpodSettingsWidget
 from app.ui.storyboard_workflow_mapping import map_workflow
@@ -362,9 +363,12 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.litellm_image_api_key_edit = QLineEdit()
         self.litellm_image_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.litellm_image_timeout_spin = self._seconds_spin(10, 3600)
+        self.litellm_image_quality_label = QLabel(self.tr_text("video_storyboard_image_quality", "Image quality"))
+        self.litellm_image_quality_combo = QComboBox()
         form.addRow(self.tr_text("video_storyboard_optional_url", "URL (optional)"), self.litellm_image_url_edit)
         form.addRow(self.tr_text("video_storyboard_model", "Model"), self.litellm_image_model_combo)
         form.addRow(self.litellm_image_custom_model_label, self.litellm_image_custom_model_edit)
+        form.addRow(self.litellm_image_quality_label, self.litellm_image_quality_combo)
         form.addRow(self.tr_text("api_key", "API key"), self.litellm_image_api_key_edit)
         form.addRow(self.tr_text("timeout", "Timeout"), self.litellm_image_timeout_spin)
         return widget
@@ -746,6 +750,11 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.ollama_context_spin.setRange(2048, 131072)
         self.ollama_context_spin.setSingleStep(2048)
         self.ollama_timeout_spin = self._seconds_spin(10, 3600)
+        self.ollama_retries_spin = QSpinBox()
+        self.ollama_retries_spin.setRange(0, 20)
+        self.ollama_retries_spin.setValue(5)
+        self.ollama_retries_spin.setToolTip(self.tr_text("storyboard_llm_retries_help",
+            "Additional attempts for temporary connection errors, timeouts or a busy service. 0 disables retries; 5 allows up to 6 attempts."))
         recommendation = QLabel(self.tr_text(
             "video_storyboard_ollama_recommendation",
             "Recommended for an 8 GB GPU: qwen3:8b. Install it from Ollama with: ollama pull qwen3:8b",
@@ -764,6 +773,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         form.addRow(self.tr_text("video_storyboard_model", "Model"), self.ollama_model_combo)
         form.addRow(self.tr_text("video_storyboard_context", "Context length"), self.ollama_context_spin)
         form.addRow(self.tr_text("timeout", "Timeout"), self.ollama_timeout_spin)
+        form.addRow(self.tr_text("storyboard_llm_retries", "Retries on temporary errors"), self.ollama_retries_spin)
         form.addRow(recommendation)
         form.addRow(install_help)
         return widget
@@ -789,6 +799,11 @@ class VideoStoryboardSettingsWidget(QWidget):
         self.litellm_api_key_edit = QLineEdit()
         self.litellm_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.litellm_timeout_spin = self._seconds_spin(10, 3600)
+        self.litellm_retries_spin = QSpinBox()
+        self.litellm_retries_spin.setRange(0, 20)
+        self.litellm_retries_spin.setValue(5)
+        self.litellm_retries_spin.setToolTip(self.tr_text("storyboard_llm_retries_help",
+            "Additional attempts for temporary connection errors, timeouts or a busy service. 0 disables retries; 5 allows up to 6 attempts."))
         self.litellm_max_output_tokens_spin = QSpinBox()
         self.litellm_max_output_tokens_spin.setRange(512, 131072)
         self.litellm_max_output_tokens_spin.setSingleStep(1000)
@@ -812,6 +827,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             self.litellm_max_output_tokens_spin,
         )
         form.addRow(self.tr_text("timeout", "Timeout"), self.litellm_timeout_spin)
+        form.addRow(self.tr_text("storyboard_llm_retries", "Retries on temporary errors"), self.litellm_retries_spin)
         return widget
 
     def _build_scene_settings(self) -> QGroupBox:
@@ -988,6 +1004,9 @@ class VideoStoryboardSettingsWidget(QWidget):
             )
         )
         self.litellm_model_combo.currentIndexChanged.connect(self._emit_changed)
+        self.litellm_image_model_combo.currentIndexChanged.connect(self._sync_image_quality)
+        self.litellm_image_custom_model_edit.textChanged.connect(self._sync_image_quality)
+        self.litellm_image_quality_combo.currentIndexChanged.connect(self._emit_changed)
         self.litellm_image_model_combo.currentIndexChanged.connect(self._emit_changed)
         self.litellm_image_edit_model_combo.currentIndexChanged.connect(
             lambda: self._sync_litellm_custom_model(
@@ -1000,6 +1019,7 @@ class VideoStoryboardSettingsWidget(QWidget):
         for combo in (self.comfyui_diffusion_combo, self.comfyui_text_encoder_combo, self.comfyui_vae_combo, self.ollama_model_combo):
             combo.currentTextChanged.connect(self._emit_changed)
         for spin in (
+            self.ollama_retries_spin, self.litellm_retries_spin,
             self.comfyui_timeout_spin, self.litellm_image_timeout_spin,
             self.comfyui_video_timeout_spin,
             self.comfyui_video_width_spin, self.comfyui_video_height_spin,
@@ -1141,6 +1161,8 @@ class VideoStoryboardSettingsWidget(QWidget):
                 image_litellm.get("model", ""),
             )
             self.litellm_image_api_key_edit.setText(str(image_litellm.get("api_key", "")))
+            self._sync_image_quality()
+            self._select(self.litellm_image_quality_combo, image_litellm.get("quality", "auto"))
             self.litellm_image_timeout_spin.setValue(int(image_litellm.get("timeout_seconds", 300)))
             image_edit = config["comfyui_image_edit"]
             self.comfyui_image_edit_url_edit.setText(str(image_edit.get("base_url", "")))
@@ -1174,6 +1196,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             self._set_combo_text(self.ollama_model_combo, ollama.get("model"))
             self.ollama_context_spin.setValue(int(ollama.get("context_length", 8192)))
             self.ollama_timeout_spin.setValue(int(ollama.get("timeout_seconds", 300)))
+            self.ollama_retries_spin.setValue(int(ollama.get("max_retries", 5)))
             litellm = config["litellm"]
             self.litellm_url_edit.setText(str(litellm.get("base_url", "")))
             self._set_litellm_model(
@@ -1184,6 +1207,7 @@ class VideoStoryboardSettingsWidget(QWidget):
             )
             self.litellm_api_key_edit.setText(str(litellm.get("api_key", "")))
             self.litellm_timeout_spin.setValue(int(litellm.get("timeout_seconds", 300)))
+            self.litellm_retries_spin.setValue(int(litellm.get("max_retries", 5)))
             self.litellm_max_output_tokens_spin.setValue(
                 int(litellm.get("max_output_tokens", 16000))
             )
@@ -1294,6 +1318,7 @@ class VideoStoryboardSettingsWidget(QWidget):
                     self.litellm_image_custom_model_edit,
                 ),
                 "api_key": self.litellm_image_api_key_edit.text().strip(),
+                "quality": self.litellm_image_quality_combo.currentData() or "auto",
                 "timeout_seconds": self.litellm_image_timeout_spin.value(),
             },
             "comfyui_image_edit": {
@@ -1329,6 +1354,7 @@ class VideoStoryboardSettingsWidget(QWidget):
                 "model": self.ollama_model_combo.currentText().strip(),
                 "context_length": self.ollama_context_spin.value(),
                 "timeout_seconds": self.ollama_timeout_spin.value(),
+                "max_retries": self.ollama_retries_spin.value(),
             },
             "litellm": {
                 "base_url": self.litellm_url_edit.text().strip(),
@@ -1338,6 +1364,7 @@ class VideoStoryboardSettingsWidget(QWidget):
                 ),
                 "api_key": self.litellm_api_key_edit.text().strip(),
                 "timeout_seconds": self.litellm_timeout_spin.value(),
+                "max_retries": self.litellm_retries_spin.value(),
                 "max_output_tokens": self.litellm_max_output_tokens_spin.value(),
             },
             "video": {
@@ -1468,6 +1495,22 @@ class VideoStoryboardSettingsWidget(QWidget):
         selected = roles[(roles.index(role) + step) % len(roles)]
         self._select_category(selected)
         self.category_cards[selected].setFocus(Qt.FocusReason.TabFocusReason)
+
+    def _sync_image_quality(self, *_args) -> None:
+        model = self._litellm_model_value(self.litellm_image_model_combo, self.litellm_image_custom_model_edit)
+        options = image_quality_options(model)
+        combo = self.litellm_image_quality_combo
+        previous = combo.currentData()
+        blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            for value in options:
+                combo.addItem(value, value)
+            combo.setCurrentIndex(max(0, combo.findData(previous)))
+        finally:
+            combo.blockSignals(blocked)
+        self.litellm_image_quality_label.setVisible(bool(options))
+        combo.setVisible(bool(options))
 
     def _sync_image_provider(self, *_args) -> None:
         provider = self.image_provider_combo.currentData()

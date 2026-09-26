@@ -92,7 +92,7 @@ def test_new_public_flow_shared_history_and_offset(monkeypatch):
     plan = p.plan_video_storyboard(SOURCE, {"seed_override": 123}, partial=partials.append)
     assert len(chats) == 3
     assert chats[0] == [{"role": "user", "content": c.CHARACTERS + "\n\n" + TEXT}]
-    assert chats[1][-1]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\n" + TEXT
+    assert chats[1][-1]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\nSOURCE_EXCERPT:\n" + TEXT + "\nEND_SOURCE_EXCERPT"
     assert len(chats[2]) == 1
     assert all(m["role"] != "system" for m in chats[2])
     assert chats[2][0]["content"] == c.LOCATIONS + "\n\nArrival, sitting, departure."
@@ -179,7 +179,7 @@ def test_scene_only_skips_character_profiles(monkeypatch):
     chats, requests = fake_backend(monkeypatch)
     plan = p.plan_video_storyboard(SOURCE, {"analysis_choices": {"plan": "scenes"}})
     assert len(chats) == 1
-    assert chats[0][0]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\n" + TEXT
+    assert chats[0][0]["content"] == c.scene_excerpt_prompt(c.SCENES, 1) + "\n\nSOURCE_EXCERPT:\n" + TEXT + "\nEND_SOURCE_EXCERPT"
     assert not plan["continuity"]["characters"]
     assert all(r[0] not in (c.CHARACTER_SCHEMA, c.LOCATION_SCHEMA) for r in requests)
 
@@ -201,6 +201,14 @@ def test_multiple_first_phase_summaries_are_unified_once_and_resume(monkeypatch,
     monkeypatch.setattr(combined, "balanced_passages", lambda text, limit:
                         ["Ana enters the house. ", TEXT[len("Ana enters the house. "):]]
                         if text == TEXT else original_chunks(text, limit))
+    original_request = p._request_plan
+    def local_request(settings, schema, system, user, **kwargs):
+        if schema == c.SCENE_SCHEMA and "replan fragment" in kwargs["request_label"]:
+            import json
+            excerpt = json.loads(user)["SOURCE_EXCERPT"]
+            return {"scenes": [{"title": "Local scene", "start_quote": excerpt.split(". ")[0].strip()}]}
+        return original_request(settings, schema, system, user, **kwargs)
+    monkeypatch.setattr(p, "_request_plan", local_request)
     unifications = []
     def free(*args, **kwargs):
         if "new characters from block" in kwargs["request_label"]:
@@ -286,7 +294,7 @@ def test_group_member_binding_can_correct_initial_but_never_later_state():
     assert warnings
 
 
-def test_missing_anchor_approximates_after_one_repair(monkeypatch):
+def test_missing_anchor_stops_after_bounded_local_recovery(monkeypatch):
     fake_backend(monkeypatch)
     original = p._request_plan
     count = []
@@ -296,10 +304,9 @@ def test_missing_anchor_approximates_after_one_repair(monkeypatch):
             return {"scenes": [{"title": "Unknown", "start_quote": "Not in this book"}]}
         return original(settings, schema, *args, **kwargs)
     monkeypatch.setattr(p, "_request_plan", request)
-    result = p.plan_video_storyboard(SOURCE, {})
-    assert result["scenes"] and result["scenes"][0]["alignment_approximate"]
-    assert result["alignment_debug"]["warnings"]
-    assert len(count) == 2
+    with pytest.raises(p.VideoStoryboardPlanningError, match="Cannot align fragment 1"):
+        p.plan_video_storyboard(SOURCE, {})
+    assert len(count) == 3
 
 
 def test_source_chunks_do_not_rewrite_original():
@@ -469,41 +476,6 @@ def test_provider_error_is_not_hidden_as_an_empty_response():
         raise p.VideoStoryboardPlanningError("Cannot connect")
     with pytest.raises(p.VideoStoryboardPlanningError, match="Cannot connect"):
         c.request_visuals(request, {"intervals": [{}]}, "", "block", lambda _: None, lambda: None)
-
-
-def test_approximation_keeps_scene_order_and_neighbouring_anchors():
-    text = "Opening. Sunshine. Leaving. Friends. Walking. Sea."
-    units = []
-    for i, sentence in enumerate(text.split(". ")):
-        start = text.index(sentence)
-        units.append({"id": i, "text": sentence, "text_start": start, "text_end": start + len(sentence),
-                      "start_seconds": 2 + i * 10, "end_seconds": 12 + i * 10})
-    proposals = [{"title": title, "start_quote": quote} for title, quote in
-                 [("Opening", "Opening"), ("Leaving", "Leaving"), ("Friends", "Friends"),
-                  ("Gulls", "Sunshine"), ("Sea", "Sea")]]
-    aligned, warnings = c.approximate_alignment(proposals, text, units)
-    assert [a["title"] for a in aligned] == [p["title"] for p in proposals]
-    assert [a["aligned_start_seconds"] for a in aligned] == [2, 22, 32, 42, 52]
-    assert aligned[3]["alignment_approximate"] and warnings
-
-
-def test_approximation_can_share_a_cue_without_zero_durations():
-    text = "Ana and Peter walk along the beach."
-    units = [{"id": 0, "text": text, "text_start": 0, "text_end": len(text), "start_seconds": 2, "end_seconds": 14}]
-    proposals = [{"title": str(i), "start_quote": text} for i in range(3)]
-    aligned, warnings = c.approximate_alignment(proposals, text, units)
-    assert [a["aligned_start_seconds"] for a in aligned] == [2, 6, 10]
-    assert len(warnings) == 2
-
-
-def test_longest_ordered_chain_ignores_a_premature_far_future_quote():
-    text = "A. B. C. D. E."
-    units = [{"id": i, "text": ch, "text_start": text.index(ch), "text_end": text.index(ch) + 1,
-              "start_seconds": i * 10, "end_seconds": (i + 1) * 10} for i, ch in enumerate("ABCDE")]
-    proposals = [{"title": ch, "start_quote": ch} for ch in "AEBCD"]
-    aligned, _ = c.approximate_alignment(proposals, text, units)
-    assert [a["title"] for a in aligned] == list("AEBCD")
-    assert [a["aligned_start_seconds"] for a in aligned] == [0, 5, 10, 20, 30]
 
 
 def test_repair_candidates_exclude_backward_and_later_scenes():

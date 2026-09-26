@@ -79,12 +79,13 @@ class AudioGenerationOptions:
     export_mode: str = "single"
     audio_format: str = "mp3"
     audio_quality: str = "standard"
-    chunk_size: int = 2500
+    chunk_size: int = 300
     pause_between_blocks_ms: int = 350
     pause_between_chapters_ms: int = 900
     paragraph_pause_min_ms: int = 450
     paragraph_pause_max_ms: int = 900
     adaptive_paragraph_pause: bool = True
+    group_short_dialogue: bool = True
     paragraph_length_reference_chars: int = 600
     paragraph_length_extra_ms: int = 650
     periodic_pause_every_paragraphs: int = 5
@@ -640,10 +641,13 @@ class AudioPipeline:
     ) -> tuple[int, int, int] | None:
         engine = str(options.voice_config.get("engine", "piper"))
         if engine == "qwen":
-            return (420, 520, 80)
-        if engine == "chatterbox":
-            return (230, 300, 45)
-        return None
+            target_chars, min_chars = 420, 80
+        elif engine == "chatterbox":
+            target_chars, min_chars = 230, 45
+        else:
+            return None
+        max_chars = options.chunk_size
+        return (min(target_chars, max_chars), max_chars, min(min_chars, max_chars))
 
     @classmethod
     def _split_tts_chunks(
@@ -659,8 +663,11 @@ class AudioPipeline:
                 target_chars=target_chars,
                 max_chars=max_chars,
                 min_chars=min_chars,
+                group_short_dialogue=options.group_short_dialogue,
             )
-        return TextProcessor.split_paragraph_chunks(text, options.chunk_size)
+        return TextProcessor.split_paragraph_chunks(
+            text, options.chunk_size, group_short_dialogue=options.group_short_dialogue
+        )
 
     @staticmethod
     def _group_safe_chunks(

@@ -5,7 +5,7 @@ import re
 
 MODES = ("manual", "auto_single", "auto_multiple")
 DISCOVERY = (
-    "In which historical period do the events take place? Give a short English period name only "
+    "In which historical period do the events take place? Give a familiar English period name of at most 3-4 words "
     "(e.g. Mesolithic, Neolithic, Bronze Age, Iron Age, Middle Ages, Victorian era, 1920s). "
     "Do not include regions, locations, environments, plot summaries or activities in the name. "
     "Separately give optional visual context limited to period-specific clothing, architecture and technology; "
@@ -19,7 +19,7 @@ STRUCTURE = (
     "Convert the reviewed period report into chronological era_events. Each event starts at an exact "
     "source sentence, copied into start_quote. Describe the period actually illustrated, not dates merely "
     "mentioned. Reuse known_id for the same period, even on a return or flashback; otherwise leave it empty. "
-    "name is a short English historical period name only (e.g. Neolithic, Bronze Age, Victorian era, 1920s), "
+    "name is a familiar English historical period name of at most 3-4 words (e.g. Neolithic, Bronze Age, Victorian era, 1920s), "
     "without regions, locations, environments or narrative summaries. Set description equal to name. "
     "visual_context separately lists only period-specific clothing, architecture and technology, without geography or scenery. "
     "For present-day events set name and description to Present day, is_current to true and visual_context empty; "

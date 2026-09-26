@@ -571,6 +571,9 @@ class VideoStoryboardRegenerationDialog(QDialog):
             "reference_images": [dict(value) for value in self._reference_images],
         }
         era = self.era_edit.text().strip()
+        prompt_mode = (self.scene.get("generation_overrides") or {}).get("prompt_mode")
+        if prompt_mode:
+            overrides["prompt_mode"] = prompt_mode
         # Displaying inherited context must not detach the scene from its period.
         if self._has_era_override or era != self._initial_era:
             overrides["narrative"]["era"] = era

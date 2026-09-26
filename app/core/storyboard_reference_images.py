@@ -8,6 +8,11 @@ def scene_with_references(scene, plan, settings=None):
     result = deepcopy(scene)
     overrides = result.setdefault("generation_overrides", {})
     references = list(overrides.get("reference_images") or [])
+    # A self-contained imported prompt must not pick up unrelated identities
+    # from an earlier analysis just because a word matches a character name.
+    if overrides.get("prompt_mode") == "complete":
+        overrides["reference_images"] = references
+        return result
     paths = {str(Path(r["path"]).resolve()).casefold() for r in references if isinstance(r, dict) and r.get("path")}
     text = " ".join(str(v or "") for v in (scene.get("prompt"), scene.get("shot"), overrides.get("raw_prompt")))
     continuity = plan.get("continuity") or {}

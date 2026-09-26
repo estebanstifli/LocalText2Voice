@@ -352,6 +352,7 @@ def _litellm_direct_edit(
     timeout: float,
     width: int | None,
     height: int | None,
+    *, quality: str | None = None,
 ) -> dict[str, Any]:
     try:
         from litellm import image_edit
@@ -377,6 +378,9 @@ def _litellm_direct_edit(
         }
         if api_key:
             arguments["api_key"] = api_key
+        if quality is not None:
+            from app.core.storyboard_image_quality import image_quality_parameters
+            arguments.update(image_quality_parameters(model, quality))
         while True:
             try:
                 response = image_edit(**arguments, **optional)

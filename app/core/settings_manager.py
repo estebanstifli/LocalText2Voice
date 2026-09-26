@@ -85,7 +85,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "kokoro": 300,
         "chatterbox": 300,
         "qwen": 520,
-        "omnivoice": 300,
+        "omnivoice": 400,
         "f5_russian": 300,
     },
     "editor_syntax_highlighting": True,
@@ -102,6 +102,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "paragraph_pause_min_ms": 450,
     "paragraph_pause_max_ms": 900,
     "adaptive_paragraph_pause": True,
+    "group_short_dialogue": True,
     "paragraph_length_reference_chars": 600,
     "paragraph_length_extra_ms": 650,
     "periodic_pause_every_paragraphs": 5,
@@ -365,6 +366,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "litellm_image": {
             "base_url": "",
             "model": "",
+            "quality": "auto",
             "api_key": "",
             "timeout_seconds": 300,
         },
@@ -396,6 +398,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "base_url": "http://127.0.0.1:11434",
             "model": "qwen3:8b",
             "context_length": 8192,
+            "max_retries": 5,
             "timeout_seconds": 300,
         },
         "litellm": {
@@ -404,6 +407,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "api_key": "",
             "timeout_seconds": 300,
             "max_output_tokens": 16000,
+            "max_retries": 5,
         },
         "video": {
             "fps": 30,
@@ -967,6 +971,10 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         litellm_image.get("base_url") or ""
     ).strip()
     litellm_image["model"] = str(litellm_image.get("model") or "").strip()
+    from app.core.storyboard_image_quality import normalize_image_quality
+    litellm_image["quality"] = normalize_image_quality(
+        litellm_image["model"], litellm_image.get("quality")
+    )
     litellm_image["api_key"] = str(
         litellm_image.get("api_key") or ""
     ).strip()
@@ -1040,6 +1048,7 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
         provider["timeout_seconds"] = _bounded_int(
             provider.get("timeout_seconds"), 10, 3600, 300
         )
+        provider["max_retries"] = _bounded_int(provider.get("max_retries"), 0, 20, 5)
     storyboard["litellm"]["api_key"] = str(
         storyboard["litellm"].get("api_key") or ""
     ).strip()

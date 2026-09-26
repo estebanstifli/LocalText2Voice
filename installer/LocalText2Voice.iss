@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.0"
+  #define MyAppVersion "2.1.1"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -91,6 +91,9 @@ russian.GpuComponent=Загрузить OmniVoice и Faster Whisper при пе�
 russian.DesktopIcon=Создать ярлык на рабочем столе
 russian.LaunchProgram=Запустить LocalText2Voice
 russian.RemoveDownloadedAIDataPrompt=LocalText2Voice обнаружил загруженные движки ИИ, модели, зависимости среды выполнения или файлы галереи голосов. Удалить их? Это может освободить несколько ГБ. Проекты аудиокниг, экспортированные аудиофайлы и настройки будут сохранены.
+russian.AssetsPageTitle=Хранилище моделей ИИ
+russian.AssetsPageDescription=Выберите, где будут храниться крупные загружаемые файлы ИИ.
+russian.AssetsPageLabel=LocalText2Voice создаст папку data в выбранном месте. Модели, зависимости движков, голоса и кэши могут занимать много ГБ. При необходимости выберите другой диск.
 
 [Types]
 Name: "cpu"; Description: "{cm:CpuLightType}"

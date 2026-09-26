@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,6 +11,9 @@ from app.utils.ffmpeg_utils import FFmpegCancelled, FFmpegError, find_ffmpeg
 
 
 RenderProgress = Callable[[str, int], None]
+
+# Bound decoder/filter memory independently of storyboard length.
+_ASSEMBLY_BATCH_SIZE = 8
 
 _XFADE_TRANSITIONS = {
     "fade",
@@ -82,6 +84,7 @@ def render_storyboard_video(
     codec = str(video.get("codec") or "libx264")
     crf = max(0, min(51, int(video.get("crf") or 18)))
     preset = str(video.get("preset") or "medium")
+    threads = _encoding_threads(video)
     supersample = max(1, min(4, int(video.get("supersample") or 4)))
     generated_frames = max(
         1,
@@ -163,6 +166,8 @@ def render_storyboard_video(
                     "error",
                     "-i",
                     str(media_input),
+                    "-filter_threads",
+                    "1",
                     "-vf",
                     scene_filter,
                     "-an",
@@ -174,6 +179,8 @@ def render_storyboard_video(
                     str(crf),
                     "-pix_fmt",
                     "yuv420p",
+                    "-threads",
+                    str(threads),
                     "-frames:v",
                     str(max(1, round(extended * fps))),
                     "-r",
@@ -199,51 +206,27 @@ def render_storyboard_video(
                 audio_track = build_clip_audio_track(normalized, executable, temporary_dir,
                     _run_ffmpeg_with_progress, is_cancelled,
                     lambda _stage, _value: report("preparing", 45))
-            arguments = ["-y", "-hide_banner", "-loglevel", "error"]
-            # Run the assembly inside its scratch directory: hundreds of
-            # absolute input paths can exceed Windows' command-line limit,
-            # even when the filter graph itself is stored in a file.
-            for clip in clip_paths:
-                arguments.extend(["-i", clip.name])
-            audio_input = len(clip_paths)
+            batched = len(normalized) > _ASSEMBLY_BATCH_SIZE
+            arguments = ["-y", "-hide_banner", "-loglevel", "error",
+                         "-filter_complex_threads", "1"]
+            if batched:
+                manifest = _render_assembly_batches(
+                    executable, clip_paths, normalized, edge_durations,
+                    fps, video, codec, preset, crf, Path(temporary_dir),
+                    report, is_cancelled,
+                )
+                arguments.extend(["-f", "concat", "-safe", "0", "-i", manifest.name])
+                audio_input = 1
+            else:
+                for clip in clip_paths:
+                    arguments.extend(["-threads", "1", "-i", clip.name])
+                audio_input = len(clip_paths)
             arguments.extend(["-i", str(audio_path.resolve())])
             if audio_track:
                 arguments.extend(["-i", Path(audio_track).name])
-            filters: list[str] = []
-            video_output = "0:v:0"
-            elapsed = normalized[0]["duration"]
-            for index in range(1, len(normalized)):
-                output_label = f"vx{index}"
-                duration = edge_durations[index - 1]
-                left = f"[{video_output}]"
-                right = f"[{index}:v:0]"
-                if duration > 0:
-                    # concat changes the time base to AVTB and may report a
-                    # variable frame rate. xfade needs identical CFR timing on
-                    # both inputs, including when a hard cut precedes a fade.
-                    timing = f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}"
-                    filters.append(f"{left}{timing}[left{index}]")
-                    filters.append(f"{right}{timing}[right{index}]")
-                    left = f"[left{index}]"
-                    right = f"[right{index}]"
-                    transition = str(
-                        normalized[index].get("transition")
-                        or video.get("transition")
-                        or "fade"
-                    ).lower()
-                    if transition not in _XFADE_TRANSITIONS:
-                        transition = "fade"
-                    filters.append(
-                        f"{left}{right}xfade=transition={transition}:"
-                        f"duration={_decimal(duration)}:offset={_decimal(elapsed)}"
-                        f"[{output_label}]"
-                    )
-                else:
-                    filters.append(
-                        f"{left}[{index}:v:0]concat=n=2:v=1:a=0[{output_label}]"
-                    )
-                video_output = output_label
-                elapsed += normalized[index]["duration"]
+            filters, video_output = _assembly_filters(
+                normalized, edge_durations, fps, video.get("transition")
+            ) if not batched else ([], "0:v:0")
             filters.append(
                 f"[{audio_input}:a]apad,atrim=duration={_decimal(total_duration)},"
                 f"asetpts=PTS-STARTPTS,volume={float(video.get('soundtrack_volume', 1)):.6f}[baseaudio]"
@@ -265,13 +248,9 @@ def render_storyboard_video(
                     "-t",
                     _decimal(total_duration),
                     "-c:v",
-                    codec,
-                    "-preset",
-                    preset,
-                    "-crf",
-                    str(crf),
-                    "-pix_fmt",
-                    "yuv420p",
+                    "copy" if batched else codec,
+                    *([] if batched else ["-preset", preset, "-crf", str(crf),
+                                           "-pix_fmt", "yuv420p", "-threads", str(threads)]),
                     "-c:a",
                     "aac",
                     "-b:a",
@@ -289,7 +268,8 @@ def render_storyboard_video(
                 arguments,
                 total_duration,
                 lambda _stage, value: report(
-                    "rendering", min(98, 45 + round(value * 0.53))
+                    "rendering", min(98, (90 + round(value * 0.08)) if batched
+                                     else (45 + round(value * 0.53)))
                 ),
                 is_cancelled,
                 cwd=Path(temporary_dir),
@@ -474,6 +454,8 @@ def _run_ffmpeg_with_progress(
     *,
     cwd: Path | None = None,
 ) -> None:
+    if cancelled():
+        raise FFmpegCancelled("Video rendering was cancelled.")
     creation_flags = (
         subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     )
@@ -551,3 +533,108 @@ def _parse_ffmpeg_time(value: str) -> float:
 
 def _decimal(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _assembly_filters(scenes, edge_durations, fps, default_transition):
+    filters: list[str] = []
+    video_output = "0:v:0"
+    elapsed = scenes[0]["duration"]
+    for index in range(1, len(scenes)):
+        output_label = f"vx{index}"
+        duration = edge_durations[index - 1]
+        left = f"[{video_output}]"
+        right = f"[{index}:v:0]"
+        if duration > 0:
+            # concat changes the time base to AVTB and may report a
+            # variable frame rate. xfade needs identical CFR timing on
+            # both inputs, including when a hard cut precedes a fade.
+            timing = f"settb=AVTB,setpts=PTS-STARTPTS,fps={fps}"
+            # Supply the endpoint frame so xfade does not finish its overlap
+            # early at EOF; local and global timestamps must behave alike.
+            filters.append(
+                f"{left}{timing},tpad=stop_mode=clone:stop_duration={_decimal(1 / fps)}[left{index}]"
+            )
+            filters.append(f"{right}{timing}[right{index}]")
+            left = f"[left{index}]"
+            right = f"[right{index}]"
+            transition = str(
+                scenes[index].get("transition")
+                or default_transition
+                or "fade"
+            ).lower()
+            if transition not in _XFADE_TRANSITIONS:
+                transition = "fade"
+            filters.append(
+                f"{left}{right}xfade=transition={transition}:"
+                f"duration={_decimal(duration)}:offset={_decimal(elapsed)}"
+                f"[{output_label}]"
+            )
+        else:
+            filters.append(
+                f"{left}[{index}:v:0]concat=n=2:v=1:a=0[{output_label}]"
+            )
+        video_output = output_label
+        elapsed += scenes[index]["duration"]
+    return filters, video_output
+
+
+def _render_assembly_batches(
+    executable, clips, scenes, edges, fps, video, codec, preset, crf,
+    directory, report, cancelled,
+):
+    """Assemble bounded graphs, preserving transitions across block boundaries.
+
+    Each block also reads the previous scene. Trimming its nominal duration
+    leaves its outgoing transition at the start of this block. The preceding
+    block ends exactly where that transition starts, so no frames are repeated.
+    Frame counts use cumulative rounding to avoid drift over hundreds of blocks.
+    """
+    outputs = []
+    elapsed = 0.0
+    for start in range(0, len(scenes), _ASSEMBLY_BATCH_SIZE):
+        if cancelled():
+            raise FFmpegCancelled("Video rendering was cancelled.")
+        end = min(len(scenes), start + _ASSEMBLY_BATCH_SIZE)
+        first = max(0, start - 1)
+        skip = scenes[first]["duration"] if start else 0.0
+        duration = sum(s["duration"] for s in scenes[start:end])
+        frames = round((elapsed + duration) * fps) - round(elapsed * fps)
+        arguments = ["-y", "-hide_banner", "-loglevel", "error",
+                     "-filter_complex_threads", "1"]
+        for clip in clips[first:end]:
+            arguments.extend(["-threads", "1", "-i", clip.name])
+        filters, label = _assembly_filters(
+            scenes[first:end], edges[first:end - 1], fps, video.get("transition")
+        )
+        filters.append(
+            f"[{label}]trim=start={_decimal(skip)},setpts=PTS-STARTPTS,"
+            f"fps={fps},tpad=stop_mode=clone:stop_duration=1,"
+            f"trim=end_frame={frames}[block]"
+        )
+        script = directory / f"block-{start:04d}.filters"
+        script.write_text(";".join(filters), encoding="utf-8")
+        target = directory / f"block-{start:04d}.mp4"
+        arguments.extend([
+            "-filter_complex_script", script.name, "-map", "[block]", "-an",
+            "-c:v", codec, "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p", "-threads", str(_encoding_threads(video)), "-r", str(fps),
+            "-frames:v", str(frames), "-video_track_timescale", str(fps * 512),
+            "-progress", "pipe:1", "-nostats", str(target.resolve()),
+        ])
+        _run_ffmpeg_with_progress(
+            executable, arguments, duration,
+            lambda _stage, value, offset=start, count=end-start: report(
+                "rendering", min(90, 45 + round((offset + count * value / 100) / len(scenes) * 45))
+            ), cancelled, cwd=directory,
+        )
+        outputs.append(target)
+        elapsed += duration
+    manifest = directory / "blocks.ffconcat"
+    manifest.write_text("ffconcat version 1.0\n" + "".join(
+        f"file '{path.name}'\n" for path in outputs
+    ), encoding="utf-8")
+    return manifest
+
+
+def _encoding_threads(video):
+    return max(1, min(64, os.cpu_count() or 1, int(video.get("threads") or 2)))

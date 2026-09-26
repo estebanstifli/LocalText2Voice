@@ -216,6 +216,8 @@ def compile_effective_scene_prompt(
     overrides = scene.get("generation_overrides", {})
     if isinstance(overrides, dict):
         raw_prompt = str(overrides.get("raw_prompt") or "").strip()
+        if overrides.get("prompt_mode") == "complete":
+            return raw_prompt or str(scene.get("prompt") or "").strip()
         if raw_prompt:
             return contextualize_prompt(strip_storyboard_prompt_markers(raw_prompt, plan), plan)
     return contextualize_prompt(compile_scene_prompt(_effective_frame_plan(plan, scene), scene), plan)
@@ -353,12 +355,13 @@ def _generate_litellm_storyboard_frame(
     # the required prompt so SDK parameter filtering and proxy retries cannot
     # drop them. This also covers generation with reference images.
     negative = str(effective_plan.get("style", {}).get("negative") or "").strip()
-    prompt += (
-        "\n\nOUTPUT COMPOSITION: Generate one full-frame image of the requested scene, "
-        "at a single moment. Use background context only for visual consistency; "
-        "do not illustrate other events or turn these instructions into a storyboard sheet. "
-        "No collage, split screen, multiple panels, captions, labels or rendered prompt text."
-    )
+    if scene.get("generation_overrides", {}).get("prompt_mode") != "complete":
+        prompt += (
+            "\n\nOUTPUT COMPOSITION: Generate one full-frame image of the requested scene, "
+            "at a single moment. Use background context only for visual consistency; "
+            "do not illustrate other events or turn these instructions into a storyboard sheet. "
+            "No collage, split screen, multiple panels, captions, labels or rendered prompt text."
+        )
     if negative:
         prompt += "\nEXCLUDE FROM THE IMAGE (negative prompt): " + negative
     seed = int(effective_plan.get("base_seed") or 0)
@@ -383,6 +386,7 @@ def _generate_litellm_storyboard_frame(
             seed=seed,
             api_key=api_key,
             timeout=timeout,
+            quality=config.get("quality", "auto"),
         )
     else:
         response = _litellm_image_direct(
@@ -392,6 +396,7 @@ def _generate_litellm_storyboard_frame(
             seed=seed,
             api_key=api_key,
             timeout=timeout,
+            quality=config.get("quality", "auto"),
         )
     if cancelled and cancelled():
         raise VideoStoryboardImageError("Frame generation was cancelled.")
@@ -414,7 +419,8 @@ def _generate_litellm_storyboard_frame(
 
 
 def _litellm_image_direct(
-    *, model: str, prompt: str, size: str, seed: int, api_key: str, timeout: float
+    *, model: str, prompt: str, size: str, seed: int, api_key: str, timeout: float,
+    quality: str = "auto",
 ) -> dict[str, Any]:
     try:
         from litellm import image_generation
@@ -429,6 +435,8 @@ def _litellm_image_direct(
         "drop_params": True,
     }
     optional = _litellm_image_optional_parameters(model, size, seed)
+    from app.core.storyboard_image_quality import image_quality_parameters
+    arguments.update(image_quality_parameters(model, quality))
     if api_key:
         arguments["api_key"] = api_key
     while True:
@@ -449,14 +457,17 @@ def _litellm_image_direct(
 
 def _litellm_image_proxy(
     root: str,
-    *, model: str, prompt: str, size: str, seed: int, api_key: str, timeout: float
+    *, model: str, prompt: str, size: str, seed: int, api_key: str, timeout: float,
+    quality: str = "auto",
 ) -> dict[str, Any]:
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     optional = _litellm_image_optional_parameters(model, size, seed)
     while True:
-        payload = {"model": model, "prompt": prompt, **optional}
+        from app.core.storyboard_image_quality import image_quality_parameters
+        payload = {"model": model, "prompt": prompt, **optional,
+                   **image_quality_parameters(model, quality)}
         request = urllib.request.Request(
             f"{root}/images/generations",
             data=json.dumps(payload).encode("utf-8"),
@@ -885,6 +896,8 @@ def _effective_frame_plan(
             **dict(effective.get("style", {})),
             **override_style,
         }
+    if overrides.get("prompt_mode") == "complete":
+        effective["style"] = {}
     try:
         override_seed = int(overrides.get("seed"))
     except (TypeError, ValueError):

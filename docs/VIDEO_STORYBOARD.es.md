@@ -32,6 +32,70 @@ El análisis utiliza las referencias temporales de narración disponibles. Si no
 existen, estima los tiempos a partir del texto. Incluso con referencias, una frase
 puede alinearse al comienzo de su bloque de narración y no a la palabra exacta.
 
+En audiolibros largos, cada propuesta conserva su fragmento de origen. Sus citas
+se validan solo contra ese fragmento; los informes globales de épocas no se usan
+para proponer escenas. Si el texto preparado para TTS difiere del original, se
+analiza el texto narrado y se guarda esa referencia junto a sus posiciones.
+Una reparación fallida se vuelve a intentar desde el fragmento, con un límite;
+si sigue sin poder alinearse, el proceso se detiene indicando cuál revisar.
+No se interpolan escenas sin cita entre puntos alejados del libro.
+La pestaña **Comprobaciones del análisis** muestra las validaciones y avisos;
+el símbolo **≈** junto a una escena identifica tiempos de frase estimados.
+
+Los diálogos y estribillos repetidos se sitúan usando las citas anterior y
+posterior cuando estas permiten identificar una única posición. Si todavía
+hay ambigüedad, la reparación solicita más contexto literal. Los títulos vacíos
+se completan sin cambiar los tiempos ni volver a generar el relato.
+Tras un fallo, **Retomar el análisis y los informes guardados** permite reutilizar
+los informes completos, las fichas terminadas y las propuestas ya guardadas.
+También reutiliza los prompts de imagen de las escenas guardadas y continúa
+desde el siguiente pendiente, incluso tras un error de saldo o de conexión.
+Las citas, la narración y los tiempos se validan de nuevo; el texto y la
+configuración deben coincidir. El progreso guardado se conserva si esa
+comprobación se interrumpe o detecta una incompatibilidad.
+Desmarca esa opción si quieres hacer un análisis nuevo.
+
+En **Ajustes → Video Storyboard → LLM**, **Reintentos ante errores temporales**
+controla los reintentos por petición (5 por defecto; 0 los desactiva). Los errores
+de conexión, timeout y saturación temporal repiten solo la petición afectada,
+con esperas progresivas de hasta 30 segundos que se pueden cancelar. Los errores
+de credenciales, saldo o formato no se resuelven repitiendo la petición.
+
+### Importar o editar todos los prompts con tiempos
+
+**Analizar audiolibro → Importar / editar prompts de escenas** abre una alternativa
+al análisis LLM. La primera pestaña prepara un encargo narrativo, educativo
+stickman o documental para tu IA externa. Puedes copiarlo con los tiempos de
+los segmentos del proyecto o cargar una transcripción SRT, VTT o TXT del audio
+definitivo. Revisa que los tiempos correspondan a la línea de tiempo final,
+incluida la pausa inicial de la voz.
+
+En la segunda pestaña, pega o carga un TXT con este formato:
+
+```text
+[00:00] Un coche rojo recorre una avenida de Nueva York.
+
+[00:06.500] Primer plano del conductor mirando por la ventanilla.
+```
+
+Cada escena termina donde empieza la siguiente; la última termina con el audio.
+También se admite `[HH:MM:SS.mmm]`, coma decimal y descripciones de varias líneas.
+La vista previa valida orden, tiempos duplicados, prompts vacíos, duración del
+audio y una duración mínima de 0,1 segundos por escena. Si la primera marca no
+es cero, puedes elegir expresamente mostrar esa imagen desde el principio.
+La validación comprueba formato y tiempos, no la veracidad del contenido.
+
+Activa **Prompts completos** si cada prompt ya tiene su estilo. En ese modo no
+se añaden estilo, contexto narrativo, exclusiones ni referencias automáticas del
+proyecto; se mantienen las referencias seleccionadas manualmente. Desactívalo
+para añadir el estilo del proyecto a las descripciones de escenas.
+
+Al volver a abrir la ventana aparecen los prompts del storyboard actual.
+**Aplicar escenas** actualiza la línea de tiempo sin generar imágenes ni llamar
+al LLM. Las escenas sin cambios conservan sus medios. Las modificadas reciben
+identificadores nuevos para evitar reutilizar resultados antiguos. Los archivos
+existentes no se eliminan y la importación se puede deshacer y rehacer.
+
 ### Crear y corregir las imágenes
 
 - Generar imágenes y regenerar resultados individuales.

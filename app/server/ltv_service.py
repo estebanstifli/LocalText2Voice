@@ -938,6 +938,7 @@ class LocalText2VoiceService:
             paragraph_pause_min_ms=int(settings.get("paragraph_pause_min_ms", 450)),
             paragraph_pause_max_ms=int(settings.get("paragraph_pause_max_ms", 900)),
             adaptive_paragraph_pause=bool(settings.get("adaptive_paragraph_pause", True)),
+            group_short_dialogue=bool(settings.get("group_short_dialogue", True)),
             paragraph_length_reference_chars=int(settings.get("paragraph_length_reference_chars", 600)),
             paragraph_length_extra_ms=int(settings.get("paragraph_length_extra_ms", 650)),
             periodic_pause_every_paragraphs=int(settings.get("periodic_pause_every_paragraphs", 5)),

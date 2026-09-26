@@ -25,7 +25,7 @@
     "kokoro": 300,
     "chatterbox": 300,
     "qwen": 520,
-    "omnivoice": 300,
+    "omnivoice": 400,
     "f5_russian": 300
   },
   "editor_syntax_highlighting": true,
@@ -53,6 +53,7 @@
   "paragraph_pause_min_ms": 450,
   "paragraph_pause_max_ms": 900,
   "adaptive_paragraph_pause": true,
+  "group_short_dialogue": true,
   "paragraph_length_reference_chars": 600,
   "paragraph_length_extra_ms": 650,
   "periodic_pause_every_paragraphs": 5,
@@ -277,6 +278,7 @@
       "timeout_seconds": 1800
     },
     "litellm_image": {
+      "quality": "auto",
       "base_url": "",
       "model": "",
       "api_key": "",
@@ -310,14 +312,16 @@
       "base_url": "http://127.0.0.1:11434",
       "model": "qwen3:8b",
       "context_length": 8192,
-      "timeout_seconds": 300
+      "timeout_seconds": 300,
+      "max_retries": 5
     },
     "litellm": {
       "base_url": "",
       "model": "",
       "api_key": "",
       "timeout_seconds": 300,
-      "max_output_tokens": 16000
+      "max_output_tokens": 16000,
+      "max_retries": 5
     },
     "video": {
       "fps": 30,

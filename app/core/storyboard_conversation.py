@@ -6,7 +6,6 @@ Only its final answers (never private thinking) are carried into subsequent turn
 from copy import deepcopy
 import hashlib
 import json
-import math
 import re
 from difflib import SequenceMatcher
 
@@ -14,6 +13,7 @@ from app.core.storyboard_analysis_review import choices, fingerprint
 from app.core.storyboard_analysis_settings import PROMPTS, normalize, conversation_input_limit
 from app.core.storyboard_entity_names import resolve, clean_names, resolve_references
 from app.core.storyboard_eras import active_era, build_eras, era_boundaries, period_context, period_name
+from app.core.storyboard_scene_resume import restored_scene
 
 CHARACTERS = PROMPTS["conversation_report"][1]
 SCENES = PROMPTS["conversation_scenes"][1]
@@ -123,7 +123,13 @@ def _request_visual_batch(request, data, instruction, label, warn, check):
 
 
 def scene_excerpt_prompt(prompt, number):
-    return f"{prompt} Number them {number}-1, {number}-2, etc."
+    return (f"{prompt} Number them {number}-1, {number}-2, etc. "
+            "Use ONLY SOURCE_EXCERPT below. Cover its opening and main visual changes in reading order. "
+            "Copy literal opening sentences from this excerpt, without translating or paraphrasing them. "
+            "Group related sentences into a few visual beats; do not illustrate the rest of the book. "
+            "For each numbered scene, use three separately labeled lines: Title: (short title), "
+            "Image: (visual description), Source quote: (exact opening sentence). "
+            "If the sentence repeats, include consecutive following sentences in Source quote to distinguish its occurrence.")
 
 
 def scene_passages(text, units, start, end, limit, seconds=120):
@@ -244,71 +250,6 @@ def align_proposals(proposals, text, units):
     return aligned, issues
 
 
-def approximate_alignment(proposals, text, units):
-    """Preserve proposal order, retain the longest consistent chain of quotes.
-
-    Missing/backward anchors are interpolated between reliable neighbours, never
-    sorted into a new narrative order. Fractional cue positions are estimates,
-    not word-level alignment. Their provenance remains visible in project data.
-    """
-    if not proposals or not units:
-        return [], ["No scenes or narration timings available for approximate alignment."]
-    candidates = []
-    for index, scene in enumerate(proposals):
-        hits = quote_offsets(text, str(scene.get("start_quote") or ""))
-        if len(hits) == 1:
-            unit = next((u for u in units if u["text_start"] <= hits[0] < u["text_end"]), None)
-            if unit is not None:
-                candidates.append((index, hits[0], float(unit["start_seconds"]), unit))
-    # Force the opening image to the opening narration; do not let a mistaken
-    # first quote near the end of the book constrain every following scene.
-    opening = (0, int(units[0]["text_start"]), float(units[0]["start_seconds"]), units[0])
-    candidates = [opening] + [c for c in candidates if c[0] > 0]
-    chains = [[opening]]
-    for k, candidate in enumerate(candidates[1:], 1):
-        previous = [chains[j] for j in range(k) if chains[j]
-                    and candidate[1] > candidates[j][1] and candidate[2] > candidates[j][2]]
-        chains.append(max(previous, key=len) + [candidate] if previous else [])
-    chain = max(chains, key=len)
-    end = max(float(u.get("end_seconds", u["start_seconds"])) for u in units)
-    if end <= opening[2]:
-        return [], ["Narration duration is too short to align proposed scenes."]
-    chain = [c for c in chain if c[2] < end]
-    anchors = {c[0]: c for c in chain}
-    anchors[len(proposals)] = (len(proposals), len(text), end, units[-1])
-    aligned, warnings = [], []
-    for index, scene in enumerate(proposals):
-        if index in anchors:
-            _, offset, at, unit = anchors[index]
-            method = "literal_quote_to_narration_cue"
-            if index == 0 and quote_offsets(text, str(scene.get("start_quote") or "")) != [offset]:
-                method = "approximate_opening"
-        else:
-            left = anchors[max(k for k in anchors if k < index)]
-            right = anchors[min(k for k in anchors if k > index)]
-            fraction = (index - left[0]) / (right[0] - left[0])
-            at = left[2] + fraction * (right[2] - left[2])
-            original = next((u for u in units if float(u["start_seconds"]) <= at < float(u.get("end_seconds", u["start_seconds"]))), None)
-            if original is None:
-                original = min(units, key=lambda u: abs(float(u["start_seconds"]) - at))
-            span = float(original.get("end_seconds", at)) - float(original["start_seconds"])
-            local = max(0.0, min(1.0, (at - float(original["start_seconds"])) / span)) if span > 0 else 0.0
-            offset = int(original["text_start"] + local * (original["text_end"] - original["text_start"]))
-            # Snap estimated text position to a nearby word start within the cue.
-            word_starts = [m.start() for m in re.finditer(r"\S+", text)
-                           if original["text_start"] <= m.start() < original["text_end"]]
-            if word_starts:
-                offset = min(word_starts, key=lambda pos: abs(pos - offset))
-            unit = {**original, "start_seconds": at, "text_start": offset}
-            method = "approximate_between_neighbours"
-        if method.startswith("approximate"):
-            warnings.append(f"Scene {index + 1} ({scene.get('title', '')}): approximate start at {at:.2f}s; original scene order preserved.")
-        aligned.append({**scene, "unit": unit, "quote_offset": offset,
-                        "aligned_start_seconds": at, "alignment_method": method,
-                        "alignment_approximate": method.startswith("approximate")})
-    return aligned, warnings
-
-
 def _names(names, records, at):
     result = []
     for name in names:
@@ -344,6 +285,11 @@ def bind_visible_names(names, records, at, visual, source_unit, warnings):
 
 def plan_conversation(source, settings, *, progress=None, partial=None, cancelled=None, trace=None, review=None):
     from app.core import video_storyboard_planner as p
+    from app.core.storyboard_source_alignment import analysis_source
+    from app.core.storyboard_scene_alignment import (
+        reviewed_excerpts, plan_excerpt, consolidate_beats, frame_intervals)
+    original_source = source
+    source, source_alignment = analysis_source(source)
     settings = deepcopy(settings)
     text = str(source.get("text") or "").strip()
     if not text:
@@ -354,6 +300,13 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     duration = float(source.get("duration_seconds") or max(4, len(text.split()) / 2.6))
     offset = max(0.0, float(source.get("voice_start_offset_seconds") or 0))
     warnings, conversations, scenes = [], [], []
+    saved_scenes = (settings.get("analysis_checkpoint") or {}).get("scenes") or []
+    # Until the saved prefix is verified, keep the last durable checkpoint intact.
+    # Revalidation itself can fail or be cancelled before any new prompt is made.
+    protect_saved_scenes = bool(saved_scenes and settings.get("review_checkpoint"))
+    scene_alignment = []
+    if source_alignment["coordinate_basis"] == "timed_narration":
+        warnings.append("Analysis uses the timed narration text because TTS normalization differs from the original. Source offsets refer to the saved analysis text.")
     units = []
     for batch in p._planning_batches(text, source.get("narration_cues", []), duration, settings):
         for unit in p._semantic_units(batch, 1):
@@ -361,6 +314,7 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     # Cue times already include voice offset. Never add it a second time.
     if not source.get("narration_cues"):
         for unit in units:
+            unit["timing_approximate"] = True
             for key in ("start_seconds", "end_seconds"):
                 unit[key] = offset + unit[key] * max(0, duration - offset) / duration
         warnings.append("No narration cues: timings are estimated from text length.")
@@ -420,9 +374,13 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                     "era_source": "detected" if automatic_eras else "user"},
                 "continuity": deepcopy(continuity), "scenes": deepcopy(scenes), "analysis_phase": phase,
                 "completed_blocks": stage, "total_blocks": stage + 1,
-                "alignment_debug": {"version": 3, "units": units, "warnings": list(warnings)}}
+                "alignment_debug": {"version": 4, "units": units, "warnings": list(warnings),
+                                    "source": source_alignment, "fragments": deepcopy(scene_alignment),
+                                    "approximate_frames": sum(bool(s.get("alignment_approximate")) for s in scenes)}}
 
     def publish(phase):
+        if protect_saved_scenes:
+            return
         if trace:
             for warning in warnings:
                 if warning not in emitted_warnings:
@@ -453,10 +411,14 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     limit = max(1000, int(settings.get("analysis", {}).get("max_block_characters") or conversation_input_limit(config)))
     from app.core.storyboard_combined_discovery import balanced_passages, split_report, new_character_text
     chunks = balanced_passages(text, limit)
-    key = fingerprint(source, settings)
+    key = fingerprint(original_source, settings)
     checkpoint = settings.get("review_checkpoint", {})
     resumable = (checkpoint.get("fingerprint") == key and checkpoint.get("pipeline") == "conversational-v2"
                  and checkpoint.get("status") in {"pending", "approved"})
+    if checkpoint and not resumable:
+        raise p.VideoStoryboardPlanningError(
+            "The saved analysis does not match this text or analysis settings. Restore the previous settings, "
+            "or uncheck Resume saved analysis to start a new analysis.")
     if resumable:
         conversations = deepcopy(checkpoint.get("reports", []))
         unified_characters = str(checkpoint.get("unified_characters") or "")
@@ -536,12 +498,17 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             excerpts = scene_passages(text, units, report["start"],
                                       report["start"] + len(report["text"]), min(limit, 4000))
             answers = []
+            report["scene_excerpts"] = []
+            excerpt_start = report["start"]
             for part, excerpt in enumerate(excerpts, 1):
                 excerpt_number += 1
-                historical_context = report.get("era_report") or era
-                answers.append(ask([], scene_excerpt_prompt(prompts["conversation_scenes"], excerpt_number)
-                                   + ("\n\nERA: " + historical_context if historical_context else "") + "\n\n" + excerpt,
-                                   f"conversation {number}/{len(chunks)}: scenes and start sentences / global excerpt {excerpt_number} (part {part}/{len(excerpts)})"))
+                answer = ask([], scene_excerpt_prompt(prompts["conversation_scenes"], excerpt_number)
+                             + "\n\nSOURCE_EXCERPT:\n" + excerpt + "\nEND_SOURCE_EXCERPT",
+                             f"conversation {number}/{len(chunks)}: scenes and start sentences / global excerpt {excerpt_number} (part {part}/{len(excerpts)})")
+                answers.append(answer)
+                report["scene_excerpts"].append({"number": excerpt_number, "start": excerpt_start,
+                                                 "text": excerpt, "summary": answer})
+                excerpt_start += len(excerpt)
             report["scenes"] = "\n\n".join(answers)
             if selection["locations"]:
                 report["locations"] = ask([], prompts["conversation_locations"] + "\n\n" + report["scenes"],
@@ -603,109 +570,98 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     if selection["review"] and review:
         checkpoint = review(deepcopy(checkpoint))
     sections = checkpoint.get("edited", sections)
-    if automatic_eras:
-        continuity["eras"], continuity["era_assignments"] = build_eras(
-            conversations, str(sections.get("eras") or ""), str(checkpoint.get("original", {}).get("eras") or ""),
-            era_mode, text, units, duration, structured, warn, check, instructions=prompts)
-    else:
+    recovery = settings.get("analysis_checkpoint") or {}
+    recovered_continuity = recovery.get("continuity") or {}
+    recovered_review = recovered_continuity.get("analysis_review") or {}
+    reuse_continuity = (resumable and recovered_review.get("fingerprint") == key
+        and recovered_review.get("edited") == sections
+        and recovery.get("analysis_phase") in {"alignment", "alignment_failed", "scenes"})
+    if not reuse_continuity or recovered_review.get("reports") != checkpoint.get("reports"):
+        saved_scenes = []
+        protect_saved_scenes = False
+    if reuse_continuity:
+        configuration_snapshot = continuity["analysis_configuration"]
+        continuity = deepcopy(recovered_continuity)
+        continuity["analysis_configuration"] = configuration_snapshot
+        warn("Resuming saved analysis: reusing completed entity and period profiles.")
+    if not automatic_eras:
         era = str(sections.get("era") or "")
-        p._seed_requested_era(continuity, era, duration)
+    continuity["analysis_review"] = checkpoint
+    continuity["discovery_reports"] = conversations
+    publish("discovery")
+    if not reuse_continuity:
+        if automatic_eras:
+            continuity["eras"], continuity["era_assignments"] = build_eras(
+                conversations, str(sections.get("eras") or ""), str(checkpoint.get("original", {}).get("eras") or ""),
+                era_mode, text, units, duration, structured, warn, check, instructions=prompts)
+        else:
+            era = str(sections.get("era") or "")
+            p._seed_requested_era(continuity, era, duration)
     continuity["analysis_review"] = checkpoint
     continuity["discovery_reports"] = conversations
     continuity["story_context"] = "\n\n".join(c.get("story_summary", "") for c in conversations)
     publish("discovery")
 
-    if any(selection[k] for k in ("characters", "locations", "objects")):
-        for collection, name_key, schema in (
-            ("characters", "character", CHARACTER_SCHEMA),
-            ("locations", "location", LOCATION_SCHEMA),
-            ("objects", "object", OBJECT_SCHEMA),
-        ):
-            if not selection[collection]:
-                continue
-            if collection == "characters":
-                fields = ("characters", "appearance")
-            else:
-                fields = (collection,)
-            edited = any(sections.get(k, "") != checkpoint.get("original", {}).get(k, "") for k in fields)
-            summaries = (["\n\n".join(str(sections.get(k, "")) for k in fields if sections.get(k))] if edited or collection in {"objects", "locations"} or (collection == "characters" and unified_characters) else
-                         ["\n\n".join(str(report.get(k, "")) for k in fields) for report in conversations])
-            for summary in summaries:
-                for summary_part in source_chunks(summary, min(limit, 6000)):
-                    if not summary_part.strip():
-                        continue
-                    historical_context = "\n".join(period_context(r) for r in continuity["eras"])
-                    instruction = prompts[collection + "_profiles"]
-                    if historical_context:
-                        instruction += "\nERA: " + historical_context + "\nRespect the applicable period. For a recurring entity use its initial appearance; do not mix technologies or clothing across periods."
-                    result = structured(schema, instruction, summary_part,
-                                        f"conversation: convert {collection} summary to JSON")
-                    add_simple_profiles(continuity[collection], result.get(collection), name_key,
-                                        duration, warnings)
-                    publish("continuity")
+    if not reuse_continuity:
+        if any(selection[k] for k in ("characters", "locations", "objects")):
+            for collection, name_key, schema in (
+                ("characters", "character", CHARACTER_SCHEMA),
+                ("locations", "location", LOCATION_SCHEMA),
+                ("objects", "object", OBJECT_SCHEMA),
+            ):
+                if not selection[collection]:
+                    continue
+                if collection == "characters":
+                    fields = ("characters", "appearance")
+                else:
+                    fields = (collection,)
+                edited = any(sections.get(k, "") != checkpoint.get("original", {}).get(k, "") for k in fields)
+                summaries = (["\n\n".join(str(sections.get(k, "")) for k in fields if sections.get(k))] if edited or collection in {"objects", "locations"} or (collection == "characters" and unified_characters) else
+                             ["\n\n".join(str(report.get(k, "")) for k in fields) for report in conversations])
+                for summary in summaries:
+                    for summary_part in source_chunks(summary, min(limit, 6000)):
+                        if not summary_part.strip():
+                            continue
+                        historical_context = "\n".join(period_context(r) for r in continuity["eras"])
+                        instruction = prompts[collection + "_profiles"]
+                        if historical_context:
+                            instruction += "\nERA: " + historical_context + "\nRespect the applicable period. For a recurring entity use its initial appearance; do not mix technologies or clothing across periods."
+                        result = structured(schema, instruction, summary_part,
+                                            f"conversation: convert {collection} summary to JSON")
+                        add_simple_profiles(continuity[collection], result.get(collection), name_key,
+                                            duration, warnings)
+                        publish("continuity")
 
-    for collection in ("characters", "locations", "objects"):
-        clean_names(continuity.get(collection, []))
-    if selection["plan"] == "full" and continuity["characters"]:
-        from app.core.storyboard_character_changes import build_character_states
-        state_sections = dict(sections)
-        if unified_characters and sections.get("characters") == checkpoint.get("original", {}).get("characters"):
-            # Unification is not a user edit: keep passage-local change evidence.
-            state_sections["characters"] = "\n\n".join(c["characters"] for c in conversations)
-            if sections.get("appearance") == checkpoint.get("original", {}).get("appearance"):
-                state_sections["appearance"] = "\n\n".join(c["appearance"] for c in conversations)
-        build_character_states(continuity["characters"], conversations, state_sections,
-                               text, units, duration, structured, warn, check, instructions=prompts)
+        for collection in ("characters", "locations", "objects"):
+            clean_names(continuity.get(collection, []))
+        if selection["plan"] == "full" and continuity["characters"]:
+            from app.core.storyboard_character_changes import build_character_states
+            state_sections = dict(sections)
+            if unified_characters and sections.get("characters") == checkpoint.get("original", {}).get("characters"):
+                # Unification is not a user edit: keep passage-local change evidence.
+                state_sections["characters"] = "\n\n".join(c["characters"] for c in conversations)
+                if sections.get("appearance") == checkpoint.get("original", {}).get("appearance"):
+                    state_sections["appearance"] = "\n\n".join(c["appearance"] for c in conversations)
+            build_character_states(continuity["characters"], conversations, state_sections,
+                                   text, units, duration, structured, warn, check, instructions=prompts)
     publish("continuity")
-    proposals = {"scenes": []}
-    proposal_summaries = ([sections.get("scenes", "")]
-                          if sections.get("scenes") != checkpoint.get("original", {}).get("scenes") else
-                          [r["scenes"] for r in conversations])
-    for summary in proposal_summaries:
-        for summary_part in source_chunks(summary, min(limit, 6000)):
-            converted = structured(SCENE_SCHEMA,
-                prompts["scene_structure"],
-                summary_part, "conversation: convert scene summary to JSON")
-            proposals["scenes"].extend(converted.get("scenes", []))
-    aligned, issues = align_proposals(proposals.get("scenes", []), text, units)
-    if issues or not aligned:
-        invalid = {int(m.group(1)) - 1 for issue in issues if (m := re.match(r"Scene (\d+):", issue))}
-        repaired_positions = set()
-        for index in sorted(invalid):
-            if index in repaired_positions:
-                continue
-            scene = proposals["scenes"][index]
-            # Include the next neighbour: a bad quote can be shifted by one
-            # scene (e.g. gulls followed by boats), even if that next quote is
-            # literal. Fix their boundaries together without reordering titles.
-            repair_scenes = proposals["scenes"][index:index + 2]
-            previous = [quote_offsets(text, str(s.get("start_quote") or "")) for s in proposals["scenes"][:index]]
-            after = next((hits[0] for hits in reversed(previous) if len(hits) == 1), -1)
-            following = [quote_offsets(text, str(s.get("start_quote") or "")) for s in proposals["scenes"][index + len(repair_scenes):]]
-            before = next((hits[0] for hits in following if len(hits) == 1 and hits[0] > after), None)
-            candidates = anchor_candidates(scene, units, maximum=12, after=after, before=before)
-            if not candidates:
-                continue
-            repaired = structured(SCENE_SCHEMA,
-                f"Correct the start sentences for these {len(repair_scenes)} scenes using the source candidates. "
-                "Keep their titles and order. Match what each scene shows; the old quotes may belong to other scenes. "
-                "Copy the corresponding sentences exactly, in chronological order. Do not invent quotes.",
-                {"scenes": repair_scenes, "source_candidates": candidates},
-                f"conversation: repair scene anchor {index + 1}")
-            rows = repaired.get("scenes", [])
-            if len(rows) == len(repair_scenes):
-                for local, row in enumerate(rows):
-                    repair_scenes[local]["start_quote"] = row.get("start_quote", "")
-                    repaired_positions.add(index + local)
-        aligned, issues = align_proposals(proposals.get("scenes", []), text, units)
-    if issues or not aligned:
-        for issue in issues:
-            warn(issue)
-        aligned, approximations = approximate_alignment(proposals.get("scenes", []), text, units)
-        for message in approximations:
-            warn(message)
-        if not aligned:
-            raise p.VideoStoryboardPlanningError("Cannot align scenes without proposals and usable narration timings.")
+    aligned = []
+    reuse_anchors = (resumable and recovered_review.get("fingerprint") == key
+        and recovered_review.get("edited", {}).get("scenes") == sections.get("scenes")
+        and recovered_review.get("reports") == checkpoint.get("reports"))
+    cached_fragments = {f.get("excerpt"): f for f in recovery.get("alignment_debug", {}).get("fragments", [])} if reuse_anchors else {}
+    for excerpt in reviewed_excerpts(conversations, str(sections.get("scenes") or ""),
+                                     str(checkpoint.get("original", {}).get("scenes") or "")):
+        try:
+            aligned.extend(plan_excerpt(excerpt, units, structured, prompts["scene_structure"], warn, check, scene_alignment,
+                                        cached=cached_fragments.get(excerpt["number"])))
+        except p.VideoStoryboardPlanningError as exc:
+            warn(str(exc))
+            publish("alignment_failed")
+            raise
+        publish("alignment")
+    if not aligned:
+        raise p.VideoStoryboardPlanningError("No validated scenes were obtained from the source passages.")
     for proposal in aligned:
         if not proposal.get("alignment_approximate") and proposal["quote_offset"] != proposal["unit"]["text_start"]:
             warnings.append(f"{proposal['title']}: start quote is inside a narration cue; using its start time (not word-level alignment).")
@@ -718,40 +674,66 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
     # First picture covers the introduction/silence; subsequent pictures start
     # at their cited source cue. Quote-to-cue alignment is not word-level ASR.
     aligned[0]["aligned_start_seconds"] = 0.0
+    aligned = consolidate_beats(aligned, duration, warn)
     for i, proposal in enumerate(aligned):
         check()
         start = proposal["aligned_start_seconds"]
         end = aligned[i + 1]["aligned_start_seconds"] if i + 1 < len(aligned) else duration
-        text_start = 0 if i == 0 else proposal["unit"]["text_start"]
-        text_end = aligned[i + 1]["unit"]["text_start"] if i + 1 < len(aligned) else len(text)
         # Split AI-proposed scenes using the user's maximum shot duration. Each prompt receives
         # only the narration currently spoken, so later actions cannot be pulled forward.
         maximum = max(4, min(60, float(settings.get("scene", {}).get("maximum_seconds") or 8)))
-        count = max(1, math.ceil((end - start) / maximum))
-        intervals = [(start + (end - start) * j / count, start + (end - start) * (j + 1) / count)
-                     for j in range(count)]
-        boundaries = {start, end, *(a for a, _ in intervals)}
+        boundaries = set()
         for collection in ("characters", "locations"):
             for record in continuity[collection]:
                 boundaries.update(s["from_seconds"] for s in record["states"][1:]
                                   if start < s["from_seconds"] < end)
         boundaries.update(t for t in era_boundaries(continuity) if start < t < end)
-        ordered = sorted(boundaries)
-        intervals = list(zip(ordered, ordered[1:]))
+        intervals = frame_intervals(start, end, maximum, boundaries)
         count = len(intervals)
         assignments = []
         for a, b in intervals:
-            active_units = [u for u in units if u["start_seconds"] < b and u["end_seconds"] > a
-                            and u["text_start"] < text_end and u["text_end"] > text_start]
+            active_units = [u for u in units if u["start_seconds"] < b and u["end_seconds"] > a]
+            hold = not active_units
+            if hold:
+                # Silence holds its preceding picture; leading silence uses the opening.
+                active_units = [next((u for u in reversed(units) if u["end_seconds"] <= a), units[0])]
             assignments.append({"narration": " ".join(u["text"] for u in active_units), "start": a, "end": b,
-                                "units": active_units or [proposal["unit"]], "era": period_context(active_era(continuity, a), include_visual_context=era_visual_context)})
-        scene_context = next((r.get("story_summary", "") for r in conversations
-                              if r["start"] <= proposal["quote_offset"] < r["start"] + len(r["text"])), "")
-        if sections.get("characters") != checkpoint.get("original", {}).get("characters"):
-            scene_context = sections.get("characters", "")
-        visual_instruction = (prompts["scene_visuals"])
-        visual_input = {"scene": proposal["title"], "intervals": [
-            {"narration": a["narration"], **({"ERA": a["era"]} if a["era"] else {})} for a in assignments],
+                                "units": active_units, "hold": hold,
+                                "era": period_context(active_era(continuity, a), include_visual_context=era_visual_context)})
+        reused = 0
+        for j, assignment in enumerate(assignments):
+            if len(scenes) >= len(saved_scenes):
+                break
+            current_era = active_era(continuity, assignment["start"])
+            restored = restored_scene(saved_scenes[len(scenes)], assignment, proposal,
+                index=len(scenes) + 1, semantic_index=i + 1,
+                coverage_index=j + 1, coverage_count=count,
+                era=period_name(current_era) if current_era else era,
+                era_state_id=current_era.get("id", ""),
+                coordinate_basis=source_alignment["coordinate_basis"])
+            if restored is None:
+                raise p.VideoStoryboardPlanningError(
+                    f"Saved scene {len(scenes) + 1} does not match the reconstructed narration, timing or context. "
+                    "Saved prompts were preserved. Restore the previous settings or uncheck Resume saved analysis "
+                    "to start a new analysis.")
+            scenes.append(restored)
+            reused += 1
+        if protect_saved_scenes and len(scenes) == len(saved_scenes):
+            protect_saved_scenes = False
+            warn(f"Resuming saved analysis: reused {len(saved_scenes)} image prompts without new model requests.")
+            publish("scenes")
+        if reused == count:
+            continue
+        pending_assignments = assignments[reused:]
+        scene_context = " ".join(u["text"] for u in [u for u in units if u["end_seconds"] <= start][-2:])
+        visual_instruction = (prompts["scene_visuals"] +
+            " Write the visual field in English even when narration is in another language. "
+            "Illustrate only the supplied interval narration as a single still image. "
+            "Context is preceding narration for pronouns only; do not depict its events again. "
+            "Use empty reference arrays for any empty profile collection.")
+        visual_input = {"intervals": [
+            {"narration": a["narration"], **({"hold_previous_action": True} if a["hold"] else {}),
+             **({"ERA": a["era"]} if a["era"] else {})} for a in pending_assignments],
              "context": scene_context, "directions": sections.get("directions", ""),
              "profiles": {k: [r["name"] for r in continuity[k]] for k in ("characters", "locations")}}
         if selection["objects"]:
@@ -759,12 +741,13 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
             visual_instruction += " List only supplied important objects actually visible in this interval in objects; otherwise use an empty list."
         results = request_visuals(structured, visual_input, visual_instruction,
                                  f"conversation: image prompts {i + 1}/{len(aligned)}", warn, check)
-        resolve_references(results, assignments, continuity, structured, warn, check)
-        for j, (assignment, visual) in enumerate(zip(assignments, results)):
+        resolve_references(results, pending_assignments, continuity, structured, warn, check,
+                           enabled=[k for k in ("characters", "locations") if selection[k]])
+        for j, (assignment, visual) in enumerate(zip(pending_assignments, results), start=reused):
             a, b = assignment["start"], assignment["end"]
             selected_units = assignment["units"]
             current_era = active_era(continuity, a)
-            scenes.append({"id": f"{len(scenes) + 1:03d}", "duration": round(b - a, 3),
+            scenes.append({"id": f"{len(scenes) + 1:03d}", "duration": round(round(b, 3) - round(a, 3), 3),
                 "start_seconds": round(a, 3), "aligned_start_seconds": round(a, 3),
                 "narration": assignment["narration"], "prompt": visual["visual"].strip(),
                 "characters": bind_visible_names(visual.get("characters", []), continuity["characters"],
@@ -775,6 +758,9 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                 "transition": "fade", "image_path": "", "status": "planned",
                 "semantic_scene_id": f"{i + 1:03d}", "semantic_title": proposal["title"],
                 "source_proposal_id": str(proposal.get("source_proposal_id") or ""),
+                "source_excerpt_id": str(proposal.get("source_excerpt_id") or ""),
+                "source_coordinate_basis": source_alignment["coordinate_basis"],
+                "consolidated_proposal_ids": proposal.get("consolidated_proposal_ids", []),
                 "coverage_index": j + 1, "coverage_count": count, "coverage_prompt_version": 2,
                 "source_unit_start": selected_units[0]["id"], "source_unit_end": selected_units[-1]["id"],
                 "source_text_start": selected_units[0]["text_start"], "source_text_end": selected_units[-1]["text_end"],
@@ -785,6 +771,10 @@ def plan_conversation(source, settings, *, progress=None, partial=None, cancelle
                 scenes[-1]["generation_overrides"] = {"object_state_ids": _names(
                     visual.get("objects", []), continuity["objects"], max(a, selected_units[0]["start_seconds"]))}
         publish("scenes")
+    if protect_saved_scenes:
+        raise p.VideoStoryboardPlanningError(
+            "Saved scenes extend beyond the reconstructed analysis. Saved prompts were preserved. "
+            "Restore the previous settings or uncheck Resume saved analysis to start a new analysis.")
     check()
     if progress:
         progress(stage, stage)

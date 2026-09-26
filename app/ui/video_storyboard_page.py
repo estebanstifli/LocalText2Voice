@@ -174,6 +174,13 @@ class StoryboardScene:
     alignment_confidence: float = 0.0
     semantic_scene_id: str = ""
     source_proposal_id: str = ""
+    source_excerpt_id: str = ""
+    source_coordinate_basis: str = ""
+    semantic_title: str = ""
+    start_quote: str = ""
+    alignment_method: str = ""
+    alignment_approximate: bool = False
+    consolidated_proposal_ids: list[str] = field(default_factory=list)
     coverage_index: int = 1
     coverage_count: int = 1
     shot_strategy: str = "semantic_shot"
@@ -247,6 +254,14 @@ class StoryboardScene:
             ),
             semantic_scene_id=str(value.get("semantic_scene_id") or ""),
             source_proposal_id=str(value.get("source_proposal_id") or ""),
+            source_excerpt_id=str(value.get("source_excerpt_id") or ""),
+            source_coordinate_basis=str(value.get("source_coordinate_basis") or ""),
+            semantic_title=str(value.get("semantic_title") or ""),
+            start_quote=str(value.get("start_quote") or ""),
+            alignment_method=str(value.get("alignment_method") or ""),
+            alignment_approximate=bool(value.get("alignment_approximate", False)),
+            consolidated_proposal_ids=[str(x) for x in value.get("consolidated_proposal_ids", [])]
+                if isinstance(value.get("consolidated_proposal_ids"), list) else [],
             coverage_index=max(1, _safe_int(value.get("coverage_index"), 1)),
             coverage_count=max(1, _safe_int(value.get("coverage_count"), 1)),
             shot_strategy=str(value.get("shot_strategy") or "semantic_shot"),
@@ -296,6 +311,13 @@ class StoryboardScene:
             "alignment_confidence": self.alignment_confidence,
             "semantic_scene_id": self.semantic_scene_id,
             "source_proposal_id": self.source_proposal_id,
+            "source_excerpt_id": self.source_excerpt_id,
+            "source_coordinate_basis": self.source_coordinate_basis,
+            "semantic_title": self.semantic_title,
+            "start_quote": self.start_quote,
+            "alignment_method": self.alignment_method,
+            "alignment_approximate": self.alignment_approximate,
+            "consolidated_proposal_ids": list(self.consolidated_proposal_ids),
             "coverage_index": self.coverage_index,
             "coverage_count": self.coverage_count,
             "shot_strategy": self.shot_strategy,
@@ -2605,6 +2627,17 @@ class VideoStoryboardPage(QWidget):
             self._show_selected_scene(None)
         self._reset_scene_history()
 
+    def apply_imported_plan(self, plan: dict[str, Any]) -> None:
+        """Install a validated external timeline as one undoable edit."""
+        before = self._scene_snapshot()
+        before["plan"] = deepcopy(self._plan_metadata)
+        history = deepcopy(self._undo_stack)
+        self.set_analysis_result(plan)
+        self._undo_stack = history
+        self._push_undo_snapshot(before)
+        self._remember_scene_snapshot()
+        self.scenesChanged.emit(self.scenes())
+
     def set_analysis_result(
         self,
         values: Iterable[StoryboardScene | dict[str, Any]] | dict[str, Any],
@@ -3360,6 +3393,11 @@ class VideoStoryboardPage(QWidget):
             return
         self._inspector_scene_id = scene.scene_id
         number = self._scenes.index(scene) + 1
+        self.scene_meta_label.setToolTip("\n".join(part for part in (
+            scene.semantic_title, scene.start_quote,
+            self.tr_text("storyboard_timing_estimated", "Estimated within a narration segment")
+                if scene.alignment_approximate else scene.alignment_method,
+            scene.source_proposal_id) if part))
         self.scene_meta_label.setText(
             self.tr_text(
                 "video_storyboard_scene_meta",
@@ -3370,6 +3408,7 @@ class VideoStoryboardPage(QWidget):
                 ),
                 duration=scene.duration_seconds,
             )
+            + (" · ≈" if scene.alignment_approximate else "")
         )
         self.current_preview.set_image(
             scene.image_path,
@@ -3488,6 +3527,8 @@ class VideoStoryboardPage(QWidget):
         self._remember_scene_snapshot()
 
     def _editable_prompt_text(self, scene: StoryboardScene) -> str:
+        if scene.generation_overrides.get("prompt_mode") == "complete":
+            return str(scene.generation_overrides.get("raw_prompt") or scene.prompt or "").strip()
         prompt = str(scene.prompt or "").strip()
         shot = str(scene.shot or "").strip()
         if not shot:
@@ -3502,6 +3543,11 @@ class VideoStoryboardPage(QWidget):
         scene: StoryboardScene,
         editable_text: str,
     ) -> None:
+        if scene.generation_overrides.get("prompt_mode") == "complete":
+            scene.generation_overrides.pop("raw_prompt", None)
+            scene.prompt = str(editable_text or "").strip()
+            scene.shot = ""
+            return
         marker = "\n\nSHOT AND COMPOSITION:"
         text = strip_storyboard_prompt_markers(
             str(editable_text or "").strip(),
@@ -3617,6 +3663,8 @@ class VideoStoryboardPage(QWidget):
         self._finish_prompt_history()
         current = self._scene_snapshot()
         target = self._undo_stack.pop()
+        if "plan" in target:
+            current["plan"] = deepcopy(self._plan_metadata)
         self._redo_stack.append(current)
         self._apply_scene_snapshot(target)
 
@@ -3626,6 +3674,8 @@ class VideoStoryboardPage(QWidget):
         self._finish_prompt_history()
         current = self._scene_snapshot()
         target = self._redo_stack.pop()
+        if "plan" in target:
+            current["plan"] = deepcopy(self._plan_metadata)
         self._undo_stack.append(current)
         self._apply_scene_snapshot(target)
 
@@ -3633,6 +3683,11 @@ class VideoStoryboardPage(QWidget):
         raw_scenes = snapshot.get("scenes", [])
         self._history_restoring = True
         try:
+            if "plan" in snapshot:
+                self._plan_metadata = deepcopy(snapshot["plan"])
+                self._rendered_output_path = str(self._plan_metadata.get("rendered_output_path") or "")
+                self._sync_prompt_markup_plan()
+                self._sync_project_controls()
             self._scenes = [
                 StoryboardScene.from_value(value, index)
                 for index, value in enumerate(raw_scenes)

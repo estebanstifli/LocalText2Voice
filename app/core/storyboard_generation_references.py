@@ -14,9 +14,11 @@ def litellm_reference_generation(references, config, prompt, width, height):
     api_key = str(config.get("api_key") or "").strip()
     timeout = float(config.get("timeout_seconds") or 300)
     root = str(config.get("base_url") or "").strip().rstrip("/")
+    from app.core.storyboard_image_quality import image_quality_parameters
+    quality = image_quality_parameters(model, config.get("quality", "auto"))
     try:
         if not root:
-            return _litellm_direct_edit(references, model, prompt, api_key, timeout, width, height)
+            return _litellm_direct_edit(references, model, prompt, api_key, timeout, width, height, **quality)
         endpoint = root if root.endswith("/images/edits") else f"{root}/images/edits"
         field = "image[]" if len(references) > 1 else "image"
         files = [(field, Path(ref["path"])) for ref in references]
@@ -24,7 +26,7 @@ def litellm_reference_generation(references, config, prompt, width, height):
         from app.core.storyboard_image_sizes import image_parameters
         import json
         sizing = image_parameters(model, width, height)
-        fields = {"model": model, "prompt": prompt, "response_format": "b64_json",
+        fields = {"model": model, "prompt": prompt, "response_format": "b64_json", **quality,
                   **{k: json.dumps(v) if isinstance(v, dict) else v for k, v in sizing.items()}}
         try:
             return _multipart_json(endpoint, fields, files, timeout, headers)
@@ -36,7 +38,7 @@ def litellm_reference_generation(references, config, prompt, width, height):
             if not (("http 400" in detail or "http 422" in detail)
                     and ("size" in detail or "response_format" in detail)):
                 raise
-            return _multipart_json(endpoint, {"model": model, "prompt": prompt}, files, timeout, headers)
+            return _multipart_json(endpoint, {"model": model, "prompt": prompt, **quality}, files, timeout, headers)
     except VideoStoryboardImageEditError as exc:
         raise VideoStoryboardImageError(
             f"The selected generation model ({model}) could not generate with reference images: {exc}"

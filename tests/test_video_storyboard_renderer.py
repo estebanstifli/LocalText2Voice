@@ -18,7 +18,7 @@ from app.core.video_storyboard_renderer import (
 from app.utils.ffmpeg_utils import FFmpegError
 
 
-def test_207_scene_assembly_stays_below_windows_command_limit(tmp_path, monkeypatch):
+def test_349_scene_assembly_bounds_inputs_and_windows_command_length(tmp_path, monkeypatch):
     from app.core import video_storyboard_renderer as renderer
 
     project = tmp_path / ("Proyecto largo con espacios y acentos áé " + "x" * 65)
@@ -40,16 +40,16 @@ def test_207_scene_assembly_stays_below_windows_command_limit(tmp_path, monkeypa
             script_index = command.index("-filter_complex_script")
             script = cwd / command[script_index + 1]
             graph = script.read_text(encoding="utf-8")
-            assert graph.count("xfade=") == 206
-            assert "[207:a]" in graph and "[aout]" in graph
-            legacy = command[:]
-            legacy[script_index:script_index + 2] = ["-filter_complex", graph]
+            assert graph.count("xfade=") <= renderer._ASSEMBLY_BATCH_SIZE
+            assert command.count("-i") <= renderer._ASSEMBLY_BATCH_SIZE + 1
             for i, value in enumerate(command):
                 if value == "-i":
-                    path = Path(command[i + 1])
-                    assert (cwd / path).is_file()
-                    legacy[i + 1] = str(cwd / path)
-            assert len(subprocess.list2cmdline(legacy).encode("utf-16-le")) // 2 > 32767
+                    assert (cwd / command[i + 1]).is_file()
+            if "[aout]" in graph:
+                assert "[1:a]" in graph
+                assert command[command.index("-c:v") + 1] == "copy"
+                manifest = cwd / command[command.index("-i") + 1]
+                assert manifest.read_text(encoding="utf-8").count("file '") == 44
             assert Path(command[-1]).is_absolute()
             assemblies.append((cwd, units))
         Path(command[-1]).write_bytes(b"mock encoded video")
@@ -57,12 +57,12 @@ def test_207_scene_assembly_stays_below_windows_command_limit(tmp_path, monkeypa
 
     monkeypatch.setattr(renderer.subprocess, "Popen", fake_popen)
     result = render_storyboard_video(
-        [{"image_path": str(frame), "duration_seconds": 1, "transition": "fade"}] * 207,
+        [{"image_path": str(frame), "duration_seconds": 1, "transition": "fade"}] * 349,
         audio, output,
         {"video": {"transition_seconds": .1}},
     )
-    assert result["scene_count"] == 207 and output.is_file()
-    assert len(assemblies) == 1
+    assert result["scene_count"] == 349 and output.is_file()
+    assert len(assemblies) == 45
     assert assemblies[0][1] < 8000
     assert not assemblies[0][0].exists()
 
@@ -350,3 +350,55 @@ def test_renderer_preserves_a_one_frame_video_scene(tmp_path):
     assert Path(result["output_path"]).stat().st_size > 1000
     check = subprocess.run([str(executable), "-v", "error", "-i", result["output_path"], "-map", "0:v:0", "-f", "null", "-"], capture_output=True)
     assert check.returncode == 0, check.stderr
+
+
+@pytest.mark.parametrize("transition", ["fade", "none", "wipeleft"])
+def test_batched_render_preserves_boundary_frames_and_duration(tmp_path, monkeypatch, transition):
+    from app.core import video_storyboard_renderer as renderer
+    audio = tmp_path / "audio.wav"
+    _write_silent_wav(audio, 3)
+    scenes = []
+    for i, color in enumerate([(240, 10, 10), (10, 240, 10), (10, 10, 240), (240, 240, 10), (10, 240, 240)]):
+        frame = tmp_path / f"frame{i}.ppm"
+        _write_ppm(frame, *color)
+        scenes.append({"image_path": str(frame), "duration_seconds": .6,
+                       "motion": "none", "transition": transition})
+    settings = {"image": {"width": 64, "height": 64}, "video": {
+        "fps": 30, "transition_seconds": .2, "supersample": 1,
+        "preset": "ultrafast", "crf": 0, "clip_audio_enabled": False}}
+    baseline, batched = tmp_path / "baseline.mp4", tmp_path / "batched.mp4"
+    render_storyboard_video(scenes, audio, baseline, settings)
+    monkeypatch.setattr(renderer, "_ASSEMBLY_BATCH_SIZE", 2)
+    render_storyboard_video(scenes, audio, batched, settings)
+    def decode(path):
+        return subprocess.run([str(Path("ffmpeg/ffmpeg.exe").resolve()),
+            "-v", "error", "-i", str(path), "-map", "0:v:0",
+            "-pix_fmt", "yuv420p", "-f", "rawvideo", "pipe:1"],
+            capture_output=True, check=True).stdout
+    original, blocks = decode(baseline), decode(batched)
+    assert len(blocks) == len(original) == 90 * 64 * 64 * 3 // 2
+    # Allow rounding/color conversion at a wipe's one-pixel edge, while
+    # comparing each frame at its exact timestamp (no temporal tolerance).
+    frame_size = 64 * 64 * 3 // 2
+    for index in range(90):
+        actual = blocks[index * frame_size:(index + 1) * frame_size]
+        expected = original[index * frame_size:(index + 1) * frame_size]
+        error = sum(abs(a - b) for a, b in zip(actual, expected)) / frame_size
+        assert error < 2, (index, error)
+
+
+def test_batches_do_not_accumulate_duration_rounding(tmp_path):
+    frame, audio, output = tmp_path / "frame.ppm", tmp_path / "audio.wav", tmp_path / "result.mp4"
+    _write_ppm(frame, 50, 140, 200)
+    _write_silent_wav(audio, 3)
+    scenes = [{"image_path": str(frame), "duration_seconds": .137,
+               "transition": "fade" if i % 3 else "none"} for i in range(17)]
+    render_storyboard_video(scenes, audio, output, {
+        "image": {"width": 64, "height": 64}, "video": {
+            "fps": 30, "transition_seconds": .04, "supersample": 1,
+            "preset": "ultrafast", "clip_audio_enabled": False}})
+    decoded = subprocess.run([str(Path("ffmpeg/ffmpeg.exe").resolve()),
+        "-v", "error", "-i", str(output), "-map", "0:v:0",
+        "-pix_fmt", "yuv420p", "-f", "rawvideo", "pipe:1"],
+        capture_output=True, check=True)
+    assert len(decoded.stdout) == round(17 * .137 * 30) * 64 * 64 * 3 // 2

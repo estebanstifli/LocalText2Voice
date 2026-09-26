@@ -10,7 +10,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -518,6 +518,35 @@ class MainWindowUITests(unittest.TestCase):
             transcript,
         )
 
+    def test_qwen_voice_readiness_checks_selected_model_only(self) -> None:
+        for selected_model in ("base_1_7b", "custom_voice_0_6b"):
+            for installed_model in ("base_1_7b", "custom_voice_0_6b", None):
+                with self.subTest(selected=selected_model, installed=installed_model):
+                    manager = SimpleNamespace(
+                        is_installed=Mock(
+                            side_effect=lambda model_id="custom_voice_0_6b": (
+                                model_id == installed_model
+                            )
+                        )
+                    )
+                    holder = SimpleNamespace(
+                        qwen_manager=manager,
+                        kokoro_python_manager=None,
+                        chatterbox_manager=None,
+                        omnivoice_manager=None,
+                        f5_russian_manager=None,
+                        _selected_qwen_model_id=lambda: selected_model,
+                    )
+                    holder._qwen_model_is_installed = lambda model_id: (
+                        MainWindow._qwen_model_is_installed(holder, model_id)
+                    )
+
+                    self.assertEqual(
+                        MainWindow._voice_engine_is_ready(holder, "qwen"),
+                        selected_model == installed_model,
+                    )
+                    manager.is_installed.assert_called_once_with(selected_model)
+
     def test_voice_library_row_selects_qwen_base_reference_voice(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)
@@ -566,8 +595,14 @@ class MainWindowUITests(unittest.TestCase):
         window.tts_engine_combo.blockSignals(False)
 
         with (
-            patch.object(window.qwen_manager, "is_installed", return_value=True),
+            patch.object(
+                window.qwen_manager,
+                "is_installed",
+                side_effect=lambda model_id=None: model_id == "base_1_7b",
+            ),
             patch.object(window, "_save_settings"),
+            patch.object(window, "_show_error") as show_error,
+            patch.object(window, "_test_qwen_voice") as test_voice,
         ):
             window._refresh_voices_page()
             target_row = next(
@@ -576,11 +611,16 @@ class MainWindowUITests(unittest.TestCase):
                 if window.voices_table.item(row, 1).text() == second.name
             )
             window.voices_table.cellClicked.emit(target_row, 1)
+            window._test_voice_page_row_data(window.voice_page_rows[target_row])
 
+        show_error.assert_not_called()
+        test_voice.assert_called_once_with()
         self.assertEqual(window.qwen_reference_picker.path(), second_path)
         self.assertEqual(
             window.qwen_reference_text_edit.toPlainText(), second.ref_text
         )
+        self.assertEqual(window.qwen_language_combo.currentData(), "English")
+        self.assertEqual(window.voices_table.rowCount(), 2)
         self.assertEqual(window.voices_table.item(target_row, 0).text(), "Selected")
 
     def test_qwen_voices_refresh_checks_engine_readiness_only_once(self) -> None:
@@ -601,7 +641,7 @@ class MainWindowUITests(unittest.TestCase):
             window._refresh_voices_page()
 
         self.assertEqual(window.voices_table.rowCount(), 90)
-        self.assertEqual(is_installed.call_count, 1)
+        is_installed.assert_called_once_with("custom_voice_0_6b")
 
     def test_qwen_base_voices_page_exposes_cloning_actions(self) -> None:
         window = MainWindow()
@@ -1419,6 +1459,21 @@ class MainWindowUITests(unittest.TestCase):
         self.assertFalse(reset_file["review"]["enabled"])
         self.assertEqual(window.text_editor.toPlainText(), "Texto que no debe borrarse.")
         self.assertTrue(hasattr(window, "reset_settings_button"))
+
+    def test_dialogue_grouping_setting_defaults_on_and_saves(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        config_path = Path(temporary.name) / 'config.json'
+        with patch('app.ui.main_window.SettingsManager', return_value=SettingsManager(config_path)):
+            window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        self.assertTrue(window.group_short_dialogue_checkbox.isChecked())
+        window.group_short_dialogue_checkbox.setChecked(False)
+        window._save_settings()
+        self.assertFalse(SettingsManager(config_path).settings['group_short_dialogue'])
+        self.assertFalse(window._bulk_generation_settings_snapshot()['group_short_dialogue'])
+        window._restore_settings_widgets()
+        self.assertFalse(window.group_short_dialogue_checkbox.isChecked())
 
     def test_switching_to_russian_keeps_russian_selected(self) -> None:
         temporary = tempfile.TemporaryDirectory()

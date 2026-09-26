@@ -6,6 +6,94 @@ from app.core.text_processor import TextProcessor
 
 
 class TextProcessorTests(unittest.TestCase):
+    def test_dialogue_grouping_can_be_disabled(self) -> None:
+        turns = ['-Hola.', '-Hola, ¿cómo estás?', '-Estoy muy bien.', '-Genial, vámonos.']
+        for splitter in (TextProcessor.split_paragraph_chunks, TextProcessor.split_short_sentence_chunks):
+            for dash in ('-', '–', '—'):
+                lines = [dash + t[1:] for t in turns]
+                for separator in ('\n', '\n\n'):
+                    chunks = splitter(separator.join(lines), max_chars=300)
+                    self.assertEqual([c.text for c in chunks], ['\n'.join(lines)])
+                chunks = splitter('\n\n'.join(lines), max_chars=300, group_short_dialogue=False)
+                self.assertEqual([c.text for c in chunks], lines)
+
+    def test_dialogue_packs_turns_and_keeps_group_pause_metadata(self) -> None:
+        turn = '—Esta intervención contiene varias palabras.'
+        source = '\n\n'.join([turn] * 9) + '\n\nNarración final.'
+        for splitter in (TextProcessor.split_paragraph_chunks, TextProcessor.split_short_sentence_chunks):
+            chunks = splitter(source, max_chars=300)
+            self.assertEqual(chunks[0].text, '\n'.join([turn] * 6))
+            self.assertEqual(chunks[1].text, '\n'.join([turn] * 3))
+            self.assertEqual([c.ends_paragraph for c in chunks], [False, True, True])
+            self.assertEqual([c.paragraph_number for c in chunks], [1, 1, 2])
+            self.assertEqual(chunks[0].paragraph_length, len('\n'.join([turn] * 9)))
+            self.assertTrue(all(len(c.text) <= 300 for c in chunks))
+
+    def test_long_dialogue_turn_uses_safe_splits(self) -> None:
+        source = '-Hola.\n\n-Primero, ' + 'palabra ' * 100 + 'fin.\n\n-Adiós.'
+        for splitter in (TextProcessor.split_paragraph_chunks, TextProcessor.split_short_sentence_chunks):
+            chunks = splitter(source, max_chars=300)
+            self.assertTrue(all(0 < len(c.text) <= 300 for c in chunks))
+            self.assertEqual(' '.join(' '.join(c.text.split()) for c in chunks), ' '.join(source.split()))
+            self.assertTrue(chunks[-1].ends_paragraph)
+            self.assertFalse(any(c.ends_paragraph for c in chunks[:-1]))
+
+    def test_dialogue_does_not_merge_across_narration_headings_or_plain_lists(self) -> None:
+        paragraphs = ['-Hola.', 'Narración.', '-Adiós.', 'Capítulo 2', '-Otra frase.', '- pan', '- leche']
+        for splitter in (TextProcessor.split_paragraph_chunks, TextProcessor.split_short_sentence_chunks):
+            chunks = splitter('\n\n'.join(paragraphs), max_chars=300)
+            self.assertEqual([c.text for c in chunks], paragraphs)
+
+    def chunk_variants(self, source: str, limit: int) -> list[list[str]]:
+        return [
+            TextProcessor.split_safe_chunks(source, limit),
+            [c.text for c in TextProcessor.split_paragraph_chunks(source, limit)],
+            [c.text for c in TextProcessor.split_short_sentence_chunks(
+                source, target_chars=limit, max_chars=limit, min_chars=1
+            )],
+        ]
+
+    def test_sentence_endings_take_priority_over_commas(self) -> None:
+        for ending in ('.', '?', '!', '…', '."', '?”', '!»'):
+            first = 'Una frase completa' + ending
+            second = 'Otra frase, con una coma y varias palabras.'
+            source = first + ' ' + second
+            for chunks in self.chunk_variants(source, len(second)):
+                with self.subTest(ending=ending, chunks=chunks):
+                    self.assertEqual(chunks, [TextProcessor.normalize_text(first), second])
+
+    def test_long_sentence_prefers_clause_boundary(self) -> None:
+        for separator in (',', ';', ':'):
+            first = 'Primera parte de la frase' + separator
+            second = 'segunda parte con varias palabras.'
+            for chunks in self.chunk_variants(first + ' ' + second, 45):
+                self.assertEqual(chunks, [first, second])
+
+    def test_oversized_clause_respects_limit_and_preserves_content(self) -> None:
+        source = 'Inicio de la frase, ' + ('palabra ' * 45).strip() + '.'
+        for chunks in self.chunk_variants(source, 100):
+            self.assertEqual(chunks[0], 'Inicio de la frase,')
+            self.assertTrue(all(0 < len(c) <= 100 for c in chunks))
+            self.assertEqual(' '.join(chunks), source)
+
+    def test_unbroken_word_after_sentence_keeps_order(self) -> None:
+        source = 'Inicio. ' + 'x' * 120
+        for chunks in self.chunk_variants(source, 40):
+            self.assertTrue(all(0 < len(c) <= 40 for c in chunks))
+            self.assertEqual(''.join(chunks), source.replace(' ', ''))
+
+    def test_clause_splits_keep_paragraph_metadata(self) -> None:
+        paragraph = 'Primera parte de la frase, segunda parte con varias palabras.'
+        for chunks in (
+            TextProcessor.split_paragraph_chunks(paragraph + '\n\nFinal.', 45),
+            TextProcessor.split_short_sentence_chunks(
+                paragraph + '\n\nFinal.', 45, 45, 1
+            ),
+        ):
+            self.assertEqual([c.ends_paragraph for c in chunks], [False, True, True])
+            self.assertEqual([c.paragraph_number for c in chunks], [1, 1, 2])
+            self.assertEqual(chunks[0].paragraph_length, len(paragraph))
+
     def test_normalize_preserves_paragraphs(self) -> None:
         source = " First   paragraph.\r\n\r\nSecond\u00a0paragraph. \u200b"
         self.assertEqual(

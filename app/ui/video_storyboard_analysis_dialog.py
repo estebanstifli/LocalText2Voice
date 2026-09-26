@@ -197,7 +197,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
         review_help = QLabel(self.tr_text("storyboard_review_help", "El proceso se pausará para corregir el resumen. Puedes guardarlo y continuar más tarde. En Solo escenas añade un breve resumen visual."))
         review_help.setWordWrap(True)
         setup_layout.addWidget(review_help)
-        self.resume_checkbox = QCheckBox(self.tr_text("storyboard_review_resume", "Retomar el borrador de revisión guardado, si coincide con este texto y configuración"))
+        self.resume_checkbox = QCheckBox(self.tr_text("storyboard_analysis_resume_saved", "Resume saved analysis and reports if the text and settings match"))
         self.resume_checkbox.setChecked(self.resume_available)
         self.resume_checkbox.setVisible(self.resume_available)
         setup_layout.addWidget(self.resume_checkbox)
@@ -325,6 +325,7 @@ class VideoStoryboardAnalysisDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         self.tabs = QTabWidget()
+        self.quality_view = self._log_view()
         self.activity_view = self._log_view()
         self.request_view = self._log_view()
         self.response_view = self._log_view()
@@ -770,6 +771,19 @@ class VideoStoryboardAnalysisDialog(QDialog):
     def update_plan(self, plan: dict, *, final: bool = False) -> None:
         self._analysed_plan = plan
         self.sidebar.update_plan(plan, final=final)
+        diagnostics = plan.get("alignment_debug") or {}
+        if diagnostics:
+            fragments = diagnostics.get("fragments", [])
+            scenes = plan.get("scenes", [])
+            self.quality_view.setPlainText(self.tr_text(
+                "storyboard_alignment_report",
+                "Validated fragments: {valid}/{total}\nFrames with estimated sentence timing: {estimated}\n"
+                "Each scene is checked against its own narration passage. Estimates within audio segments are not word-level alignment.",
+                valid=sum(f.get("status") == "validated" for f in fragments), total=len(fragments),
+                estimated=sum(bool(s.get("alignment_approximate")) for s in scenes))
+                + "\n\n" + "\n".join(dict.fromkeys(diagnostics.get("warnings", []))))
+            if self.tabs.indexOf(self.quality_view) < 0:
+                self.tabs.addTab(self.quality_view, self.tr_text("storyboard_alignment_tab", "Analysis checks"))
         if not final:
             return
         continuity = plan.get("continuity") or {}

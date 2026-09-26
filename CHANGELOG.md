@@ -7,6 +7,44 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-26
+
+### Added
+
+- Added manual import and editing of timestamped storyboard prompts from TXT,
+  SRT or VTT, including validation, examples, undo/redo and an optional
+  complete-prompt mode for externally authored prompts.
+- Added source-aware scene alignment for long narration, with saved coordinate
+  provenance, Analysis checks, safer handling of repeated dialogue or refrains,
+  and clear approximate-timing markers where word timing is unavailable.
+- Added resumable storyboard analysis and visual-prompt generation that verifies
+  saved work before reuse and continues from the first missing scene.
+- Added configurable retries for temporary Ollama and LiteLLM analysis failures,
+  with cancellable backoff and no retries for authentication, credit or format
+  errors.
+- Added image-quality controls for compatible direct and LiteLLM image models,
+  plus a dedicated render dialog with progress, cancellation and CPU-thread
+  options.
+- Added an option to group short dialogue turns while preserving explicit voice
+  changes, pauses and line breaks.
+
+### Changed
+
+- Reduced the default TTS chunk limit to 300 characters and improved sentence
+  boundaries so generative engines receive safer, more natural chunks.
+- Expanded the Video Storyboard English and Spanish guides with the manual
+  prompt workflow, alignment safeguards, retry behaviour and resume rules.
+
+### Fixed
+
+- Prevented invalid scene quotes from being silently interpolated across distant
+  parts of a narration and preserved saved prompts when recovery cannot safely
+  continue.
+- Kept Qwen Base-only installations available to the Voice Library and
+  generation readiness checks.
+- Preserved full custom prompts through image regeneration without injecting
+  incompatible project style or context instructions.
+
 ## [2.1.0] - 2026-09-21
 
 ### Added

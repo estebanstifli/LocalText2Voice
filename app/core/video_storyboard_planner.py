@@ -17,6 +17,7 @@ from app.core.video_storyboard_styles import (
     storyboard_style,
 )
 from app.core.video_storyboard_appearance import selected_appearance
+from app.core.storyboard_llm_retry import retry_llm_request
 
 
 class VideoStoryboardPlanningError(RuntimeError):
@@ -198,7 +199,10 @@ def _find_text_offset(text: str, fragment: str, cursor: int) -> int:
     if found >= 0:
         return found
     found = text.casefold().find(fragment.casefold(), max(0, cursor))
-    return found if found >= 0 else max(0, cursor)
+    if found < 0:
+        raise VideoStoryboardPlanningError(
+            "A narration fragment could not be located in the analysis text. No estimated text offset was assigned.")
+    return found
 
 
 def _semantic_units(
@@ -234,6 +238,7 @@ def _semantic_units(
                     + (cue_end - cue_start) * end / cue_length,
                     "text_start": source_start + start,
                     "text_end": source_start + end,
+                    "timing_approximate": start != 0 or end != len(cue_text),
                 }
             )
     if not units:
@@ -499,6 +504,7 @@ def _text_chunks(text: str, limit: int) -> list[str]:
     return chunks or [text]
 
 
+@retry_llm_request
 def _request_free_text(
     settings: dict[str, Any],
     system: str,
@@ -744,6 +750,7 @@ def _request_free_text(
     return content.strip()
 
 
+@retry_llm_request
 def _request_plan(
     settings: dict[str, Any],
     schema: dict[str, Any] | None,
@@ -1179,6 +1186,7 @@ def _litellm_direct_completion(
     # not expose OpenAI-compatible structured-output controls. The system
     # prompt still requires strict JSON and the response is validated below.
     arguments["drop_params"] = True
+    arguments["num_retries"] = 0
     if api_key:
         arguments["api_key"] = api_key
     try:
@@ -1222,6 +1230,8 @@ def _litellm_direct_responses(
     arguments = dict(payload)
     arguments["timeout"] = timeout
     arguments["drop_params"] = True
+    arguments["max_retries"] = 0
+    arguments["num_retries"] = 0
     if api_key:
         arguments["api_key"] = api_key
     try:

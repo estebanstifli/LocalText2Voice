@@ -72,11 +72,14 @@ def mentioned_records(text, records):
     return result
 
 
-def resolve_references(visuals, assignments, continuity, request, warn, check):
+def resolve_references(visuals, assignments, continuity, request, warn, check, *, enabled=("characters", "locations")):
     """Batch only unresolved references. Never cache contextual pronouns as aliases."""
     pending = []
     for index, visual in enumerate(visuals):
         for collection in ("characters", "locations"):
+            if collection not in enabled:
+                visual[collection] = []
+                continue
             resolved = []
             for reference in visual.get(collection, []):
                 record = resolve(reference, continuity[collection])

@@ -33,8 +33,9 @@ class TextProcessor:
         r")",
         re.IGNORECASE,
     )
-    _sentence_boundary = re.compile(r"(?<=[.!?;…。！？；])\s+")
-    _sentence_piece = re.compile(r".+?(?:[.!?;…。！？；]+(?=\s+|$)|$)", re.DOTALL)
+    _sentence_piece = re.compile(
+        r".+?(?:[.!?…。！？]+[\"'”’»）)\]}]*(?=\s+|$)|$)", re.DOTALL
+    )
     _clause_boundary = re.compile(r"(?<=[,,:;…、，：；])\s+")
     _control_characters = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
     _horizontal_space = re.compile(r"[^\S\n]+")
@@ -139,11 +140,11 @@ class TextProcessor:
                 current = piece
                 return
             for smaller_piece in cls._split_oversized_piece(piece, max_chars):
+                if current:
+                    chunks.append(current)
+                    current = ""
                 if len(smaller_piece) == max_chars:
                     chunks.append(smaller_piece)
-                elif current:
-                    chunks.append(current)
-                    current = smaller_piece
                 else:
                     current = smaller_piece
 
@@ -159,6 +160,7 @@ class TextProcessor:
         cls,
         text: str,
         max_chars: int = 2500,
+        group_short_dialogue: bool = True,
     ) -> list[TextChunk]:
         """Split text safely while retaining real paragraph boundaries."""
         if max_chars < 1:
@@ -169,14 +171,12 @@ class TextProcessor:
             return []
 
         chunks: list[TextChunk] = []
-        paragraphs = [
-            paragraph.strip()
-            for paragraph in re.split(r"\n\s*\n", normalized)
-            if paragraph.strip()
-        ]
+        paragraphs = cls._tts_paragraphs(normalized, group_short_dialogue)
         for paragraph_number, paragraph in enumerate(paragraphs, start=1):
             pieces = (
-                [paragraph]
+                cls._split_dialogue_turns(paragraph, max_chars)
+                if group_short_dialogue and cls._is_dialogue(paragraph)
+                else [paragraph]
                 if len(paragraph) <= max_chars
                 else cls._split_oversized_piece(paragraph, max_chars)
             )
@@ -198,6 +198,7 @@ class TextProcessor:
         target_chars: int = 230,
         max_chars: int = 300,
         min_chars: int = 45,
+        group_short_dialogue: bool = True,
     ) -> list[TextChunk]:
         """Split text into short sentence-safe chunks for generative TTS engines."""
         if min_chars < 1:
@@ -212,19 +213,18 @@ class TextProcessor:
             return []
 
         chunks: list[TextChunk] = []
-        paragraphs = [
-            paragraph.strip()
-            for paragraph in re.split(r"\n\s*\n", normalized)
-            if paragraph.strip()
-        ]
+        paragraphs = cls._tts_paragraphs(normalized, group_short_dialogue)
         for paragraph_number, paragraph in enumerate(paragraphs, start=1):
-            pieces = cls._short_sentence_pieces(paragraph, max_chars)
-            grouped = cls._group_short_pieces(
-                pieces,
-                target_chars=target_chars,
-                max_chars=max_chars,
-                min_chars=min_chars,
-            )
+            if group_short_dialogue and cls._is_dialogue(paragraph):
+                grouped = cls._split_dialogue_turns(paragraph, max_chars)
+            else:
+                pieces = cls._short_sentence_pieces(paragraph, max_chars)
+                grouped = cls._group_short_pieces(
+                    pieces,
+                    target_chars=target_chars,
+                    max_chars=max_chars,
+                    min_chars=min_chars,
+                )
             for index, piece in enumerate(grouped):
                 chunks.append(
                     TextChunk(
@@ -236,12 +236,60 @@ class TextProcessor:
                 )
         return chunks
 
+    @staticmethod
+    def _is_dialogue(paragraph: str) -> bool:
+        # Require a speech dash and sentence punctuation on every line to avoid
+        # treating ordinary bullet lists as dialogue. Ambiguous prose can opt out.
+        return bool(paragraph) and all(
+            re.match(r"^[-–—]\s*\S", line)
+            and re.search(r"[.!?…。！？][\"'”’»）)\]}]*$", line)
+            for line in paragraph.splitlines()
+        )
+
+    @classmethod
+    def _tts_paragraphs(cls, normalized: str, group_short_dialogue: bool) -> list[str]:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()]
+        if not group_short_dialogue:
+            return paragraphs
+        grouped: list[str] = []
+        dialogue: list[str] = []
+        for paragraph in paragraphs:
+            if cls._is_dialogue(paragraph):
+                dialogue.append(paragraph)
+            else:
+                if dialogue:
+                    grouped.append("\n".join(dialogue))
+                    dialogue = []
+                grouped.append(paragraph)
+        if dialogue:
+            grouped.append("\n".join(dialogue))
+        return grouped
+
+    @classmethod
+    def _split_dialogue_turns(cls, paragraph: str, max_chars: int) -> list[str]:
+        pieces: list[str] = []
+        current = ""
+        for turn in paragraph.splitlines():
+            if len(turn) > max_chars:
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.extend(cls._split_oversized_piece(turn, max_chars))
+            elif current and len(current) + 1 + len(turn) > max_chars:
+                pieces.append(current)
+                current = turn
+            else:
+                current = f"{current}\n{turn}" if current else turn
+        if current:
+            pieces.append(current)
+        return pieces
+
     @classmethod
     def _split_oversized_piece(cls, text: str, max_chars: int) -> list[str]:
         sentences = [
-            sentence.strip()
-            for sentence in cls._sentence_boundary.split(text)
-            if sentence.strip()
+            match.group(0).strip()
+            for match in cls._sentence_piece.finditer(text)
+            if match.group(0).strip()
         ]
         pieces: list[str] = []
         current = ""
@@ -251,7 +299,7 @@ class TextProcessor:
                 if current:
                     pieces.append(current)
                     current = ""
-                pieces.extend(cls._split_by_words(sentence, max_chars))
+                pieces.extend(cls._split_long_sentence(sentence, max_chars))
                 continue
 
             separator = " " if current else ""
@@ -277,15 +325,30 @@ class TextProcessor:
             if len(sentence) <= max_chars:
                 pieces.append(sentence)
                 continue
-            clauses = [
-                clause.strip()
-                for clause in cls._clause_boundary.split(sentence)
-                if clause.strip()
-            ]
-            if len(clauses) <= 1:
-                pieces.extend(cls._split_by_words(sentence, max_chars))
+            pieces.extend(cls._split_long_sentence(sentence, max_chars))
+        return pieces
+
+    @classmethod
+    def _split_long_sentence(cls, sentence: str, max_chars: int) -> list[str]:
+        """Prefer clause boundaries; split oversized clauses by words only."""
+        pieces: list[str] = []
+        current = ""
+        for clause in cls._clause_boundary.split(sentence):
+            clause = clause.strip()
+            if not clause:
+                continue
+            if len(clause) > max_chars:
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.extend(cls._split_by_words(clause, max_chars))
+            elif current and len(current) + 1 + len(clause) > max_chars:
+                pieces.append(current)
+                current = clause
             else:
-                pieces.extend(cls._group_short_pieces(clauses, max_chars, max_chars, 1))
+                current = f"{current} {clause}" if current else clause
+        if current:
+            pieces.append(current)
         return pieces
 
     @staticmethod

@@ -601,6 +601,17 @@ def test_service_rejects_unsafe_requested_chunk_size(tmp_path):
     assert service._chunk_size("omnivoice", {"chunk_size": 120}) == 120
 
 
+def test_service_uses_dialogue_grouping_setting(tmp_path):
+    settings = SettingsManager(tmp_path / 'config.json')
+    service = LocalText2VoiceService(settings)
+    for enabled in (True, False):
+        settings.settings['group_short_dialogue'] = enabled
+        options = service._generation_options(
+            {'output_dir': str(tmp_path / 'output')}, {'engine': 'piper'},
+        )
+        assert options.group_short_dialogue is enabled
+
+
 def test_cancelled_cached_engine_is_not_reused_by_next_generation(tmp_path):
     settings = SettingsManager(tmp_path / "config.json")
     settings.settings["tts_engine"] = "piper"

@@ -99,6 +99,8 @@ def test_export_dispatches_mixer_controls_with_existing_full_mix(tmp_path):
     page.soundtrack_volume.setValue(60)
     holder = Mock()
     holder.video_storyboard_render_thread = None
+    holder.video_storyboard_render_dialog = None
+    holder.video_storyboard_render_worker = None
     holder.video_storyboard_video_thread = None
     holder.video_storyboard_image_edit_thread = None
     holder.current_audiobook_id = 1
@@ -107,11 +109,16 @@ def test_export_dispatches_mixer_controls_with_existing_full_mix(tmp_path):
     holder.settings = {}
     holder.tr = tr
     holder._safe_project_folder_name.return_value = 'Test'
-    with patch('app.ui.main_window.QThread'), patch('app.ui.main_window.VideoStoryboardRenderWorker') as worker:
+    holder._launch_video_storyboard_render = Mock()
+    with patch('app.ui.main_window.VideoStoryboardRenderDialog') as dialog:
+        dialog.return_value.values.return_value = {'threads': 8, 'fps': 24, 'supersample': 2, 'preset': 'veryfast'}
         MainWindow._start_video_storyboard_render(holder, [])
-        args = worker.call_args.args
-        assert args[1] == mix
-        assert args[3]['video']['clip_audio_enabled'] is False
-        assert args[3]['video']['clip_audio_volume'] == .25
-        assert args[3]['video']['soundtrack_volume'] == .6
+        dialog.return_value.show_and_raise.assert_called_once()
+        launch = dialog.return_value.startRequested.connect.call_args.args[0]
+        launch()
+        args = holder._launch_video_storyboard_render.call_args.args
+        assert args[2] == mix
+        assert args[4]['video']['clip_audio_enabled'] is False
+        assert args[4]['video']['clip_audio_volume'] == .25
+        assert args[4]['video']['soundtrack_volume'] == .6
     page.deleteLater()

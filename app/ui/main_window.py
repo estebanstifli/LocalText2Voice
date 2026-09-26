@@ -171,6 +171,7 @@ from app.ui.video_storyboard_page import VideoStoryboardPage
 from app.ui.video_storyboard_analysis_dialog import (
     VideoStoryboardAnalysisDialog,
 )
+from app.ui.video_storyboard_render_dialog import VideoStoryboardRenderDialog
 from app.ui.video_storyboard_settings import VideoStoryboardSettingsWidget
 from app.ui.storyboard_analysis_settings import StoryboardAnalysisSettingsWidget
 from app.core.storyboard_analysis_settings import normalize as normalize_continuity_analysis, input_limit as continuity_input_limit
@@ -4081,6 +4082,31 @@ class MainWindow(QMainWindow):
                 )
             )
             return
+        from app.ui.storyboard_prompt_import_dialog import (
+            StoryboardSourceDialog, StoryboardPromptImportDialog,
+        )
+        chooser = StoryboardSourceDialog(self.tr, self)
+        if chooser.exec() != QDialog.DialogCode.Accepted:
+            chooser.deleteLater()
+            return
+        if chooser.choice == "external":
+            editor = StoryboardPromptImportDialog(
+                self.tr, source, self.video_storyboard_page.project_state(), self,
+            )
+            if editor.exec() == QDialog.DialogCode.Accepted and editor.imported_plan is not None:
+                self._close_storyboard_review_window()
+                if self.video_storyboard_analysis_dialog is not None:
+                    previous_dialog = self.video_storyboard_analysis_dialog
+                    previous_dialog.close()
+                    previous_dialog.deleteLater()
+                    self.video_storyboard_analysis_dialog = None
+                self.video_storyboard_page.apply_imported_plan(editor.imported_plan)
+                self.video_storyboard_analysis_status = "ready"
+                self._persist_video_storyboard_state()
+            editor.deleteLater()
+            chooser.deleteLater()
+            return
+        chooser.deleteLater()
         configuration = deepcopy(
             self.settings.get("video_storyboard", {})
         )
@@ -4135,8 +4161,9 @@ class MainWindow(QMainWindow):
                     }
                 )
         if self.video_storyboard_analysis_dialog is not None:
-            self.video_storyboard_analysis_dialog.close()
-            self.video_storyboard_analysis_dialog.deleteLater()
+            previous_dialog = self.video_storyboard_analysis_dialog
+            previous_dialog.close()
+            previous_dialog.deleteLater()
         provider = str(configuration.get("llm_provider") or "ollama")
         provider_settings = configuration.get(provider, {})
         if not isinstance(provider_settings, dict):
@@ -4151,7 +4178,7 @@ class MainWindow(QMainWindow):
             provider_settings.get("max_output_tokens")
             or (16000 if provider == "litellm" else 4096)
         )
-        from app.core.storyboard_analysis_review import load_review
+        from app.core.storyboard_analysis_review import load_review, resume_maximum_seconds
         audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id) if self.current_audiobook_id is not None else None
         review_state = load_review(audiobook.project_dir) if audiobook else {}
         configuration["review_project_dir"] = str(audiobook.project_dir) if audiobook else ""
@@ -4176,7 +4203,7 @@ class MainWindow(QMainWindow):
             max_output_tokens=saved_limits.get("max_output_tokens", default_output),
             replaces_existing=bool(self.video_storyboard_page.scenes()),
             analysis_choices=selected_choices,
-            maximum_scene_seconds=configuration.get("scene", {}).get("maximum_seconds", 8),
+            maximum_scene_seconds=resume_maximum_seconds(source, configuration, review_state, manual_era),
             audiobook_era=manual_era,
             resume_available=review_state.get("draft", {}).get("status") in {"pending", "approved"},
         )
@@ -4218,7 +4245,7 @@ class MainWindow(QMainWindow):
         ):
             return
         limits = raw_limits if isinstance(raw_limits, dict) else {}
-        from app.core.storyboard_analysis_review import choices, load_review, save_review
+        from app.core.storyboard_analysis_review import choices, load_review, save_review, load_recovery_plan
         configuration["analysis_choices"] = choices(limits.get("analysis_choices"))
         if "audiobook_era" in limits:
             configuration["narrative_context"] = {**configuration.get("narrative_context", {}), "era": str(limits["audiobook_era"] or "").strip()}
@@ -4231,10 +4258,14 @@ class MainWindow(QMainWindow):
         saved_review = load_review(project_dir) if project_dir else {}
         if limits.get("resume_review"):
             configuration["review_checkpoint"] = saved_review.get("draft", {})
+            configuration["analysis_checkpoint"] = load_recovery_plan(project_dir)
+        else:
+            configuration.pop("review_checkpoint", None)
+            configuration.pop("analysis_checkpoint", None)
         if project_dir:
             try:
                 save_review(project_dir, {**saved_review, "choices": configuration["analysis_choices"],
-                    "limits": {k: limits.get(k) for k in ("max_input_characters", "max_output_tokens", "audiobook_era")}})
+                    "limits": {k: limits.get(k) for k in ("max_input_characters", "max_output_tokens", "audiobook_era", "maximum_scene_seconds")}})
             except OSError as exc:
                 dialog.set_finished(False, f"Could not save analysis choices: {exc}")
                 return
@@ -5806,6 +5837,12 @@ class MainWindow(QMainWindow):
             self.video_storyboard_page.append_activity(message)
 
     def _start_video_storyboard_render(self, raw_scenes: object) -> None:
+        active_dialog = getattr(self, "video_storyboard_render_dialog", None)
+        if active_dialog is not None and not active_dialog._finished:
+            active_dialog.show_and_raise()
+            return
+        if active_dialog is not None:
+            active_dialog.close()
         if (
             self.video_storyboard_render_thread is not None
             or self.video_storyboard_video_thread is not None
@@ -5864,6 +5901,31 @@ class MainWindow(QMainWindow):
         render_settings["ffmpeg_path"] = self.settings.get(
             "ffmpeg_path", "ffmpeg/ffmpeg.exe"
         )
+
+        dialog = VideoStoryboardRenderDialog(self.tr, render_settings.get("video", {}), self)
+        self.video_storyboard_render_dialog = dialog
+        dialog.startRequested.connect(
+            lambda: self._launch_video_storyboard_render(dialog, scenes, audio_path, output_path, render_settings)
+        )
+        dialog.cancelRequested.connect(self._cancel_video_storyboard_render)
+        dialog.finished.connect(lambda _result: self._close_video_storyboard_render_dialog(dialog))
+        dialog.show_and_raise()
+
+    def _close_video_storyboard_render_dialog(self, dialog) -> None:
+        if getattr(self, "video_storyboard_render_dialog", None) is dialog:
+            self.video_storyboard_render_dialog = None
+            if not dialog._running:
+                self.video_storyboard_page.finish_operation()
+                self.video_storyboard_page._sync_output_actions()
+        dialog.deleteLater()
+
+    def _cancel_video_storyboard_render(self) -> None:
+        worker = self.video_storyboard_render_worker
+        if worker is not None:
+            worker.cancel()
+
+    def _launch_video_storyboard_render(self, dialog, scenes, audio_path, output_path, render_settings) -> None:
+        render_settings.setdefault("video", {}).update(dialog.values())
 
         thread = QThread(self)
         worker = VideoStoryboardRenderWorker(
@@ -5925,10 +5987,17 @@ class MainWindow(QMainWindow):
             percentage,
         )
 
+        dialog = getattr(self, "video_storyboard_render_dialog", None)
+        if dialog is not None:
+            dialog.set_progress(messages.get(stage, messages["rendering"]), percentage)
+
     def _on_video_storyboard_render_finished(self, raw_result: object) -> None:
         result = raw_result if isinstance(raw_result, dict) else {}
         output_path = str(result.get("output_path") or "")
         self.video_storyboard_page.set_render_finished(output_path)
+        dialog = getattr(self, "video_storyboard_render_dialog", None)
+        if dialog is not None:
+            dialog.set_finished(True, self.tr("video_storyboard_render_complete", "Final video created: {path}", path=output_path))
         self.log_view.append_event(
             self.tr(
                 "video_storyboard_render_complete",
@@ -5939,6 +6008,9 @@ class MainWindow(QMainWindow):
 
     def _on_video_storyboard_render_failed(self, error: str) -> None:
         self.video_storyboard_page.set_render_failed(error)
+        dialog = getattr(self, "video_storyboard_render_dialog", None)
+        if dialog is not None:
+            dialog.set_finished(False, error)
         self.log_view.append_event(
             self.tr(
                 "video_storyboard_render_failed",
@@ -12439,6 +12511,15 @@ class MainWindow(QMainWindow):
             )
         )
         pause_form.addRow("", self.adaptive_pause_checkbox)
+        self.group_short_dialogue_checkbox = QCheckBox(
+            self.tr("group_short_dialogue", "Group short dialogue turns")
+        )
+        self.group_short_dialogue_checkbox.setToolTip(self.tr(
+            "group_short_dialogue_help",
+            "Group consecutive dialogue turns within the chunk limit, preserving line breaks, "
+            "voice changes and explicit pauses. A paragraph pause is added only after the dialogue group.",
+        ))
+        pause_form.addRow("", self.group_short_dialogue_checkbox)
 
         paragraph_pause_row = QWidget()
         paragraph_pause_layout = QHBoxLayout(paragraph_pause_row)
@@ -13470,6 +13551,10 @@ class MainWindow(QMainWindow):
         )
 
     def _voice_engine_is_ready(self, engine_id: str) -> bool:
+        if engine_id == "qwen":
+            # The default manager check targets CustomVoice, not the selected
+            # model. A Base-only installation must also support library voices.
+            return self._qwen_model_is_installed(self._selected_qwen_model_id())
         if engine_id == "piper":
             executable = resolve_executable(
                 self.piper_path_edit.text().strip()
@@ -13479,7 +13564,6 @@ class MainWindow(QMainWindow):
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
-            "qwen": self.qwen_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -13574,7 +13658,7 @@ class MainWindow(QMainWindow):
             status = (
                 self.tr("installed", "Installed")
                 if (
-                    self.qwen_manager.is_installed()
+                    self._voice_engine_is_ready("qwen")
                     if engine_ready is None
                     else engine_ready
                 )
@@ -15355,6 +15439,9 @@ class MainWindow(QMainWindow):
         self.adaptive_pause_checkbox.setChecked(
             bool(self.settings.get("adaptive_paragraph_pause", True))
         )
+        self.group_short_dialogue_checkbox.setChecked(
+            bool(self.settings.get("group_short_dialogue", True))
+        )
         self.paragraph_length_reference_spin.setValue(
             int(self.settings.get("paragraph_length_reference_chars", 600))
         )
@@ -16165,6 +16252,7 @@ class MainWindow(QMainWindow):
             "paragraph_pause_min_ms",
             "paragraph_pause_max_ms",
             "adaptive_paragraph_pause",
+            "group_short_dialogue",
             "paragraph_length_reference_chars",
             "paragraph_length_extra_ms",
             "periodic_pause_every_paragraphs",
@@ -19498,6 +19586,7 @@ class MainWindow(QMainWindow):
                 self.paragraph_pause_max_spin.value() * 1000
             ),
             adaptive_paragraph_pause=self.adaptive_pause_checkbox.isChecked(),
+            group_short_dialogue=self.group_short_dialogue_checkbox.isChecked(),
             paragraph_length_reference_chars=(
                 self.paragraph_length_reference_spin.value()
             ),
@@ -20007,6 +20096,7 @@ class MainWindow(QMainWindow):
             self.paragraph_pause_min_spin,
             self.paragraph_pause_max_spin,
             self.adaptive_pause_checkbox,
+            self.group_short_dialogue_checkbox,
             self.paragraph_length_reference_spin,
             self.paragraph_length_extra_spin,
             self.periodic_pause_every_spin,
@@ -20091,6 +20181,7 @@ class MainWindow(QMainWindow):
                 "adaptive_paragraph_pause": (
                     self.adaptive_pause_checkbox.isChecked()
                 ),
+                "group_short_dialogue": self.group_short_dialogue_checkbox.isChecked(),
                 "paragraph_length_reference_chars": (
                     self.paragraph_length_reference_spin.value()
                 ),

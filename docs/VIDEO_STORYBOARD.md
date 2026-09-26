@@ -33,6 +33,63 @@ The analysis uses narration timing cues when available. Without cues, timing is
 estimated from text. Even with cues, an opening sentence can be aligned to the
 start of its narration block rather than to its exact spoken word.
 
+For long audiobooks, each proposal retains its source passage. Quotes are checked
+only against that passage; global era reports do not supply scene content. When
+TTS preparation changes the original text, analysis uses the spoken text and saves
+that coordinate reference. Failed anchors receive bounded local repair and
+replanning; a remaining failure stops analysis and identifies the passage to review.
+Unanchored scenes are never interpolated between distant points in the book.
+The **Analysis checks** tab shows validation results and warnings; **≈** beside
+a scene identifies estimated sentence timing.
+
+Repeated dialogue and refrains use preceding and following quotes to identify a
+unique position where possible. Remaining ambiguity requests a longer literal
+quotation. Missing titles are filled without changing narration timings.
+After a failure, **Resume saved analysis and reports** reuses complete reports,
+finished entity profiles and saved proposals. Saved scene image prompts are also
+reused, continuing with the next missing prompt after credit or connection errors.
+Quotes, narration and timings are revalidated; text and settings must match.
+Saved progress is preserved if that verification is interrupted or finds an
+incompatibility. Uncheck this option to start a new analysis.
+
+Under **Settings → Video Storyboard → LLM**, **Retries on temporary errors**
+sets additional attempts per request (default 5; 0 disables retries). Temporary
+connection failures, timeouts and service overload retry only the affected
+request, with cancellable delays increasing to 30 seconds. Authentication,
+credit and response-format errors are not retried by this mechanism.
+
+### Import or edit timed scene prompts
+
+**Analyze audiobook → Import / edit scene prompts** bypasses in-app LLM analysis.
+The first tab provides narrative, educational stickman and documentary request
+examples. Copy one with the project's timed segment text, or load a final-audio
+transcript (SRT, VTT or TXT). Times must use the final storyboard timeline,
+including any opening voice delay; segment timings are not word alignment.
+
+Paste or load a TXT in the second tab:
+
+```text
+[00:00] A red car drives along a New York avenue.
+
+[00:06.500] Close-up of the driver looking through the window.
+```
+
+Each image lasts until the next timestamp; the last ends with the audio.
+Hours, decimal commas and multiline prompts are supported. Preview validates
+ordering, duplicates, empty prompts, audio bounds and the renderer's minimum
+scene duration of 0.1 seconds. A later first timestamp requires explicitly
+choosing to show that image from the beginning. Validation checks format and
+timing, not factual accuracy or the visual interpretation.
+
+Use **Complete prompts** for self-contained descriptions: project style,
+narrative context, exclusions and automatic references are not added; manually
+selected image references still apply. Turn it off to use the project's style.
+
+Reopening the dialog loads all current prompts. Applying replaces the timeline
+without generating images or calling an LLM. Unchanged scenes retain their media;
+changed scenes get new IDs to avoid stale generated results. Files are never
+deleted by import. The operation supports undo/redo and normal project saving.
+
 ### Create and refine the pictures
 
 - Generate storyboard images and regenerate individual results.

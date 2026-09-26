@@ -78,4 +78,4 @@ def snapshot(settings):
             "effective_prompts": {k: instruction(config, k) for k in PROMPTS},
             "provider": provider, "model": model.get("model", ""),
             "limits": deepcopy(settings.get("analysis", {})),
-            "model_parameters": {k: model[k] for k in ("max_output_tokens", "temperature", "num_ctx", "think") if k in model}}
+            "model_parameters": {k: model[k] for k in ("max_output_tokens", "temperature", "num_ctx", "think", "timeout_seconds", "max_retries") if k in model}}
