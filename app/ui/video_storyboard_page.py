@@ -158,6 +158,10 @@ class StoryboardScene:
     start_seconds: float = 0.0
     characters: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
+    objects: list[str] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)
+    eras: list[str] = field(default_factory=list)
+    mentioned_entities: list[str] = field(default_factory=list)
     shot: str = ""
     era: str = ""
     era_state_id: str = ""
@@ -232,6 +236,10 @@ class StoryboardScene:
             ]
             if isinstance(value.get("locations"), list)
             else [],
+            objects=list(value.get("objects") or []),
+            groups=list(value.get("groups") or []),
+            eras=list(value.get("eras") or []),
+            mentioned_entities=list(value.get("mentioned_entities") or []),
             shot=str(value.get("shot") or ""),
             era=str(value.get("era") or ""),
             era_state_id=str(value.get("era_state_id") or ""),
@@ -295,6 +303,10 @@ class StoryboardScene:
             "start_seconds": self.start_seconds,
             "characters": list(self.characters),
             "locations": list(self.locations),
+            "objects": list(self.objects),
+            "groups": list(self.groups),
+            "eras": list(self.eras),
+            "mentioned_entities": list(self.mentioned_entities),
             "shot": self.shot,
             "era": self.era,
             "era_state_id": self.era_state_id,
@@ -334,6 +346,7 @@ class StoryboardNarrationCue:
     duration_seconds: float
     text: str
     timing_ready: bool = True
+    cue_id: str = ""
 
     @classmethod
     def from_value(cls, value: dict[str, Any]) -> StoryboardNarrationCue:
@@ -341,9 +354,10 @@ class StoryboardNarrationCue:
             segment_id=int(value.get("segment_id") or 0),
             sequence_index=int(value.get("sequence_index") or 0),
             start_seconds=max(0.0, float(value.get("start_seconds") or 0.0)),
-            duration_seconds=max(0.0, float(value.get("duration_seconds") or 0.0)),
+            duration_seconds=max(0.0, float(value.get("duration_seconds") or float(value.get("end_seconds") or 0)-float(value.get("start_seconds") or 0))),
             text=str(value.get("text") or ""),
             timing_ready=bool(value.get("timing_ready", False)),
+            cue_id=str(value.get("cue_id") or ""),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -355,6 +369,7 @@ class StoryboardNarrationCue:
             "duration_seconds": self.duration_seconds,
             "text": self.text,
             "timing_ready": self.timing_ready,
+            **({"cue_id": self.cue_id} if self.cue_id else {}),
         }
 
 
@@ -2545,6 +2560,8 @@ class VideoStoryboardPage(QWidget):
             self._source_duration_seconds
         )
         if source_changed:
+            self._storage_revision = None
+            self._source_audio_sha256 = ""
             if self._video_batch_dialog is not None and not self._video_batch_total:
                 self._video_batch_dialog.close()
                 self._video_batch_dialog = None
@@ -2582,6 +2599,7 @@ class VideoStoryboardPage(QWidget):
 
     def source_payload(self) -> dict[str, Any]:
         return {
+            **({"audio_sha256": self._source_audio_sha256} if getattr(self, "_source_audio_sha256", "") else {}),
             "project_id": self._source_project_id,
             "title": self._source_title,
             "text": self._audiobook_text,
@@ -2750,6 +2768,7 @@ class VideoStoryboardPage(QWidget):
         self.append_activity(message)
 
     def restore_project_state(self, state: dict[str, Any]) -> None:
+        self._storage_revision = state.get("_revision")
         plan = state.get("plan", {})
         scenes = state.get("scenes", [])
         self._plan_metadata = dict(plan) if isinstance(plan, dict) else {}

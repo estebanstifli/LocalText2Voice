@@ -209,22 +209,48 @@ class SegmentVerificationWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            self.verifier.set_log_callback(self.log.emit)
-            segments = [
-                segment
-                for segment in self.store.list_segments(self.audiobook_id)
-                if segment.status in {"rendered", "verified"}
-                and segment.wav_path
-                and Path(segment.wav_path).is_file()
-                and self._segment_needs_review(segment)
-            ]
-            total = len(segments)
-            if total == 0:
-                self.log.emit(
-                    "No pending rendered segments found for review."
-                    if self.only_unverified
-                    else "No rendered segments found for review."
-                )
+            with self.store.defer_project_manifests(self.audiobook_id):
+                self.verifier.set_log_callback(self.log.emit)
+                segments = [
+                    segment
+                    for segment in self.store.list_segments(self.audiobook_id)
+                    if segment.status in {"rendered", "verified"}
+                    and segment.wav_path
+                    and Path(segment.wav_path).is_file()
+                    and self._segment_needs_review(segment)
+                ]
+                total = len(segments)
+                if total == 0:
+                    self.log.emit(
+                        "No pending rendered segments found for review."
+                        if self.only_unverified
+                        else "No rendered segments found for review."
+                    )
+                    summary = resolve_audio_event_timeline(
+                        self.store,
+                        self.audiobook_id,
+                    )
+                    if summary.total:
+                        self.log.emit(
+                            "PLAY/STOP timeline resolved: "
+                            f"{summary.resolved}/{summary.total} event(s) ready."
+                        )
+                    self._export_subtitles()
+                    self.store.flush_project_manifest(self.audiobook_id)
+                    self.finished.emit()
+                    return
+                for index, segment in enumerate(segments, start=1):
+                    if self._cancel_requested.is_set():
+                        raise FasterWhisperCancelled("Verification cancelled.")
+                    self.progress.emit(
+                        index - 1,
+                        total,
+                        f"Reviewing segment {index}/{total}...",
+                    )
+                    self._review_segment(segment)
+                    if index % max(1, (total + 3) // 4) == 0 or index == total:
+                        self.store.flush_project_manifest(self.audiobook_id)
+                    self.progress.emit(index, total, f"Reviewed {index}/{total}.")
                 summary = resolve_audio_event_timeline(
                     self.store,
                     self.audiobook_id,
@@ -232,33 +258,12 @@ class SegmentVerificationWorker(QObject):
                 if summary.total:
                     self.log.emit(
                         "PLAY/STOP timeline resolved: "
-                        f"{summary.resolved}/{summary.total} event(s) ready."
+                        f"{summary.resolved}/{summary.total} ready, "
+                        f"{summary.pending} pending, {summary.missing} missing."
                     )
                 self._export_subtitles()
+                self.store.flush_project_manifest(self.audiobook_id)
                 self.finished.emit()
-                return
-            for index, segment in enumerate(segments, start=1):
-                if self._cancel_requested.is_set():
-                    raise FasterWhisperCancelled("Verification cancelled.")
-                self.progress.emit(
-                    index - 1,
-                    total,
-                    f"Reviewing segment {index}/{total}...",
-                )
-                self._review_segment(segment)
-                self.progress.emit(index, total, f"Reviewed {index}/{total}.")
-            summary = resolve_audio_event_timeline(
-                self.store,
-                self.audiobook_id,
-            )
-            if summary.total:
-                self.log.emit(
-                    "PLAY/STOP timeline resolved: "
-                    f"{summary.resolved}/{summary.total} ready, "
-                    f"{summary.pending} pending, {summary.missing} missing."
-                )
-            self._export_subtitles()
-            self.finished.emit()
         except (FasterWhisperCancelled, FFmpegCancelled):
             self.cancelled.emit()
         except (FasterWhisperError, PythonRuntimeError, FFmpegError) as exc:

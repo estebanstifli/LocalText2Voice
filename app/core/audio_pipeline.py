@@ -4,6 +4,7 @@ import difflib
 import errno
 import json
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -11,12 +12,12 @@ import threading
 import time
 import unicodedata
 import wave
-import random
+from collections.abc import Callable
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from app.core.audiobook_store import AudiobookStore, StoredAudiobook
 from app.core.audio_formats import (
     AUDIO_FORMATS,
     audio_format_spec,
@@ -25,6 +26,7 @@ from app.core.audio_formats import (
     normalize_audio_quality,
 )
 from app.core.audio_mix import ducking_filter
+from app.core.audiobook_store import AudiobookStore, StoredAudiobook
 from app.core.book_metadata import (
     apply_m4b_tags,
     book_metadata_from_settings,
@@ -42,10 +44,11 @@ from app.utils.ffmpeg_utils import (
     find_ffmpeg,
 )
 
+from .generation_progress import GenerationProgress
 from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
-from .text_processor import TextChunk, TextProcessor
 from .text_normalization import normalize_text_for_speech
+from .text_processor import TextChunk, TextProcessor
 
 
 def _move_file(src: Path, dst: Path) -> None:
@@ -154,12 +157,14 @@ class AudioPipeline:
         log_callback: LogCallback | None = None,
         close_engine_on_finish: bool = True,
         audiobook_store: AudiobookStore | None = None,
+        stage_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.tts_engine = tts_engine
         self.progress_callback = progress_callback or (lambda current, total, text: None)
         self.log_callback = log_callback or (lambda message: None)
         self.close_engine_on_finish = close_engine_on_finish
         self.audiobook_store = audiobook_store
+        self.stage_callback = stage_callback
         self._cancel_requested = threading.Event()
         self._ffmpeg_runner: FFmpegRunner | None = None
         self._runner_lock = threading.Lock()
@@ -167,8 +172,21 @@ class AudioPipeline:
         self._markup_voice_cache: dict[str, Any] = {}
         self._active_audiobook: StoredAudiobook | None = None
         self._segment_ids: dict[tuple[int, int], int] = {}
+        self._wav_headers: dict[Path, tuple[int, int, int, str, str, int]] = {}
+        self._progress = GenerationProgress(self.progress_callback, self.stage_callback)
 
     def generate(self, text: str, options: AudioGenerationOptions) -> list[Path]:
+        self._progress = GenerationProgress(self.progress_callback, self.stage_callback)
+        self._wav_headers.clear()
+        scope = (
+            self.audiobook_store.defer_project_manifests()
+            if self.audiobook_store
+            else nullcontext()
+        )
+        with scope:
+            return self._generate(text, options)
+
+    def _generate(self, text: str, options: AudioGenerationOptions) -> list[Path]:
         generation_started = time.perf_counter()
         runner: FFmpegRunner | None = None
         try:
@@ -244,6 +262,7 @@ class AudioPipeline:
                     self._active_audiobook,
                     groups,
                 )
+                self.audiobook_store.flush_project_manifest(self._active_audiobook.id)
                 for audio_event in self.audiobook_store.list_audio_events(
                     self._active_audiobook.id
                 ):
@@ -281,11 +300,6 @@ class AudioPipeline:
                 f"{options.paragraph_pause_min_ms}-"
                 f"{options.paragraph_pause_max_ms} ms"
             )
-            output_spec = audio_format_spec(options.audio_format)
-            export_steps = 1
-            podcast_steps = export_steps if options.podcast_enabled else 0
-            total_steps = total_chunks + export_steps + podcast_steps
-
             with tempfile.TemporaryDirectory(prefix="local_text_2_voice_") as temp_name:
                 temp_dir = Path(temp_name)
                 pause_random = random.Random()
@@ -294,15 +308,9 @@ class AudioPipeline:
                     options,
                     temp_dir,
                     total_chunks,
-                    total_steps,
                     runner,
                 )
                 self._check_cancelled()
-                self.progress_callback(
-                    total_chunks,
-                    total_steps,
-                    f"Encoding {output_spec.label} output...",
-                )
                 artifacts = [
                     self._export_single(
                         groups,
@@ -313,16 +321,11 @@ class AudioPipeline:
                         pause_random,
                     )
                 ]
-                completed_steps = total_chunks + export_steps
-                self.progress_callback(
-                    completed_steps,
-                    total_steps,
-                    f"{output_spec.label} narration created.",
-                )
                 outputs = [artifact.audio_path for artifact in artifacts]
                 if options.podcast_enabled:
                     for artifact in artifacts:
                         self._check_cancelled()
+                        self._progress.emit("mixing", 0, 0, "Creating podcast mix...")
                         podcast_path = self._export_podcast_mix(
                             artifact,
                             options,
@@ -330,13 +333,11 @@ class AudioPipeline:
                             runner,
                         )
                         outputs.append(podcast_path)
-                        completed_steps += 1
-                        self.progress_callback(
-                            completed_steps,
-                            total_steps,
-                            "Podcast mix created.",
-                        )
+                        self._progress.emit("mixing", 1, 1, "Podcast mix created.")
                 self._check_cancelled()
+                self._progress.emit(
+                    "finalizing", 0, 0, "Finalizing project and subtitles..."
+                )
                 if self.audiobook_store is not None and self._active_audiobook is not None:
                     self.audiobook_store.complete_audiobook(
                         self._active_audiobook.id,
@@ -351,6 +352,9 @@ class AudioPipeline:
                         self.log_callback(
                             f"Created {len(subtitle_result.files)} subtitle file(s)."
                         )
+                    self.audiobook_store.flush_project_manifest(
+                        self._active_audiobook.id
+                    )
                 self.log_callback(
                     "Generation pipeline completed in "
                     f"{self._format_duration(time.perf_counter() - generation_started)}."
@@ -696,7 +700,6 @@ class AudioPipeline:
         options: AudioGenerationOptions,
         temp_dir: Path,
         total_chunks: int,
-        total_steps: int,
         runner: FFmpegRunner,
     ) -> list[list[Path]]:
         rendered_groups: list[list[Path]] = []
@@ -715,7 +718,9 @@ class AudioPipeline:
                     f"Generating block {completed}/{total_chunks}: "
                     f"{group.title}"
                 )
-                self.progress_callback(completed - 1, total_steps, status)
+                self._progress.emit(
+                    "synthesis", completed - 1, total_chunks, status, unit="blocks"
+                )
                 self.log_callback(status)
 
                 output_wav = self._segment_output_wav(
@@ -728,6 +733,7 @@ class AudioPipeline:
                     chunk,
                 )
                 segment_id = self._segment_ids.get((group_index, chunk_index))
+                total_block_started = time.perf_counter()
                 if (
                     segment_id is not None
                     and self.audiobook_store is not None
@@ -762,6 +768,8 @@ class AudioPipeline:
                         )
                     raise
                 block_duration = time.perf_counter() - block_started
+                self._read_wav_header(output_wav)
+                persistence_started = time.perf_counter()
                 if (
                     segment_id is not None
                     and self.audiobook_store is not None
@@ -769,17 +777,29 @@ class AudioPipeline:
                     self.audiobook_store.mark_segment_rendered(
                         segment_id,
                         output_wav,
-                        round(self._wav_duration_seconds(output_wav) * 1000),
+                        self._rendered_duration_ms(output_wav),
                         round(block_duration * 1000),
                     )
+                    if (
+                        completed % max(1, (total_chunks + 3) // 4) == 0
+                        or completed == total_chunks
+                    ):
+                        self.audiobook_store.flush_project_manifest(
+                            self._active_audiobook.id
+                        )
+                persistence_duration = time.perf_counter() - persistence_started
                 self.log_callback(
                     f"Generated block {completed}/{total_chunks} in "
-                    f"{self._format_duration(block_duration)} "
+                    f"{self._format_duration(time.perf_counter() - total_block_started)} "
+                    f"(synthesis/postprocessing {block_duration:.3f} s, "
+                    f"persistence {persistence_duration:.3f} s) "
                     f"({len(chunk.text):,} chars, "
                     f"{self._format_file_size(output_wav)} WAV)."
                 )
                 rendered_chunks.append(output_wav)
-                self.progress_callback(completed, total_steps, status)
+                self._progress.emit(
+                    "synthesis", completed, total_chunks, status, unit="blocks"
+                )
             self.log_callback(
                 f"Rendered group {group_index}/{len(groups)} in "
                 f"{self._format_duration(time.perf_counter() - group_started)}."
@@ -1974,16 +1994,21 @@ class AudioPipeline:
         self._markup_runtime_warning_keys.add(key)
         self.log_callback(message)
 
-    def _export_single(
+    def _prepare_timeline(
         self,
         groups: list[AudioGroup],
         rendered_groups: list[list[Path]],
         options: AudioGenerationOptions,
         temp_dir: Path,
-        runner: FFmpegRunner,
         pause_random: random.Random,
-    ) -> NarrationArtifact:
-        timeline: list[Path] = []
+    ) -> tuple[list[Path], list[tuple[str, int, int]], int]:
+        planned: list[tuple[Path, int, int]] = []
+        pause_updates: list[tuple[int, int, int]] = []
+        prepared = 0
+        total = sum(len(chunks) for chunks in rendered_groups)
+        self._progress.emit(
+            "preparation", 0, total, "Calculating pauses and chapter timings..."
+        )
         pause_index = 0
         total_pause_ms = 0
         timeline_ms = 0
@@ -1992,22 +2017,15 @@ class AudioPipeline:
         for group_index, rendered_chunks in enumerate(rendered_groups):
             chapter_start_ms = timeline_ms
             for chunk_index, wav_path in enumerate(rendered_chunks):
+                self._check_cancelled()
                 chunk = groups[group_index].chunks[chunk_index]
                 segment_id = self._segment_ids.get((group_index + 1, chunk_index + 1))
                 before_duration = max(0, chunk.markup_pause_before_ms)
                 if chunk.markup_pause_before_ms > 0:
                     pause_index += 1
                     total_pause_ms += chunk.markup_pause_before_ms
-                    silence = temp_dir / f"pause_{pause_index:04d}_before.wav"
-                    self._create_silence(
-                        wav_path,
-                        silence,
-                        chunk.markup_pause_before_ms,
-                    )
-                    timeline.append(silence)
                     timeline_ms += chunk.markup_pause_before_ms
-                timeline.append(wav_path)
-                timeline_ms += max(1, round(self._wav_duration_seconds(wav_path) * 1000))
+                timeline_ms += max(1, self._rendered_duration_ms(wav_path))
                 is_last_chunk = chunk_index == len(rendered_chunks) - 1
                 is_last_group = group_index == len(rendered_groups) - 1
                 if chunk.markup_pause_after_ms is not None:
@@ -2024,19 +2042,131 @@ class AudioPipeline:
                 if duration > 0:
                     pause_index += 1
                     total_pause_ms += duration
-                    silence = temp_dir / f"pause_{pause_index:04d}.wav"
-                    self._create_silence(wav_path, silence, duration)
-                    timeline.append(silence)
                     timeline_ms += duration
                 if segment_id is not None and self.audiobook_store is not None:
-                    self.audiobook_store.update_segment_pause(
-                        segment_id,
-                        before_duration,
-                        duration,
-                    )
+                    pause_updates.append((segment_id, before_duration, duration))
+                planned.append((wav_path, before_duration, duration))
+                prepared += 1
+                self._progress.emit(
+                    "preparation",
+                    0,
+                    total,
+                    f"Calculating pauses and chapters {prepared}/{total}...",
+                )
             chapter_ranges.append(
-                (groups[group_index].title, chapter_start_ms, max(chapter_start_ms + 1, timeline_ms))
+                (
+                    groups[group_index].title,
+                    chapter_start_ms,
+                    max(chapter_start_ms + 1, timeline_ms),
+                )
             )
+
+        self._check_cancelled()
+        if self.audiobook_store is not None and self._active_audiobook is not None:
+            self.audiobook_store.update_segment_pauses(
+                self._active_audiobook.id, pause_updates
+            )
+        timeline: list[Path] = []
+        silences: dict[tuple, Path] = {}
+        for index, (wav_path, before, after) in enumerate(planned, 1):
+            self._check_cancelled()
+            if before > 0:
+                timeline.append(
+                    self._timeline_silence(
+                        wav_path, before, temp_dir, silences, index * 2
+                    )
+                )
+            timeline.append(wav_path)
+            if after > 0:
+                timeline.append(
+                    self._timeline_silence(
+                        wav_path, after, temp_dir, silences, index * 2 + 1
+                    )
+                )
+            self._progress.emit(
+                "preparation", index, total, f"Preparing timeline {index}/{total}..."
+            )
+        if self.audiobook_store is not None and self._active_audiobook is not None:
+            self.audiobook_store.flush_project_manifest(self._active_audiobook.id)
+        self.log_callback(
+            f"Prepared narration timeline with {len(timeline)} segment(s), "
+            f"{pause_index} pause(s), {self._format_duration(total_pause_ms / 1000)} total silence."
+        )
+        return timeline, chapter_ranges, timeline_ms
+
+    def _read_wav_header(self, path: Path) -> tuple[int, int, int, str, str, int]:
+        if path not in self._wav_headers:
+            with wave.open(str(path), "rb") as wav:
+                self._wav_headers[path] = (
+                    wav.getnchannels(),
+                    wav.getsampwidth(),
+                    wav.getframerate(),
+                    wav.getcomptype(),
+                    wav.getcompname(),
+                    wav.getnframes(),
+                )
+        return self._wav_headers[path]
+
+    def _rendered_duration_ms(self, path: Path) -> int:
+        header = self._read_wav_header(path)
+        return round(header[5] / header[2] * 1000)
+
+    def _timeline_silence(
+        self,
+        reference: Path,
+        duration_ms: int,
+        temp_dir: Path,
+        cache: dict[tuple, Path],
+        index: int,
+    ) -> Path:
+        header = self._read_wav_header(reference)
+        key = (*header[:5], max(1, int(header[2] * duration_ms / 1000)))
+        if key in cache:
+            return cache[key]
+        output = temp_dir / f"pause_{index:05d}.wav"
+        self._create_silence(reference, output, duration_ms)
+        if len(cache) < 512:
+            cache[key] = output
+        return output
+
+    @contextmanager
+    def _ffmpeg_stage(
+        self, runner: FFmpegRunner, stage: str, duration_ms: int, message: str
+    ):
+        previous = runner.progress_callback
+        self._check_cancelled()
+        self._progress.emit(
+            stage, 0, duration_ms, message, unit="milliseconds", force=True
+        )
+        runner.progress_callback = lambda current_ms: self._progress.emit(
+            stage, current_ms, duration_ms, message, unit="milliseconds"
+        )
+        try:
+            yield
+            self._check_cancelled()
+            self._progress.emit(
+                stage,
+                duration_ms,
+                duration_ms,
+                message,
+                unit="milliseconds",
+                force=True,
+            )
+        finally:
+            runner.progress_callback = previous
+
+    def _export_single(
+        self,
+        groups: list[AudioGroup],
+        rendered_groups: list[list[Path]],
+        options: AudioGenerationOptions,
+        temp_dir: Path,
+        runner: FFmpegRunner,
+        pause_random: random.Random,
+    ) -> NarrationArtifact:
+        timeline, chapter_ranges, timeline_ms = self._prepare_timeline(
+            groups, rendered_groups, options, temp_dir, pause_random
+        )
 
         filename, podcast_filename = self._next_single_filenames(
             options.output_dir,
@@ -2044,13 +2174,11 @@ class AudioPipeline:
             audio_format_spec(options.audio_format).extension,
             self._project_output_title(options),
         )
-        self.log_callback(
-            f"Prepared narration timeline with {len(timeline)} segment(s), "
-            f"{pause_index} pause(s), "
-            f"{self._format_duration(total_pause_ms / 1000)} total silence."
-        )
         join_started = time.perf_counter()
-        joined_wav = self._join_wavs(timeline, temp_dir / "podcast.wav", runner)
+        with self._ffmpeg_stage(
+            runner, "joining", timeline_ms, "Joining narration audio..."
+        ):
+            joined_wav = self._join_wavs(timeline, temp_dir / "podcast.wav", runner)
         self.log_callback(
             "Joined WAV narration in "
             f"{self._format_duration(time.perf_counter() - join_started)} "
@@ -2067,13 +2195,20 @@ class AudioPipeline:
         chapter_metadata = None
         if output_spec.id == "m4b" and book.get("chapter_mode") != "none":
             chapter_metadata = write_ffmetadata(temp_dir / "chapters.ffmetadata", chapter_ranges)
-        self._encode_audio(
-            joined_wav,
-            temporary_audio,
-            options,
-            runner,
-            options.metadata,
-            chapter_metadata,
+        with self._ffmpeg_stage(
+            runner, "encoding", timeline_ms, f"Encoding {output_spec.label} output..."
+        ):
+            self._encode_audio(
+                joined_wav,
+                temporary_audio,
+                options,
+                runner,
+                options.metadata,
+                chapter_metadata,
+            )
+        self._check_cancelled()
+        self._progress.emit(
+            "finalizing", 0, 0, "Finalizing audio metadata and output file..."
         )
         if output_spec.id == "m4b":
             cover = (
@@ -2583,9 +2718,13 @@ class AudioPipeline:
             return wav_paths[0]
 
         concat_file = output_path.with_suffix(".concat.txt")
-        concat_lines = [
-            f"file '{self._escape_concat_path(path)}'" for path in wav_paths
-        ]
+        escaped_paths: dict[Path, str] = {}
+        concat_lines: list[str] = []
+        for path in wav_paths:
+            self._check_cancelled()
+            if path not in escaped_paths:
+                escaped_paths[path] = self._escape_concat_path(path)
+            concat_lines.append(f"file '{escaped_paths[path]}'")
         concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
         runner.run(
             [
@@ -2610,8 +2749,12 @@ class AudioPipeline:
     def _escape_concat_path(path: Path) -> str:
         return path.resolve().as_posix().replace("'", "'\\''")
 
-    @staticmethod
-    def _create_silence(reference: Path, output: Path, duration_ms: int) -> None:
+    def _create_silence(
+        self,
+        reference: Path,
+        output: Path,
+        duration_ms: int,
+    ) -> None:
         with wave.open(str(reference), "rb") as source:
             channels = source.getnchannels()
             sample_width = source.getsampwidth()
@@ -2630,6 +2773,7 @@ class AudioPipeline:
             target.setcomptype(compression_type, compression_name)
             remaining = frame_count
             while remaining > 0:
+                self._check_cancelled()
                 frames = min(remaining, 4096)
                 target.writeframesraw(zero_chunk[: frames * bytes_per_frame])
                 remaining -= frames

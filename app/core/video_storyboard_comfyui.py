@@ -652,7 +652,7 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
     } if isinstance(scene.get("characters"), list) else set()
     # Also support unambiguous short names in existing projects/manual prompts.
     # Raw overrides still bypass this compiler entirely.
-    for line in canonical_character_lines_for_prompt(plan, scene, str(scene.get("prompt") or "")):
+    for line in ([] if scene.get("generation_overrides", {}).get("explicit_entities") else canonical_character_lines_for_prompt(plan, scene, str(scene.get("prompt") or ""))):
         state_id = line.split(":", 1)[0].strip().casefold()
         record = next((r for r in plan.get("continuity", {}).get("characters", [])
                        if any(str(s.get("id", "")).casefold() == state_id for s in r.get("states", []))), None)
@@ -678,6 +678,8 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
                 resolved_character_state_ids.add(name.casefold())
                 continue
             identity = str(character.get("identity_description") or "").strip()
+            if str(character.get("id", "")).casefold() in requested_names and identity:
+                character_locks.append(_character_sentence(name, identity))
             for state in character.get("states", []):
                 if not isinstance(state, dict):
                     continue
@@ -725,6 +727,8 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
             continue
         name = str(location.get("name") or "").strip()
         identity = str(location.get("identity_description") or "").strip()
+        if str(location.get("id", "")).casefold() in requested_locations and identity:
+            location_locks.append(f"{name}: {identity}")
         for state in location.get("states", []):
             if not isinstance(state, dict):
                 continue
@@ -764,17 +768,19 @@ def compile_scene_prompt(plan: dict[str, Any], scene: dict[str, Any]) -> str:
     style_prompt = "; ".join(style_parts)
     scene_parts = [scene_prompt]
     object_locks = []
-    from app.core.storyboard_entity_names import mentioned_records
+    from app.core.storyboard_entity_names import mentioned_records, resolve
     objects = [r for r in continuity.get("objects", []) if isinstance(r, dict)]
-    mentioned_objects = mentioned_records(scene_prompt, objects)
+    explicit_mode = scene.get("generation_overrides", {}).get("explicit_entities")
+    explicit_objects = list(scene.get("objects", [])) + list(scene.get("generation_overrides", {}).get("object_state_ids", []))
+    mentioned_objects = [resolve(v, objects) for v in explicit_objects] if explicit_mode else mentioned_records(scene_prompt, objects)
     for record in continuity.get("objects", []):
         if not isinstance(record, dict) or referenced_entity(record, scene):
             continue
         name = str(record.get("name") or "")
         if name and record in mentioned_objects:
             from app.core.video_storyboard_prompt_entities import active_entity_state_id
-            state_id = active_entity_state_id(record, float(scene.get("start_seconds") or 0) + float(scene.get("duration_seconds") or 0) / 2)
-            explicit = (scene.get("generation_overrides") or {}).get("object_state_ids", [])
+            state_id = "" if explicit_mode else active_entity_state_id(record, float(scene.get("start_seconds") or 0) + float(scene.get("duration_seconds") or 0) / 2)
+            explicit = explicit_objects
             state_id = next((s.get("id") for s in record.get("states", []) if s.get("id") in explicit), state_id)
             state = next((s for s in record.get("states", []) if s.get("id") == state_id), {})
             details = compact_visual_description(str(record.get("identity_description") or ""), str(state.get("description") or ""))

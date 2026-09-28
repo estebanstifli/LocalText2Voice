@@ -14,6 +14,7 @@ class EngineHostGenerationWorker(QObject):
     """Submit and follow one UI generation job through the shared engine host."""
 
     progress = Signal(int, int, str)
+    stage_progress = Signal(dict)
     log = Signal(str)
     finished = Signal(dict)
     failed = Signal(str)
@@ -54,6 +55,8 @@ class EngineHostGenerationWorker(QObject):
                         int(progress.get("total", 0) or 0),
                         str(progress.get("message", "") or "Generating audio..."),
                     )
+                    if progress.get("stage"):
+                        self.stage_progress.emit(progress)
                 status = str(job.get("status", "")).casefold()
                 if status == "complete":
                     result = job.get("result", {})

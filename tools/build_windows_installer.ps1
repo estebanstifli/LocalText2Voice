@@ -65,6 +65,11 @@ try {
         throw "The portable application failed the Qt DLL packaging check."
     }
 
+    & "$RepositoryRoot\.venv\Scripts\python.exe" "$RepositoryRoot\tools\check_windows_engine_host_bundle.py" $InstallerSource
+    if ($LASTEXITCODE -ne 0) {
+        throw "The portable application failed the EngineHost resource check."
+    }
+
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     & $Compiler /Qp "/DMyAppVersion=$Version" "/DSourceDir=$InstallerSource" $InstallerScript
     if ($LASTEXITCODE -ne 0) {

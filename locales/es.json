@@ -1965,5 +1965,13 @@
   "group_short_dialogue_help": "Agrupa intervenciones consecutivas de diálogo dentro del límite del bloque, conservando saltos de línea, cambios de voz y pausas explícitas. Solo se añade una pausa de párrafo tras el grupo de diálogo.",
   "storyboard_llm_retries": "Reintentos ante errores temporales",
   "storyboard_llm_retries_help": "Intentos adicionales ante errores temporales de conexión, timeout o saturación. 0 desactiva los reintentos; 5 permite hasta 6 intentos.",
-  "storyboard_analysis_resume_saved": "Retomar el análisis y los informes guardados si coinciden el texto y la configuración"
+  "storyboard_analysis_resume_saved": "Retomar el análisis y los informes guardados si coinciden el texto y la configuración",
+  "stage_synthesis": "Generando voz",
+  "stage_preparation": "Preparando pausas y capítulos",
+  "stage_joining": "Uniendo audio",
+  "stage_encoding": "Codificando audio",
+  "stage_finalizing": "Finalizando archivos y proyecto",
+  "stage_mixing": "Creando mezcla de pódcast",
+  "stage_percent": "Fase actual: %p%",
+  "generation_stage_time_status": "Transcurrido: {elapsed} | Restante de esta fase: {remaining} | Restante total: sin estimación"
 }

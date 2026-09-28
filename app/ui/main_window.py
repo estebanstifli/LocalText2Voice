@@ -4662,12 +4662,15 @@ class MainWindow(QMainWindow):
         if audiobook is None or not hasattr(self, "video_storyboard_page"):
             return
         try:
+            page_state = self.video_storyboard_page.project_state()
             save_storyboard_state(
                 audiobook.project_dir,
-                self.video_storyboard_page.project_state(),
+                page_state,
                 analysis_status=self.video_storyboard_analysis_status,
                 error=error,
+                expected_revision=getattr(self.video_storyboard_page, "_storage_revision", None),
             )
+            self.video_storyboard_page._storage_revision = page_state["_revision"]
         except OSError as exc:
             self.log_view.append_event(
                 f"Could not save Video Storyboard progress: {exc}"
@@ -4675,11 +4678,20 @@ class MainWindow(QMainWindow):
 
     def _restore_video_storyboard_state(self, audiobook) -> None:
         state = load_storyboard_state(audiobook.project_dir)
-        if state is None or not storyboard_matches_source(
+        if state is None or (not state.get("plan", {}).get("mcp_managed") and not storyboard_matches_source(
             state,
             self.text_editor.toPlainText(),
-        ):
+        )):
             return
+        if state.get("plan", {}).get("mcp_managed"):
+            source = state.get("source", {})
+            self.video_storyboard_page.set_audiobook_source(
+                audiobook.id, source.get("title", audiobook.title), source.get("text", ""),
+                source.get("narration_cues", []), source.get("duration_seconds", 0),
+                source.get("audio_path", ""), source.get("voice_start_offset_seconds") or 0,
+                str(audiobook.project_dir),
+            )
+            self.video_storyboard_page._source_audio_sha256 = source.get("audio_sha256", "")
         self.video_storyboard_analysis_status = str(
             state.get("analysis_status") or "ready"
         )
@@ -4690,6 +4702,9 @@ class MainWindow(QMainWindow):
         existing_video = output_dir / (
             f"{self._safe_project_folder_name(audiobook.title)}-storyboard.mp4"
         )
+        saved_render = state.get("plan", {}).get("rendered_output_path")
+        if saved_render and Path(saved_render).is_file():
+            existing_video = Path(saved_render)
         self.video_storyboard_page.set_existing_render_output(
             str(existing_video) if existing_video.is_file() else ""
         )
@@ -4829,7 +4844,9 @@ class MainWindow(QMainWindow):
         checkpoint_state = self.video_storyboard_page.project_state()
         if audiobook is not None and not candidate:
             try:
-                save_storyboard_state(audiobook.project_dir, checkpoint_state, analysis_status=self.video_storyboard_analysis_status)
+                save_storyboard_state(audiobook.project_dir, checkpoint_state, analysis_status=self.video_storyboard_analysis_status,
+                                      expected_revision=getattr(self.video_storyboard_page, "_storage_revision", None))
+                self.video_storyboard_page._storage_revision = checkpoint_state["_revision"]
             except OSError as exc:
                 self.video_storyboard_page.set_frame_generation_failed(f"Cannot save storyboard before generation: {exc}")
                 return
@@ -5036,8 +5053,11 @@ class MainWindow(QMainWindow):
             if worker is not None and worker.checkpoint is not None:
                 if worker.payload.get("source", {}).get("project_id") == self.current_audiobook_id:
                     try:
-                        save_storyboard_state(worker.checkpoint_project_dir, self.video_storyboard_page.project_state(),
-                                              analysis_status=self.video_storyboard_analysis_status)
+                        page_state = self.video_storyboard_page.project_state()
+                        save_storyboard_state(worker.checkpoint_project_dir, page_state,
+                                              analysis_status=self.video_storyboard_analysis_status,
+                                              expected_revision=getattr(self.video_storyboard_page, "_storage_revision", None))
+                        self.video_storyboard_page._storage_revision = page_state["_revision"]
                         worker.checkpoint.finish()
                     except OSError as exc:
                         self.log_view.append_event(f"Progress remains in the recovery journal: {exc}")
@@ -16997,7 +17017,7 @@ class MainWindow(QMainWindow):
         if not path_text:
             return
         try:
-            audiobook = self.audiobook_store.import_project_manifest(Path(path_text))
+            audiobook = self.audiobook_store.open_project_manifest(Path(path_text))
         except Exception as exc:
             self._show_error(self.tr("file_open_project", "Open Project"), str(exc))
             return
@@ -17083,6 +17103,7 @@ class MainWindow(QMainWindow):
         return self.tr("draft", "Draft")
 
     def _load_project(self, audiobook_id: int) -> None:
+        self.audiobook_store.flush_project_manifest(audiobook_id)
         audiobook = self.audiobook_store.get_audiobook(audiobook_id)
         if audiobook is None:
             self._show_error(
@@ -18066,9 +18087,12 @@ class MainWindow(QMainWindow):
         }
         self.log_view.clear()
         self.log_view.append_event(self.tr("starting", "Starting generation..."))
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("%p%")
         self.progress_bar.setValue(0)
         self.status_label.setText(self.tr("preparing", "Preparing audio job..."))
         self.generation_started_at = time.monotonic()
+        self._generation_stage_progress = None
         self.progress_current = 0
         self.progress_total = 0
         self.last_output_folder = None
@@ -18098,6 +18122,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
+        worker.stage_progress.connect(self._on_stage_progress)
         worker.log.connect(self.log_view.append_event)
         worker.finished.connect(self._on_host_generation_finished)
         worker.failed.connect(self._on_failed)
@@ -18149,6 +18174,9 @@ class MainWindow(QMainWindow):
         self.worker.request_cancel()
 
     def _on_progress(self, current: int, total: int, status: str) -> None:
+        self._generation_stage_progress = None
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("%p%")
         percentage = int((current / total) * 100) if total else 0
         self.progress_bar.setValue(min(99, percentage))
         self.status_label.setText(status)
@@ -18156,9 +18184,42 @@ class MainWindow(QMainWindow):
         self.progress_total = total
         self._update_generation_time()
 
+    def _on_stage_progress(self, progress: dict[str, object]) -> None:
+        self._generation_stage_progress = progress
+        current = int(progress.get("current", 0) or 0)
+        total = int(progress.get("total", 0) or 0)
+        self.progress_current, self.progress_total = current, total
+        self.progress_bar.setRange(0, 100 if total else 0)
+        if total:
+            self.progress_bar.setValue(min(100, int(current / total * 100)))
+        labels = {
+            "synthesis": self.tr("stage_synthesis", "Generating speech"),
+            "preparation": self.tr(
+                "stage_preparation", "Preparing pauses and chapters"
+            ),
+            "joining": self.tr("stage_joining", "Joining audio"),
+            "encoding": self.tr("stage_encoding", "Encoding audio"),
+            "finalizing": self.tr("stage_finalizing", "Finalizing files and project"),
+            "mixing": self.tr("stage_mixing", "Creating podcast mix"),
+        }
+        label = labels.get(
+            str(progress.get("stage", "")), str(progress.get("message", ""))
+        )
+        if total:
+            if progress.get("unit") == "milliseconds":
+                label += f" · {self._format_duration(current // 1000)} / {self._format_duration(total // 1000)}"
+            else:
+                label += f" · {current:,} / {total:,}"
+        self.status_label.setText(label)
+        self.progress_bar.setFormat(self.tr("stage_percent", "Current stage: %p%"))
+        self._update_generation_time()
+
     def _on_finished(self, output_paths: list[str]) -> None:
+        self._generation_stage_progress = None
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("%p%")
         self.generation_timer.stop()
-        self.progress_current = self.progress_total
+        self.progress_current = self.progress_total = max(1, self.progress_total)
         self._update_generation_time()
         self.progress_bar.setValue(100)
         self.status_label.setText(
@@ -18198,6 +18259,7 @@ class MainWindow(QMainWindow):
 
     def _on_failed(self, message: str) -> None:
         self.generation_timer.stop()
+        self.progress_bar.setRange(0, 100)
         self._update_generation_time()
         self.status_label.setText(self.tr("generation_failed", "Generation failed"))
         self.log_view.append_event(message)
@@ -18207,6 +18269,7 @@ class MainWindow(QMainWindow):
 
     def _on_cancelled(self) -> None:
         self.generation_timer.stop()
+        self.progress_bar.setRange(0, 100)
         self._update_generation_time()
         self.status_label.setText(
             self.tr("generation_cancelled", "Generation cancelled")
@@ -18236,6 +18299,23 @@ class MainWindow(QMainWindow):
         if self.generation_started_at is None:
             return
         elapsed = max(0, round(time.monotonic() - self.generation_started_at))
+        stage = getattr(self, "_generation_stage_progress", None)
+        if stage:
+            eta = stage.get("stage_eta_seconds")
+            remaining = (
+                self._format_duration(int(eta))
+                if eta is not None
+                else self.tr("calculating", "Calculating...")
+            )
+            self.time_label.setText(
+                self.tr(
+                    "generation_stage_time_status",
+                    "Elapsed: {elapsed} | Current stage remaining: {remaining} | Total remaining: unknown",
+                    elapsed=self._format_duration(elapsed),
+                    remaining=remaining,
+                )
+            )
+            return
         if self.progress_current > 0 and self.progress_total > self.progress_current:
             remaining = round(
                 elapsed
@@ -20497,6 +20577,12 @@ class MainWindow(QMainWindow):
     def _shared_engine_close_action(self) -> str:
         if not self.engine_host_client.health(timeout=0.25):
             return "none"
+        try:
+            host_status = self.engine_host_client.request_json("GET", "/health", timeout=2)
+            if host_status.get("storyboard_active_jobs", 0):
+                return "keep"
+        except Exception:
+            pass
         loaded_names: list[str] = []
         try:
             memory = self.engine_host_client.engine_memory()

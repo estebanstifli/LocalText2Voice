@@ -166,11 +166,11 @@ def test_schema_18_server_port_migrates_to_internal_engine_host_port(tmp_path):
     settings = SettingsManager(path).settings
 
     assert settings["internal_engine_host_port"] == 9123
-    assert settings["remote_mcp_port"] == 8766
+    assert "remote_mcp_port" not in settings
     assert "port" not in settings["local_server"]
 
 
-def test_internal_and_remote_ports_are_sanitized_and_kept_distinct(tmp_path):
+def test_internal_port_preserved_and_obsolete_remote_port_removed(tmp_path):
     manager = SettingsManager(tmp_path / "config.json")
     manager.settings["internal_engine_host_port"] = 9000
     manager.settings["remote_mcp_port"] = 9000
@@ -178,7 +178,7 @@ def test_internal_and_remote_ports_are_sanitized_and_kept_distinct(tmp_path):
     manager.save()
 
     assert manager.settings["internal_engine_host_port"] == 9000
-    assert manager.settings["remote_mcp_port"] == 9001
+    assert "remote_mcp_port" not in manager.settings
 
 
 def test_save_preserves_existing_settings_reference(tmp_path):

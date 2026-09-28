@@ -2,29 +2,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import sqlite3
 import stat
-import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from app.utils.paths import app_data_root
 
 from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
+from .project_manifest_lock import project_manifest_lock
 from .text_processor import TextChunk
 
-
-CURRENT_DB_SCHEMA_VERSION = 5
+CURRENT_DB_SCHEMA_VERSION = 6
 PROJECT_MANIFEST_NAME = "project.localtext2voice.json"
 LEGACY_PROJECT_MANIFEST_NAME = "project.json"
-_PROJECT_MANIFEST_WRITE_LOCK = threading.RLock()
 _LOCKED_LEGACY_MANIFESTS: set[Path] = set()
 
 
@@ -127,7 +127,99 @@ class AudiobookStore:
         self.root_dir = app_data_root() / "projects"
         self.db_path = db_path or self.root_dir / "localtext2voice.sqlite3"
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._manifest_deferrals: dict[int | None, int] = {}
+        self._deferred_projects: set[int] = set()
         self._ensure_schema()
+
+    @contextmanager
+    def defer_project_manifests(
+        self, audiobook_id: int | None = None
+    ) -> Iterator[None]:
+        """Commit segment updates normally; publish snapshots at explicit checkpoints.
+
+        Deferral belongs to this store's operation, not a process-wide switch.
+        Durable revisions in SQLite also track changes made by other stores.
+        """
+        if audiobook_id is not None and not self._manifests_deferred(audiobook_id):
+            # Establish the recovery ledger for projects created before schema v6.
+            self.flush_project_manifest(audiobook_id)
+        self._manifest_deferrals[audiobook_id] = (
+            self._manifest_deferrals.get(audiobook_id, 0) + 1
+        )
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            self._manifest_deferrals[audiobook_id] -= 1
+            pending = list(self._deferred_projects)
+            for project_id in pending:
+                if self._manifests_deferred(project_id):
+                    continue
+                try:
+                    self.flush_project_manifest(project_id)
+                except Exception:
+                    if not failed:
+                        raise
+                    logging.getLogger(__name__).exception(
+                        "Could not publish project %s after interruption; SQLite retains progress",
+                        project_id,
+                    )
+                finally:
+                    self._deferred_projects.discard(project_id)
+
+    def _manifests_deferred(self, audiobook_id: int) -> bool:
+        return bool(
+            self._manifest_deferrals.get(None)
+            or self._manifest_deferrals.get(audiobook_id)
+        )
+
+    def flush_project_manifest(self, audiobook_id: int, *, force: bool = False) -> None:
+        audiobook = self.get_audiobook(audiobook_id)
+        if audiobook is None:
+            return
+        with project_manifest_lock(audiobook.project_dir):
+            self._publish_project_manifest(audiobook, force=force)
+
+    def open_project_manifest(self, manifest_path: Path) -> StoredAudiobook:
+        """Reopen a known local project without replacing newer committed progress."""
+        content = manifest_path.read_text(encoding="utf-8-sig")
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            # Match the existing import_project_manifest validation contract.
+            raise ValueError("Project file is not a valid LocalText2Voice project.")  # noqa: TRY004
+        existing = self.get_audiobook_by_uuid(str(data.get("uuid", "")))
+        if (
+            existing
+            and existing.project_dir.resolve() == manifest_path.parent.resolve()
+        ):
+            with project_manifest_lock(existing.project_dir):
+                # A publisher may have completed between the initial read and the lock.
+                content = manifest_path.read_text(encoding="utf-8-sig")
+                with self._connect() as connection:
+                    state = connection.execute(
+                        "SELECT * FROM project_manifest_state WHERE audiobook_id = ?",
+                        (existing.id,),
+                    ).fetchone()
+                digest = self._hash_text(content)
+                known = state is not None and digest in {
+                    state["manifest_sha256"],
+                    state["legacy_sha256"],
+                    state["pending_sha256"],
+                }
+                if known:
+                    self._publish_project_manifest(existing)
+                    return self.get_audiobook(existing.id) or existing
+                if state and state["revision"] > state["published_revision"]:
+                    raise ValueError(
+                        "This project file differs from the last saved copy, and the local "
+                        "database contains newer progress. Open the project from Recent Projects "
+                        "to recover that progress. Keep this external file separately before "
+                        "importing it as a replacement."
+                    )
+        return self.import_project_manifest(manifest_path)
 
     def create_audiobook(
         self,
@@ -393,6 +485,11 @@ class AudiobookStore:
         )
         if source.project_dir.exists():
             for item in source.project_dir.iterdir():
+                if item.name in {
+                    PROJECT_MANIFEST_NAME, LEGACY_PROJECT_MANIFEST_NAME, ".manifest.lock"
+                }:
+                    # The clone publishes its own identity and owns its own lock.
+                    continue
                 destination = clone.project_dir / item.name
                 if item.is_dir():
                     shutil.copytree(item, destination, dirs_exist_ok=True)
@@ -1125,6 +1222,50 @@ class AudiobookStore:
             self._invalidate_audio_events_from_segment(connection, segment_id)
         self._write_project_manifest_for_segment(segment_id)
 
+    def update_segment_pauses(
+        self, audiobook_id: int, pauses: list[tuple[int, int | None, int | None]]
+    ) -> None:
+        """Commit a prepared timeline atomically, invalidating affected events once."""
+        if not pauses:
+            return
+        with self._connect() as connection:
+            existing = {
+                int(row["id"]): row
+                for row in connection.execute(
+                    "SELECT id, sequence_index, resolved_pause_before_ms, resolved_pause_after_ms "
+                    "FROM audiobook_segments WHERE audiobook_id = ?",
+                    (audiobook_id,),
+                )
+            }
+            changes = []
+            first_changed: tuple[int, int] | None = None
+            now = self._now()
+            for segment_id, before_ms, after_ms in pauses:
+                row = existing.get(segment_id)
+                if row is None:
+                    raise ValueError(
+                        f"Segment {segment_id} does not belong to project {audiobook_id}."
+                    )
+                if (
+                    row["resolved_pause_before_ms"],
+                    row["resolved_pause_after_ms"],
+                ) == (before_ms, after_ms):
+                    continue
+                changes.append((before_ms, after_ms, now, segment_id))
+                candidate = (int(row["sequence_index"]), segment_id)
+                first_changed = (
+                    min(first_changed, candidate) if first_changed else candidate
+                )
+            connection.executemany(
+                "UPDATE audiobook_segments SET resolved_pause_before_ms = ?, "
+                "resolved_pause_after_ms = ?, updated_at = ? WHERE id = ?",
+                changes,
+            )
+            if first_changed is not None:
+                self._invalidate_audio_events_from_segment(connection, first_changed[1])
+        if changes:
+            self._request_project_manifest(audiobook_id)
+
     @staticmethod
     def _invalidate_audio_events_from_segment(
         connection: sqlite3.Connection,
@@ -1148,6 +1289,9 @@ class AudiobookStore:
                 END,
                 updated_at = ?
             WHERE audiobook_id = ? AND anchor_segment_sequence >= ?
+              AND (resolved_time_ms IS NOT NULL OR resolution_confidence IS NOT NULL
+                   OR (enabled = 0 AND resolution_status != 'invalid')
+                   OR (enabled != 0 AND resolution_status NOT IN ('pending_whisper', 'missing')))
             """,
             (
                 AudiobookStore._now(),
@@ -1157,7 +1301,7 @@ class AudiobookStore:
         )
         connection.execute(
             "UPDATE audiobooks SET mix_audio_path = '', mix_mp3_path = '', "
-            "updated_at = ? WHERE id = ?",
+            "updated_at = ? WHERE id = ? AND (mix_audio_path != '' OR mix_mp3_path != '')",
             (AudiobookStore._now(), int(row["audiobook_id"])),
         )
 
@@ -1678,6 +1822,63 @@ class AudiobookStore:
                 ON audio_events(audiobook_id, source_position)
                 """
             )
+            self._ensure_manifest_schema(connection)
+
+    @staticmethod
+    def _ensure_manifest_schema(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS project_manifest_state (
+                audiobook_id INTEGER PRIMARY KEY REFERENCES audiobooks(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL DEFAULT 1,
+                published_revision INTEGER NOT NULL DEFAULT -1,
+                lineage TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+                manifest_sha256 TEXT NOT NULL DEFAULT '',
+                legacy_sha256 TEXT NOT NULL DEFAULT '',
+                pending_sha256 TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+        # Existing v5 projects have a current snapshot but no recovery ledger yet.
+        connection.execute(
+            "INSERT OR IGNORE INTO project_manifest_state (audiobook_id, revision, published_revision) "
+            "SELECT id, 0, 0 FROM audiobooks"
+        )
+        connection.execute(
+            """CREATE TRIGGER IF NOT EXISTS manifest_audiobook_insert AFTER INSERT ON audiobooks
+            BEGIN INSERT INTO project_manifest_state (audiobook_id) VALUES (NEW.id); END"""
+        )
+        fields = (
+            "title",
+            "source_text",
+            "project_dir",
+            "output_dir",
+            "split_mode",
+            "export_mode",
+            "engine_config_json",
+            "project_settings_json",
+            "clean_audio_path",
+            "mix_audio_path",
+        )
+        changed = " OR ".join(f"NEW.{name} IS NOT OLD.{name}" for name in fields)
+        connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS manifest_audiobook_update AFTER UPDATE ON audiobooks "
+            f"WHEN {changed} BEGIN UPDATE project_manifest_state SET revision = revision + 1 "
+            "WHERE audiobook_id = NEW.id; END"
+        )
+        for table in ("audiobook_segments", "audio_events"):
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                ref = "OLD" if operation == "DELETE" else "NEW"
+                connection.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS manifest_{table}_{operation.lower()} "
+                    f"AFTER {operation} ON {table} BEGIN UPDATE project_manifest_state "
+                    f"SET revision = revision + 1 WHERE audiobook_id = {ref}.audiobook_id; END"
+                )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_audio_events_invalidation
+            ON audio_events(audiobook_id, anchor_segment_sequence)
+            WHERE resolved_time_ms IS NOT NULL OR resolution_confidence IS NOT NULL
+               OR (enabled = 0 AND resolution_status != 'invalid')
+               OR (enabled != 0 AND resolution_status NOT IN ('pending_whisper', 'missing'))"""
+        )
 
     def _ensure_segment_columns(self, connection: sqlite3.Connection) -> None:
         existing = {
@@ -1876,16 +2077,58 @@ class AudiobookStore:
         return clone_root / relative
 
     def _write_project_manifest_for_segment(self, segment_id: int) -> None:
-        segment = self.get_segment(segment_id)
-        if segment is None:
-            return
-        audiobook = self.get_audiobook(segment.audiobook_id)
-        if audiobook is not None:
-            self._write_project_manifest(audiobook)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT audiobook_id FROM audiobook_segments WHERE id = ?",
+                (segment_id,),
+            ).fetchone()
+        if row is not None:
+            self._request_project_manifest(int(row["audiobook_id"]))
+
+    def _request_project_manifest(self, audiobook_id: int) -> None:
+        if self._manifests_deferred(audiobook_id):
+            self._deferred_projects.add(audiobook_id)
+        else:
+            self.flush_project_manifest(audiobook_id)
 
     def _write_project_manifest(self, audiobook: StoredAudiobook) -> None:
+        if self._manifests_deferred(audiobook.id):
+            self._deferred_projects.add(audiobook.id)
+        else:
+            # Explicit Save also repairs missing/stale compatibility mirrors.
+            self.flush_project_manifest(audiobook.id, force=True)
+
+    def _publish_project_manifest(
+        self, audiobook: StoredAudiobook, *, force: bool = False
+    ) -> None:
+        """Caller holds the project lock from before the read through publication."""
         project_dir = audiobook.project_dir
         with self._connect() as connection:
+            connection.execute("BEGIN")
+            state = connection.execute(
+                "SELECT * FROM project_manifest_state WHERE audiobook_id = ?",
+                (audiobook.id,),
+            ).fetchone()
+            if state is None:
+                return
+            if (
+                not force
+                and state["manifest_sha256"]
+                and state["revision"] == state["published_revision"]
+                and (project_dir / PROJECT_MANIFEST_NAME).is_file()
+            ):
+                return
+            # Metadata and both collections must come from the same SQLite snapshot.
+            book_row = connection.execute(
+                "SELECT * FROM audiobooks WHERE id = ?", (audiobook.id,)
+            ).fetchone()
+            if book_row is None:
+                return
+            audiobook = self._row_to_audiobook(book_row)
+            if audiobook.project_dir != project_dir:
+                raise OSError(
+                    "The project directory changed during saving. Retry the operation."
+                )
             rows = connection.execute(
                 """
                 SELECT sequence_index, chapter_index, chapter_title,
@@ -1922,6 +2165,17 @@ class AudiobookStore:
                 """,
                 (audiobook.id,),
             ).fetchall()
+        resolved_root = project_dir.resolve()
+        path_cache: dict[str, str] = {}
+
+        def manifest_path(value: Any, _root: Path = project_dir) -> str:
+            key = str(value or "").strip()
+            if key not in path_cache:
+                path_cache[key] = self._path_for_manifest(
+                    value, project_dir, resolved_root=resolved_root
+                )
+            return path_cache[key]
+
         segments = []
         for row in rows:
             segments.append(
@@ -1942,19 +2196,15 @@ class AudiobookStore:
                     "voice": str(row["voice"] or ""),
                     "language": str(row["language"] or ""),
                     "status": str(row["status"] or ""),
-                    "wav_path": self._path_for_manifest(row["wav_path"], project_dir),
+                    "wav_path": manifest_path(row["wav_path"], project_dir),
                     "duration_ms": int(row["duration_ms"] or 0),
                     "attempt_count": int(row["attempt_count"] or 0),
                     "transcript_text": str(row["transcript_text"] or ""),
                     "normalized_transcript_text": str(
                         row["normalized_transcript_text"] or ""
                     ),
-                    "word_timestamps": self._json_to_list(
-                        row["word_timestamps_json"]
-                    ),
-                    "review_metrics": self._json_to_dict(
-                        row["review_metrics_json"]
-                    ),
+                    "word_timestamps": self._json_to_list(row["word_timestamps_json"]),
+                    "review_metrics": self._json_to_dict(row["review_metrics_json"]),
                     "similarity_score": row["similarity_score"],
                     "wer": row["wer"],
                     "cer": row["cer"],
@@ -1975,16 +2225,12 @@ class AudiobookStore:
                 "command_type": str(row["command_type"]),
                 "raw_command": str(row["raw_command"]),
                 "source_position": int(row["source_position"] or 0),
-                "anchor_segment_sequence": int(
-                    row["anchor_segment_sequence"] or 0
-                ),
+                "anchor_segment_sequence": int(row["anchor_segment_sequence"] or 0),
                 "anchor_source_word": int(row["anchor_source_word"] or 0),
                 "anchor_mode": str(row["anchor_mode"] or "word_boundary"),
-                "anchor_pause_offset_ms": int(
-                    row["anchor_pause_offset_ms"] or 0
-                ),
+                "anchor_pause_offset_ms": int(row["anchor_pause_offset_ms"] or 0),
                 "file_reference": str(row["file_reference"] or ""),
-                "file_path": self._path_for_manifest(row["file_path"], project_dir),
+                "file_path": manifest_path(row["file_path"], project_dir),
                 "track": str(row["track"] or "sfx"),
                 "source_start_ms": int(row["source_start_ms"] or 0),
                 "duration_ms": row["duration_ms"],
@@ -1998,9 +2244,7 @@ class AudiobookStore:
                 "target_event_uid": str(row["target_event_uid"] or ""),
                 "enabled": bool(row["enabled"]),
                 "resolved_time_ms": row["resolved_time_ms"],
-                "resolution_status": str(
-                    row["resolution_status"] or "pending_whisper"
-                ),
+                "resolution_status": str(row["resolution_status"] or "pending_whisper"),
                 "resolution_confidence": row["resolution_confidence"],
                 "warnings": self._json_to_list(row["warnings_json"]),
             }
@@ -2011,29 +2255,30 @@ class AudiobookStore:
         manifest = {
             "schema": "localtext2voice.project",
             "version": 2,
+            "persistence": {"revision": state["revision"], "lineage": state["lineage"]},
             "uuid": audiobook.uuid,
             "title": audiobook.title,
             "source_text": audiobook.source_text,
             "source_hash": self._hash_text(audiobook.source_text),
-            "output_dir": self._path_for_manifest(audiobook.output_dir, project_dir),
+            "output_dir": manifest_path(audiobook.output_dir, project_dir),
             "split_mode": audiobook.split_mode,
             "export_mode": audiobook.export_mode,
             "engine_config": self._json_to_dict(audiobook.engine_config_json),
             "project_settings": project_settings,
-            "clean_audio_path": self._path_for_manifest(
+            "clean_audio_path": manifest_path(
                 audiobook.clean_audio_path,
                 project_dir,
             ),
-            "mix_audio_path": self._path_for_manifest(
+            "mix_audio_path": manifest_path(
                 audiobook.mix_audio_path,
                 project_dir,
             ),
             # Deprecated mirrors kept so older versions can open the project.
-            "clean_mp3_path": self._path_for_manifest(
+            "clean_mp3_path": manifest_path(
                 audiobook.clean_audio_path,
                 project_dir,
             ),
-            "mix_mp3_path": self._path_for_manifest(
+            "mix_mp3_path": manifest_path(
                 audiobook.mix_audio_path,
                 project_dir,
             ),
@@ -2043,46 +2288,90 @@ class AudiobookStore:
         }
         project_dir.mkdir(parents=True, exist_ok=True)
         manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
+        digest = self._hash_text(manifest_text)
+        with self._connect() as connection:
+            # Covers a crash after os.replace but before recording publication.
+            connection.execute(
+                "UPDATE project_manifest_state SET pending_sha256 = ? WHERE audiobook_id = ?",
+                (digest, audiobook.id),
+            )
         # Segment generation and Whisper review can write the same project from
         # different AudiobookStore instances.  A unique temporary file avoids
         # collisions, while retries tolerate short Windows locks from indexers,
         # antivirus software, or a reader opening project.json.
-        with _PROJECT_MANIFEST_WRITE_LOCK:
-            source_path = project_dir / "source.txt"
-            try:
-                source_is_current = (
-                    source_path.is_file()
-                    and source_path.read_text(encoding="utf-8")
-                    == audiobook.source_text
-                )
-            except OSError:
-                source_is_current = False
-            if not source_is_current:
-                self._write_text_atomic(source_path, audiobook.source_text)
-            self._write_text_atomic(
-                project_dir / PROJECT_MANIFEST_NAME,
-                manifest_text,
+        source_path = project_dir / "source.txt"
+        try:
+            source_is_current = (
+                source_path.is_file()
+                and source_path.read_text(encoding="utf-8") == audiobook.source_text
             )
-            legacy_path = project_dir / LEGACY_PROJECT_MANIFEST_NAME
-            legacy_key = legacy_path.resolve()
-            if legacy_key not in _LOCKED_LEGACY_MANIFESTS:
-                try:
-                    self._write_text_atomic(legacy_path, manifest_text)
-                except OSError as exc:
-                    # project.json is only the legacy compatibility mirror.  The
-                    # canonical project.localtext2voice.json is already safe, so a
-                    # reader holding the old file open must not fail a 97%-complete
-                    # audiobook job. Skip repeated slow retries until next launch.
-                    if not self._retryable_replace_error(exc):
-                        raise
-                    _LOCKED_LEGACY_MANIFESTS.add(legacy_key)
+        except OSError:
+            source_is_current = False
+        if not source_is_current:
+            self._write_text_atomic(source_path, audiobook.source_text)
+        self._preserve_external_manifest(
+            project_dir / PROJECT_MANIFEST_NAME,
+            state["manifest_sha256"],
+            state["pending_sha256"],
+        )
+        self._write_text_atomic(
+            project_dir / PROJECT_MANIFEST_NAME,
+            manifest_text,
+        )
+        legacy_path = project_dir / LEGACY_PROJECT_MANIFEST_NAME
+        legacy_key = legacy_path.resolve()
+        if legacy_key not in _LOCKED_LEGACY_MANIFESTS:
+            try:
+                self._preserve_external_manifest(
+                    legacy_path, state["legacy_sha256"], state["pending_sha256"]
+                )
+                self._write_text_atomic(legacy_path, manifest_text)
+            except OSError as exc:
+                # project.json is only the legacy compatibility mirror.  The
+                # canonical project.localtext2voice.json is already safe, so a
+                # reader holding the old file open must not fail a 97%-complete
+                # audiobook job. Skip repeated slow retries until next launch.
+                if not self._retryable_replace_error(exc):
+                    raise
+                _LOCKED_LEGACY_MANIFESTS.add(legacy_key)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE project_manifest_state SET published_revision = ?, manifest_sha256 = ?, "
+                "legacy_sha256 = CASE WHEN ? THEN ? ELSE legacy_sha256 END, "
+                "pending_sha256 = '' WHERE audiobook_id = ?",
+                (
+                    state["revision"],
+                    digest,
+                    legacy_key not in _LOCKED_LEGACY_MANIFESTS,
+                    digest,
+                    audiobook.id,
+                ),
+            )
+
+    def _preserve_external_manifest(
+        self, path: Path, published_hash: str, pending_hash: str
+    ) -> None:
+        if not published_hash:
+            return
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            return
+        if self._hash_text(content) not in {published_hash, pending_hash}:
+            backup = path.with_name(
+                f"{path.stem}.external-{uuid.uuid4().hex[:12]}.json"
+            )
+            self._write_text_atomic(backup, content)
+            logging.getLogger(__name__).warning(
+                "Preserved externally modified project file: %s", backup
+            )
 
     @staticmethod
     def _write_text_atomic(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        temporary.write_text(content, encoding="utf-8")
         try:
+            temporary.write_text(content, encoding="utf-8")
             for attempt in range(8):
                 try:
                     os.replace(temporary, path)
@@ -2150,7 +2439,9 @@ class AudiobookStore:
             return None
 
     @classmethod
-    def _path_for_manifest(cls, path_value: Any, project_dir: Path) -> str:
+    def _path_for_manifest(
+        cls, path_value: Any, project_dir: Path, *, resolved_root: Path | None = None
+    ) -> str:
         text = str(path_value or "").strip()
         if not text:
             return ""
@@ -2158,7 +2449,9 @@ class AudiobookStore:
         if not path.is_absolute():
             return cls._path_to_manifest_text(path)
         try:
-            relative = path.resolve().relative_to(project_dir.resolve())
+            relative = path.resolve().relative_to(
+                resolved_root if resolved_root is not None else project_dir.resolve()
+            )
             return cls._path_to_manifest_text(relative)
         except (OSError, ValueError):
             return str(path)

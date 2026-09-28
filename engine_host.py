@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """LocalText2Voice persistent engine host.
 
-This process owns the long-lived HTTP/MCP server used by desktop bridges. It is
+This process owns the long-lived internal HTTP service used by desktop bridges. It is
 intentionally separate from the PySide UI and from the stdio MCP bridge so heavy
 TTS engines can stay loaded in memory across multiple jobs.
 """

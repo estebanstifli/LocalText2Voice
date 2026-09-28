@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "Regroupe les répliques consécutives dans la limite du segment tout en préservant les sauts de ligne, les changements de voix et les pauses explicites. Une pause de paragraphe n'est ajoutée qu'après le groupe de dialogue.",
   "storyboard_llm_retries": "Nouvelles tentatives en cas d'erreurs temporaires",
   "storyboard_llm_retries_help": "Tentatives supplémentaires pour les erreurs temporaires de connexion, les délais d'attente ou un service occupé. 0 désactive les nouvelles tentatives ; 5 autorise jusqu'à 6 essais.",
-  "storyboard_analysis_resume_saved": "Reprendre l'analyse et les rapports enregistrés si le texte et les paramètres correspondent"
+  "storyboard_analysis_resume_saved": "Reprendre l'analyse et les rapports enregistrés si le texte et les paramètres correspondent",
+  "stage_synthesis": "Génération de la voix",
+  "stage_preparation": "Préparation des pauses et des chapitres",
+  "stage_joining": "Assemblage de l'audio",
+  "stage_encoding": "Encodage de l'audio",
+  "stage_finalizing": "Finalisation des fichiers et du projet",
+  "stage_mixing": "Création du mixage du podcast",
+  "stage_percent": "Étape actuelle : %p%",
+  "generation_stage_time_status": "Écoulé : {elapsed} | Temps restant pour cette étape : {remaining} | Temps restant total : inconnu"
 }

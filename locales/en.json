@@ -1965,5 +1965,13 @@
   "group_short_dialogue_help": "Group consecutive dialogue turns within the chunk limit, preserving line breaks, voice changes and explicit pauses. A paragraph pause is added only after the dialogue group.",
   "storyboard_llm_retries": "Retries on temporary errors",
   "storyboard_llm_retries_help": "Additional attempts for temporary connection errors, timeouts or a busy service. 0 disables retries; 5 allows up to 6 attempts.",
-  "storyboard_analysis_resume_saved": "Resume saved analysis and reports if the text and settings match"
+  "storyboard_analysis_resume_saved": "Resume saved analysis and reports if the text and settings match",
+  "stage_synthesis": "Generating speech",
+  "stage_preparation": "Preparing pauses and chapters",
+  "stage_joining": "Joining audio",
+  "stage_encoding": "Encoding audio",
+  "stage_finalizing": "Finalizing files and project",
+  "stage_mixing": "Creating podcast mix",
+  "stage_percent": "Current stage: %p%",
+  "generation_stage_time_status": "Elapsed: {elapsed} | Current stage remaining: {remaining} | Total remaining: unknown"
 }

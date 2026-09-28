@@ -1,2 +1,2 @@
-"""Local HTTP/MCP server integration for LocalText2Voice."""
+"""Local internal HTTP service integration for LocalText2Voice."""
 

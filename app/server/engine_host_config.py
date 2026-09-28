@@ -7,7 +7,6 @@ from app.utils.paths import app_data_root
 
 
 DEFAULT_INTERNAL_ENGINE_HOST_PORT = 8765
-DEFAULT_REMOTE_MCP_PORT = 8766
 ENGINE_HOST_ADDRESS = "127.0.0.1"
 
 

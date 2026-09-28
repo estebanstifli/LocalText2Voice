@@ -76,7 +76,7 @@ human review is part of the workflow before final export.
 
 ## Video Storyboard (Beta)
 
-**Beta feature introduced in LocalText2Voice 2.0.1 and expanded in 2.1.1.**
+**Beta feature introduced in LocalText2Voice 2.0.1 and expanded in 2.1.2.**
 
 Turn narration into an editable visual timeline, analyze scenes and reusable
 entities, generate or import images, create video clips, and render an MP4 with
@@ -132,6 +132,21 @@ engine. Disk usage also grows with each optional engine because models and
 isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
+
+## What's New In 2.1.2
+
+- Automate the complete Video Storyboard workflow through local MCP: 57 new
+  storyboard tools, 76 tools in total, from timed narration and scene editing
+  to reference images, clips and the final MP4. The desktop UI can stay closed.
+- Review generated candidates and resume visual jobs with persistent results,
+  cancellation, retries and safeguards against concurrent project edits.
+- Export large audiobooks more efficiently by batching project snapshots and
+  pause updates while keeping each generated segment saved in SQLite.
+- See the actual generation/export phase and its progress, instead of an
+  apparently stuck 99% encoding message. Addresses
+  [issue #27](https://github.com/estebanstifli/LocalText2Voice/issues/27).
+- MCP now uses **stdio only**; the internal HTTP API continues to connect the
+  app and EngineHost. See the [MCP storyboard guide](docs/MCP_STORYBOARD.md).
 
 ## What's New In 2.1.1
 
@@ -536,7 +551,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 - Faster Whisper verification pipeline with similarity scoring and retry logic.
 - SQLite persistence for projects, segments, transcripts, review status, and word timestamps.
 - FFmpeg audio DSP pipeline for joining, multi-format encoding, speed/volume postprocessing, loudnorm, fades, ducking, and podcast mixing.
-- Optional local MCP/HTTP server for automation from local AI clients and agent tools.
+- Local MCP stdio server for automation from local AI clients and agent tools.
 - PySide6 desktop UI with background workers, progress, cancellation, logs, translation files, and portable packaging.
 
 ## Technology Stack
@@ -554,7 +569,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 | F5-TTS Russian | Optional Russian voice cloning and stress-aware TTS |
 | Faster Whisper | Optional transcription and generation review |
 | FastAPI + MCP SDK | Optional local automation server |
-| Uvicorn | Local ASGI server for HTTP/MCP |
+| Uvicorn | Internal EngineHost HTTP API |
 | FFmpeg | M4B/MP3/M4A/Opus/FLAC/OGG export, chapters, conversion, mixing, filters |
 | SQLite | Project, segment, transcript, and review data |
 | Mutagen | Audio metadata reading plus M4B tags and embedded cover writing |
@@ -570,7 +585,7 @@ LocalText2Voice/
 |   |-- core/          # Text processing, markup, audio pipeline, projects, SQLite store
 |   |-- tts/           # TTS engines, managers, voice catalogs, local/API providers
 |   |-- verification/  # Faster Whisper runtime and persistent verifier
-|   |-- server/        # Optional local FastAPI/MCP server and job queue
+|   |-- server/        # Internal FastAPI service and job queue
 |   |-- ui/            # PySide6 windows, pages, Audio Mix, widgets
 |   |-- workers/       # Background generation, install, verification workers
 |   |-- utils/         # Paths, FFmpeg, GPU detection, logging
@@ -681,26 +696,32 @@ Existing MP3 files are retained, and the tool
 response reports `render_required=true` when the edited source needs a new
 render.
 
-### Optional HTTP/MCP server
+### Headless Video Storyboard
 
-The desktop app can also expose a local FastAPI/MCP server from
-**Settings -> Local Server**. It is disabled by default and binds to
-`127.0.0.1` for Windows desktop use.
+The stdio server exposes 57 storyboard tools (76 total with the existing audio tools).
+Use `sb_get_timed_text` to read narration timings, then let the connected agent
+write the scenes and prompts. No internal narrative analysis is required.
+`sb_list_styles` lists all image styles; `sb_set_style` selects a preset or custom
+style for the project or individual scenes. Entity/state references, frames,
+clips, image editing, preview and final MP4 rendering work without the desktop UI.
+See [the complete workflow and tool contracts](docs/MCP_STORYBOARD.md).
 
-Useful endpoints:
+### Internal EngineHost HTTP API
 
-- MCP: `http://127.0.0.1:8765/mcp`
+MCP is exposed **only through stdio**. The former `/mcp` HTTP transport has been
+removed. The internal FastAPI service remains because both the desktop app and
+stdio bridge use it. It binds to `127.0.0.1` by default.
+
 - Health: `GET /health`
 - Voices: `GET /voices`
-- Music: `GET /background-music`
 - Jobs: `POST /jobs`, `GET /jobs/{job_id}`, `POST /jobs/{job_id}/cancel`
 - Job source: `GET/PUT /jobs/{job_id}/source`
 - Source operations: `POST /jobs/{job_id}/source/search`, `/edit`, `/replace`
+- Storyboard operations: `POST /storyboard/{sb_tool_name}` with tool arguments as JSON.
 
-The MCP tools include generation, job status, and paginated project-source
-reading, searching, insertion, deletion, replacement, and full-document writes.
-Generated jobs return paths, MIME information, and local URLs for the clean narration and optional mix. Legacy `clean_mp3` and `mix_mp3` aliases remain available for existing clients.
-Use the generated access token as a Bearer token for clients that support headers.
+Configured Bearer authentication also protects storyboard operations. Restart an
+idle EngineHost after upgrading so it loads the new routes. Do not stop a host
+with active jobs; the shutdown endpoint rejects active storyboard work.
 
 ## Run From Source
 

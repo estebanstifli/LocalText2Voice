@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "Agrupa falas consecutivas de diálogo dentro do limite do segmento, preservando quebras de linha, mudanças de voz e pausas explícitas. Só é adicionada uma pausa de parágrafo depois do grupo de diálogo.",
   "storyboard_llm_retries": "Tentativas em erros temporários",
   "storyboard_llm_retries_help": "Tentativas adicionais para erros temporários de ligação, tempos limite ou serviço ocupado. 0 desativa as tentativas; 5 permite até 6 tentativas.",
-  "storyboard_analysis_resume_saved": "Retomar a análise e os relatórios guardados se o texto e as definições coincidirem"
+  "storyboard_analysis_resume_saved": "Retomar a análise e os relatórios guardados se o texto e as definições coincidirem",
+  "stage_synthesis": "A gerar voz",
+  "stage_preparation": "A preparar pausas e capítulos",
+  "stage_joining": "A juntar áudio",
+  "stage_encoding": "A codificar áudio",
+  "stage_finalizing": "A finalizar ficheiros e projeto",
+  "stage_mixing": "A criar a mistura do podcast",
+  "stage_percent": "Fase atual: %p%",
+  "generation_stage_time_status": "Decorrido: {elapsed} | Restante nesta fase: {remaining} | Restante total: desconhecido"
 }

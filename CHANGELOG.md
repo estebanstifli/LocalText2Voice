@@ -7,6 +7,55 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-09-28
+
+### Added
+
+- Added 57 Video Storyboard MCP tools, bringing the stdio server to 76 tools:
+  projects, timed narration, styles, entities and appearance states, scenes,
+  references, images, video clips, previews, validation and final MP4 rendering.
+- Added persistent visual jobs in EngineHost with per-item results, cancellation,
+  explicit retries, idempotency keys and candidate media for human review.
+- Added a storyboard MCP documentation resource at
+  `localtext2voice://docs/storyboard` and a complete headless workflow guide.
+- Added revision checks, cross-process locking and snapshots to protect
+  storyboards edited by the desktop app and an MCP client concurrently.
+- Added generation progress by phase, including pause/chapter preparation,
+  joining, encoding, mixing and finalization, with current-phase time estimates.
+
+### Changed
+
+- Batched project-manifest snapshots during generation and Whisper review while
+  retaining durable per-segment SQLite updates. Pending snapshots are flushed
+  at completion, cancellation and errors, and recovered on project reopening.
+- Batched pause persistence and reused matching silence WAVs, WAV headers and
+  concatenation paths to reduce preparation overhead on large audiobooks.
+- Added explicit entity/state assignments for agent-authored scenes, avoiding
+  unwanted visual references inferred from names mentioned only in narration.
+- Kept EngineHost alive while visual jobs are active and rejected shutdown
+  requests that would interrupt them.
+- Completed translations for the new progress messages in all 11 UI languages.
+
+### Fixed
+
+- Fixed the large-project export slowdown and misleading 99% encoding status
+  reported in [issue #27](https://github.com/estebanstifli/LocalText2Voice/issues/27).
+  Synthetic benchmarks cover up to 8,000 segments; their results measure
+  persistence and export preparation, not end-to-end TTS speed.
+- Preserved newer SQLite project data after interrupted snapshot publication
+  and retained conflicting externally edited manifests before replacement.
+- Added cancellation checks during timeline preparation and long silence
+  generation, plus FFmpeg progress reporting while draining its error output.
+- Included LiteLLM resources, the style catalog, bundled ComfyUI workflows and
+  engine manifests in the Windows EngineHost build for headless image/video
+  workflows. The packaged MCP smoke test exercises styles, preview and MP4 export.
+
+### Removed
+
+- Removed the MCP HTTP `/mcp` transport and its unused remote-port setting.
+  MCP clients use stdio; the authenticated internal FastAPI API remains shared
+  by the desktop app, EngineHost and stdio bridge.
+
 ## [2.1.1] - 2026-09-26
 
 ### Added
@@ -476,7 +525,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.0.2...v2.1.0
+[2.0.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.5.1...v2.0.1
+[1.5.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.4...v1.5.0
 [1.4.4]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/estebanstifli/LocalText2Voice/compare/v1.4.2...v1.4.3

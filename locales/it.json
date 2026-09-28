@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "Raggruppa turni di dialogo consecutivi entro il limite del blocco, mantenendo interruzioni di riga, cambi di voce e pause esplicite. Una pausa di paragrafo viene aggiunta solo dopo il gruppo di dialogo.",
   "storyboard_llm_retries": "Tentativi per errori temporanei",
   "storyboard_llm_retries_help": "Tentativi aggiuntivi per errori temporanei di connessione, timeout o servizio occupato. 0 disabilita i tentativi; 5 consente fino a 6 tentativi.",
-  "storyboard_analysis_resume_saved": "Riprendi analisi e rapporti salvati se testo e impostazioni corrispondono"
+  "storyboard_analysis_resume_saved": "Riprendi analisi e rapporti salvati se testo e impostazioni corrispondono",
+  "stage_synthesis": "Generazione della voce",
+  "stage_preparation": "Preparazione delle pause e dei capitoli",
+  "stage_joining": "Unione dell'audio",
+  "stage_encoding": "Codifica dell'audio",
+  "stage_finalizing": "Finalizzazione dei file e del progetto",
+  "stage_mixing": "Creazione del mix del podcast",
+  "stage_percent": "Fase attuale: %p%",
+  "generation_stage_time_status": "Trascorso: {elapsed} | Tempo rimanente per questa fase: {remaining} | Tempo totale rimanente: sconosciuto"
 }

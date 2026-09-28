@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "Aufeinanderfolgende kurze Dialogpassagen innerhalb der Chunk-Grenze gruppieren; Zeilenumbrüche, Stimmwechsel und explizite Pausen bleiben erhalten. Eine Absatzpause wird erst nach der Dialoggruppe eingefügt.",
   "storyboard_llm_retries": "Wiederholungen bei temporären Fehlern",
   "storyboard_llm_retries_help": "Zusätzliche Versuche bei vorübergehenden Verbindungsfehlern, Timeouts oder einem ausgelasteten Dienst. 0 deaktiviert Wiederholungen; 5 erlaubt bis zu 6 Versuche.",
-  "storyboard_analysis_resume_saved": "Gespeicherte Analyse und Berichte fortsetzen, wenn Text und Einstellungen übereinstimmen"
+  "storyboard_analysis_resume_saved": "Gespeicherte Analyse und Berichte fortsetzen, wenn Text und Einstellungen übereinstimmen",
+  "stage_synthesis": "Sprache wird erzeugt",
+  "stage_preparation": "Pausen und Kapitel werden vorbereitet",
+  "stage_joining": "Audio wird zusammengefügt",
+  "stage_encoding": "Audio wird kodiert",
+  "stage_finalizing": "Dateien und Projekt werden fertiggestellt",
+  "stage_mixing": "Podcast-Mix wird erstellt",
+  "stage_percent": "Aktuelle Phase: %p%",
+  "generation_stage_time_status": "Vergangen: {elapsed} | Verbleibend in dieser Phase: {remaining} | Insgesamt verbleibend: unbekannt"
 }

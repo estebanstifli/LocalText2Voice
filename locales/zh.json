@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "在片段限制内合并连续的简短对话轮次，同时保留换行、语音变化和明确停顿。仅在对话组之后添加段落停顿。",
   "storyboard_llm_retries": "临时错误重试",
   "storyboard_llm_retries_help": "针对临时连接错误、超时或服务繁忙的额外尝试。0 禁用重试；5 最多允许 6 次尝试。",
-  "storyboard_analysis_resume_saved": "如果文本和设置匹配，则恢复已保存的分析和报告"
+  "storyboard_analysis_resume_saved": "如果文本和设置匹配，则恢复已保存的分析和报告",
+  "stage_synthesis": "正在生成语音",
+  "stage_preparation": "正在准备停顿和章节",
+  "stage_joining": "正在合并音频",
+  "stage_encoding": "正在编码音频",
+  "stage_finalizing": "正在完成文件和项目",
+  "stage_mixing": "正在创建播客混音",
+  "stage_percent": "当前阶段：%p%",
+  "generation_stage_time_status": "已用时间：{elapsed} | 当前阶段剩余时间：{remaining} | 总剩余时间：未知"
 }

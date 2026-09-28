@@ -147,7 +147,6 @@
     "tail_failure_threshold_seconds": 1.0
   },
   "internal_engine_host_port": 8765,
-  "remote_mcp_port": 8766,
   "local_server": {
     "auth_token": "",
     "serve_files": true,

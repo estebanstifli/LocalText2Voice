@@ -5,8 +5,10 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,33 @@ from typing import Any
 STORYBOARD_PROJECT_FILE = Path("storyboard") / "storyboard.json"
 STORYBOARD_ANALYSIS_LOG_DIR = Path("storyboard") / "debug"
 _WRITE_LOCK = threading.RLock()
+_KNOWN_REVISIONS: dict[Path, str] = {}
+
+
+@contextmanager
+def _project_file_lock(root):
+    """Serialize GUI and EngineHost writes across processes."""
+    path = root / "storyboard" / ".write.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_json(target, document):
@@ -25,7 +54,15 @@ def _atomic_json(target, document):
             json.dump(document, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        for attempt in range(50):
+            try:
+                os.replace(temporary, target)
+                break
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                # Windows readers briefly hold the destination without delete sharing.
+                time.sleep(.01)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -176,6 +213,7 @@ def save_storyboard_state(
     *,
     analysis_status: str = "ready",
     error: str = "",
+    expected_revision: str | None = None,
 ) -> Path:
     """Atomically persist a portable storyboard beside its project assets."""
     root = project_dir.resolve()
@@ -223,7 +261,11 @@ def save_storyboard_state(
     document = _migrate_storyboard_document(document)
     target = root / STORYBOARD_PROJECT_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
-    with _WRITE_LOCK:
+    with _WRITE_LOCK, _project_file_lock(root):
+        current_revision = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else ""
+        expected = expected_revision if expected_revision is not None else _KNOWN_REVISIONS.get(root)
+        if expected is not None and current_revision != expected:
+            raise OSError("Storyboard changed in another client. Reload it before saving; your changes were not written.")
         if target.is_file():
             try:
                 previous = json.loads(target.read_text(encoding="utf-8-sig"))
@@ -232,32 +274,38 @@ def save_storyboard_state(
             except (ValueError, AttributeError):
                 pass
         _atomic_json(target, document)
+        _KNOWN_REVISIONS[root] = hashlib.sha256(target.read_bytes()).hexdigest()
+        state["_revision"] = _KNOWN_REVISIONS[root]
     return target
 
 
-def load_storyboard_state(project_dir: Path) -> dict[str, Any] | None:
+def load_storyboard_state(project_dir: Path, *, recover_pending: bool = True) -> dict[str, Any] | None:
     root = project_dir.resolve()
     path = root / STORYBOARD_PROJECT_FILE
     document = None
+    loaded_revision = ""
     using_backup = False
     for candidate in (path, path.with_suffix(".json.bak")):
         try:
-            loaded = json.loads(candidate.read_text(encoding="utf-8-sig"))
+            raw = candidate.read_bytes()
+            loaded = json.loads(raw.decode("utf-8-sig"))
             if isinstance(loaded, dict) and loaded.get("schema") == "localtext2voice.video-storyboard":
                 document = loaded
                 using_backup = candidate != path
+                loaded_revision = hashlib.sha256(raw).hexdigest() if candidate == path else (hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "")
                 break
         except (OSError, ValueError):
             continue
     from app.core.storyboard_frame_checkpoint import recover
     with _WRITE_LOCK:
-        recovered_document, recovered = recover(root, None if using_backup else document)
+        recovered_document, recovered = recover(root, None if using_backup else document) if recover_pending else (document, False)
         if recovered_document is not None:
             document = recovered_document
         if recovered:
             # Commit before consuming the journal. If interrupted, replay is safe.
             try:
                 save_storyboard_state(root, document, analysis_status=document.get("analysis_status", "ready"))
+                loaded_revision = _KNOWN_REVISIONS[root]
                 (root / "storyboard" / "frame-checkpoint.json").unlink(missing_ok=True)
             except OSError:
                 # The journal still owns a durable copy; allow viewing recovered
@@ -294,6 +342,8 @@ def load_storyboard_state(project_dir: Path) -> dict[str, Any] | None:
             )
             restored_scenes.append(scene)
     result["scenes"] = restored_scenes
+    _KNOWN_REVISIONS[root] = loaded_revision
+    result["_revision"] = loaded_revision
     return result
 
 

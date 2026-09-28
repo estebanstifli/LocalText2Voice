@@ -1960,5 +1960,13 @@
   "group_short_dialogue_help": "チャンク上限内で連続する短い会話ターンをまとめ、改行、声の変更、明示的なポーズを保持します。段落のポーズは会話グループの後にだけ追加されます。",
   "storyboard_llm_retries": "一時的なエラー時の再試行",
   "storyboard_llm_retries_help": "一時的な接続エラー、タイムアウト、サービス混雑に対する追加試行です。0 で無効、5 なら最大 6 回試行します。",
-  "storyboard_analysis_resume_saved": "テキストと設定が一致する場合は、保存済みの分析とレポートを再開する"
+  "storyboard_analysis_resume_saved": "テキストと設定が一致する場合は、保存済みの分析とレポートを再開する",
+  "stage_synthesis": "音声を生成中",
+  "stage_preparation": "間とチャプターを準備中",
+  "stage_joining": "音声を結合中",
+  "stage_encoding": "音声をエンコード中",
+  "stage_finalizing": "ファイルとプロジェクトの最終処理中",
+  "stage_mixing": "ポッドキャストのミックスを作成中",
+  "stage_percent": "現在の工程: %p%",
+  "generation_stage_time_status": "経過時間: {elapsed} | この工程の残り時間: {remaining} | 全体の残り時間: 不明"
 }

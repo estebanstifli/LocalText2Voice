@@ -6,27 +6,15 @@ from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from mcp.server.fastmcp import FastMCP
 
 from app import __version__
 from app.core.audio_formats import audio_format_from_path
 from app.core.audiobook_store import AudiobookStore
 from app.core.settings_manager import SettingsManager
-from app.server.job_manager import LocalServerJobManager, wait_for_job
+from app.server.job_manager import LocalServerJobManager
 from app.server.job_source_editor import JobSourceEditor
 from app.server.engine_host_config import internal_engine_host_url
 from app.server.ltv_service import LocalText2VoiceService, public_settings_snapshot
-from app.utils.paths import application_root
-
-
-def _read_text_resource(relative_path: str) -> str:
-    path = application_root() / relative_path
-    if not path.is_file():
-        return (
-            f"# Missing resource\n\nThe LocalText2Voice resource was not found: "
-            f"`{relative_path}`."
-        )
-    return path.read_text(encoding="utf-8", errors="replace")
 
 
 async def _json_object(request: Request) -> dict[str, Any]:
@@ -49,319 +37,21 @@ def create_http_app(
     service = LocalText2VoiceService(settings_manager, keep_engines_alive=True)
     server_settings = _server_settings(settings_manager)
     base_url = _base_url_from_settings(settings_manager.settings)
-    mcp_url = f"{base_url}/mcp"
     manager = job_manager or LocalServerJobManager(
         service,
         max_parallel_jobs=int(server_settings.get("max_parallel_jobs", 1) or 1),
     )
     source_editor = JobSourceEditor(manager, audiobook_store)
-    mcp = FastMCP(
-        "LocalText2Voice",
-        instructions=(
-            "Create audiobooks and podcast mixes using the local "
-            "LocalText2Voice desktop engine."
-        ),
-        stateless_http=True,
-        json_response=True,
-    )
-
-    @mcp.tool(description="Return server status, enabled engines, and public settings.")
-    def server_info() -> dict[str, Any]:
-        return {
-            **service.server_info(),
-            "settings": public_settings_snapshot(settings_manager.settings),
-            "mcp_endpoint": mcp_url,
-        }
-
-    @mcp.tool(description="List available TTS engines.")
-    def list_engines() -> list[dict[str, Any]]:
-        return service.list_engines()
-
-    @mcp.tool(description="List voices for the selected or requested TTS engine.")
-    def list_voices(
-        engine_id: str | None = None,
-        installed_only: bool = True,
-    ) -> list[dict[str, Any]]:
-        return service.list_voices(engine_id, installed_only=installed_only)
-
-    @mcp.tool(description="List background music tracks available for podcast mixes.")
-    def list_background_music() -> list[dict[str, Any]]:
-        return service.list_background_music()
-
-    @mcp.tool(description="List sound effects available to PLAY markup commands.")
-    def list_sfx() -> list[dict[str, Any]]:
-        return service.list_sfx()
-
-    @mcp.resource("localtext2voice://docs/markup")
-    def markup_documentation() -> str:
-        """Return the LocalText2Voice markup manual."""
-        return _read_text_resource("docs/LTV_MARKUP.md")
-
-    @mcp.resource("localtext2voice://docs/markup/examples")
-    def markup_examples() -> str:
-        """Return concise LocalText2Voice markup examples."""
-        manual = _read_text_resource("docs/LTV_MARKUP.md")
-        marker = "## Examples"
-        index = manual.find(marker)
-        if index >= 0:
-            return manual[index:]
-        return manual
-
-    @mcp.resource("localtext2voice://docs/engines")
-    def engine_documentation() -> str:
-        """Return a compact guide for engine-aware audiobook generation."""
-        return (
-            "# LocalText2Voice Engines\n\n"
-            "Use `list_engines` to see installed engines and `list_voices` to see "
-            "compatible voices for an engine. Use `engine_memory` to check which "
-            "engines are loaded in the persistent host, and `preload_engine` before "
-            "long jobs when using heavy local engines such as Qwen3 TTS, OmniVoice, "
-            "or Chatterbox.\n\n"
-            "For advanced text control, read `localtext2voice://docs/markup` before "
-            "calling `create_audiobook`."
-        )
-
-    @mcp.tool(
-        description=(
-            "Return the LocalText2Voice markup manual. Use this before composing "
-            "advanced audiobook scripts with voice, language, pause, speed, volume, "
-            "and model parameter commands."
-        )
-    )
-    def get_markup_help(section: str | None = None) -> str:
-        manual = _read_text_resource("docs/LTV_MARKUP.md")
-        selected = str(section or "").strip().casefold()
-        if selected in {"", "all", "manual"}:
-            return manual
-        heading = f"## {selected}"
-        lower_manual = manual.casefold()
-        index = lower_manual.find(heading)
-        if index < 0:
-            return manual
-        next_index = lower_manual.find("\n## ", index + 1)
-        return manual[index:] if next_index < 0 else manual[index:next_index]
-
-    @mcp.tool(
-        description=(
-            "Create a complete audiobook job from text or LocalText2Voice markup. "
-            "For advanced scripts, first read the localtext2voice://docs/markup "
-            "resource or call get_markup_help. Returns immediately with a job id "
-            "unless wait_until_complete is true."
-        )
-    )
-    def create_audiobook(
-        text: str,
-        title: str = "Audiobook",
-        engine_id: str | None = None,
-        voice: str | None = None,
-        language: str | None = None,
-        background_music: str | None = None,
-        mix_policy: str = "always",
-        audio_format: str | None = None,
-        audio_quality: str | None = None,
-        export_mode: str | None = None,
-        split_mode: str | None = None,
-        review_policy: str = "default",
-        wait_until_complete: bool = False,
-        wait_timeout_seconds: int = 0,
-    ) -> dict[str, Any]:
-        request = {
-            "text": text,
-            "title": title,
-            "engine_id": engine_id,
-            "voice": voice,
-            "language": language,
-            "background_music": background_music,
-            "mix_policy": mix_policy,
-            "audio_format": audio_format,
-            "audio_quality": audio_quality,
-            "export_mode": export_mode,
-            "split_mode": split_mode,
-            "review_policy": review_policy,
-        }
-        job = manager.submit({key: value for key, value in request.items() if value is not None})
-        if wait_until_complete:
-            job = wait_for_job(
-                manager,
-                job.job_id,
-                timeout_seconds=max(1, int(wait_timeout_seconds or 3600)),
-            ) or job
-        return _job_response(job, settings_manager, base_url=base_url)
-
-    @mcp.tool(description="Alias of create_audiobook for simpler clients.")
-    def generate_audio(
-        text: str,
-        title: str = "Audiobook",
-        engine_id: str | None = None,
-        voice: str | None = None,
-        language: str | None = None,
-        background_music: str | None = None,
-        mix_policy: str = "always",
-        audio_format: str | None = None,
-        audio_quality: str | None = None,
-        review_policy: str = "default",
-    ) -> dict[str, Any]:
-        return create_audiobook(
-            text=text,
-            title=title,
-            engine_id=engine_id,
-            voice=voice,
-            language=language,
-            background_music=background_music,
-            mix_policy=mix_policy,
-            audio_format=audio_format,
-            audio_quality=audio_quality,
-            review_policy=review_policy,
-        )
-
-    @mcp.tool(
-        description=(
-            "Get one generation job by id. Completed jobs include the editable "
-            "LocalText2Voice project name and manifest path."
-        )
-    )
-    def get_job(job_id: str) -> dict[str, Any]:
-        job = manager.get_job(job_id)
-        if job is None:
-            return {"error": f"Job not found: {job_id}"}
-        return _job_response(job, settings_manager, base_url=base_url)
-
-    @mcp.tool(description="List recent generation jobs.")
-    def get_jobs(status: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
-        return [
-            _job_response(
-                job,
-                settings_manager,
-                base_url=base_url,
-                include_logs=False,
-            )
-            for job in manager.list_jobs(status=status, limit=limit)
-        ]
-
-    @mcp.tool(
-        description=(
-            "Read an editable job source with character-based pagination. Use "
-            "page/page_count for large sources; read_all is limited to 200000 chars."
-        )
-    )
-    def read_job_source(
-        job_id: str,
-        page: int = 1,
-        page_size_chars: int = 12000,
-        page_count: int = 1,
-        read_all: bool = False,
-    ) -> dict[str, Any]:
-        return source_editor.read(
-            job_id,
-            page=page,
-            page_size_chars=page_size_chars,
-            page_count=page_count,
-            read_all=read_all,
-        )
-
-    @mcp.tool(
-        description=(
-            "Replace the complete editable source for a job. Pass the SHA-256 "
-            "returned by read_job_source as expected_sha256 to prevent lost updates."
-        )
-    )
-    def write_job_source(
-        job_id: str,
-        text: str,
-        expected_sha256: str | None = None,
-    ) -> dict[str, Any]:
-        return source_editor.write(job_id, text, expected_sha256)
-
-    @mcp.tool(
-        description=(
-            "Search a job source using plain text or a regular expression. Returns "
-            "stable character offsets, line numbers, snippets, and paged results."
-        )
-    )
-    def search_job_source(
-        job_id: str,
-        query: str,
-        regex: bool = False,
-        case_sensitive: bool = False,
-        result_offset: int = 0,
-        max_results: int = 25,
-    ) -> dict[str, Any]:
-        return source_editor.search(
-            job_id,
-            query,
-            regex=regex,
-            case_sensitive=case_sensitive,
-            result_offset=result_offset,
-            max_results=max_results,
-        )
-
-    @mcp.tool(
-        description=(
-            "Insert, replace, or delete source text using Unicode character offsets. "
-            "Use expected_sha256 from a prior read or search for concurrency safety."
-        )
-    )
-    def edit_job_source(
-        job_id: str,
-        operation: str,
-        start_offset: int,
-        end_offset: int | None = None,
-        text: str = "",
-        expected_sha256: str | None = None,
-    ) -> dict[str, Any]:
-        return source_editor.edit(
-            job_id,
-            operation,
-            start_offset,
-            end_offset=end_offset,
-            text=text,
-            expected_sha256=expected_sha256,
-        )
-
-    @mcp.tool(
-        description=(
-            "Find and replace one occurrence or all occurrences in a job source. "
-            "Supports literal text and regular expressions."
-        )
-    )
-    def replace_job_source_text(
-        job_id: str,
-        search: str,
-        replacement: str,
-        replace_all: bool = False,
-        occurrence: int = 1,
-        regex: bool = False,
-        case_sensitive: bool = True,
-        expected_sha256: str | None = None,
-    ) -> dict[str, Any]:
-        return source_editor.replace_text(
-            job_id,
-            search,
-            replacement,
-            replace_all=replace_all,
-            occurrence=occurrence,
-            regex=regex,
-            case_sensitive=case_sensitive,
-            expected_sha256=expected_sha256,
-        )
-
-    @mcp.tool(description="Cancel a queued or running generation job.")
-    def cancel_job(job_id: str) -> dict[str, Any]:
-        job = manager.cancel_job(job_id)
-        if job is None:
-            return {"error": f"Job not found: {job_id}"}
-        return _job_response(job, settings_manager, base_url=base_url)
-
-    mcp_app = mcp.streamable_http_app()
-
+    from app.server.storyboard_service import StoryboardService
+    storyboard = StoryboardService(settings_manager, audiobook_store)
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        async with mcp.session_manager.run():
-            try:
-                yield
-            finally:
-                manager.shutdown()
-                service.close()
+        try:
+            yield
+        finally:
+            storyboard.close()
+            manager.shutdown()
+            service.close()
 
     app = FastAPI(
         title="LocalText2Voice Local Server",
@@ -383,11 +73,14 @@ def create_http_app(
         return {
             "status": "ok",
             "name": "LocalText2Voice",
-            "mcp_endpoint": mcp_url,
+            "mcp_transport": "stdio",
+            "storyboard_active_jobs": len(storyboard.events),
         }
 
     @app.post("/shutdown")
     def shutdown_server() -> dict[str, Any]:
+        if storyboard.events:
+            raise HTTPException(status_code=409, detail="Storyboard jobs are active. Cancel them explicitly before stopping the shared host.")
         if shutdown_callback is None:
             raise HTTPException(
                 status_code=409,
@@ -398,7 +91,7 @@ def create_http_app(
 
     @app.get("/info")
     def info() -> dict[str, Any]:
-        return server_info()
+        return {**service.server_info(), "settings": public_settings_snapshot(settings_manager.settings), "mcp_transport": "stdio"}
 
     @app.get("/engines")
     def http_list_engines() -> list[dict[str, Any]]:
@@ -600,7 +293,16 @@ def create_http_app(
             filename=path.name,
         )
 
-    app.mount("/mcp", mcp_app)
+    @app.post("/storyboard/{operation}")
+    def storyboard_operation(operation: str, payload: dict[str, Any]) -> Any:
+        try:
+            return storyboard.call(operation, payload)
+        except (ValueError, KeyError, TypeError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    app.state.storyboard_service = storyboard
     return app
 
 
@@ -622,10 +324,6 @@ def _authorized(request: Request, settings_manager: SettingsManager) -> bool:
 
 def _base_url_from_settings(settings: dict[str, Any]) -> str:
     return internal_engine_host_url(settings)
-
-
-def _mcp_url(settings_manager: SettingsManager) -> str:
-    return f"{_base_url_from_settings(settings_manager.settings)}/mcp"
 
 
 def _job_response(

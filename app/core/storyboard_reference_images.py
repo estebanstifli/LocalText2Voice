@@ -19,7 +19,7 @@ def scene_with_references(scene, plan, settings=None):
     automatic = (settings or {}).get("auto_character_references", True)
     from app.core.runpod_image_models import image_model_id
     collections = ["characters", "objects"]
-    if ((settings or {}).get("image_provider") == "runpod"
+    if overrides.get("explicit_entities") or ((settings or {}).get("image_provider") == "runpod"
             and image_model_id((settings or {}).get("runpod", {})) == "qwen-image-edit-2511"):
         collections.append("locations")
     for collection in collections:
@@ -29,12 +29,13 @@ def scene_with_references(scene, plan, settings=None):
         if collection == "objects":
             selected.update(str(v).casefold() for v in overrides.get("object_state_ids", []))
         records = [r for r in continuity.get(collection, []) if isinstance(r, dict)]
-        mentioned = mentioned_records(text, records)
+        mentioned = [] if overrides.get("explicit_entities") else mentioned_records(text, records)
         assigned = [resolve(value, records) for value in selected]
         for record in records:
             if record not in mentioned and record not in assigned:
                 continue
-            path = str(record.get("reference_image_path") or "")
+            state = next((s for s in record.get("states", []) if str(s.get("id", "")).casefold() in selected), {})
+            path = str(state.get("reference_image_path") or record.get("reference_image_path") or "")
             if not path or not Path(path).is_file():
                 continue
             key = str(Path(path).resolve()).casefold()

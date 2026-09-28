@@ -93,7 +93,11 @@ echo Building persistent engine host executable...
     --workpath "build\LocalText2VoiceEngineHost" ^
     --specpath "build\LocalText2VoiceEngineHost" ^
     --paths "%CD%" ^
+    --add-data "%CD%\assets\video_storyboard_styles.json;assets" ^
+    --add-data "%CD%\assets\comfyui;assets\comfyui" ^
+    --add-data "%CD%\assets\storyboard_engines;assets\storyboard_engines" ^
     --collect-data mcp ^
+    --collect-all litellm ^
     --collect-submodules anyio ^
     --collect-submodules fastapi ^
     --collect-submodules mcp.server ^
@@ -104,6 +108,9 @@ echo Building persistent engine host executable...
     --collect-submodules starlette ^
     --collect-submodules uvicorn ^
     engine_host.py
+if errorlevel 1 goto :error
+
+".venv\Scripts\python.exe" tools\check_windows_engine_host_bundle.py "%DIST_DIR%"
 if errorlevel 1 goto :error
 
 echo Building MCP stdio server executable...

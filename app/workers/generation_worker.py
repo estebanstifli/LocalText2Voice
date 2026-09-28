@@ -12,12 +12,13 @@ from app.core.audio_pipeline import (
     GenerationCancelled,
 )
 from app.core.audiobook_store import AudiobookStore
-from app.tts.engine_registry import create_tts_engine
 from app.tts.base import BaseTTSEngine
+from app.tts.engine_registry import create_tts_engine
 
 
 class GenerationWorker(QObject):
     progress = Signal(int, int, str)
+    stage_progress = Signal(dict)
     log = Signal(str)
     finished = Signal(list)
     failed = Signal(str)
@@ -50,6 +51,7 @@ class GenerationWorker(QObject):
                 log_callback=self.log.emit,
                 close_engine_on_finish=self.tts_engine is None,
                 audiobook_store=AudiobookStore(),
+                stage_callback=self._report_stage,
             )
             self._pipeline = pipeline
             if self._cancel_requested:
@@ -65,6 +67,10 @@ class GenerationWorker(QObject):
             self.failed.emit(f"Unexpected generation error: {exc}")
         finally:
             self._pipeline = None
+
+    def _report_stage(self, details: dict) -> None:
+        self.progress.emit(details["current"], details["total"], details["message"])
+        self.stage_progress.emit(details)
 
     def request_cancel(self) -> None:
         self._cancel_requested = True

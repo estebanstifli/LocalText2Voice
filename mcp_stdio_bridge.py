@@ -27,6 +27,7 @@ Tools exposed here:
 - edit_job_source -> POST /jobs/{job_id}/source/edit
 - replace_job_source_text -> POST /jobs/{job_id}/source/replace
 - cancel_job -> POST /jobs/{job_id}/cancel
+- sb_* -> POST /storyboard/{operation} (see docs/MCP_STORYBOARD.md)
 
 The MCP protocol uses stdout, so do not add print() debug statements here.
 """
@@ -53,8 +54,10 @@ T = TypeVar("T")
 mcp = FastMCP(
     "LocalText2Voice",
     instructions=(
-        "Create audiobooks, podcast-ready narration, and audio mixes using "
-        "the local LocalText2Voice persistent engine host."
+        "Create audiobooks, podcast-ready narration, audio mixes and video "
+        "storyboards using the local LocalText2Voice persistent engine host. "
+        "Read localtext2voice://docs/markup for narration commands and "
+        "localtext2voice://docs/storyboard for the visual workflow."
     ),
     log_level="ERROR",
 )
@@ -598,6 +601,17 @@ def cancel_job(job_id: str) -> dict[str, Any]:
             _request_json("POST", f"/jobs/{urllib.parse.quote(job_id)}/cancel", {})
         )
     )
+
+
+from app.server.storyboard_mcp import register_storyboard_tools
+
+register_storyboard_tools(mcp, _request_json)
+
+
+@mcp.resource("localtext2voice://docs/storyboard")
+def storyboard_documentation() -> str:
+    """Read headless storyboard workflow, schemas, styles and job conventions."""
+    return _read_text_resource("docs/MCP_STORYBOARD.md")
 
 
 if __name__ == "__main__":

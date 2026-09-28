@@ -226,7 +226,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "tail_failure_threshold_seconds": 1.00,
     },
     "internal_engine_host_port": 8765,
-    "remote_mcp_port": 8766,
     "local_server": {
         "auth_token": "",
         "serve_files": True,
@@ -489,7 +488,6 @@ def _migrate_settings(
             else 8765
         )
         result["internal_engine_host_port"] = legacy_port
-        result["remote_mcp_port"] = 8766
 
     if version < 20:
         # Safe chunks is now the only desktop splitting policy. Convert the
@@ -661,11 +659,8 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         return port if 1024 <= port <= 65535 else fallback
 
     internal_port = sanitized_port("internal_engine_host_port", 8765)
-    remote_port = sanitized_port("remote_mcp_port", 8766)
-    if remote_port == internal_port:
-        remote_port = internal_port + 1 if internal_port < 65535 else internal_port - 1
     settings["internal_engine_host_port"] = internal_port
-    settings["remote_mcp_port"] = remote_port
+    settings.pop("remote_mcp_port", None)  # Removed MCP HTTP transport.
 
     engine = settings.get("tts_engine")
     if not isinstance(engine, str) or not engine.strip():

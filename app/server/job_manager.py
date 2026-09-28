@@ -7,13 +7,18 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from app.core.audio_pipeline import AudioPipeline, AudioPipelineError, GenerationCancelled
+from app.core.audio_pipeline import (
+    AudioPipeline,
+    AudioPipelineError,
+    GenerationCancelled,
+)
 from app.server.ltv_service import LocalText2VoiceService
 from app.utils.paths import app_data_root
 
@@ -39,6 +44,7 @@ class ServerJob:
     result_json: str = "{}"
     logs_json: str = "[]"
     cancel_requested: bool = False
+    progress_details_json: str = "{}"
 
     @property
     def clean_mp3_path(self) -> str:
@@ -88,11 +94,29 @@ class ServerJob:
         }
         if include_logs:
             payload["logs"] = logs
+        try:
+            details = json.loads(self.progress_details_json or "{}")
+        except json.JSONDecodeError:
+            details = {}
+        if isinstance(details, dict):
+            payload["progress"].update(details)
+        payload["progress"]["message"] = self.message
+        if self.status == "complete":
+            payload["progress"].update(
+                stage="complete",
+                current=1,
+                total=1,
+                percent=100.0,
+                stage_eta_seconds=0,
+                overall_eta_seconds=0,
+            )
+        elif self.status in {"failed", "cancelled"}:
+            payload["progress"].update(stage_eta_seconds=None, overall_eta_seconds=None)
         return payload
 
 
 class LocalServerJobManager:
-    DB_SCHEMA_VERSION = 2
+    DB_SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -151,7 +175,7 @@ class LocalServerJobManager:
                        started_at, finished_at, progress_current, progress_total,
                        progress_percent, message, clean_audio_path, mix_audio_path,
                        audiobook_id, error_message, request_json, result_json,
-                       logs_json, cancel_requested
+                       logs_json, cancel_requested, progress_details_json
                 FROM server_jobs
                 WHERE job_id = ?
                 """,
@@ -167,7 +191,7 @@ class LocalServerJobManager:
                    started_at, finished_at, progress_current, progress_total,
                    progress_percent, message, clean_audio_path, mix_audio_path,
                    audiobook_id, error_message, request_json, result_json,
-                   logs_json, cancel_requested
+                   logs_json, cancel_requested, progress_details_json
             FROM server_jobs
         """
         if status:
@@ -263,12 +287,25 @@ class LocalServerJobManager:
                 progress_total=max(0, int(total)),
                 progress_percent=percent,
                 message=message,
+                progress_details_json="{}",
+            )
+
+        def stage_progress(details: dict[str, Any]) -> None:
+            self._update_job(
+                job_id,
+                progress_current=details["current"],
+                progress_total=details["total"],
+                progress_percent=details["percent"] or 0.0,
+                message=details["message"],
+                progress_details_json=json.dumps(details, ensure_ascii=False),
             )
 
         def log(message: str) -> None:
             self._append_log(job_id, message)
 
         def on_pipeline(pipeline: Any) -> None:
+            if isinstance(pipeline, AudioPipeline):
+                pipeline.stage_callback = stage_progress
             with self._active_lock:
                 self._active_pipelines[job_id] = pipeline
             if cancel_event.is_set():
@@ -431,6 +468,7 @@ class LocalServerJobManager:
                 "mix_audio_path",
                 "clean_mp3_path",
                 "mix_mp3_path",
+                "progress_details_json",
             ):
                 if name not in existing:
                     connection.execute(
@@ -490,12 +528,15 @@ class LocalServerJobManager:
             message=str(row["message"]),
             clean_audio_path=str(row["clean_audio_path"]),
             mix_audio_path=str(row["mix_audio_path"]),
-            audiobook_id=int(row["audiobook_id"]) if row["audiobook_id"] is not None else None,
+            audiobook_id=int(row["audiobook_id"])
+            if row["audiobook_id"] is not None
+            else None,
             error_message=str(row["error_message"]),
             request_json=str(row["request_json"]),
             result_json=str(row["result_json"]),
             logs_json=str(row["logs_json"]),
             cancel_requested=bool(row["cancel_requested"]),
+            progress_details_json=str(row["progress_details_json"] or "{}"),
         )
 
     @staticmethod
