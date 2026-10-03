@@ -70,9 +70,9 @@ class RunpodSettingsWidget(QWidget):
         for endpoint, model in VIDEO_MODELS.items():
             self.video_model.addItem(model["name"], endpoint)
         self.video_model.addItem(tr("runpod_custom_endpoint", "Custom endpoint (Advanced)"), "custom")
-        self.video_model.addItem(tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"), "h3_private")
+        self.video_model.addItem(tr("h3_private_endpoint", "MiniMax H3 · In development"), "h3_private")
         form.addRow(tr("runpod_video_model", "Video model"), self.video_model)
-        self.h3_panel = QGroupBox(tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"))
+        self.h3_panel = QGroupBox(tr("h3_private_endpoint", "MiniMax H3 · In development"))
         h3_form = QFormLayout(self.h3_panel)
         self.h3_preset = QComboBox()
         self.h3_preset.addItem(tr("h3_fast", "Fast · Turbo 4 steps"), "fast")
@@ -84,7 +84,7 @@ class RunpodSettingsWidget(QWidget):
         self.gpu_hourly.setSuffix(" USD/h")
         self.gpu_hourly.setSpecialValueText(tr("era_basis_unknown", "Unknown"))
         h3_form.addRow(tr("h3_gpu_rate", "GPU rate (estimate only)"), self.gpu_hourly)
-        h3_note = QLabel(tr("h3_help", "Requires a compatible private H3 endpoint, not the commercial MiniMax API. Enter its ID under Advanced. One starting image, 1–10 seconds, native resolution and audio. References go directly to your worker; mute unwanted audio in the storyboard. Set Max workers to at least 1 remotely. The app does not start or stop GPU workers."))
+        h3_note = QLabel(tr("h3_help", "In development: for testing only, not ready for public use. General-purpose local/remote H3 JSON workflow support is not available yet. This prototype requires a compatible private endpoint, not a standard ComfyUI server or the commercial MiniMax API. Enter its ID under Advanced. The app does not start or stop GPU workers."))
         h3_note.setWordWrap(True)
         h3_form.addRow(h3_note)
         form.addRow(self.h3_panel)
@@ -279,7 +279,7 @@ class RunpodSettingsWidget(QWidget):
             self.model_note.setText(label)
             self.cost_label.setText(self.tr("runpod_role_rate", "Indicative price: {price}. Verify current Runpod prices.", price=price))
         if h3 and self._role in (None, "video"):
-            self.model_note.setText(self.tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"))
+            self.model_note.setText(self.tr("h3_private_endpoint", "MiniMax H3 · In development"))
             rate = self.gpu_hourly.value()
             self.cost_label.setText(self.tr("h3_cost_help", "Estimates use the GPU rate above; zero means unknown. Billing depends on active GPU time, not clip duration or queue time. Startup, idle and storage may add cost. Timings are saved in Runpod jobs."))
 

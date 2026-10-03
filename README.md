@@ -55,8 +55,7 @@ Choose emotions in the text editor's **Emotion** menu. IndexTTS settings contain
 See the [emotion markup guide](docs/LTV_MARKUP.md#emotions-indextts-25) and [IndexTTS setup, parameters and license](docs/INDEXTTS_2_5.md). The optional model has its own bilibili license and conditions.
 
 Also in this release: a fix for very short Chatterbox inputs, character-based
-generation estimates, configurable Qwen/Chatterbox chunk packing, and a
-[private Runpod H3 video adapter](docs/RUNPOD_H3.md) with timing-report export.
+generation estimates and configurable Qwen/Chatterbox chunk packing.
 See the [full changelog](CHANGELOG.md#220---2026-10-03).
 
 ## See LocalText2Voice In Action
@@ -199,8 +198,8 @@ figures above.
 - Add persistent visual references, richer prompt construction, image editing,
   scene continuity improvements, batch image/video generation, cancellation and
   recovery for long-running provider jobs.
-- Add direct video provider integrations for Alibaba Cloud Wan, LTX, MiniMax
-  H3 and BytePlus Seedance, while retaining ComfyUI, Runpod and LiteLLM routes.
+- Add direct video provider integrations for Alibaba Cloud Wan, LTX and
+  BytePlus Seedance, while retaining ComfyUI, Runpod and LiteLLM routes.
 - Add shared async job handling, provider capability validation, media fitting,
   audio preservation and clearer diagnostics for video generation failures.
 - Fix a Qwen3 TTS runtime compatibility path by registering its Transformers

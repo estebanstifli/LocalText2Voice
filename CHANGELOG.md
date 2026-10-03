@@ -23,11 +23,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   narration model loads to avoid keeping both models in VRAM simultaneously.
 - Added reference-audio reuse from compatible voice-gallery entries for
   IndexTTS, including automatic download on selection and local cache reuse.
-- Added a MiniMax H3 adapter for a private Runpod/ComfyUI endpoint, with
-  start-image input, fast/normal presets, inline video recovery, timing reports
-  and execution-only cost estimates. This is not the public MiniMax API and
-  does not provision or start GPU infrastructure.
-- Included IndexTTS license notices and dedicated engine/emotion and H3 guides.
+- Included IndexTTS license notices and a dedicated engine/emotion guide.
   The optional IndexTTS code and weights use the bilibili Model Use License
   Agreement, not the application's MIT license.
 
@@ -40,7 +36,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   the default Chatterbox limit for new settings is now 400 characters.
 - Keep IndexTTS emotion direction in the editor instead of hidden global UI
   settings. Advanced synthesis parameters remain configurable separately.
-- Localized the new engine controls, emotion presets and private H3 controls
+- Localized the new engine controls, emotion presets and development controls
   across all 11 interface languages.
 
 ### Fixed
@@ -51,8 +47,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   preload instances from the EngineHost cache, avoiding a false loaded state.
 - Validate effective IndexTTS voice/language/emotion settings after applying
   markup, so inline voice selection works without a global reference file.
-- Keep private H3 recovery records when a completed paid job cannot yet be
-  downloaded, rather than silently submitting another generation.
+### In Development
+
+- Retained the experimental private H3 Runpod/ComfyUI adapter for development
+  testing, clearly labeled **In development** in the interface. General-purpose
+  H3 JSON workflow support for local ComfyUI or remote services is not ready
+  for public use yet. The prototype is not the commercial MiniMax API and does
+  not provision or start GPU infrastructure.
+- Prototype work includes start-image input, fast/normal presets, timing
+  reports and completed-job recovery without submitting a second paid job.
+  Its test setup and limitations are documented in `docs/RUNPOD_H3.md`.
 
 ## [2.1.2] - 2026-09-28
 

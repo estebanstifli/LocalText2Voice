@@ -1,13 +1,22 @@
-# Private MiniMax H3 storyboard videos
+# H3 Workflow Prototype (In Development)
+
+> **In development. Not ready for public use.** This private integration is a
+> development test, not a finished feature or a publicly available service.
+
+The goal is to support H3 JSON workflows locally through ComfyUI or remotely
+through Runpod, hosted ComfyUI or other compatible services. That general-purpose
+integration is not implemented yet. The notes below describe the current private
+test setup only; a normal ComfyUI installation or Runpod endpoint is not enough
+to use this prototype. Keep it out of the README until public support is ready.
 
 The Runpod provider supports two different contracts. Public models continue to
-use their existing Wan/Kling adapters. **MiniMax H3 · private ComfyUI endpoint**
-is for the custom queue worker running the validated H3 workflows; it is not
+use their existing Wan/Kling adapters. **MiniMax H3 · In development**
+is for the custom queue worker running the private test H3 workflows; it is not
 MiniMax's commercial API or a public Runpod Hailuo endpoint.
 
 ## Settings → Video Storyboard → Video generation → Runpod
 
-1. Select **MiniMax H3 · private ComfyUI endpoint**.
+1. For development testing only, select **MiniMax H3 · In development**.
 2. Under **Advanced**, enter the private endpoint ID (or its Runpod URL).
 3. Reuse your Runpod API key. It remains in encrypted application settings,
    never in the storyboard or workflow JSON.

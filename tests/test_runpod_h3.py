@@ -112,6 +112,12 @@ def test_h3_settings_and_ui_roundtrip(config):
     widget.set_role("video")
     widget.set_configuration(config["runpod"])
     assert widget.video_model.currentData() == "h3_private"
+    assert "In development" in widget.video_model.currentText()
+    assert "In development" in widget.h3_panel.title()
+    assert "In development" in widget.model_note.text()
+    from PySide6.QtWidgets import QLabel
+    assert any("not ready for public use" in label.text()
+               for label in widget.h3_panel.findChildren(QLabel))
     assert not widget.size.isEnabled()
     assert widget.configuration()["video_adapter"] == "h3"
     assert widget.configuration()["video_endpoint"] == "private-h3"
