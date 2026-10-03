@@ -35,6 +35,7 @@ ENGINE_INSTALL_REQUIREMENTS: dict[str, EngineInstallRequirement] = {
     "kokoro": EngineInstallRequirement(8, "5-15 min"),
     "chatterbox": EngineInstallRequirement(20, "15-40 min"),
     "qwen": EngineInstallRequirement(20, "20-45 min"),
+    "indextts": EngineInstallRequirement(30, "20-60+ min"),
     "omnivoice": EngineInstallRequirement(30, "30-60+ min"),
     "f5_russian": EngineInstallRequirement(15, "15-40 min"),
     "russian_normalization": EngineInstallRequirement(4, "3-10 min"),

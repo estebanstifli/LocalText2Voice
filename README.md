@@ -27,9 +27,37 @@
   <a href="https://andromedanova.com"><strong>AndromedaNova.com</strong></a>
 </p>
 
-LocalText2Voice is a free desktop app for long-form AI voice and video production. It can run fully local and offline for narration with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, and the optional non-commercial F5-TTS Russian engine, while also supporting optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, Azure Speech, and direct video providers.
+LocalText2Voice is a free desktop app for long-form AI voice and video production. It can run fully local and offline for narration with engines such as Piper, Kokoro, Chatterbox, Qwen3 TTS, OmniVoice, IndexTTS-2.5, and the optional non-commercial F5-TTS Russian engine, while also supporting optional cloud APIs such as OpenAI TTS, ElevenLabs, Google Gemini TTS, Azure Speech, and direct video providers.
 
 The workflow is designed for long projects: import or write a script, generate narration, review and correct segments, build an audio mix, then use Video Storyboard to plan scenes, generate visuals, assemble motion, and render a long-form MP4. Local engines keep data on the user's computer; cloud providers are optional and clearly configured.
+
+## What's New In 2.2.0: Voice Cloning And Emotions
+
+Clone a voice from a reference recording and direct each passage with **IndexTTS-2.5**, including Spanish narration and CUDA/BF16 inference. Install the optional engine in **Settings → TTS Engines**; compatible WAV references from the voice catalog can be reused.
+
+The editor's **emotion** button offers eight presets, **Off**, and **Custom**:
+
+```text
+{{lang es}}
+{{voice asun}}
+{{emotion alegria 90%}}
+¡Lo hemos conseguido! Por fin podemos celebrarlo juntos.
+{{emotion custom "Simpática y enérgica" 90%}}
+Hoy vamos a descubrir algo sorprendente. Acompáñame en esta nueva aventura.
+{{emotion off}}
+Este fragmento conserva la emoción de la voz de referencia.
+```
+
+Presets use fixed vectors without loading QwenEmotion. Custom descriptions are resolved together before narration: QwenEmotion loads once for missing descriptions, then exits before IndexTTS loads. The resulting vectors are saved with the segments and reused when regenerating them. Emotions are optional; without a local or general instruction, narration uses the reference voice's emotion.
+
+Choose emotions in the text editor's **Emotion** menu. IndexTTS settings contain voice, language and runtime options, with synthesis tuning under **Advanced settings**; emotion controls and sample testing live in the editor workflow.
+
+See the [emotion markup guide](docs/LTV_MARKUP.md#emotions-indextts-25) and [IndexTTS setup, parameters and license](docs/INDEXTTS_2_5.md). The optional model has its own bilibili license and conditions.
+
+Also in this release: a fix for very short Chatterbox inputs, character-based
+generation estimates, configurable Qwen/Chatterbox chunk packing, and a
+[private Runpod H3 video adapter](docs/RUNPOD_H3.md) with timing-report export.
+See the [full changelog](CHANGELOG.md#220---2026-10-03).
 
 ## See LocalText2Voice In Action
 
@@ -566,6 +594,7 @@ LocalText2Voice is an applied AI engineering project focused on productizing voi
 | Chatterbox TTS | Optional advanced local voice/reference engine |
 | Qwen3 TTS | Optional local multilingual neural TTS |
 | OmniVoice | Optional local zero-shot TTS with voice design/cloning |
+| IndexTTS-2.5 | Optional BF16 voice cloning with text, audio and vector emotion controls; [setup and license](docs/INDEXTTS_2_5.md) |
 | F5-TTS Russian | Optional Russian voice cloning and stress-aware TTS |
 | Faster Whisper | Optional transcription and generation review |
 | FastAPI + MCP SDK | Optional local automation server |
@@ -927,6 +956,7 @@ teams:
 | Chatterbox | [Chatterbox TTS](https://github.com/resemble-ai/chatterbox) by Resemble AI | Optional local multilingual and reference-voice generation |
 | Qwen3 TTS | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by the Qwen team, including [CustomVoice 0.6B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice) and [Base 1.7B](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | Optional preset-voice and ICL voice-cloning models |
 | OmniVoice | [OmniVoice](https://github.com/k2-fsa/OmniVoice) by k2-fsa and its [pretrained model](https://huggingface.co/k2-fsa/OmniVoice) | Optional multilingual cloning and voice design; pretrained model is CC-BY-NC |
+| IndexTTS-2.5 | [IndexTeam / Bilibili](https://github.com/index-tts/index-tts) and [official weights](https://huggingface.co/IndexTeam/IndexTTS-2.5) | Optional download; bilibili Model Use License Agreement, conditional commercial use and redistribution restrictions; [details](docs/INDEXTTS_2_5.md) |
 | F5-TTS Russian | [F5-TTS Russian](https://huggingface.co/Misha24-10/F5-TTS_RUSSIAN) by Misha24-10, based on [F5-TTS](https://github.com/SWivid/F5-TTS) by SWivid, with [Silero Stress](https://github.com/snakers4/silero-stress) | Optional Russian cloning and stress processing; F5-TTS Russian is CC BY-NC 4.0 |
 | OpenAI | [OpenAI Audio API](https://platform.openai.com/docs/api-reference/audio) | Optional cloud TTS using the user's API credentials |
 | ElevenLabs | [ElevenLabs Text to Speech](https://elevenlabs.io/docs/overview/capabilities/text-to-speech) | Optional cloud voices using the user's API credentials |

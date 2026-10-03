@@ -10,6 +10,8 @@ from .api_engines import (
     GeminiTTSEngine,
     OpenAITTSEngine,
 )
+from .indextts_engine import IndexTTSTTSEngine
+from .indextts_manager import IndexTTSManager
 from .base import BaseTTSEngine, TTSEngineError
 from .chatterbox_engine import ChatterboxTTSEngine
 from .chatterbox_manager import ChatterboxManager
@@ -36,6 +38,7 @@ TTS_ENGINES: tuple[TTSEngineDefinition, ...] = (
     TTSEngineDefinition("kokoro", "Kokoro", True),
     TTSEngineDefinition("chatterbox", "Chatterbox", True),
     TTSEngineDefinition("qwen", "Qwen3 TTS", True),
+    TTSEngineDefinition("indextts", "IndexTTS-2.5", True),
     TTSEngineDefinition("omnivoice", "OmniVoice", True),
     TTSEngineDefinition("f5_russian", "F5-TTS Russian", True),
     TTSEngineDefinition("openai", "OpenAI TTS (API)", False),
@@ -58,6 +61,8 @@ def create_tts_engine(engine_id: str, piper_path: Path) -> BaseTTSEngine:
         return ChatterboxTTSEngine(ChatterboxManager())
     if engine_id == "qwen":
         return QwenTTSEngine(QwenManager())
+    if engine_id == "indextts":
+        return IndexTTSTTSEngine(IndexTTSManager())
     if engine_id == "omnivoice":
         return OmniVoiceTTSEngine(OmniVoiceManager())
     if engine_id == "f5_russian":

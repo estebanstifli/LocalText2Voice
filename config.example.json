@@ -23,10 +23,11 @@
   "engine_chunk_sizes": {
     "piper": 300,
     "kokoro": 300,
-    "chatterbox": 300,
+    "chatterbox": 400,
     "qwen": 520,
     "omnivoice": 400,
-    "f5_russian": 300
+    "f5_russian": 300,
+    "indextts": 400
   },
   "editor_syntax_highlighting": true,
   "show_markup_toolbar": true,
@@ -419,5 +420,36 @@
     "pending_installs": [],
     "completed": false,
     "completed_at": ""
+  },
+  "indextts": {
+    "model": "indextts_2_5",
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "language": "ES",
+    "reference_audio_path": "",
+    "emotion_mode": "reference",
+    "emo_text": "",
+    "emo_audio_prompt": "",
+    "emo_alpha": 0.6,
+    "emo_vector": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "use_random": false,
+    "duration_factor": 1.0,
+    "temperature": 0.8,
+    "top_p": 0.8,
+    "top_k": 30,
+    "num_beams": 3,
+    "repetition_penalty": 10.0,
+    "max_mel_tokens": 1500,
+    "max_text_tokens_per_segment": 120,
+    "interval_silence": 200
   }
 }

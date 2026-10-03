@@ -33,6 +33,11 @@ def resolve_runpod_video_references(scene, frame_role, config):
     config = dict(config)
     paths = video_reference_paths(scene, frame_role)
     endpoint = model_id(config)
+    from app.core.runpod_h3 import is_h3
+    if is_h3(config):
+        if frame_role != 'start' or len(paths) != 1:
+            raise ValueError('The private H3 workflow requires exactly one starting image. End-frame and multiple references are not supported by this adapter.')
+        return config, paths
     if endpoint == 'kling-video-o1-r2v':
         if frame_role != 'none':
             raise ValueError('Kling O1 uses references without a fixed start/end frame. Select None and add images with + Img Ref.')

@@ -192,7 +192,9 @@ class AudioPipeline:
         try:
             validation_started = time.perf_counter()
             self._validate_options(options)
-            self.tts_engine.validate(options.voice_config)
+            validate_markup_inputs = str(options.voice_config.get("engine", "")).casefold() == "indextts"
+            if not validate_markup_inputs:
+                self.tts_engine.validate(options.voice_config)
             self._log_tts_engine(options.voice_config)
             self.log_callback(
                 "Validation completed in "
@@ -206,6 +208,15 @@ class AudioPipeline:
                 raise AudioPipelineError(
                     "The text does not contain anything to synthesize."
                 )
+            if validate_markup_inputs:
+                # IndexTTS voice and emotion can both come from inline commands.
+                # Validate every effective fragment before generating any audio.
+                for group in groups:
+                    for chunk in group.chunks:
+                        self.tts_engine.validate(
+                            self._voice_config_for_chunk(options.voice_config, chunk)
+                        )
+                groups = self._prepare_indextts_emotions(groups, options)
             total_chars = sum(
                 len(chunk.text) for group in groups for chunk in group.chunks
             )
@@ -428,6 +439,8 @@ class AudioPipeline:
             )
             self.log_callback(f"Qwen3 device: {voice_config.get('device', 'auto')}")
             self.log_callback(f"Qwen3 dtype: {voice_config.get('dtype', 'auto')}")
+        elif engine == "indextts":
+            self.log_callback(f"Using IndexTTS-2.5 ({voice_config.get('dtype', 'bfloat16')}), emotion: {voice_config.get('emotion_mode', 'reference')}")
         elif engine == "omnivoice":
             self.log_callback("Using TTS engine: OmniVoice")
             self.log_callback(
@@ -474,6 +487,60 @@ class AudioPipeline:
                 self.log_callback(f"Custom response mode: {response_mode}")
         elif engine != "piper":
             self.log_callback(f"Using TTS engine: {engine}")
+
+    def _prepare_indextts_emotions(
+        self, groups: list[AudioGroup], options: AudioGenerationOptions,
+    ) -> list[AudioGroup]:
+        prepare = getattr(self.tts_engine, "prepare_emotions", None)
+        if not callable(prepare):
+            return groups
+        remember = getattr(self.tts_engine, "remember_emotions", None)
+        if (
+            self.audiobook_store is not None
+            and options.project_audiobook_id
+            and callable(remember)
+        ):
+            saved = []
+            for segment in self.audiobook_store.list_segments(options.project_audiobook_id):
+                try:
+                    state = json.loads(segment.markup_state_json)
+                    saved.append(state.get("emotion", {}))
+                except (ValueError, AttributeError):
+                    continue
+            remember(saved)
+        chunks = [chunk for group in groups for chunk in group.chunks]
+        configs = [
+            self._voice_config_for_chunk(options.voice_config, chunk)
+            for chunk in chunks
+        ]
+        self._check_cancelled()
+        self._progress.emit(
+            "emotion_preparation", 0, 0,
+            "Preparing emotion vectors before speech synthesis...",
+        )
+        prepared = prepare(configs, [chunk.text for chunk in chunks])
+        self._check_cancelled()
+        self._progress.emit(
+            "emotion_preparation", 1, 1,
+            "Emotion settings ready for speech synthesis.",
+        )
+        resolved_chunks = iter(
+            replace(
+                chunk,
+                markup_state={
+                    **chunk.markup_state,
+                    "emotion": {
+                        key: value for key, value in config.items()
+                        if key.startswith(("emo_", "emotion_")) or key == "use_random"
+                    },
+                },
+            ) if config.get("emotion_prompt") else chunk
+            for chunk, config in zip(chunks, prepared)
+        )
+        return [
+            replace(group, chunks=tuple(next(resolved_chunks) for _ in group.chunks))
+            for group in groups
+        ]
 
     def _prepare_groups(
         self,
@@ -644,14 +711,12 @@ class AudioPipeline:
         options: AudioGenerationOptions,
     ) -> tuple[int, int, int] | None:
         engine = str(options.voice_config.get("engine", "piper"))
-        if engine == "qwen":
-            target_chars, min_chars = 420, 80
-        elif engine == "chatterbox":
-            target_chars, min_chars = 230, 45
-        else:
+        if engine not in {"qwen", "chatterbox"}:
             return None
+        # Settings controls both the packing target and the hard limit.
+        # Short standalone lines remain valid; no minimum length is required.
         max_chars = options.chunk_size
-        return (min(target_chars, max_chars), max_chars, min(min_chars, max_chars))
+        return (max_chars, max_chars, 1)
 
     @classmethod
     def _split_tts_chunks(
@@ -704,6 +769,8 @@ class AudioPipeline:
     ) -> list[list[Path]]:
         rendered_groups: list[list[Path]] = []
         completed = 0
+        completed_characters = 0
+        total_characters = sum(len(chunk.text) for group in groups for chunk in group.chunks)
 
         for group_index, group in enumerate(groups, start=1):
             group_started = time.perf_counter()
@@ -719,7 +786,9 @@ class AudioPipeline:
                     f"{group.title}"
                 )
                 self._progress.emit(
-                    "synthesis", completed - 1, total_chunks, status, unit="blocks"
+                    "synthesis", completed - 1, total_chunks, status, unit="blocks",
+                    completed_characters=completed_characters,
+                    total_characters=total_characters,
                 )
                 self.log_callback(status)
 
@@ -797,8 +866,11 @@ class AudioPipeline:
                     f"{self._format_file_size(output_wav)} WAV)."
                 )
                 rendered_chunks.append(output_wav)
+                completed_characters += len(chunk.text)
                 self._progress.emit(
-                    "synthesis", completed, total_chunks, status, unit="blocks"
+                    "synthesis", completed, total_chunks, status, unit="blocks",
+                    completed_characters=completed_characters,
+                    total_characters=total_characters,
                 )
             self.log_callback(
                 f"Rendered group {group_index}/{len(groups)} in "
@@ -917,6 +989,13 @@ class AudioPipeline:
         if isinstance(overrides, dict) and overrides:
             self._apply_config_overrides(config, overrides)
 
+        emotion = state.get("emotion")
+        if engine == "indextts" and isinstance(emotion, dict):
+            # A vector preset overrides textual guidance, including global presets.
+            config.pop("instruct", None)
+            config.pop("instructions", None)
+            config.update(emotion)
+
         if "speed" in state:
             try:
                 config["_postprocess_speed"] = max(0.25, min(4.0, float(state["speed"])))
@@ -949,6 +1028,8 @@ class AudioPipeline:
             self._apply_kokoro_voice(config, voice_value, voice_language)
         elif engine == "qwen":
             self._apply_qwen_voice(config, voice_value, voice_language)
+        elif engine == "indextts":
+            self._apply_indextts_voice(config, voice_value, voice_language)
         elif engine == "omnivoice":
             self._apply_omnivoice_voice(config, voice_value, voice_language)
         elif engine == "f5_russian":
@@ -977,6 +1058,14 @@ class AudioPipeline:
         language_value: str,
     ) -> None:
         if self._is_default_marker(language_value):
+            return
+        if engine == "indextts":
+            from app.tts.indextts_config import language_code, LANGUAGES
+            language = language_code(language_value)
+            if language in LANGUAGES:
+                config["language"] = language
+            else:
+                self._warn_unknown_language(engine, language_value)
             return
         if engine == "qwen":
             language = self._qwen_language_name(language_value)
@@ -1298,6 +1387,33 @@ class AudioPipeline:
         base_instruction = str(config.get("instruct", "")).strip()
         if base_instruction:
             config["instruct"] = base_instruction
+
+    def _apply_indextts_voice(self, config, voice_value, voice_language=""):
+        from app.tts.voice_gallery_manager import VoiceGalleryError, VoiceGalleryManager
+        manager = self._markup_voice_cache.get("indextts_gallery_manager")
+        if manager is None:
+            manager = VoiceGalleryManager()
+            self._markup_voice_cache["indextts_gallery_manager"] = manager
+        voices = manager.list_voices("indextts")
+        match = self._match_named_item(voice_value, voices, self._omnivoice_gallery_voice_names)
+        if match is None:
+            self._warn_unknown_voice("IndexTTS", voice_value)
+            return
+        matched = match.item
+        try:
+            path = manager.ensure_voice_audio(matched)
+        except (VoiceGalleryError, OSError) as exc:
+            self._log_markup_runtime_warning(
+                "voice:indextts:download", f"Could not load IndexTTS voice {matched.name}: {exc}"
+            )
+            return
+        if path is None or not path.is_file():
+            self._warn_unknown_voice("IndexTTS", voice_value)
+            return
+        config["reference_audio_path"] = str(path)
+        if voice_language:
+            self._apply_markup_language(config, "indextts", voice_language)
+        self._log_markup_voice_once("IndexTTS", matched.name)
 
     def _apply_omnivoice_voice(
         self,

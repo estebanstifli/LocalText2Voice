@@ -49,6 +49,9 @@ def _configure_cache(cache_dir: str | None) -> None:
 
 
 def _load_model(model_id: str, device: str):
+    from app.tts.chatterbox_compat import apply_alignment_compat
+
+    apply_alignment_compat()
     if model_id == "turbo":
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 

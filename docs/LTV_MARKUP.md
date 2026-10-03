@@ -12,6 +12,46 @@ I do not like this place.
 
 Markup is optional. If your text does not contain `{{...}}` commands, LocalText2Voice works exactly as before.
 
+## Emotions (IndexTTS-2.5)
+
+Click **emotion** in the markup toolbar to choose a preset, **Off**, or **Custom**. These instructions apply to the **next markup segment**, including its sentences and any smaller TTS chunks. Repeat the instruction for another segment. They preserve voice and language. Other engines ignore this command with a warning.
+
+| Menu / name | Spanish aliases | Behavior |
+| --- | --- | --- |
+| `happy` | `alegria`, `feliz` | Fixed happiness vector |
+| `sad` | `tristeza`, `triste` | Fixed sadness vector |
+| `angry` | `enfado`, `ira` | Fixed anger vector |
+| `disgust` | `asco` | Fixed disgust vector |
+| `fear` | `miedo` | Fixed fear vector |
+| `surprise` | `sorpresa` | Fixed surprise vector |
+| `calm` | `calma` | Fixed calmness vector |
+| `melancholic` | `melancolia` | Fixed melancholy vector |
+| `off` | `neutral` | Use the emotion of the voice reference |
+| `custom "description"` | — | Convert a quoted description to a vector before narration |
+
+```text
+{{lang es}}
+{{voice asun}}
+{{emotion alegria 90%}}
+¡Lo hemos conseguido! Podemos celebrarlo juntos.
+{{emotion custom "Simpática y enérgica" 90%}}
+Bienvenidos a esta nueva aventura. Hoy descubriremos algo maravilloso.
+{{emotion off}}
+Este texto conserva la emoción de la voz de referencia.
+```
+
+Intensity is optional: use `0`–`1` or `0%`–`100%`; the default is `100%`. It is applied once through `emo_alpha`. Zero, `{{emotion}}`, and `{{emotion neutral}}` also use the reference emotion. **Off** uses the reference emotion for that segment; `{{reset}}` restores all general settings, including voice. Unmarked segments use the reference emotion. Emotions are managed in the text editor; IndexTTS engine settings no longer contain global emotion controls or a sample-text test.
+
+The eight presets are application defaults, not official universal vectors. They need no QwenEmotion. Older names such as `very_happy`, `deep_sadness`, and `restrained_anger` remain accepted as aliases for their basic emotions; use intensity to adjust them.
+
+**Custom preparation and reuse:** before synthesizing any segment, the app gathers custom descriptions and other text-based emotion settings, deduplicates them, and calculates missing vectors in one QwenEmotion process. It unloads an already-loaded IndexTTS worker first, then releases QwenEmotion completely before loading IndexTTS for narration. Fixed-only projects skip QwenEmotion entirely. This avoids keeping both models in GPU memory, at the cost of reloading IndexTTS when new descriptions need calculation.
+
+Each resolved segment stores the eight values, original description, intensity, source mode, and model revision in its existing project metadata (`markup_state_json` and synthesis configuration). Review/regeneration reuses those values; rerunning the same saved project can reuse descriptions from its stored segments. New descriptions or a changed model revision are recalculated. Automatic emotion from narration is recalculated when that segment's text changes. Direct single-segment previews prepare their own description before synthesis.
+
+Custom descriptions express emotions, not general assistant instructions: their effect is limited to the model's eight emotional dimensions. See [IndexTTS configuration and limitations](INDEXTTS_2_5.md).
+
+QwenEmotion can misinterpret descriptions, particularly across languages. In a Spanish test, `Simpática y enérgica` produced a vector dominated by anger. Audition custom results; choose a fixed preset when you need an explicit emotion. The stored values reproduce the interpreter's output, not a guarantee that it understood the wording.
+
 ## Basic Syntax
 
 Commands use double braces:
@@ -59,23 +99,24 @@ Unknown or malformed commands do not stop generation. They are ignored and writt
 
 Some commands are handled by LocalText2Voice before the text is sent to TTS. Those commands work with every engine because the TTS model never sees them. Engine-specific commands are only marked where the selected backend actually receives and uses the instruction today.
 
-| Command | Piper | Kokoro | Chatterbox | Qwen3 TTS | OmniVoice | OpenAI | ElevenLabs | Gemini | Azure | Custom HTTP | Notes |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | --- |
-| `{{pause ...}}` | * | * | * | * | * | * | * | * | * | * | App inserts real silence between segments. |
-| `{{chapter "..."}}` | * | * | * | * | * | * | * | * | * | * | App creates named internal groups before generation. |
-| `{{alias "A" "B"}}` | * | * | * | * | * | * | * | * | * | * | App replaces later text before TTS. |
-| `{{reset}}` | * | * | * | * | * | * | * | * | * | * | App resets active markup state. |
-| `{{voice "..."}}` | * | * | * | * | * |  |  |  |  | * | Switches installed/local voices, Qwen aliases, OmniVoice reference voices, or custom template voice value. |
-| `{{lang ...}}` |  | * | * | * | * |  |  |  |  | * | Custom HTTP receives the literal language value in `{{language}}` / `{{lang}}`. |
-| `{{speed ...}}` | * | * | * | * | * | * | * | * | * | * | App can apply speed after generation with FFmpeg when the engine has no native speed control. |
-| `{{cmd ...}}` | * | * | * | * | * | * | * | * | * | * | App attaches TTS parameters to the next segment only. Engines ignore unsupported keys. |
-| `{{preset ...}}` | * | * | * | * | * | * | * | * | * | * | App attaches TTS parameters to every following segment until `{{reset.preset}}`. |
-| `{{sendcommand ...}}` | * | * | * | * | * | * | * | * | * | * | Alias of one-shot `cmd`. |
-| `{{sendcomand ...}}` | * | * | * | * | * | * | * | * | * | * | Tolerant misspelling alias of `sendcommand`. |
-| `{{volume ...}}` | * | * | * | * | * | * | * | * | * | * | App applies voice gain or loudness normalization after generation with FFmpeg. |
-| `{{play "..." ...}}` | * | * | * | * | * | * | * | * | * | * | App aligns the source position with mandatory Whisper word timestamps and mixes the local audio in postproduction. |
-| `{{stop id="..."}}` | * | * | * | * | * | * | * | * | * | * | Stops a previously identified looping or long PLAY event. |
-| `{{mark "..."}}` |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future editing/navigation markers. |
+| Command | Piper | Kokoro | Chatterbox | Qwen3 TTS | OmniVoice | IndexTTS-2.5 | F5 Russian | OpenAI | ElevenLabs | Gemini | Azure | Custom HTTP | Notes |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | --- |
+| `{{pause ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | App inserts real silence between segments. |
+| `{{chapter "..."}}` | * | * | * | * | * | * | * | * | * | * | * | * | App creates named internal groups before generation. |
+| `{{alias "A" "B"}}` | * | * | * | * | * | * | * | * | * | * | * | * | App replaces later text before TTS. |
+| `{{reset}}` | * | * | * | * | * | * | * | * | * | * | * | * | App resets active markup state. |
+| `{{speed ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | App can apply speed after generation with FFmpeg. |
+| `{{volume ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | App applies voice gain or loudness normalization with FFmpeg. |
+| `{{play "..." ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | App aligns source positions using mandatory Whisper word timestamps and mixes local audio. |
+| `{{stop id="..."}}` | * | * | * | * | * | * | * | * | * | * | * | * | Stops a previously identified PLAY event. |
+| `{{cmd ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | Parameters for the next segment only; supported parameters depend on the engine. |
+| `{{preset ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | Parameters for following segments until `{{reset.preset}}`. |
+| `{{sendcommand ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | Alias of one-shot `cmd`. |
+| `{{sendcomand ...}}` | * | * | * | * | * | * | * | * | * | * | * | * | Tolerant misspelling alias of `sendcommand`. |
+| `{{voice "..."}}` | * | * | * | * | * | * | * |  |  |  |  | * | Selects engine voices, reference recordings, or the custom template voice value. |
+| `{{lang ...}}` |  | * | * | * | * | * |  |  |  |  |  | * | IndexTTS supports EN/ZH/ES/JA/AR. Custom HTTP receives the literal language value. F5 Russian stays Russian. |
+| `{{emotion ...}}` |  |  |  |  |  | * |  |  |  |  |  |  | IndexTTS preset, custom description or reference expression for the next markup segment. |
+| `{{mark "..."}}` |  |  |  |  |  |  |  |  |  |  |  |  | Parsed/reserved for future editing/navigation markers. |
 
 Recommended mental model:
 

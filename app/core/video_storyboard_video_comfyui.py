@@ -1136,6 +1136,7 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
     from app.core import video_storyboard_runpod as rp
     from app.core.storyboard_video_references import resolve_runpod_video_references
     from app.core.runpod_video_models import video_parameters, model_id
+    from app.core.runpod_h3 import is_h3, encode_reference
     if not str(prompt).strip():
         raise VideoStoryboardVideoError("The video prompt is empty.")
     try:
@@ -1154,6 +1155,8 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
         # accepted version, so an older queued/completed job cannot replace it.
         # Retries before accepting another clip retain the same recovery key.
         identity = {**parameters, "frame_role": role}
+        if is_h3(config):
+            identity["video_adapter"] = "h3"
         if scene.get("video_path"):
             identity.update(
                 scene_id=str(scene.get("scene_id") or scene.get("id") or ""),
@@ -1165,7 +1168,9 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
             identity["image"] = rp.file_digest(references[0]) if references else None
         def payload():
             values = dict(parameters)
-            if multiple:
+            if is_h3(config):
+                values["images"] = [encode_reference(references[0])]
+            elif multiple:
                 values["images"] = [rp.source_url(path, config) for path in references]
             elif references:
                 values["image"] = rp.source_url(references[0], config)
@@ -1173,6 +1178,7 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
         result = rp.execute(effective_settings, "video", payload, source, identity=identity,
                             status=status, cancelled=cancelled, regenerate=True,
                             legacy_result_used=bool(scene.get("video_path")))
+        postprocess_started = time.monotonic()
         measured = _probe_media_duration(source, settings)
         if not measured:
             raise VideoStoryboardVideoError("Runpod returned an unreadable video.")
@@ -1182,6 +1188,11 @@ def _generate_runpod_video(scene, plan, settings, target, *, prompt, frame_role,
             import shutil
             shutil.copyfile(source, target)
         _retime_video(target, duration, settings, source_duration_seconds=measured)
+        if result.get("timing"):
+            timing = result["timing"]
+            timing["postprocess_seconds"] = round(time.monotonic() - postprocess_started, 3)
+            if timing.get("total_to_media_seconds") is not None:
+                timing["total_to_ready_seconds"] = round(timing["total_to_media_seconds"] + timing["postprocess_seconds"], 3)
         rp.consume_result(result)
     except (rp.RunpodError, ValueError) as exc:
         raise VideoStoryboardVideoError(str(exc)) from exc

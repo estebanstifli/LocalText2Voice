@@ -1,8 +1,9 @@
+import csv
 import json
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout
 
 from app.core.video_storyboard_runpod import TERMINAL, configuration, job_error, jobs_directory, manage_job
 
@@ -49,6 +50,9 @@ class RunpodJobsDialog(QDialog):
             buttons.addWidget(button)
             self.buttons.append(button)
         layout.addLayout(buttons)
+        self.export_button = QPushButton(tr("runpod_export_metrics", "Export timing report (CSV)…"))
+        self.export_button.clicked.connect(self._export_metrics)
+        layout.addWidget(self.export_button)
         self._load()
 
     def _load(self):
@@ -61,9 +65,36 @@ class RunpodJobsDialog(QDialog):
                 continue
             cost = record.get("output", {}).get("cost") if isinstance(record.get("output"), dict) else None
             item = QListWidgetItem(f"{record.get('endpoint')} · {record.get('status')} · {record.get('id', '?')}" + (f" · ${cost}" if cost is not None else ""))
+            timing = record.get("timing") or {}
+            if timing.get("execution_seconds") is not None:
+                queue = timing.get("queue_seconds")
+                queue_label = "?" if queue is None else f"{queue:.1f}s"
+                item.setText(item.text() + " · " + self.tr("runpod_job_timing", "GPU {gpu}s · Queue {queue}", gpu=f"{timing['execution_seconds']:.1f}", queue=queue_label))
             item.setToolTip(record.get("target", ""))
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             self.items.addItem(item)
+
+    def _export_metrics(self):
+        filename, _ = QFileDialog.getSaveFileName(self, self.tr("runpod_export_metrics", "Export timing report (CSV)…"), "runpod-timings.csv", "CSV (*.csv)")
+        if not filename:
+            return
+        columns = ["endpoint", "id", "status", "queue_seconds", "execution_seconds", "media_save_seconds",
+                   "postprocess_seconds", "total_to_ready_seconds", "worker_id", "execution_cost_estimate_usd", "reported_cost_usd", "cost_note"]
+        try:
+            with open(filename, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=columns)
+                writer.writeheader()
+                for index in range(self.items.count()):
+                    path = Path(self.items.item(index).data(Qt.ItemDataRole.UserRole))
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    row = {**{key: record.get(key, "") for key in ("endpoint", "id", "status")}, **(record.get("timing") or {})}
+                    output = record.get("output")
+                    row["reported_cost_usd"] = output.get("cost", "") if isinstance(output, dict) else ""
+                    # Do not export prompts, reference images, credentials or media URLs.
+                    writer.writerow({key: row.get(key, "") for key in columns})
+            self.status.setText(self.tr("runpod_metrics_saved", "Timing report saved. Estimates exclude startup, idle and storage; check Runpod billing for actual charges."))
+        except (OSError, ValueError, TypeError) as exc:
+            self.status.setText(self.tr("runpod_metrics_error", "Cannot export timing report: {error}", error=str(exc)))
 
     def _action(self, action):
         item = self.items.currentItem()

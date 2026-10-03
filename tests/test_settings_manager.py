@@ -119,9 +119,10 @@ def test_chunk_defaults_migrate_to_explicit_safe_engine_limits(tmp_path):
     assert settings["engine_chunk_sizes"] == {
         "piper": 300,
         "kokoro": 300,
-        "chatterbox": 300,
+        "chatterbox": 400,
         "qwen": 520,
         "omnivoice": 400,
+        "indextts": 400,
         "f5_russian": 300,
     }
 
@@ -433,3 +434,11 @@ def test_custom_comfyui_image_settings_persist(tmp_path):
     assert storyboard["image_provider"] == "custom_comfyui"
     assert storyboard["comfyui"]["auth_token"] == "remote-token"
     assert storyboard["comfyui"]["bindings"]["prompt"] == "7.text"
+
+
+def test_custom_chatterbox_chunk_size_is_preserved(tmp_path):
+    path = tmp_path / "custom.json"
+    path.write_text(json.dumps({"engine_chunk_sizes": {"chatterbox": 360, "qwen": 600}}), encoding="utf-8")
+    settings = SettingsManager(path).settings
+    assert settings["engine_chunk_sizes"]["chatterbox"] == 360
+    assert settings["engine_chunk_sizes"]["qwen"] == 600

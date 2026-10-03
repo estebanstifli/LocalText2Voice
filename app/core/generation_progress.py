@@ -30,6 +30,8 @@ class GenerationProgress:
         *,
         unit: str = "segments",
         force: bool = False,
+        completed_characters: int | None = None,
+        total_characters: int | None = None,
     ) -> None:
         now = self.clock()
         if stage != self.stage:
@@ -43,7 +45,16 @@ class GenerationProgress:
         self.last_emit = now
         elapsed = now - self.started
         eta = None
-        if total and current and elapsed >= 1.0:
+        if completed_characters is not None and total_characters is not None:
+            # Keep block counters for display; estimate only from text rendered
+            # in this run. The cumulative rate smooths individual block timings.
+            done = max(0, min(completed_characters, total_characters))
+            pending = max(0, total_characters - done)
+            if pending == 0:
+                eta = 0
+            elif done and current >= 3 and elapsed >= 1.0:
+                eta = max(0, round(elapsed / done * pending))
+        elif total and current and elapsed >= 1.0:
             eta = max(0, round(elapsed / current * (total - current)))
         payload = {
             "stage": stage,

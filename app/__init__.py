@@ -1,3 +1,3 @@
 """LocalText2Voice application package."""
 
-__version__ = "2.1.2"
+__version__ = "2.2.0"

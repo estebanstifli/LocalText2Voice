@@ -116,6 +116,54 @@ class VoiceGalleryManager:
         self.timeout_seconds = timeout_seconds
         self._cancel_requested = threading.Event()
         self._ensure_schema()
+        self._ensure_indextts_reference_aliases()
+
+    def _ensure_indextts_reference_aliases(self) -> None:
+        """Expose audio from catalogs cached before IndexTTS was supported."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM voice_gallery_voices").fetchall()
+            source_ids = {str(row["id"]) for row in rows}
+            for row in rows:
+                voice = self._row_to_voice(row)
+                metadata = dict(voice.metadata or {})
+                if (
+                    voice.engine == "indextts"
+                    or voice.is_user_import
+                    or metadata.get("compatible_source_id") in source_ids
+                    or not (
+                        voice.ref_audio_url or voice.ref_audio_path
+                        or voice.preview_url or voice.preview_path
+                    )
+                ):
+                    continue
+                values = dict(row)
+                values.update(
+                    id=self._compatible_voice_id("indextts", voice.voice_id),
+                    engine="indextts",
+                    install_type="reference_audio",
+                    voice_type="Reference voice",
+                    installed_path="",
+                    installed_at="",
+                    ref_audio_url=voice.ref_audio_url or voice.preview_url,
+                    ref_audio_path=voice.ref_audio_path or voice.preview_path,
+                    engine_voice_id="",
+                    speaker_id="",
+                    model_id="",
+                    metadata_json=json.dumps(
+                        {
+                            **metadata,
+                            "compatible_source_engine": voice.engine,
+                            "compatible_source_id": voice.voice_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                columns = ", ".join(values)
+                placeholders = ", ".join("?" for _ in values)
+                connection.execute(
+                    f"INSERT OR IGNORE INTO voice_gallery_voices ({columns}) VALUES ({placeholders})",
+                    tuple(values.values()),
+                )
 
     def cancel(self) -> None:
         self._cancel_requested.set()
@@ -325,6 +373,16 @@ class VoiceGalleryManager:
         if voice.installed_path and Path(voice.installed_path).is_file():
             return Path(voice.installed_path)
         source = voice.ref_audio_url or voice.ref_audio_path or voice.preview_url or voice.preview_path
+        if voice.engine == "indextts":
+            source_id = str((voice.metadata or {}).get("compatible_source_id", ""))
+            original = self.get_voice(source_id) if source_id else None
+            if (
+                original and original.installed_path
+                and Path(original.installed_path).is_file()
+            ):
+                # Keep a separate copy so removing one engine's reference cannot
+                # remove the audio selected in another engine.
+                source = original.installed_path
         if not source:
             if voice.is_builtin:
                 return None
@@ -816,7 +874,13 @@ class VoiceGalleryManager:
             voice_id = str(document.get("id", "")).strip()
             compatible_engines = document.get("compatible_engines", [])
             if not isinstance(compatible_engines, list):
-                continue
+                compatible_engines = []
+            if engine != "indextts" and (
+                document.get("ref_audio") or document.get("preview_audio")
+            ):
+                compatible_engines = list(
+                    dict.fromkeys([*compatible_engines, "indextts"])
+                )
             for compatible_engine_value in compatible_engines:
                 compatible_engine = str(compatible_engine_value).strip()
                 if not compatible_engine or compatible_engine == engine:
@@ -829,14 +893,19 @@ class VoiceGalleryManager:
                 alias["engine"] = compatible_engine
                 alias["compatible_source_engine"] = engine
                 alias["compatible_source_id"] = voice_id
-                if compatible_engine == "chatterbox":
+                if compatible_engine in {"chatterbox", "indextts"}:
                     alias["install_type"] = "reference_audio"
                     alias["type"] = "Reference voice"
                     if not str(alias.get("ref_audio", "")).strip():
                         alias["ref_audio"] = str(alias.get("preview_audio", ""))
                     tags = alias.get("tags", [])
-                    if isinstance(tags, list) and "chatterbox-compatible" not in tags:
-                        alias["tags"] = [*tags, "chatterbox-compatible"]
+                    compatibility_tag = f"{compatible_engine}-compatible"
+                    if isinstance(tags, list) and compatibility_tag not in tags:
+                        alias["tags"] = [*tags, compatibility_tag]
+                    if compatible_engine == "indextts":
+                        alias["engine_voice_id"] = ""
+                        alias["speaker_id"] = ""
+                        alias["model_id"] = ""
                 expanded.append(alias)
         return expanded
 

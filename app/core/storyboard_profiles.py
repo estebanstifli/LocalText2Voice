@@ -11,6 +11,7 @@ VISUAL_KEYS = (
 RUNPOD_DEFAULTS = {
     "api_key_encrypted": "", "image_endpoint": "z-image-turbo",
     "edit_endpoint": "qwen-image-edit-2511", "video_endpoint": "wan-2-6-i2v",
+    "video_adapter": "public", "h3_preset": "fast", "gpu_hourly_usd": 0.0,
     "video_size": "1280*720", "edit_size": "1536*1080",
     "edit_preserve_size": True,
     "timeout_seconds": 1800, "prompt_expansion": False,

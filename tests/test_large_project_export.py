@@ -500,7 +500,8 @@ def test_ui_displays_phase_progress_without_using_synthesis_eta():
     )
     holder.progress_bar.setValue.assert_called_with(50)
     assert "01:00 / 02:00" in holder.status_label.setText.call_args.args[0]
-    assert "Total remaining: unknown" in holder.time_label.setText.call_args.args[0]
+    assert "Estimated remaining for this stage:" in holder.time_label.setText.call_args.args[0]
+    assert "Total remaining" not in holder.time_label.setText.call_args.args[0]
     MainWindow._on_stage_progress(
         holder, {"stage": "finalizing", "current": 0, "total": 0}
     )
@@ -699,3 +700,40 @@ def test_host_and_worker_transport_structured_progress_and_terminal_state(
         assert completed[0]["audiobook_id"] == book.id
     finally:
         manager.shutdown()
+
+
+def test_character_eta_weights_unequal_blocks_and_resets_for_export(tmp_path):
+    now = [0.0]
+    seen = []
+
+    class TimedEngine(FakeTTSEngine):
+        def synthesize_to_wav(self, text, output_wav, voice_config):
+            result = super().synthesize_to_wav(text, output_wav, voice_config)
+            now[0] += len(text) / 10
+            return result
+
+    pipeline = AudioPipeline(TimedEngine())
+    pipeline._progress = GenerationProgress(lambda *_: None, seen.append, clock=lambda: now[0])
+    groups = [AudioGroup("Chapter", tuple(TextChunk("x" * n, True) for n in (100, 200, 300, 2400)))]
+    options = AudioGenerationOptions(tmp_path, {}, "unused")
+    pipeline._render_groups(groups, options, tmp_path, 4, None)
+    synthesis = [event for event in seen if event["stage"] == "synthesis"]
+    assert all(event["stage_eta_seconds"] is None for event in synthesis if event["current"] < 3)
+    third = next(event for event in synthesis if event["current"] == 3)
+    # 600 characters in 60 seconds, 2400 left: 240 seconds, not 20
+    # seconds as an equal-block estimate would report.
+    assert third["stage_eta_seconds"] == 240
+    assert third["current"] == 3 and third["total"] == 4
+    assert synthesis[-1]["stage_eta_seconds"] == 0
+    pipeline._progress.emit("encoding", 0, 100, "Encoding")
+    assert seen[-1]["stage_eta_seconds"] is None
+    now[0] += 10
+    pipeline._progress.emit("encoding", 50, 100, "Encoding")
+    assert seen[-1]["stage_eta_seconds"] == 10
+
+
+def test_character_eta_handles_empty_work():
+    seen = []
+    reporter = GenerationProgress(lambda *_: None, seen.append)
+    reporter.emit("synthesis", 0, 0, "Empty", completed_characters=0, total_characters=0)
+    assert seen[-1]["stage_eta_seconds"] == 0

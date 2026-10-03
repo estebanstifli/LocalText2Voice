@@ -108,6 +108,7 @@ class LTVMarkupParser:
         "alias",
         "chapter",
         "cmd",
+        "emotion",
         "lang",
         "mark",
         "pause",
@@ -266,6 +267,26 @@ class LTVMarkupParser:
             event = cls._parse_pause(modifier, args, raw, position)
         elif command == "voice":
             event = cls._parse_voice(modifier, args, raw, position)
+        elif command == "emotion":
+            from app.tts.indextts_emotions import emotion_preset
+
+            values = ([modifier] if modifier else []) + args
+            try:
+                if values and values[0].casefold() == "custom":
+                    if len(values) not in {2, 3} or not values[1].strip():
+                        raise ValueError('Use {{emotion custom "Friendly and energetic" 90%}}.')
+                    preset = emotion_preset("off", values[2] if len(values) == 3 else "1")
+                    preset.update(
+                        emotion_mode="text" if preset["emo_alpha"] else "reference",
+                        emo_text=values[1].strip(), emotion_source="custom",
+                    )
+                else:
+                    if len(values) > 2:
+                        raise ValueError('Use {{emotion sad 70%}}.')
+                    preset = emotion_preset(*(values or ["off"]))
+                event = LTVMarkupEvent("emotion", raw=raw, value=preset, position=position)
+            except ValueError as exc:
+                event = cls._warning(raw, position, str(exc))
         elif command == "speed":
             event = cls._parse_speed(modifier, args, raw, position)
         elif command == "volume":
@@ -956,6 +977,7 @@ class LTVMarkupCompiler:
         aliases: dict[str, str] = {}
         pending_pause_before_ms = 0
         pending_config_overrides: dict[str, Any] = {}
+        pending_emotion: dict[str, Any] | None = None
         persistent_config_overrides: dict[str, Any] = {}
         buffer: list[str] = []
         pending_audio_events: list[tuple[LTVAudioEvent, int, int]] = []
@@ -969,6 +991,7 @@ class LTVMarkupCompiler:
 
         def flush_text(pause_after_ms: int | None = None) -> None:
             nonlocal pending_pause_before_ms, pending_audio_events
+            nonlocal pending_emotion
             raw_text = "".join(buffer)
             text_value = cls._clean_segment_text(raw_text)
             if not text_value:
@@ -1008,6 +1031,9 @@ class LTVMarkupCompiler:
                 merged_overrides.update(pending_config_overrides)
                 segment_state["config_overrides"] = merged_overrides
                 pending_config_overrides.clear()
+            if pending_emotion is not None:
+                segment_state["emotion"] = pending_emotion
+                pending_emotion = None
             current_section().segments.append(
                 LTVNarrationSegment(
                     text=text_value,
@@ -1065,6 +1091,17 @@ class LTVMarkupCompiler:
                 flush_text()
                 if isinstance(event.value, dict):
                     pending_config_overrides.update(event.value)
+                    if {"instruct", "emo_text", "emotion_mode", "emo_vector"} & event.value.keys():
+                        pending_emotion = None
+            elif event.type == "emotion":
+                flush_text()
+                if backend.casefold() == "indextts":
+                    pending_emotion = dict(event.value)
+                else:
+                    cls._ignore_backend_command(
+                        event, backend, ignored_commands, warnings,
+                        "emotion instructions require IndexTTS",
+                    )
             elif event.type == "config_preset":
                 flush_text()
                 if isinstance(event.value, dict):
@@ -1174,6 +1211,7 @@ class LTVMarkupCompiler:
                 cls._reset_state(state, aliases, scope)
                 if scope in {"all", ""}:
                     explicit_state.clear()
+                    pending_emotion = None
                     pending_config_overrides.clear()
                     persistent_config_overrides.clear()
                 elif scope == "voice":
@@ -1188,6 +1226,7 @@ class LTVMarkupCompiler:
                     explicit_state.discard("speed")
                 elif scope in {"cmd", "command", "instruction", "instructions"}:
                     pending_config_overrides.clear()
+                    pending_emotion = None
                 elif scope in {"preset", "presets", "default", "defaults"}:
                     persistent_config_overrides.clear()
             elif event.type == "warning":

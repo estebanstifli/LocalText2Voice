@@ -16,6 +16,8 @@ from app.utils.gpu_detection import (
 )
 from app.utils.paths import engine_dependencies_root, models_root
 
+from .chatterbox_compat import ALIGNMENT_COMPAT_SOURCE
+
 from .install_logging import (
     ProcessOutputCallback,
     communicate_with_live_output,
@@ -189,6 +191,7 @@ def resolve_device(torch, requested: str) -> str:
 
 
 def load_model(model_id: str, device: str):
+    apply_alignment_compat()
     if model_id == "turbo":
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
@@ -351,6 +354,11 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 '''.strip() + "\n"
+
+
+CHATTERBOX_PYTHON_CLI = CHATTERBOX_PYTHON_CLI.replace(
+    "def load_model(", ALIGNMENT_COMPAT_SOURCE + "\n\ndef load_model(", 1
+)
 
 
 class ChatterboxManager:

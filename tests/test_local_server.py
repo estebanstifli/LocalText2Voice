@@ -79,6 +79,38 @@ def _settings(tmp_path: Path) -> SettingsManager:
     return manager
 
 
+def test_preload_error_is_reported_and_failed_engine_is_not_cached(tmp_path):
+    from app.tts.base import TTSEngineError
+
+    engine = MagicMock()
+    engine.cancellation_requested.return_value = False
+    engine.preload.side_effect = TTSEngineError("GPU cannot load the requested precision")
+    with patch("app.server.ltv_service.create_tts_engine", return_value=engine):
+        app = create_http_app(_settings(tmp_path))
+        with TestClient(app) as client:
+            response = client.post(
+                "/engines/indextts/preload",
+                headers={"Authorization": "Bearer secret-token"},
+                json={"emotion_mode": "text", "emo_text": ""},
+            )
+            assert response.status_code == 400
+            assert response.json()["detail"] == "GPU cannot load the requested precision"
+            assert "indextts" not in app.state.service.engine_status()
+            engine.close.assert_called_once()
+
+
+def test_service_close_releases_cached_engine_objects_and_verifier(tmp_path):
+    service = LocalText2VoiceService(_settings(tmp_path), keep_engines_alive=True)
+    engine = SimpleNamespace(close=MagicMock())
+    verifier = SimpleNamespace(close=MagicMock())
+    service._engine_cache["indextts"] = engine
+    service._whisper_verifier = verifier
+    service.close()
+    engine.close.assert_called_once()
+    verifier.close.assert_called_once_with(force=False)
+    assert service.engine_status() == {}
+
+
 def test_public_settings_redact_video_storyboard_api_keys(tmp_path):
     settings = SettingsManager(tmp_path / "config.json").settings
     settings["video_storyboard"]["litellm_image"]["api_key"] = "image-secret"

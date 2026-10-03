@@ -30,6 +30,8 @@ from app.utils.paths import (
 from app.core.video_storyboard_styles import normalize_storyboard_style_id
 from app.core.storyboard_analysis_settings import defaults as continuity_defaults, normalize as normalize_continuity_settings
 
+from app.tts.indextts_config import DEFAULTS as INDEXTTS_DEFAULTS
+
 CURRENT_SETTINGS_SCHEMA_VERSION = 30
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
@@ -83,9 +85,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "engine_chunk_sizes": {
         "piper": 300,
         "kokoro": 300,
-        "chatterbox": 300,
+        "chatterbox": 400,
         "qwen": 520,
         "omnivoice": 400,
+        "indextts": 400,
         "f5_russian": 300,
     },
     "editor_syntax_highlighting": True,
@@ -185,6 +188,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "reference_audio_path": "",
         "reference_text": "",
     },
+    "indextts": deepcopy(INDEXTTS_DEFAULTS),
     "omnivoice": {
         "model": "omnivoice",
         "mode": "clone",
@@ -680,6 +684,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
         "chatterbox",
         "qwen",
         "omnivoice",
+        "indextts",
         "f5_russian",
         "review",
         "local_server",
@@ -693,6 +698,15 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
     ):
         if not isinstance(settings.get(section), dict):
             settings[section] = deepcopy(DEFAULT_SETTINGS[section])
+
+    # Emotion direction belongs to editor segments, never hidden global settings.
+    # Keep engine/API defaults available without reviving old UI selections.
+    for key in (
+        "emotion_mode", "emo_text", "emo_audio_prompt", "emo_alpha",
+        "emo_vector", "use_random",
+    ):
+        settings["indextts"][key] = deepcopy(INDEXTTS_DEFAULTS[key])
+    settings["indextts"].pop("instruct", None)
 
     server = settings["local_server"]
     for obsolete_key in ("enabled", "auto_start", "host", "port", "allow_lan"):
@@ -783,6 +797,13 @@ def _sanitize_video_storyboard(storyboard: dict[str, Any]) -> None:
     storyboard["runpod"]["timeout_seconds"] = _bounded_int(runpod.get("timeout_seconds"), 60, 7200, 1800)
     storyboard["runpod"]["video_size"] = _choice_value(runpod.get("video_size"), {"1280*720", "1920*1080"}, "1280*720")
     storyboard["runpod"]["reference_storage"] = _choice_value(runpod.get("reference_storage"), {"auto", "disabled", "s3", "managed"}, "auto")
+    storyboard["runpod"]["video_adapter"] = _choice_value(runpod.get("video_adapter"), {"public", "h3"}, "public")
+    storyboard["runpod"]["h3_preset"] = _choice_value(runpod.get("h3_preset"), {"fast", "normal"}, "fast")
+    try:
+        rate = float(runpod.get("gpu_hourly_usd", 0))
+        storyboard["runpod"]["gpu_hourly_usd"] = rate if 0 <= rate <= 100 else 0.0
+    except (TypeError, ValueError):
+        storyboard["runpod"]["gpu_hourly_usd"] = 0.0
     storyboard["image_provider"] = _choice_value(
         storyboard.get("image_provider"),
         {"comfyui", "custom_comfyui", "litellm_image", "runpod"},

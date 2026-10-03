@@ -311,6 +311,22 @@ class MainWindowUITests(unittest.TestCase):
         actions[0].trigger()
         self.assertEqual(window.text_editor.toPlainText(), '{{voice "Narrator"}}')
 
+    def test_markup_emotion_menu_off_custom_and_basic_presets(self) -> None:
+        from app.tts.indextts_emotions import EMOTION_PRESETS
+
+        window = MainWindow()
+        self.addCleanup(window.deleteLater)
+        actions = window.markup_emotion_menu.actions()
+        self.assertEqual([a.data() for a in actions], [*EMOTION_PRESETS, "off", "custom"])
+        for action in actions[:-1]:
+            window.text_editor.clear()
+            action.trigger()
+            self.assertEqual(window.text_editor.toPlainText(), "{{emotion " + action.data() + "}}")
+        window.text_editor.clear()
+        actions[-1].trigger()
+        window.text_editor.insertPlainText("Simpática y enérgica")
+        self.assertEqual(window.text_editor.toPlainText(), '{{emotion custom "Simpática y enérgica"}}')
+
     def test_markup_play_menu_inserts_the_selected_library_asset(self) -> None:
         window = MainWindow()
         self.addCleanup(window.deleteLater)

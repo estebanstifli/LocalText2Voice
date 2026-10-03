@@ -150,6 +150,9 @@ from app.tts.chatterbox_voice_manager import (
 from app.tts.kokoro_preview import kokoro_preview_text_for_language
 from app.tts.kokoro_python_manager import KokoroPythonManager
 from app.tts.install_logging import install_detail_text, is_install_detail
+from app.tts.indextts_manager import IndexTTSManager
+from app.tts.indextts_config import LICENSE_NOTICE as INDEXTTS_LICENSE_NOTICE, LICENSE_URL as INDEXTTS_LICENSE_URL
+from app.ui.indextts_settings import IndexTTSSettingsMixin
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
 from app.tts.russian_normalization_manager import RussianNormalizationManager
@@ -338,6 +341,15 @@ MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
         "color": "#b45309",
         "background": "#fffbeb",
         "help": "Applies TTS parameters to every following segment until {{reset.preset}}. One-shot {{cmd}} can override it for one segment.",
+    },
+    {
+        "name": "emotion",
+        "label": "Emotion",
+        "template": "{{emotion sad 70%}}",
+        "cursor": "{{emotion ",
+        "color": "#be185d",
+        "background": "#fdf2f8",
+        "help": 'IndexTTS emotion for the next segment. Presets: happy, sad, angry, disgust, fear, surprise, calm, melancholic. Examples: {{emotion tristeza 70%}}, {{emotion off}}, {{emotion custom "Friendly and energetic" 90%}}. Intensity: 0–1 or 0%–100%. Off uses the voice reference. Custom descriptions are converted to vectors together before speech synthesis; QwenEmotion is then unloaded.',
     },
     {
         "name": "play",
@@ -867,7 +879,7 @@ class OmniVoiceDesignDialog(QDialog):
         }
 
 
-class MainWindow(QMainWindow):
+class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings_manager = SettingsManager()
@@ -889,6 +901,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_manager = ChatterboxManager()
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
+        self.indextts_manager = IndexTTSManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
         self.russian_normalization_manager = RussianNormalizationManager()
@@ -931,6 +944,7 @@ class MainWindow(QMainWindow):
         self.voice_gallery_thread: QThread | None = None
         self.pending_qwen_gallery_voice_id: str | None = None
         self.pending_f5_russian_gallery_voice_id: str | None = None
+        self.pending_indextts_gallery_voice_id: str | None = None
         self.pending_removed_gallery_voice: tuple[str, GalleryVoice] | None = None
         self.qwen_worker: QwenInstallWorker | None = None
         self.qwen_thread: QThread | None = None
@@ -938,6 +952,8 @@ class MainWindow(QMainWindow):
         self.qwen_preview_thread: QThread | None = None
         self.qwen_hardware_worker: QwenHardwareWorker | None = None
         self.qwen_hardware_thread: QThread | None = None
+        self.indextts_thread = None
+        self.indextts_worker = None
         self.omnivoice_worker: OmniVoiceInstallWorker | None = None
         self.omnivoice_thread: QThread | None = None
         self.omnivoice_preview_worker: OmniVoicePreviewWorker | None = None
@@ -1987,6 +2003,9 @@ class MainWindow(QMainWindow):
             if command["name"] == "voice":
                 layout.addWidget(self._build_markup_voice_button(command))
                 continue
+            if command["name"] == "emotion":
+                layout.addWidget(self._build_markup_emotion_button(command))
+                continue
             if command["name"] == "play":
                 layout.addWidget(self._build_markup_play_button(command, "music"))
                 layout.addWidget(self._build_markup_play_button(command, "sfx"))
@@ -2002,6 +2021,41 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
         layout.addStretch(1)
         return toolbar
+
+    def _build_markup_emotion_button(self, command: dict[str, str]) -> QPushButton:
+        from app.tts.indextts_emotions import EMOTION_PRESETS
+
+        button = QPushButton(self.tr("markup_emotion_label", "Emotion"))
+        button.setObjectName("markupCommandButton")
+        button.setProperty("markup_color", command["color"])
+        self._style_markup_command_button(button, command)
+        button.setToolTip(self.tr(
+            "markup_emotion_help",
+            "IndexTTS only: direct the next passage with a preset or Custom description. Intensity: 0–100%. Off uses the reference voice's expression. Custom descriptions are prepared before narration.",
+        ) + '\n{{emotion sad 70%}}\n{{emotion custom "Friendly and energetic" 90%}}\n{{emotion off}}')
+        menu = QMenu(button)
+        emotion_keys = {"fear": "afraid", "disgust": "disgusted", "surprise": "surprised"}
+        for name in [*EMOTION_PRESETS, "off", "custom"]:
+            key = emotion_keys.get(name, name)
+            label = self.tr("indextts_emotion_" + key, name.title())
+            template = (
+                '{{emotion custom ""}}' if name == "custom"
+                else '{{emotion ' + name + '}}'
+            )
+            item = {
+                **command,
+                "template": template,
+                "cursor": '{{emotion custom "' if name == "custom" else template,
+            }
+            action = menu.addAction(label)
+            action.setData(name)
+            action.triggered.connect(
+                lambda _checked=False, entry=item: self._insert_markup_template(entry)
+            )
+        button.setMenu(menu)
+        self.markup_emotion_menu = menu
+        self.markup_emotion_menu_button = button
+        return button
 
     def _build_markup_play_button(
         self,
@@ -2202,6 +2256,7 @@ class MainWindow(QMainWindow):
             "kokoro",
             "qwen",
             "omnivoice",
+            "indextts",
             "f5_russian",
             "chatterbox",
         }:
@@ -2324,6 +2379,8 @@ class MainWindow(QMainWindow):
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
         if engine_id == "f5_russian":
             return "ru"
+        if engine_id == "indextts":
+            return str(self.indextts_fields["language"].currentData()).lower()
         if engine_id == "omnivoice":
             return self._omnivoice_language_value()
         combo_by_engine = {
@@ -4722,7 +4779,10 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes
 
-    def _confirm_runpod_storage(self, configuration):
+    def _confirm_runpod_storage(self, configuration, *, role="image"):
+        from app.core.runpod_h3 import is_h3
+        if role == "video" and is_h3(configuration.get("runpod", {})):
+            return True  # H3 embeds the reference directly; no Cloudflare upload.
         from app.ui.storyboard_storage_consent import ensure_storage_consent
         try:
             return ensure_storage_consent(configuration.get("runpod", {}), self, self.tr)
@@ -5209,7 +5269,7 @@ class MainWindow(QMainWindow):
         elif (configuration.get("video_provider") == "runpod"
               and (request.get("frame_role", "start") != "none"
                    or (scene.get("generation_overrides") or {}).get("video_reference_images"))
-              and not self._confirm_runpod_storage(configuration)):
+              and not self._confirm_runpod_storage(configuration, role="video")):
             self.video_storyboard_page.set_video_generation_failed(scene_id, self.tr("cancelled", "Cancelled"))
             return
         configuration["ffmpeg_path"] = self.settings.get(
@@ -5276,7 +5336,7 @@ class MainWindow(QMainWindow):
             return
         config = self.settings.get("video_storyboard", {})
         if config.get("video_provider") == "runpod":
-            if not self._confirm_runpod_storage(config):
+            if not self._confirm_runpod_storage(config, role="video"):
                 self.video_storyboard_page.finish_auto_video_generation(0, len(requests), 0)
                 return
             from app.core.video_storyboard_runpod import estimate_cost
@@ -6963,6 +7023,7 @@ class MainWindow(QMainWindow):
             ("kokoro", self._build_kokoro_python_engine_panel()),
             ("chatterbox", self._build_chatterbox_engine_panel()),
             ("qwen", self._build_qwen_engine_panel()),
+            ("indextts", self._build_indextts_engine_panel()),
             ("omnivoice", self._build_omnivoice_engine_panel()),
             ("f5_russian", self._build_f5_russian_engine_panel()),
             ("openai", self._build_openai_engine_panel()),
@@ -10505,6 +10566,7 @@ class MainWindow(QMainWindow):
                 "Chatterbox",
             ),
             "qwen": self.tr("tts_engine_qwen", "Qwen3 TTS"),
+            "indextts": "IndexTTS-2.5",
             "omnivoice": self.tr("tts_engine_omnivoice", "OmniVoice"),
             "f5_russian": self.tr("tts_engine_f5_russian", "F5-TTS Russian"),
             "openai": self.tr("tts_engine_openai", "OpenAI TTS (API)"),
@@ -10610,6 +10672,7 @@ class MainWindow(QMainWindow):
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
+            "indextts": self.indextts_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -10670,6 +10733,11 @@ class MainWindow(QMainWindow):
         )
         omnivoice_runtime_ready = self.omnivoice_manager.has_runtime()
         omnivoice_ready = self.omnivoice_manager.is_installed()
+        indextts_model_detected = self._manager_model_detected(
+            self.indextts_manager
+        )
+        indextts_runtime_ready = self.indextts_manager.has_runtime()
+        indextts_ready = self.indextts_manager.is_installed()
         f5_russian_model_detected = self._manager_model_detected(
             self.f5_russian_manager
         )
@@ -10740,6 +10808,22 @@ class MainWindow(QMainWindow):
                 "_selectable": omnivoice_ready,
                 "_model_detected": omnivoice_model_detected,
                 "_runtime_ready": omnivoice_runtime_ready,
+            },
+            {
+                "engine_id": "indextts",
+                "type": local_type,
+                "name": self._tts_engine_label("indextts"),
+                "speed": self.tr("engine_speed_slow", "Slow"),
+                "quality": self.tr("engine_quality_high", "High"),
+                "gpu": self.tr("recommended", "Recommended"),
+                "installed": self._local_engine_install_status(
+                    indextts_ready,
+                    indextts_model_detected,
+                    indextts_runtime_ready,
+                ),
+                "_selectable": indextts_ready,
+                "_model_detected": indextts_model_detected,
+                "_runtime_ready": indextts_runtime_ready,
             },
             {
                 "engine_id": "f5_russian",
@@ -10837,6 +10921,7 @@ class MainWindow(QMainWindow):
                 "chatterbox",
                 "qwen",
                 "omnivoice",
+                "indextts",
                 "f5_russian",
             }:
                 row["selected"] = self.tr(
@@ -11168,6 +11253,38 @@ class MainWindow(QMainWindow):
                 )
                 install_button.setEnabled(self.omnivoice_thread is None)
                 layout.addWidget(install_button)
+        elif engine_id == "indextts":
+            if model_detected is None:
+                model_detected = self._manager_model_detected(self.indextts_manager)
+            if runtime_ready is None:
+                runtime_ready = self.indextts_manager.has_runtime()
+            if installed is None:
+                installed = self.indextts_manager.is_installed()
+            install_button = QPushButton(
+                self._local_engine_install_action(
+                    installed, model_detected, runtime_ready
+                )
+            )
+            install_button.setIcon(ui_icon("apply"))
+            install_button.clicked.connect(
+                lambda _checked=False: self._select_and_install_engine("indextts")
+            )
+            install_button.setEnabled(self.indextts_thread is None)
+            layout.addWidget(install_button)
+            if installed:
+                remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
+                remove_button.setIcon(ui_icon("delete"))
+                remove_button.clicked.connect(lambda: self._start_indextts_operation("remove"))
+                remove_button.setEnabled(self.indextts_thread is None)
+                layout.addWidget(remove_button)
+                load_button = QPushButton()
+                load_button.clicked.connect(
+                    lambda _checked=False: self._toggle_preloaded_tts_engine(
+                        "indextts"
+                    )
+                )
+                self._configure_preload_button(load_button, "indextts", True)
+                layout.addWidget(load_button)
         elif engine_id == "f5_russian":
             if model_detected is None:
                 model_detected = self._manager_model_detected(self.f5_russian_manager)
@@ -11245,6 +11362,7 @@ class MainWindow(QMainWindow):
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
+            "indextts": self.indextts_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -11296,6 +11414,8 @@ class MainWindow(QMainWindow):
             self._install_chatterbox()
         elif engine_id == "qwen":
             self._install_qwen()
+        elif engine_id == "indextts":
+            self._show_tts_engine_install_dialog("indextts")
         elif engine_id == "omnivoice":
             self._install_omnivoice()
         elif engine_id == "f5_russian":
@@ -11318,6 +11438,7 @@ class MainWindow(QMainWindow):
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
             "qwen": self.qwen_manager,
+            "indextts": self.indextts_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -11340,6 +11461,7 @@ class MainWindow(QMainWindow):
             install_path=install_path,
             existing_model_detected=self._tts_engine_model_detected(engine_id),
             license_notice=(
+                self.tr("indextts_license", INDEXTTS_LICENSE_NOTICE) if engine_id == "indextts" else
                 self.tr(
                     "f5_russian_install_license_notice",
                     "F5-TTS Russian is an optional non-commercial model. "
@@ -11350,11 +11472,14 @@ class MainWindow(QMainWindow):
                 else ""
             ),
             license_url=(
+                INDEXTTS_LICENSE_URL if engine_id == "indextts" else
                 "https://creativecommons.org/licenses/by-nc/4.0/"
                 if engine_id == "f5_russian"
                 else ""
             ),
         )
+        if engine_id == "indextts":
+            self._configure_indextts_install_dialog(dialog)
         self.engine_install_dialogs[engine_id] = dialog
         dialog.install_requested.connect(
             lambda selected=engine_id: self._start_tts_engine_install(selected)
@@ -11379,6 +11504,7 @@ class MainWindow(QMainWindow):
             "kokoro": self.kokoro_python_thread,
             "chatterbox": self.chatterbox_thread,
             "qwen": self.qwen_thread,
+            "indextts": self.indextts_thread,
             "omnivoice": self.omnivoice_thread,
             "f5_russian": self.f5_russian_thread,
         }.get(engine_id)
@@ -11392,6 +11518,8 @@ class MainWindow(QMainWindow):
             self._start_chatterbox_operation("install")
         elif engine_id == "qwen":
             self._start_qwen_operation("install")
+        elif engine_id == "indextts":
+            self._start_indextts_operation("install")
         elif engine_id == "omnivoice":
             self._start_omnivoice_operation("install")
         elif engine_id == "f5_russian":
@@ -11404,6 +11532,8 @@ class MainWindow(QMainWindow):
             self._cancel_chatterbox_operation()
         elif engine_id == "qwen":
             self._cancel_qwen_operation()
+        elif engine_id == "indextts":
+            self._cancel_indextts_operation()
         elif engine_id == "omnivoice":
             self._cancel_omnivoice_operation()
         elif engine_id == "f5_russian":
@@ -11472,6 +11602,7 @@ class MainWindow(QMainWindow):
         russian_dialog = self.russian_normalization_install_dialog
         return (
             tts_install_active
+            or self.indextts_thread is not None
             or self.russian_normalization_thread is not None
             or (
                 russian_dialog is not None
@@ -11525,7 +11656,7 @@ class MainWindow(QMainWindow):
     def _start_preload_tts_engine(self, engine_id: str) -> None:
         if self.preload_thread is not None:
             return
-        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "f5_russian"}:
+        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "indextts", "f5_russian"}:
             return
         # Show a visible acknowledgement before doing any local preparation.
         # Some model configurations take noticeable time to assemble.
@@ -11716,6 +11847,7 @@ class MainWindow(QMainWindow):
         self._refresh_kokoro_python_status()
         self._refresh_chatterbox_status()
         self._refresh_qwen_status()
+        self._refresh_indextts_status()
         self._refresh_omnivoice_status()
         self._refresh_f5_russian_status()
         self._refresh_custom_engine_panel()
@@ -12157,6 +12289,7 @@ class MainWindow(QMainWindow):
             "chatterbox_preview_thread",
             "qwen_thread",
             "qwen_preview_thread",
+            "indextts_thread",
             "omnivoice_thread",
             "omnivoice_preview_thread",
             "f5_russian_thread",
@@ -12361,6 +12494,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_manager = ChatterboxManager()
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
+        self.indextts_manager = IndexTTSManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
         self.faster_whisper_manager = FasterWhisperManager()
@@ -12457,6 +12591,8 @@ class MainWindow(QMainWindow):
         for section_name, field_name in (
             ("chatterbox", "reference_audio_path"),
             ("qwen", "reference_audio_path"),
+            ("indextts", "reference_audio_path"),
+            ("indextts", "emo_audio_prompt"),
             ("omnivoice", "reference_audio_path"),
             ("f5_russian", "reference_audio_path"),
             ("voice_gallery", "local_catalog_path"),
@@ -12479,6 +12615,8 @@ class MainWindow(QMainWindow):
                 self.chatterbox_reference_picker.set_path(relocated)
             elif section_name == "qwen":
                 self.qwen_reference_picker.set_path(relocated)
+            elif section_name == "indextts" and field_name in self.indextts_fields:
+                self.indextts_fields[field_name].set_path(relocated)
             elif section_name == "omnivoice":
                 self.omnivoice_reference_picker.set_path(relocated)
             elif section_name == "f5_russian":
@@ -12683,6 +12821,7 @@ class MainWindow(QMainWindow):
         self.omnivoice_chunk_size_spin = self._engine_chunk_spin()
         self.kokoro_chunk_size_spin = self._engine_chunk_spin()
         self.piper_chunk_size_spin = self._engine_chunk_spin()
+        self.indextts_chunk_size_spin = self._engine_chunk_spin()
         self.f5_russian_chunk_size_spin = self._engine_chunk_spin()
         splitting_form.addRow(
             self.tr("default_chunk_size", "Default chunk size"),
@@ -12712,6 +12851,7 @@ class MainWindow(QMainWindow):
             self.tr("f5_russian_chunk_size", "F5-TTS Russian maximum"),
             self.f5_russian_chunk_size_spin,
         )
+        splitting_form.addRow("IndexTTS-2.5", self.indextts_chunk_size_spin)
 
         libraries_group = QGroupBox(
             self.tr("audio_library_folders", "Audio library folders")
@@ -12787,6 +12927,7 @@ class MainWindow(QMainWindow):
             "chatterbox": getattr(self, "chatterbox_chunk_size_spin", None),
             "qwen": getattr(self, "qwen_chunk_size_spin", None),
             "omnivoice": getattr(self, "omnivoice_chunk_size_spin", None),
+            "indextts": getattr(self, "indextts_chunk_size_spin", None),
             "f5_russian": getattr(self, "f5_russian_chunk_size_spin", None),
         }
         override = 0
@@ -13403,13 +13544,13 @@ class MainWindow(QMainWindow):
         self.voices_manage_button.setIcon(
             ui_icon(
                 "voice"
-                if engine_id in {"chatterbox", "omnivoice", "f5_russian"}
+                if engine_id in {"chatterbox", "omnivoice", "indextts", "f5_russian"}
                 or qwen_cloning
                 else "settings"
             )
         )
         self.voices_manage_button.setEnabled(
-            engine_id in {"piper", "chatterbox", "omnivoice", "f5_russian"}
+            engine_id in {"piper", "chatterbox", "omnivoice", "indextts", "f5_russian"}
             or qwen_cloning
         )
         self.voices_external_libraries_button.setVisible(True)
@@ -13509,7 +13650,7 @@ class MainWindow(QMainWindow):
             return self.tr("download_piper_voices", "Download Piper voices")
         if engine_id == "chatterbox":
             return self.tr("clone_voice", "Clone Voice")
-        if engine_id == "omnivoice":
+        if engine_id in {"omnivoice", "indextts"}:
             return self.tr("clone_voice", "Clone Voice")
         if engine_id == "f5_russian":
             return self.tr("clone_voice", "Clone Voice")
@@ -13584,6 +13725,7 @@ class MainWindow(QMainWindow):
         manager = {
             "kokoro": self.kokoro_python_manager,
             "chatterbox": self.chatterbox_manager,
+            "indextts": self.indextts_manager,
             "omnivoice": self.omnivoice_manager,
             "f5_russian": self.f5_russian_manager,
         }.get(engine_id)
@@ -13705,7 +13847,7 @@ class MainWindow(QMainWindow):
                         }
                     )
             return self._merge_voice_gallery_rows(engine_id, rows)
-        if engine_id == "omnivoice":
+        if engine_id in {"omnivoice", "indextts"}:
             return self._merge_voice_gallery_rows(engine_id, [])
         if engine_id == "f5_russian":
             rows: list[dict[str, object]] = []
@@ -13963,6 +14105,9 @@ class MainWindow(QMainWindow):
             path = Path(voice.installed_path) if voice.installed_path else None
             selected = self.chatterbox_reference_picker.path()
             return bool(path and selected and path.resolve() == selected.resolve())
+        if engine_id == "indextts":
+            selected = self.indextts_fields["reference_audio_path"].path()
+            return bool(selected and voice.installed_path and Path(voice.installed_path).resolve() == selected.resolve())
         if engine_id == "omnivoice":
             selected = self.omnivoice_reference_picker.path()
             return bool(
@@ -14109,7 +14254,7 @@ class MainWindow(QMainWindow):
             )
             layout.addWidget(edit_button)
 
-        if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "chatterbox", "f5_russian"}:
+        if engine_id in {"piper", "kokoro", "qwen", "omnivoice", "indextts", "chatterbox", "f5_russian"}:
             test_button = self._small_icon_button(
                 "preview",
                 self.tr("test_voice", "Test voice"),
@@ -14227,6 +14372,8 @@ class MainWindow(QMainWindow):
                     self.pending_f5_russian_gallery_voice_id = (
                         gallery_voice.voice_id
                     )
+                elif engine_id == "indextts":
+                    self.pending_indextts_gallery_voice_id = gallery_voice.voice_id
                 elif (
                     engine_id == "qwen"
                     and self._qwen_model_kind() == "voice_clone"
@@ -14246,6 +14393,8 @@ class MainWindow(QMainWindow):
                 and self._qwen_model_kind() == "voice_clone"
             ):
                 self._apply_qwen_gallery_reference(gallery_voice)
+            elif engine_id == "indextts":
+                self._apply_indextts_gallery_reference(gallery_voice)
             elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(gallery_voice)
             elif engine_id == "f5_russian":
@@ -14406,6 +14555,8 @@ class MainWindow(QMainWindow):
             self._test_kokoro_python_voice()
         elif engine_id == "qwen":
             self._test_qwen_voice()
+        elif engine_id == "indextts":
+            self._start_indextts_operation("preview")
         elif engine_id == "omnivoice":
             self._test_omnivoice_voice()
         elif engine_id == "f5_russian":
@@ -14641,7 +14792,9 @@ class MainWindow(QMainWindow):
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
             return
         if self._is_gallery_voice_selected(engine_id, gallery_voice):
-            if engine_id == "omnivoice":
+            if engine_id == "indextts":
+                self._apply_indextts_gallery_reference(voice)
+            elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(voice)
             elif engine_id == "f5_russian":
                 self._apply_f5_russian_gallery_reference(voice)
@@ -14719,6 +14872,12 @@ class MainWindow(QMainWindow):
         self.pending_f5_russian_gallery_voice_id = None
         pending_qwen_voice_id = self.pending_qwen_gallery_voice_id
         self.pending_qwen_gallery_voice_id = None
+        pending_indextts_voice_id = self.pending_indextts_gallery_voice_id
+        self.pending_indextts_gallery_voice_id = None
+        if pending_indextts_voice_id:
+            pending_voice = self.voice_gallery_manager.get_voice(pending_indextts_voice_id)
+            if pending_voice is not None and self._apply_indextts_gallery_reference(pending_voice):
+                self._save_settings()
         if pending_qwen_voice_id:
             pending_voice = self.voice_gallery_manager.get_voice(
                 pending_qwen_voice_id
@@ -14741,7 +14900,9 @@ class MainWindow(QMainWindow):
         self.pending_removed_gallery_voice = None
         if pending_removed is not None:
             engine_id, _voice = pending_removed
-            if engine_id == "omnivoice":
+            if engine_id == "indextts":
+                self.indextts_fields["reference_audio_path"].set_path(None)
+            elif engine_id == "omnivoice":
                 self.omnivoice_reference_picker.set_path(None)
                 self.omnivoice_reference_text_edit.clear()
             elif engine_id == "qwen":
@@ -14758,6 +14919,7 @@ class MainWindow(QMainWindow):
 
     def _on_voice_gallery_failed(self, message: str) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_indextts_gallery_voice_id = None
         self.pending_qwen_gallery_voice_id = None
         self.pending_f5_russian_gallery_voice_id = None
         self.pending_removed_gallery_voice = None
@@ -14766,6 +14928,7 @@ class MainWindow(QMainWindow):
 
     def _on_voice_gallery_cancelled(self) -> None:
         self.voices_progress_bar.setVisible(False)
+        self.pending_indextts_gallery_voice_id = None
         self.pending_qwen_gallery_voice_id = None
         self.pending_f5_russian_gallery_voice_id = None
         self.pending_removed_gallery_voice = None
@@ -14789,6 +14952,9 @@ class MainWindow(QMainWindow):
             return
         if engine_id == "chatterbox":
             self._import_gallery_reference_voice("chatterbox")
+            return
+        if engine_id == "indextts":
+            self._import_gallery_reference_voice("indextts")
             return
         if engine_id == "omnivoice":
             self._import_gallery_reference_voice("omnivoice")
@@ -14870,6 +15036,9 @@ class MainWindow(QMainWindow):
                 self._show_error(self.tr("import_failed", "Import failed"), str(exc))
                 return
         self.log_view.append_event(f"Imported {engine_id} reference voice: {voice.name}")
+        if engine_id == "indextts":
+            self._apply_indextts_gallery_reference(voice)
+            self._save_settings()
         if engine_id == "qwen":
             self._apply_qwen_gallery_reference(voice)
             self._save_settings()
@@ -15275,6 +15444,7 @@ class MainWindow(QMainWindow):
         self._refresh_qwen_model_fields()
         self._ensure_default_qwen_reference(allow_sync=False)
 
+        self._load_indextts_settings()
         omnivoice = self.settings.get("omnivoice", {})
         if not isinstance(omnivoice, dict):
             omnivoice = {}
@@ -15499,7 +15669,7 @@ class MainWindow(QMainWindow):
                 value = int(engine_chunk_sizes.get(engine, 0) or 0)
             except (TypeError, ValueError):
                 value = 0
-            default = 520 if engine == "qwen" else 300
+            default = int(DEFAULT_SETTINGS["engine_chunk_sizes"].get(engine, 300))
             return value if value >= MIN_CHUNK_SIZE else default
 
         self.piper_chunk_size_spin.setValue(chunk_size_for("piper"))
@@ -15507,6 +15677,7 @@ class MainWindow(QMainWindow):
         self.chatterbox_chunk_size_spin.setValue(chunk_size_for("chatterbox"))
         self.qwen_chunk_size_spin.setValue(chunk_size_for("qwen"))
         self.omnivoice_chunk_size_spin.setValue(chunk_size_for("omnivoice"))
+        self.indextts_chunk_size_spin.setValue(chunk_size_for("indextts"))
         self.f5_russian_chunk_size_spin.setValue(chunk_size_for("f5_russian"))
         self._select_combo_data(
             self.audio_format_combo,
@@ -17924,6 +18095,8 @@ class MainWindow(QMainWindow):
             return self._chatterbox_voice_config_for_ui()
         if engine_id == "qwen":
             return self._qwen_voice_config_for_ui()
+        if engine_id == "indextts":
+            return self._indextts_voice_config_for_ui()
         if engine_id == "omnivoice":
             return self._omnivoice_voice_config_for_ui()
         if engine_id == "f5_russian":
@@ -18310,7 +18483,7 @@ class MainWindow(QMainWindow):
             self.time_label.setText(
                 self.tr(
                     "generation_stage_time_status",
-                    "Elapsed: {elapsed} | Current stage remaining: {remaining} | Total remaining: unknown",
+                    "Elapsed: {elapsed} | Estimated remaining for this stage: {remaining}",
                     elapsed=self._format_duration(elapsed),
                     remaining=remaining,
                 )
@@ -20106,6 +20279,7 @@ class MainWindow(QMainWindow):
             self.qwen_test_button,
             self.qwen_load_button,
             self.qwen_detect_gpu_button,
+            self.indextts_panel,
             self.omnivoice_model_combo,
             self.omnivoice_mode_combo,
             self.omnivoice_device_combo,
@@ -20189,6 +20363,7 @@ class MainWindow(QMainWindow):
             self.qwen_chunk_size_spin,
             self.omnivoice_chunk_size_spin,
             self.f5_russian_chunk_size_spin,
+            self.indextts_chunk_size_spin,
             self.output_picker,
             self.save_next_to_source_checkbox,
             self.use_source_filename_checkbox,
@@ -20228,6 +20403,7 @@ class MainWindow(QMainWindow):
             self._refresh_kokoro_python_status()
             self._refresh_chatterbox_status()
             self._refresh_qwen_status()
+            self._refresh_indextts_status()
             self._refresh_omnivoice_status()
             self._refresh_f5_russian_status()
             self._refresh_wav_cache_stats()
@@ -20290,6 +20466,7 @@ class MainWindow(QMainWindow):
                     "chatterbox": self.chatterbox_chunk_size_spin.value(),
                     "qwen": self.qwen_chunk_size_spin.value(),
                     "omnivoice": self.omnivoice_chunk_size_spin.value(),
+                    "indextts": self.indextts_chunk_size_spin.value(),
                     "f5_russian": self.f5_russian_chunk_size_spin.value(),
                 },
                 "normalize_audio": self.normalize_checkbox.isChecked(),
@@ -20388,6 +20565,7 @@ class MainWindow(QMainWindow):
                         self.qwen_reference_text_edit.toPlainText().strip()
                     ),
                 },
+                "indextts": self._indextts_settings(),
                 "omnivoice": {
                     "model": (
                         self.omnivoice_model_combo.currentData()

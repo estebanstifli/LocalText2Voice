@@ -7,6 +7,53 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-03
+
+### Added
+
+- Added optional IndexTTS-2.5 voice cloning with a persistent worker shared
+  through EngineHost, on-demand installation/repair/removal, memory loading,
+  and integration with the voice library, generation, review and local API.
+- Added eight IndexTTS emotion presets and an Emotion menu in the markup
+  editor, with `{{emotion sad 70%}}`, `{{emotion off}}` and free-form
+  `{{emotion custom "Friendly and energetic" 90%}}` instructions.
+- Added batch preparation of custom emotion descriptions with QwenEmotion.
+  Repeated descriptions are resolved once; vectors and provenance are saved
+  with segments and reused for regeneration. QwenEmotion exits before the
+  narration model loads to avoid keeping both models in VRAM simultaneously.
+- Added reference-audio reuse from compatible voice-gallery entries for
+  IndexTTS, including automatic download on selection and local cache reuse.
+- Added a MiniMax H3 adapter for a private Runpod/ComfyUI endpoint, with
+  start-image input, fast/normal presets, inline video recovery, timing reports
+  and execution-only cost estimates. This is not the public MiniMax API and
+  does not provision or start GPU infrastructure.
+- Included IndexTTS license notices and dedicated engine/emotion and H3 guides.
+  The optional IndexTTS code and weights use the bilibili Model Use License
+  Agreement, not the application's MIT license.
+
+### Changed
+
+- Estimate synthesis time from processed characters after at least three
+  blocks, rather than treating short and long blocks as equally costly.
+- Make Qwen and Chatterbox chunk packing honor the configured character limit
+  instead of a hidden lower target. Short standalone text remains valid;
+  the default Chatterbox limit for new settings is now 400 characters.
+- Keep IndexTTS emotion direction in the editor instead of hidden global UI
+  settings. Advanced synthesis parameters remain configurable separately.
+- Localized the new engine controls, emotion presets and private H3 controls
+  across all 11 interface languages.
+
+### Fixed
+
+- Guard Chatterbox's alignment analyzer against an empty reduction for very
+  short input, in both the isolated worker and the source CLI.
+- Run engine preloading outside the HTTP event loop and remove failed
+  preload instances from the EngineHost cache, avoiding a false loaded state.
+- Validate effective IndexTTS voice/language/emotion settings after applying
+  markup, so inline voice selection works without a global reference file.
+- Keep private H3 recovery records when a completed paid job cannot yet be
+  downloaded, rather than silently submitting another generation.
+
 ## [2.1.2] - 2026-09-28
 
 ### Added
@@ -525,7 +572,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.2...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.0.2...v2.1.0

@@ -22,6 +22,7 @@ from pathlib import Path
 from app.core.storyboard_credentials import reveal
 from app.core.storyboard_profiles import RUNPOD_DEFAULTS
 from app.core.runpod_video_models import VIDEO_MODELS, duration_for, model_id
+from app.core.runpod_h3 import is_h3, save_output
 
 API_ROOT = "https://api.runpod.ai/v2"
 TERMINAL = {"FAILED", "CANCELLED", "TIMED_OUT", "EXPIRED"}
@@ -137,6 +138,8 @@ def prepare(settings, role):
     config = configuration(settings)
     api_key(config)
     endpoint = endpoint_id(config[f"{role}_endpoint"])
+    if role == "video" and is_h3(config) and endpoint in PUBLIC_ENDPOINTS:
+        raise RunpodError("H3 requires your private Runpod endpoint ID, not a public Wan/MiniMax model name.")
     return {"provider": "runpod", "model": endpoint}
 
 
@@ -325,6 +328,9 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
             regenerate=False, legacy_result_used=False, _retry_expired=True):
     config = configuration(settings)
     endpoint = endpoint_id(config[f"{role}_endpoint"])
+    h3 = role == "video" and is_h3(config)
+    if h3 and endpoint in PUBLIC_ENDPOINTS:
+        raise RunpodError("Select the private H3 endpoint ID before generating.")
     account = hashlib.sha256(api_key(config).encode()).hexdigest()
     fingerprint = hashlib.sha256(json.dumps([str(Path(target).parent.resolve()), endpoint, account, identity or payload], sort_keys=True).encode()).hexdigest()
     record_path = jobs_directory() / (fingerprint + ".json")
@@ -410,18 +416,56 @@ def execute(settings, role, payload, target, *, identity=None, status=None, canc
                 if cancelled and cancelled():
                     break
                 time.sleep(0.25)
+    record.setdefault("completed_observed_at", time.time())
     _release_temporary(record, config, record_path)
     output = record.get("output", {})
     if not isinstance(output, dict):
         raise RunpodError("This endpoint does not use the expected public model response format.")
-    url = output_media_url(output, role)
-    if status:
-        status("Runpod · Downloading")
-    download(url, target, cancelled)
+    save_started = time.monotonic()
+    url = ""
+    if h3:
+        if status:
+            status("Runpod · Saving H3 video")
+        try:
+            save_output(output, target, cancelled)
+        except (OSError, ValueError) as exc:
+            raise RunpodError(str(exc)) from exc
+    else:
+        url = output_media_url(output, role)
+        if status:
+            status("Runpod · Downloading")
+        download(url, target, cancelled)
+    record["media_saved_at"] = time.time()
+    record["media_save_seconds"] = round(time.monotonic() - save_started, 3)
+    timing = job_metrics(record, config)
+    record["timing"] = timing
+    _write(record_path, record)
     if role != "video":
         remember_asset(target, url, float(record.get("created", time.time())) + 6 * 86400)
     return {"provider": "runpod", "prompt_id": record["id"], "model": endpoint,
-            "cost_usd": output.get("cost"), "remote_url": url, "job_record": str(record_path)}
+            "cost_usd": output.get("cost"), "remote_url": url, "job_record": str(record_path),
+            "timing": timing}
+
+
+def job_metrics(record, config):
+    """Server timings are not an invoice; queue time is not GPU compute time."""
+    def number(value):
+        import math
+        try:
+            value = float(value)
+            return value if math.isfinite(value) and value >= 0 else None
+        except (TypeError, ValueError):
+            return None
+    delay, execution = number(record.get("delayTime")), number(record.get("executionTime"))
+    created, saved = number(record.get("created")), number(record.get("media_saved_at"))
+    rate = number(config.get("gpu_hourly_usd")) if is_h3(config) else None
+    return {"queue_seconds": None if delay is None else delay / 1000,
+            "execution_seconds": None if execution is None else execution / 1000,
+            "total_to_media_seconds": None if created is None or saved is None else round(max(0, saved - created), 3),
+            "media_save_seconds": number(record.get("media_save_seconds")),
+            "worker_id": str(record.get("workerId") or ""),
+            "execution_cost_estimate_usd": execution / 1000 * rate / 3600 if execution is not None and rate else None,
+            "cost_note": "Execution-only estimate excludes worker startup, idle and storage; use Runpod billing for the actual charge."}
 
 
 def consume_result(result):
@@ -432,6 +476,8 @@ def consume_result(result):
     record = _read(path)
     if record.get("id") == result.get("prompt_id"):
         record["consumed"] = True
+        if result.get("timing"):
+            record["timing"] = result["timing"]
         _write(path, record)
 
 
@@ -463,6 +509,8 @@ def video_duration(seconds, config=None):
 
 def estimate_cost(settings, *, images=0, edits=0, durations=()):
     config = configuration(settings)
+    if durations and is_h3(config):
+        return None  # GPU time is not determined by requested clip length.
     image_rate = IMAGE_MODELS.get(image_model_id(config), {}).get("price")
     if (images and image_rate is None) or (edits and config["edit_endpoint"] != RUNPOD_DEFAULTS["edit_endpoint"]):
         return None

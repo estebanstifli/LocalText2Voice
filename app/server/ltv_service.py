@@ -37,6 +37,8 @@ from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
 from app.tts.f5_russian_manager import F5RussianManager
 from app.tts.kokoro_python_manager import KokoroPythonManager
+from app.tts.indextts_manager import IndexTTSManager
+from app.tts.indextts_config import DEFAULTS as INDEXTTS_DEFAULTS, LICENSE_URL as INDEXTTS_LICENSE_URL
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
 from app.tts.voice_gallery_manager import (
@@ -79,6 +81,7 @@ class LocalText2VoiceService:
         self.kokoro_manager = KokoroPythonManager()
         self.chatterbox_manager = ChatterboxManager()
         self.qwen_manager = QwenManager()
+        self.indextts_manager = IndexTTSManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
         self.faster_whisper_manager = FasterWhisperManager()
@@ -166,6 +169,8 @@ class LocalText2VoiceService:
             for engine in TTS_ENGINES
         ]
         for engine in engines:
+            if engine["id"] == "indextts":
+                engine.update(license="bilibili Model Use License Agreement", license_url=INDEXTTS_LICENSE_URL, commercial_use="conditional")
             if engine["id"] == "f5_russian":
                 engine.update(
                     {
@@ -213,7 +218,17 @@ class LocalText2VoiceService:
         request["engine_id"] = engine
         voice_config = self._voice_config(engine, request)
         tts_engine = self._get_tts_engine(engine, log_callback or (lambda message: None))
-        tts_engine.preload(voice_config)
+        try:
+            tts_engine.preload(voice_config)
+        except Exception:
+            with self._engine_lock:
+                if self._engine_cache.get(engine) is tts_engine:
+                    self._engine_cache.pop(engine)
+            try:
+                tts_engine.close()
+            except Exception:
+                pass
+            raise
         return {
             "engine_id": engine,
             "loaded": True,
@@ -351,7 +366,7 @@ class LocalText2VoiceService:
                 for voice in self.qwen_manager.list_voices()
                 for language in languages
             ]
-        if engine in {"chatterbox", "omnivoice", "f5_russian"}:
+        if engine in {"chatterbox", "omnivoice", "indextts", "f5_russian"}:
             rows = []
             for voice in self.voice_gallery_manager.list_voices(engine):
                 installed = self.voice_gallery_manager.is_installed(voice)
@@ -1084,6 +1099,21 @@ class LocalText2VoiceService:
                     or qwen.get("reference_text", "")
                 ),
             }
+        if engine_id == "indextts":
+            config = {**copy.deepcopy(INDEXTTS_DEFAULTS), **self._settings_dict("indextts")}
+            gallery_voice = self._match_gallery_voice("indextts", voice_hint, language_hint)
+            if gallery_voice is not None and not request.get("reference_audio_path"):
+                audio_path = self.voice_gallery_manager.ensure_voice_audio(gallery_voice)
+                if audio_path is not None:
+                    config["reference_audio_path"] = str(audio_path)
+            for key in INDEXTTS_DEFAULTS:
+                if key in request:
+                    config[key] = request[key]
+            if "instruct" in request:
+                config["instruct"] = request["instruct"]
+            if language_hint:
+                config["language"] = language_hint
+            return {**config, "engine": "indextts", "speed": speed}
         if engine_id == "omnivoice":
             omnivoice = self._settings_dict("omnivoice")
             gallery_voice = self._match_gallery_voice("omnivoice", voice_hint, language_hint)
@@ -1191,7 +1221,7 @@ class LocalText2VoiceService:
     ) -> GalleryVoice | None:
         voices = self.voice_gallery_manager.list_voices(engine)
         installed = [voice for voice in voices if self.voice_gallery_manager.is_installed(voice)]
-        candidates = installed or voices
+        candidates = voices if engine == "indextts" else (installed or voices)
         if not candidates or not voice_hint:
             return None
         language_hint = self._normalize_token(language_hint)
@@ -1348,6 +1378,8 @@ class LocalText2VoiceService:
                 )
             )
             return self.qwen_manager.is_installed(model)
+        if engine_id == "indextts":
+            return self.indextts_manager.is_installed()
         if engine_id == "omnivoice":
             return self.omnivoice_manager.is_installed()
         if engine_id == "f5_russian":

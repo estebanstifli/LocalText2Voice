@@ -17,16 +17,25 @@ def model_id(config):
 
 
 def model_name(config):
+    from app.core.runpod_h3 import is_h3
+    if is_h3(config):
+        return "MiniMax H3 private · " + ("Fast 4-step" if config.get("h3_preset", "fast") == "fast" else "Normal 20-step")
     endpoint = model_id(config)
     return VIDEO_MODELS.get(endpoint, {}).get("name", endpoint)
 
 
 def duration_for(seconds, config):
+    from app.core.runpod_h3 import is_h3, parameters
+    if is_h3(config):
+        return parameters(config, "", seconds, 0)["seconds"]
     choices = VIDEO_MODELS.get(model_id(config), VIDEO_MODELS["wan-2-6-i2v"])["durations"]
     return next((n for n in choices if n >= math.ceil(float(seconds))), choices[-1])
 
 
 def video_parameters(config, prompt, seconds, seed):
+    from app.core.runpod_h3 import is_h3, parameters
+    if is_h3(config):
+        return parameters(config, prompt, seconds, seed)
     endpoint = model_id(config)
     model = VIDEO_MODELS.get(endpoint, VIDEO_MODELS["wan-2-6-i2v"])
     size = config.get("video_size", "1280*720")

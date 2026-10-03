@@ -267,3 +267,21 @@ provenance:
 
 This track is also distributed as an application background-music asset, not
 as a standalone media product.
+
+## IndexTTS-2.5 optional model and runtime
+
+IndexTeam / Bilibili: https://github.com/index-tts/index-tts
+Official weights: https://huggingface.co/IndexTeam/IndexTTS-2.5
+
+The bilibili Model Use License Agreement applies to the official published model
+and code. Commercial use is conditional; this is not an MIT/Apache model.
+See [the integration/license analysis](docs/INDEXTTS_2_5.md) and the original
+agreement, Chinese version and disclaimer under `licenses/INDEXTTS-*`.
+The installer preserves upstream notices and downloads this optional engine
+separately from the application's own MIT-licensed source.
+
+Auxiliary models: facebook/w2v-bert-2.0 (MIT), funasr/campplus (Apache-2.0),
+nvidia/bigvgan_v2_22khz_80band_256x (MIT). The emotion interpreter is included in
+the official IndexTTS-2.5 snapshot. Model cards and available licenses are retained
+with downloaded components. Python, uv, PyTorch and other runtime dependencies
+retain their respective licenses and notices in the isolated environment.

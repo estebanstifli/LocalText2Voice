@@ -99,6 +99,26 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
                 [source],
             )
 
+    def test_generative_chunk_packing_uses_configured_limit(self) -> None:
+        source = " ".join(["a" * 99 + "."] * 8)
+        for engine, limit, expected in (
+            ("chatterbox", 400, [302, 302, 201]),
+            ("qwen", 520, [504, 302]),
+            ("chatterbox", 700, [605, 201]),
+            ("qwen", 700, [605, 201]),
+        ):
+            with self.subTest(engine=engine, limit=limit):
+                options = AudioGenerationOptions(
+                    Path("unused"), {"engine": engine}, "ffmpeg", chunk_size=limit,
+                )
+                chunks = AudioPipeline._split_tts_chunks(source, options)
+                self.assertEqual([len(c.text) for c in chunks], expected)
+                self.assertEqual(" ".join(c.text for c in chunks), source)
+                self.assertEqual(
+                    [c.text for c in AudioPipeline._split_tts_chunks("What?", options)],
+                    ["What?"],
+                )
+
     def test_normalization_precedes_chunking(self) -> None:
         options = AudioGenerationOptions(
             output_dir=Path('unused'), voice_config={'engine': 'qwen'},
@@ -457,6 +477,79 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for this test")
 class AudioPipelineTests(unittest.TestCase):
+    def test_indextts_validates_commands_before_requiring_global_emotion(self) -> None:
+        from app.tts.indextts_engine import IndexTTSTTSEngine
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            reference = root / "reference.wav"
+            reference.touch()
+            validator = IndexTTSTTSEngine(SimpleNamespace(is_installed=lambda: True))
+            engine = FakeTTSEngine()
+            engine.validate = validator.validate
+            pipeline = AudioPipeline(engine)
+            voice = GalleryVoice(
+                voice_id="indextts_es_asun", engine="indextts", name="asun",
+                language="es", language_name="Spanish", voice_type="Reference voice",
+                install_type="reference_audio", installed_path=str(reference),
+            )
+            pipeline._markup_voice_cache["indextts_gallery_manager"] = SimpleNamespace(
+                list_voices=lambda engine: [voice], ensure_voice_audio=lambda voice: reference,
+            )
+            options = AudioGenerationOptions(
+                output_dir=root / "output", ffmpeg_path=shutil.which("ffmpeg"),
+                voice_config={"engine": "indextts", "emotion_mode": "text", "emo_text": "",
+                              "reference_audio_path": ""},
+            )
+            source = '{{lang es}}\n{{voice asun}}\n' + '\n\n'.join(
+                '{{cmd "instruct": "' + emotion + '", "emo_alpha": 0.75}}\n' + phrase
+                for emotion, phrase in [
+                    ("Estoy muy feliz.", "¡Lo hemos conseguido! Podemos celebrarlo juntos."),
+                    ("Estoy triste.", "La casa está en silencio. Espero escuchar tus pasos."),
+                    ("Estoy enfadada.", "Te pedí la verdad. No puedes seguir así."),
+                    ("Estoy tranquila.", "Cierra los ojos. Respira despacio."),
+                ]
+            )
+            outputs = pipeline.generate(source, options)
+            self.assertTrue(outputs[0].is_file())
+            self.assertEqual(len(engine.voice_configs), 4)
+            self.assertEqual([c["instruct"] for c in engine.voice_configs],
+                             ["Estoy muy feliz.", "Estoy triste.", "Estoy enfadada.", "Estoy tranquila."])
+            self.assertTrue(all(c["reference_audio_path"] == str(reference) for c in engine.voice_configs))
+            self.assertEqual(options.voice_config["emo_text"], "")
+
+    def test_indextts_optional_emotion_and_reset_do_not_leak_instruction(self) -> None:
+        from app.tts.indextts_engine import IndexTTSTTSEngine
+        from app.tts.indextts_config import inference_arguments
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            reference = root / "reference.wav"
+            reference.touch()
+            validator = IndexTTSTTSEngine(SimpleNamespace(is_installed=lambda: True))
+            engine = FakeTTSEngine()
+            engine.validate = validator.validate
+            options = AudioGenerationOptions(
+                output_dir=root / "output", ffmpeg_path=shutil.which("ffmpeg"),
+                voice_config={"engine": "indextts", "emotion_mode": "text", "emo_text": "",
+                              "reference_audio_path": str(reference)},
+            )
+            outputs = AudioPipeline(engine).generate(
+                'Inicio sin instrucciones.\n\n{{cmd "instruct": "Happy", "emo_alpha": 0.75}}Hola.'
+                '\n\n{{reset}}Después del reset.\n\nOtro párrafo sin marcar.', options,
+            )
+            self.assertTrue(outputs[0].is_file())
+            args = [inference_arguments(config, text, "unused.wav")
+                    for text, config in zip(engine.synthesized_texts, engine.voice_configs)]
+            marked = [arg for arg in args if arg.get("use_emo_text")]
+            self.assertEqual(len(marked), 1)
+            self.assertEqual(marked[0]["text"], "Hola.")
+            self.assertEqual(marked[0]["emo_text"], "Happy")
+            unmarked = [arg for arg in args if not arg.get("use_emo_text")]
+            self.assertTrue(any("Después del reset" in arg["text"] for arg in unmarked))
+            self.assertTrue(all("emo_text" not in arg and "emo_vector" not in arg for arg in unmarked))
+            self.assertTrue(all(arg["spk_audio_prompt"] == str(reference) for arg in args))
+
     def test_exports_single_mp3_with_real_ffmpeg(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             output_dir = Path(temporary_name) / "output"
@@ -705,7 +798,7 @@ class AudioPipelineTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0].chunks), 2)
 
-    def test_qwen_uses_short_sentence_chunk_policy(self) -> None:
+    def test_qwen_honors_explicit_large_chunk_size(self) -> None:
         options = AudioGenerationOptions(
             output_dir=Path("unused"),
             voice_config={"engine": "qwen", "speed": 1.0},
@@ -720,8 +813,7 @@ class AudioPipelineTests(unittest.TestCase):
         groups = AudioPipeline(FakeTTSEngine())._prepare_groups(text, options)
 
         self.assertEqual(len(groups), 1)
-        self.assertGreater(len(groups[0].chunks), 1)
-        self.assertTrue(all(len(chunk.text) <= 520 for chunk in groups[0].chunks))
+        self.assertEqual([chunk.text for chunk in groups[0].chunks], [text])
 
     def test_adaptive_pause_uses_length_and_periodic_rhythm(self) -> None:
         from app.core.text_processor import TextChunk

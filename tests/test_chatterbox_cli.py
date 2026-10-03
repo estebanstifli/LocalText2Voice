@@ -3,6 +3,10 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from unittest.mock import patch
+
+from app.tts.chatterbox_compat import apply_alignment_compat
+from app.tts.chatterbox_manager import CHATTERBOX_PYTHON_CLI
 
 from app.tts.chatterbox_cli import _load_model
 
@@ -42,3 +46,45 @@ class ChatterboxCLITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlignmentCompatTests(unittest.TestCase):
+    def test_guard_and_idempotence_in_both_entry_points(self):
+        source = "def step(self, logits, next_token=None):\n    A = self.alignment\n    S = self.size\n    alignment_repetition = self.complete and (A[self.completed_at:, :-5].max(dim=1).values.sum() > 5)\n    return alignment_repetition\n"
+        class EmptyReduction:
+            def __getitem__(self, key):
+                return self
+            def max(self, **kwargs):
+                raise AssertionError("Empty reduction must not run")
+        for embedded in (False, True):
+            namespace = {"__name__": "compat_test"}
+            if embedded:
+                exec(CHATTERBOX_PYTHON_CLI, namespace)
+                apply = namespace["apply_alignment_compat"]
+            else:
+                apply = apply_alignment_compat
+            functions = {}
+            exec(source, functions)
+            cls = type("Analyzer", (), {"step": functions["step"]})
+            module = types.SimpleNamespace(AlignmentStreamAnalyzer=cls)
+            with patch("inspect.getsource", return_value=source), patch("importlib.import_module", return_value=module):
+                self.assertTrue(apply())
+                first = cls.step
+                self.assertTrue(apply())
+                self.assertIs(cls.step, first)
+            obj = cls()
+            obj.alignment = EmptyReduction()
+            obj.complete = True
+            obj.completed_at = 0
+            for size in range(1, 6):
+                obj.size = size
+                self.assertFalse(obj.step(None))
+
+
+    def test_changed_upstream_method_is_left_unchanged(self):
+        original = lambda self, logits: logits
+        cls = type("Analyzer", (), {"step": original})
+        module = types.SimpleNamespace(AlignmentStreamAnalyzer=cls)
+        with patch("inspect.getsource", return_value="def step(self, logits): return logits"), patch("importlib.import_module", return_value=module):
+            self.assertFalse(apply_alignment_compat())
+        self.assertIs(cls.step, original)

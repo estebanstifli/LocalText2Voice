@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from app.core.storyboard_credentials import protect, reveal
 from app.core.storyboard_profiles import RUNPOD_DEFAULTS
@@ -45,6 +45,7 @@ class RunpodSettingsWidget(QWidget):
         self._secret_cache = {}
         self._restoring = False
         self._role = None
+        self._video_adapter = "public"
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         form = QFormLayout()
@@ -69,7 +70,24 @@ class RunpodSettingsWidget(QWidget):
         for endpoint, model in VIDEO_MODELS.items():
             self.video_model.addItem(model["name"], endpoint)
         self.video_model.addItem(tr("runpod_custom_endpoint", "Custom endpoint (Advanced)"), "custom")
+        self.video_model.addItem(tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"), "h3_private")
         form.addRow(tr("runpod_video_model", "Video model"), self.video_model)
+        self.h3_panel = QGroupBox(tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"))
+        h3_form = QFormLayout(self.h3_panel)
+        self.h3_preset = QComboBox()
+        self.h3_preset.addItem(tr("h3_fast", "Fast · Turbo 4 steps"), "fast")
+        self.h3_preset.addItem(tr("h3_normal", "Normal · 20 steps"), "normal")
+        h3_form.addRow(tr("h3_preset", "H3 preset"), self.h3_preset)
+        self.gpu_hourly = QDoubleSpinBox()
+        self.gpu_hourly.setRange(0, 100)
+        self.gpu_hourly.setDecimals(4)
+        self.gpu_hourly.setSuffix(" USD/h")
+        self.gpu_hourly.setSpecialValueText(tr("era_basis_unknown", "Unknown"))
+        h3_form.addRow(tr("h3_gpu_rate", "GPU rate (estimate only)"), self.gpu_hourly)
+        h3_note = QLabel(tr("h3_help", "Requires a compatible private H3 endpoint, not the commercial MiniMax API. Enter its ID under Advanced. One starting image, 1–10 seconds, native resolution and audio. References go directly to your worker; mute unwanted audio in the storyboard. Set Max workers to at least 1 remotely. The app does not start or stop GPU workers."))
+        h3_note.setWordWrap(True)
+        h3_form.addRow(h3_note)
+        form.addRow(self.h3_panel)
         self.size = QComboBox()
         self.size.addItem("720p", "1280*720")
         self.size.addItem("1080p", "1920*1080")
@@ -127,7 +145,7 @@ class RunpodSettingsWidget(QWidget):
         from app.core.storyboard_temporary_storage import DEFAULT_SERVICE_URL
         self.fields["temporary_storage_url"].setPlaceholderText(DEFAULT_SERVICE_URL)
         advanced.addRow(tr("runpod_storage_service", "Temporary storage service URL"), self.fields["temporary_storage_url"])
-        for name, label in (("image_endpoint", "Image endpoint · Z-Image contract"), ("edit_endpoint", "Edit endpoint · Qwen Edit contract"), ("video_endpoint", "Video endpoint · selected public model or custom Wan 2.6 contract")):
+        for name, label in (("image_endpoint", "Image endpoint · Z-Image contract"), ("edit_endpoint", "Edit endpoint · Qwen Edit contract"), ("video_endpoint", "Video endpoint ID or Runpod URL · contract chosen above")):
             self.fields[name] = QLineEdit()
             advanced.addRow(label, self.fields[name])
         self.edit_size = QComboBox()
@@ -171,6 +189,9 @@ class RunpodSettingsWidget(QWidget):
         self.fields["image_endpoint"].textChanged.connect(self._sync_image_model)
         self.fields["video_endpoint"].textChanged.connect(self._sync_video_model)
         self.size.currentIndexChanged.connect(self._update_cost)
+        self.h3_preset.currentIndexChanged.connect(self._changed)
+        self.gpu_hourly.valueChanged.connect(self._changed)
+        self.gpu_hourly.valueChanged.connect(self._update_cost)
         self._role_forms = (
             (form, {"image": [self.image_model, image_help], "video": [self.video_model, self.size]}),
             (advanced, {"image": [self.fields["image_endpoint"]], "video": [self.fields["video_endpoint"], self.expansion],
@@ -204,16 +225,23 @@ class RunpodSettingsWidget(QWidget):
 
     def _video_model_changed(self, *_):
         endpoint = self.video_model.currentData()
-        if endpoint != "custom":
+        self._video_adapter = "h3" if endpoint == "h3_private" else "public"
+        if endpoint == "h3_private":
+            if model_id({"video_endpoint": self.fields["video_endpoint"].text()}) in VIDEO_MODELS:
+                self.fields["video_endpoint"].clear()
+            self.advanced_toggle.setChecked(True)
+        elif endpoint != "custom":
             self.fields["video_endpoint"].setText(endpoint)
         else:
             self.advanced_toggle.setChecked(True)
+        self._sync_video_model()
         self._changed()
 
     def _sync_video_model(self, *_):
         endpoint = model_id({"video_endpoint": self.fields["video_endpoint"].text()})
         self.video_model.blockSignals(True)
-        self.video_model.setCurrentIndex(self.video_model.findData(endpoint if endpoint in VIDEO_MODELS else "custom"))
+        h3 = self._video_adapter == "h3"
+        self.video_model.setCurrentIndex(self.video_model.findData("h3_private" if h3 else endpoint if endpoint in VIDEO_MODELS else "custom"))
         self.video_model.blockSignals(False)
         sizes = VIDEO_MODELS.get(endpoint, VIDEO_MODELS["wan-2-6-i2v"])["rates"]
         previous = self.size.currentData()
@@ -224,12 +252,17 @@ class RunpodSettingsWidget(QWidget):
         if endpoint == "kling-video-o1-r2v":
             self.size.clear()
             self.size.addItem(self.tr("storyboard_video_model_resolution", "Model default (16:9)"), "1280*720")
-        self.size.setEnabled(endpoint != "kling-video-o1-r2v")
+        if h3:
+            self.size.clear()
+            self.size.addItem(self.tr("h3_native", "Native H3 workflow · 1344×768, 24 FPS"), "1280*720")
+        self.size.setEnabled(not h3 and endpoint != "kling-video-o1-r2v")
         self.size.setCurrentIndex(max(0, self.size.findData(previous)))
         self.size.blockSignals(False)
         self._update_cost()
 
     def _update_cost(self, *_):
+        h3 = self._video_adapter == "h3"
+        self.h3_panel.setVisible(h3 and self._role in (None, "video"))
         model = VIDEO_MODELS.get(model_id({"video_endpoint": self.fields["video_endpoint"].text()}))
         image = IMAGE_MODELS.get(image_model_id({"image_endpoint": self.fields["image_endpoint"].text()}), {})
         self.model_note.setText(image.get("name", "Custom image") + " · Qwen Image Edit 2511 · " + (model["name"] if model else self.tr("runpod_custom_endpoint", "Custom endpoint (Advanced)")))
@@ -245,6 +278,10 @@ class RunpodSettingsWidget(QWidget):
             }[self._role]
             self.model_note.setText(label)
             self.cost_label.setText(self.tr("runpod_role_rate", "Indicative price: {price}. Verify current Runpod prices.", price=price))
+        if h3 and self._role in (None, "video"):
+            self.model_note.setText(self.tr("h3_private_endpoint", "MiniMax H3 · private ComfyUI endpoint"))
+            rate = self.gpu_hourly.value()
+            self.cost_label.setText(self.tr("h3_cost_help", "Estimates use the GPU rate above; zero means unknown. Billing depends on active GPU time, not clip duration or queue time. Startup, idle and storage may add cost. Timings are saved in Runpod jobs."))
 
     def _storage_changed(self, *_):
         mode = self.reference_storage.currentData()
@@ -270,6 +307,7 @@ class RunpodSettingsWidget(QWidget):
     def configuration(self):
         config = deepcopy(RUNPOD_DEFAULTS)
         config.update({key: edit.text().strip() for key, edit in self.fields.items()})
+        config.update(video_adapter=self._video_adapter, h3_preset=self.h3_preset.currentData(), gpu_hourly_usd=self.gpu_hourly.value())
         config["api_key_encrypted"] = self._encrypted("api_key", self.key.text().strip())
         config["s3_secret_encrypted"] = self._encrypted("s3_secret", self.fields["s3_secret_encrypted"].text().strip())
         config["temporary_storage_token_encrypted"] = ""
@@ -282,6 +320,9 @@ class RunpodSettingsWidget(QWidget):
         config = {**RUNPOD_DEFAULTS, **value}
         self._restoring = True
         try:
+            self._video_adapter = config.get("video_adapter", "public")
+            self.h3_preset.setCurrentIndex(max(0, self.h3_preset.findData(config.get("h3_preset", "fast"))))
+            self.gpu_hourly.setValue(float(config.get("gpu_hourly_usd", 0)))
             for key, edit in self.fields.items():
                 if key != "s3_secret_encrypted":
                     edit.setText(str(config[key]))

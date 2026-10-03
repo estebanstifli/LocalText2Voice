@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app import __version__
 from app.core.audio_formats import audio_format_from_path
@@ -111,7 +112,10 @@ def create_http_app(
         if isinstance(body, dict):
             payload.update(body)
         payload["engine_id"] = engine_id
-        return service.preload_engine(engine_id, payload)
+        try:
+            return await run_in_threadpool(service.preload_engine, engine_id, payload)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/engines/{engine_id}/unload")
     def unload_engine(engine_id: str) -> dict[str, Any]:
