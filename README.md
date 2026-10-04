@@ -38,14 +38,14 @@ Clone a voice from a reference recording and direct each passage with **IndexTTS
 The editor's **emotion** button offers eight presets, **Off**, and **Custom**:
 
 ```text
-{{lang es}}
-{{voice asun}}
-{{emotion alegria 90%}}
-¡Lo hemos conseguido! Por fin podemos celebrarlo juntos.
-{{emotion custom "Simpática y enérgica" 90%}}
-Hoy vamos a descubrir algo sorprendente. Acompáñame en esta nueva aventura.
+{{lang en}}
+{{voice "Teacher"}}
+{{emotion happy 90%}}
+We did it! At last, we can celebrate together.
+{{emotion custom "Friendly and energetic" 90%}}
+Today we are going to discover something amazing. Join me on this new adventure.
 {{emotion off}}
-Este fragmento conserva la emoción de la voz de referencia.
+This passage keeps the emotion of the reference voice.
 ```
 
 Presets use fixed vectors without loading QwenEmotion. Custom descriptions are resolved together before narration: QwenEmotion loads once for missing descriptions, then exits before IndexTTS loads. The resulting vectors are saved with the segments and reused when regenerating them. Emotions are optional; without a local or general instruction, narration uses the reference voice's emotion.
@@ -317,6 +317,7 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Chatterbox | Local GPU/CPU | Advanced voice cloning and expressive speech | CUDA recommended |
 | Qwen3 TTS | Local GPU/CPU | Fast preset voices or high-fidelity voice cloning | CustomVoice 0.6B and Base 1.7B, with an accelerated CUDA path |
 | OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand; pretrained model is CC-BY-NC |
+| IndexTTS-2.5 | Optional local GPU/CPU | Voice cloning with text, audio and vector emotion controls | CUDA/BF16 recommended; [setup and model license](docs/INDEXTTS_2_5.md) |
 | F5-TTS Russian | Optional local GPU/CPU | Russian voice cloning with automatic stress marks | F5TTS_v1_Base_v2; **non-commercial only (CC BY-NC 4.0)** |
 | OpenAI TTS | Cloud API | High-quality remote TTS | Optional API key |
 | ElevenLabs | Cloud API | Commercial voices and voice design workflows | Optional API key |
