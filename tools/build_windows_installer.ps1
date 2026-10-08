@@ -79,6 +79,10 @@ try {
     if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
         throw "The expected installer was not generated: $Installer"
     }
+    & "$RepositoryRoot\.venv\Scripts\python.exe" "$RepositoryRoot\tools\normalize_installer_metadata.py" $Installer --version $Version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installer metadata normalization failed. Do not sign or publish this build."
+    }
     $Hash = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
     "$Hash  LocalText2Voice-Setup.exe" | Set-Content -LiteralPath $Checksum -Encoding Ascii
 

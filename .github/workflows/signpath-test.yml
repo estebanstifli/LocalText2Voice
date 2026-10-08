@@ -43,7 +43,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create build environment' }
           .\.venv\Scripts\python.exe -m pip install -r requirements.txt pytest
           if ($LASTEXITCODE -ne 0) { throw 'Cannot install build dependencies' }
-          .\.venv\Scripts\python.exe -m pytest tests/test_signpath_packaging.py -q
+          .\.venv\Scripts\python.exe -m pytest tests/test_signpath_packaging.py tests/test_installer_metadata.py -q
           if ($LASTEXITCODE -ne 0) { throw 'Packaging tests failed' }
       - name: Read application version
         id: version
@@ -150,6 +150,22 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+      - name: Smoke-test installer on disposable Windows runner
+        timeout-minutes: 10
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Installation smoke test requires a disposable hosted runner' }
+          $installer = if ('${{ inputs.sign_test }}' -eq 'true') { 'build/signpath-signed/installer/LocalText2Voice-Setup.exe' } else { 'build/signpath-input/installer/LocalText2Voice-Setup.exe' }
+          $target = Join-Path $env:RUNNER_TEMP 'signpath-install-smoke'
+          $log = Join-Path $env:GITHUB_WORKSPACE 'build/signpath-input/install-smoke.log'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/TYPE=cpu', '/TASKS=', "/DIR=`"$target`"", "/LOG=`"$log`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer smoke test failed: $($process.ExitCode)" }
+          foreach ($name in @('LocalText2Voice', 'LocalText2VoiceEngineHost', 'LocalText2VoiceMCP')) {
+            $installed = Join-Path $target "$name.exe"
+            $source = "build/signpath-dist/LocalText2Voice/$name.exe"
+            if (-not (Test-Path -LiteralPath $installed)) { throw "Missing installed executable: $name" }
+            if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $source).Hash) { throw "Installed executable differs from build: $name" }
+          }
+          Write-Output 'Installer extracted all three expected application executables without modifying their contents.'
       - name: Keep build provenance
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -157,6 +173,7 @@ jobs:
           name: signing-build-details-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/signpath-input/build-dependencies.txt
+            build/signpath-input/install-smoke.log
             tools/ci/windows-assets.json
             installer/signpath/*.xml
           retention-days: 7

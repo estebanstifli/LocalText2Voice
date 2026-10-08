@@ -4,7 +4,7 @@ Status (2026-10-08): **application test signing and Windows verification passed*
 installer signing still needs investigation. The production certificate is pending.
 This is not a production publishing workflow.
 
-Local checks: 29 focused packaging/localization tests passed. A minimal real
+Local checks: 33 focused packaging/localization tests passed. A minimal real
 PyInstaller executable was built and run with ProductName `LocalText2Voice` and
 ProductVersion `2.2.0`. PowerShell parsing passed. The complete unsigned build and
 Inno Setup compilation passed on GitHub-hosted Windows. Installation testing of
@@ -23,10 +23,16 @@ test-root trust step hung. The verifier now uses temporary LocalMachine trust
 on the disposable hosted runner, logs each stage, and has a five-minute step
 timeout. That correction passed in run 37821098825. No trust was added locally.
 
-The downloaded unsigned installer has the expected product/version, but Inno
-Setup pads its version-resource strings with spaces. The local verifier trims
-that padding. Whether SignPath's metadata restrictions caused the rejection is
-not yet confirmed; inspect the request log before changing the XML restrictions.
+The request log confirmed that Inno Setup's space-padded `ProductName` caused
+the installer rejection (error reference `cc254e75-512b-434c-a516-5818b2c34fa0`).
+The installer build now runs `tools/normalize_installer_metadata.py` before
+calculating its checksum or uploading it. This removes only trailing padding
+from the two version-resource strings and updates the PE checksum. It rejects
+wrong product/version values and already signed files, and does not resize
+resources or move/repack the Inno payload. On the actual 534,962,171-byte CI
+installer, the payload offset, size and SHA-256 were unchanged after this fix.
+Both SignPath XML configurations retain exact product/version restrictions;
+no wildcard or manual configuration change is needed.
 The signing token and both configuration slugs were accepted. Public v2.2.0 and
 its release assets have not been replaced.
 
@@ -96,6 +102,10 @@ GitHub's upload-artifact creates the ZIP; do not wrap a prebuilt ZIP inside it.
   voice from the app when testing. It is not a replacement for the public installer.
 - Product/version resources are generated for all three own EXEs. Existing Qt
   ICU and EngineHost-resource checks still run before packaging.
+- Inno's padded product/version strings are normalized before signing; never
+  run metadata normalization on signed output. CI also silently installs the
+  resulting installer on its disposable runner and compares all three installed
+  EXEs with the build. It does not launch the GUI or download optional engines.
 - Test signatures must match the maintainer's exact certificate fingerprint.
   Only on the disposable GitHub runner, the verifier temporarily trusts that
   specific certificate in LocalMachine Root (avoiding CurrentUser consent UI),
