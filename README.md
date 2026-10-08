@@ -974,6 +974,12 @@ LocalText2Voice source code is released under the [MIT License](LICENSE).
 
 Third-party engines, models, voices, FFmpeg, Qt/PySide6, music files, and API providers keep their own licenses. Always check model cards and redistribution terms before publishing a packaged build.
 
+## Code signing policy
+
+SignPath Foundation onboarding is in progress using a test certificate.
+See our [Code signing policy](CODE_SIGNING.md). Test-signed CI artifacts are not
+public releases; existing installers have not been retroactively signed.
+
 ## Author
 
 Created by [Esteban](https://andromedanova.com) at [AndromedaNova.com](https://andromedanova.com).

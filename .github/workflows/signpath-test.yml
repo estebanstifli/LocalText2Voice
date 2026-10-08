@@ -1,0 +1,160 @@
+name: Windows SignPath test (never publishes releases)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sign_test:
+        description: 'Request TEST signatures (requires both ZIP configurations in SignPath)'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: signpath-test
+  cancel-in-progress: false
+
+jobs:
+  windows-test:
+    if: github.repository == 'estebanstifli/LocalText2Voice' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      LTV_DIST_ROOT: build\signpath-dist
+      LTV_PRESERVE_RUNTIME: '0'
+      LTV_PRESERVE_CONFIG: '0'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13.1'
+      - name: Prepare build environment
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create build environment' }
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt pytest
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install build dependencies' }
+          .\.venv\Scripts\python.exe -m pytest tests/test_signpath_packaging.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging tests failed' }
+      - name: Read application version
+        id: version
+        run: |
+          $version = .\.venv\Scripts\python.exe -c 'from tools.write_windows_version_info import app_version; print(app_version())'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read application version' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Download and verify upstream tools
+        run: |
+          .\.venv\Scripts\python.exe tools/ci/prepare_windows_assets.py
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream asset preparation failed' }
+          $inno = Join-Path $env:GITHUB_WORKSPACE '.util_instalador_y_firmas\InnoSetup'
+          $process = Start-Process -FilePath 'build\ci-assets\inno.exe' -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$inno`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+      - name: Build from source on this runner
+        run: |
+          cmd /c build_windows.bat
+          if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
+          New-Item -ItemType Directory -Path build/signpath-input/application -Force | Out-Null
+          foreach ($name in @('LocalText2Voice', 'LocalText2VoiceEngineHost', 'LocalText2VoiceMCP')) {
+            Copy-Item -LiteralPath "build/signpath-dist/LocalText2Voice/$name.exe" -Destination build/signpath-input/application
+          }
+          .\.venv\Scripts\python.exe -m pip freeze > build/signpath-input/build-dependencies.txt
+      - name: Upload unsigned application ZIP
+        id: unsigned_app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-application-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/signpath-input/application/*.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Test-sign project executables
+        if: inputs.sign_test
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: f18d1304-1b63-4ca0-afd7-847be5f5d3be
+          project-slug: LocalText2Voice
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: application-zip-v1
+          github-artifact-id: ${{ steps.unsigned_app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: build/signpath-signed/application
+          parameters: |
+            version: ${{ toJSON(steps.version.outputs.version) }}
+      - name: Verify and install signed application files into build
+        if: inputs.sign_test
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./tools/ci/verify_test_signatures.ps1 -Directory build/signpath-signed/application -Version $env:APP_VERSION
+          foreach ($name in @('LocalText2Voice', 'LocalText2VoiceEngineHost', 'LocalText2VoiceMCP')) {
+            Copy-Item -LiteralPath "build/signpath-signed/application/$name.exe" -Destination build/signpath-dist/LocalText2Voice -Force
+          }
+      - name: Build installer containing the application files
+        run: |
+          ./tools/build_windows_installer.ps1 -SkipAppBuild -DistRoot build/signpath-dist
+          New-Item -ItemType Directory -Path build/signpath-input/installer -Force | Out-Null
+          Copy-Item -LiteralPath .util_instalador_y_firmas/output/LocalText2Voice-Setup.exe -Destination build/signpath-input/installer
+      - name: Upload unsigned installer ZIP
+        id: unsigned_installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-installer-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/signpath-input/installer/LocalText2Voice-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Test-sign installer
+        if: inputs.sign_test
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: f18d1304-1b63-4ca0-afd7-847be5f5d3be
+          project-slug: LocalText2Voice
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: installer-zip-v1
+          github-artifact-id: ${{ steps.unsigned_installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: build/signpath-signed/installer
+          parameters: |
+            version: ${{ toJSON(steps.version.outputs.version) }}
+      - name: Verify signed installer and calculate final checksum
+        if: inputs.sign_test
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./tools/ci/verify_test_signatures.ps1 -Directory build/signpath-signed/installer -Version $env:APP_VERSION -Kind installer
+          $file = 'build/signpath-signed/installer/LocalText2Voice-Setup.exe'
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  LocalText2Voice-Setup.exe" | Set-Content -LiteralPath "$file.sha256" -Encoding ascii
+          'TEST CERTIFICATE ONLY. Not a public release. Do not distribute to users or install this certificate as a trusted root on user PCs. The Inno uninstaller is not signed by this first test workflow.' | Set-Content build/signpath-signed/installer/TEST-ONLY.txt
+      - name: Keep test-signed installer for review (not a GitHub release)
+        if: inputs.sign_test
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TEST-ONLY-signed-installer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/signpath-signed/installer/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Keep build provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signing-build-details-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/signpath-input/build-dependencies.txt
+            tools/ci/windows-assets.json
+            installer/signpath/*.xml
+          retention-days: 7

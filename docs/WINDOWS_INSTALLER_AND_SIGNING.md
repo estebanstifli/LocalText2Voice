@@ -17,6 +17,11 @@ This document records the current LocalText2Voice Windows installer setup so it 
 
 The installer is not signed yet.
 
+SignPath Foundation onboarding has now started with a test certificate. See
+[SignPath setup](SIGNPATH_SETUP.md) and the [Code signing policy](../CODE_SIGNING.md)
+for the isolated manual CI test workflow. Public releases remain unchanged until
+production signing has been reviewed and approved.
+
 ## Why the local tooling folder is ignored
 
 The Inno Setup installation and signing tooling are local build infrastructure. They may later contain certificate tooling, signing configuration, temporary build artifacts, and private signing experiments. They should not be committed.

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="LocalText2Voice.exe" product-name="LocalText2Voice" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="LocalText2VoiceEngineHost.exe" product-name="LocalText2Voice" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="LocalText2VoiceMCP.exe" product-name="LocalText2Voice" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

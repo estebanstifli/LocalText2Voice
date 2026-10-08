@@ -50,6 +50,8 @@ if /I "%PRESERVE_LOCAL_CONFIG%"=="1" if exist "%DIST_DIR%\config.json" (
 )
 
 echo Building portable application folder...
+".venv\Scripts\python.exe" tools\write_windows_version_info.py
+if errorlevel 1 goto :error
 ".venv\Scripts\python.exe" tools\run_pyinstaller.py ^
     --noconfirm ^
     --clean ^
@@ -57,6 +59,7 @@ echo Building portable application folder...
     --onedir ^
     --distpath "%DIST_ROOT%" ^
     --name LocalText2Voice ^
+    --version-file "%CD%\build\windows-version-info\LocalText2Voice.txt" ^
     --icon "assets\LocalText2Voice.ico" ^
     --paths "%CD%" ^
     --collect-data qtawesome ^
@@ -88,6 +91,7 @@ echo Building persistent engine host executable...
     --console ^
     --onefile ^
     --name LocalText2VoiceEngineHost ^
+    --version-file "%CD%\build\windows-version-info\LocalText2VoiceEngineHost.txt" ^
     --icon "%CD%\assets\LocalText2Voice.ico" ^
     --distpath "%DIST_DIR%" ^
     --workpath "build\LocalText2VoiceEngineHost" ^
@@ -120,6 +124,7 @@ echo Building MCP stdio server executable...
     --console ^
     --onefile ^
     --name LocalText2VoiceMCP ^
+    --version-file "%CD%\build\windows-version-info\LocalText2VoiceMCP.txt" ^
     --icon "%CD%\assets\LocalText2Voice.ico" ^
     --distpath "%DIST_DIR%" ^
     --workpath "build\LocalText2VoiceMCP" ^
