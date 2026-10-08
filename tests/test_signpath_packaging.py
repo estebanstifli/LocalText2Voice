@@ -71,6 +71,22 @@ def test_workflow_is_manual_test_only_and_does_not_publish():
         if "uses" in step:
             assert len(step["uses"].split("@")[1]) == 40
         assert "gh release" not in step.get("run", "")
+        if "verify_test_signatures.ps1" in step.get("run", ""):
+            assert step["timeout-minutes"] == "5"
+
+
+def test_certificate_trust_is_pinned_and_restricted_to_disposable_ci():
+    script = (ROOT / "tools/ci/verify_test_signatures.ps1").read_text()
+    assert "$env:GITHUB_ACTIONS -ne 'true'" in script
+    assert "$env:RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
+    assert "15C8F90D4432F333EF31C8C5C1DB02E4A91F1FE6" in script
+    assert "::new('Root', 'LocalMachine')" in script
+    assert "::new('Root', 'CurrentUser')" not in script
+    assert "$Certificate.Thumbprint -ne $Thumbprint" in script
+    assert "$Verified.Status -ne 'Valid'" in script
+    assert "$Verified.TimeStamperCertificate" in script
+    assert "finally {" in script
+    assert "$Store.Remove($Certificate)" in script
 
 
 def test_download_requires_matching_hash_and_cleans_temporary_file(tmp_path):

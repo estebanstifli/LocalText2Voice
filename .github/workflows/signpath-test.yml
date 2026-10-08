@@ -93,6 +93,7 @@ jobs:
             version: ${{ toJSON(steps.version.outputs.version) }}
       - name: Verify and install signed application files into build
         if: inputs.sign_test
+        timeout-minutes: 5
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -131,6 +132,7 @@ jobs:
             version: ${{ toJSON(steps.version.outputs.version) }}
       - name: Verify signed installer and calculate final checksum
         if: inputs.sign_test
+        timeout-minutes: 5
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
