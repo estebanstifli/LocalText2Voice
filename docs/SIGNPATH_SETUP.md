@@ -1,12 +1,34 @@
 # SignPath: first Windows test build
 
-Status: local integration prepared; **not yet validated by a SignPath signing run**.
-The production certificate is pending. This is not a production publishing workflow.
+Status (2026-10-08): **application test signing and Windows verification passed**;
+installer signing still needs investigation. The production certificate is pending.
+This is not a production publishing workflow.
 
-Local checks: 28 focused packaging/localization tests passed. A minimal real
+Local checks: 29 focused packaging/localization tests passed. A minimal real
 PyInstaller executable was built and run with ProductName `LocalText2Voice` and
-ProductVersion `2.2.0`. PowerShell parsing passed. A full GitHub-hosted build,
-SignPath authorization and signed-installer installation still need verification.
+ProductVersion `2.2.0`. PowerShell parsing passed. The complete unsigned build and
+Inno Setup compilation passed on GitHub-hosted Windows. Installation testing of
+the final signed installer is still pending.
+
+## First CI evidence
+
+- [Unsigned build 37816237453](https://github.com/estebanstifli/LocalText2Voice/actions/runs/37816237453): successful application and installer build.
+- [Signing build 37821098825](https://github.com/estebanstifli/LocalText2Voice/actions/runs/37821098825): all three application EXEs signed and verified by Windows, then installer built successfully. The installer signing request returned `Failed`.
+- [Successful application signing request](https://app.signpath.io/Web/f18d1304-1b63-4ca0-afd7-847be5f5d3be/SigningRequests/01b13947-8064-47fd-b2f8-20dfc51c4c3b).
+- [Installer request requiring its detailed error log](https://app.signpath.io/Web/f18d1304-1b63-4ca0-afd7-847be5f5d3be/SigningRequests/c168d1ad-c83a-4299-858d-078f90a186b9).
+
+The initial signing run 37818551155 also signed the EXEs successfully (request
+`5ec3d19c-dc68-4d51-951c-2d66b61fd5f0`) but was cancelled when its CurrentUser
+test-root trust step hung. The verifier now uses temporary LocalMachine trust
+on the disposable hosted runner, logs each stage, and has a five-minute step
+timeout. That correction passed in run 37821098825. No trust was added locally.
+
+The downloaded unsigned installer has the expected product/version, but Inno
+Setup pads its version-resource strings with spaces. The local verifier trims
+that padding. Whether SignPath's metadata restrictions caused the rejection is
+not yet confirmed; inspect the request log before changing the XML restrictions.
+The signing token and both configuration slugs were accepted. Public v2.2.0 and
+its release assets have not been replaced.
 
 ## Account configuration
 
@@ -76,7 +98,8 @@ GitHub's upload-artifact creates the ZIP; do not wrap a prebuilt ZIP inside it.
   ICU and EngineHost-resource checks still run before packaging.
 - Test signatures must match the maintainer's exact certificate fingerprint.
   Only on the disposable GitHub runner, the verifier temporarily trusts that
-  specific certificate, checks Windows Authenticode integrity and timestamp,
+  specific certificate in LocalMachine Root (avoiding CurrentUser consent UI),
+  checks Windows Authenticode integrity and timestamp,
   then removes the trust entry it added. It refuses to run on ordinary local PCs.
 - Returned files must exactly match the expected file list. Only the three own
   EXEs are copied back before packaging; no upstream binaries are signed.
@@ -85,7 +108,8 @@ GitHub's upload-artifact creates the ZIP; do not wrap a prebuilt ZIP inside it.
 
 ## Before production signing
 
-1. Finish a successful unsigned CI build and both test signing requests.
+1. Resolve the installer signing rejection and finish both test signing requests.
+   The unsigned CI build and application signing/verification have already passed.
 2. Add/test Inno Setup `SignedUninstaller` support. The first test workflow signs
    the application and outer installer only, not `unins*.exe` or Setup self-copies.
    Do not describe the current test as full installer/uninstaller coverage.

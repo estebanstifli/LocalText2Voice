@@ -83,6 +83,8 @@ def test_certificate_trust_is_pinned_and_restricted_to_disposable_ci():
     assert "::new('Root', 'LocalMachine')" in script
     assert "::new('Root', 'CurrentUser')" not in script
     assert "$Certificate.Thumbprint -ne $Thumbprint" in script
+    assert "$File.VersionInfo.ProductName.Trim() -ne 'LocalText2Voice'" in script
+    assert "$File.VersionInfo.ProductVersion.Trim() -ne $Version" in script
     assert "$Verified.Status -ne 'Valid'" in script
     assert "$Verified.TimeStamperCertificate" in script
     assert "finally {" in script

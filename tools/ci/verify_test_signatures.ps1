@@ -20,7 +20,8 @@ if ($Files.Count -ne $Names.Count) { throw 'Unexpected signed artifact contents.
 foreach ($Name in $Names) {
     Write-Output "Checking TEST artifact: $Name"
     $File = Get-Item -LiteralPath (Join-Path $Directory $Name)
-    if ($File.VersionInfo.ProductName -ne 'LocalText2Voice' -or
+    # Inno Setup reserves fixed-width version strings padded with spaces.
+    if ($File.VersionInfo.ProductName.Trim() -ne 'LocalText2Voice' -or
         $File.VersionInfo.ProductVersion.Trim() -ne $Version) {
         throw "Wrong product/version in $Name"
     }
