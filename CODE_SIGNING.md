@@ -5,9 +5,10 @@ Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 
 ## Current status
 
-The project has been accepted into the SignPath Foundation program. Integration
-is currently being validated with a **self-signed test certificate**. Production
-certificate issuance is pending SignPath's review. Previously published releases
+The project has been accepted into the SignPath Foundation program. Application
+and installer signing have been validated with a **self-signed test certificate**,
+including Windows signature verification and a CI installation smoke test.
+Production certificate issuance is pending SignPath's review. Previously published releases
 remain unsigned; this page does not claim that they have been signed retroactively.
 Test-signed files are CI artifacts, not public releases, and must not be distributed
 as trusted Windows installers. Do not install the test certificate as a trusted
