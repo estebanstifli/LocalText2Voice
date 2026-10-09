@@ -29,6 +29,7 @@ def project_window(parent):
         tr=lambda key, fallback, **kwargs: fallback.format(**kwargs),
     )
     window.audiobook_store.create_audiobook.return_value = book
+    window.audiobook_store.project_paths.return_value.root = parent / "My book"
     window.audiobook_store.save_audiobook_project.return_value = book
     window.audiobook_store.next_project_title.return_value = "My book"
     window._safe_project_folder_name = MainWindow._safe_project_folder_name

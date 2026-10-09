@@ -389,7 +389,7 @@ class AudiobookStoreTests(unittest.TestCase):
                 review_metrics,
             )
 
-    def test_rename_persists_title_without_moving_project_folder(self) -> None:
+    def test_rename_persists_title_and_moves_project_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             root = Path(temporary_name)
             store = AudiobookStore(root / "projects.sqlite3")
@@ -413,11 +413,13 @@ class AudiobookStoreTests(unittest.TestCase):
             renamed = store.rename_audiobook(project.id, "My Book")
 
             self.assertEqual(renamed.title, "My Book")
-            self.assertEqual(renamed.project_dir, project_dir)
+            self.assertEqual(renamed.project_dir, root / "My Book")
+            self.assertFalse(project_dir.exists())
+            self.assertEqual(renamed.output_dir, root / "My Book" / "exports")
             settings = json.loads(renamed.project_settings_json)
             self.assertEqual(settings["book_metadata"]["title"], "My Book")
             manifest = json.loads(
-                (project_dir / PROJECT_MANIFEST_NAME).read_text(encoding="utf-8")
+                (renamed.project_dir / PROJECT_MANIFEST_NAME).read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["title"], "My Book")
 

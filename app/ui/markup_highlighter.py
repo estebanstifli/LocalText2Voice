@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 
@@ -17,6 +19,7 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
         "chapter",
         "cmd",
         "emotion",
+        "vocal",
         "lang",
         "mark",
         "pause",
@@ -36,6 +39,7 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
         "chapter": "#2563eb",
         "cmd": "#c2410c",
         "emotion": "#be185d",
+        "vocal": "#be185d",
         "lang": "#0f766e",
         "mark": "#4b5563",
         "pause": "#92400e",
@@ -55,22 +59,41 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
         self._enabled = True
         self._corrector_enabled = True
         self._dark_mode = False
+        self._suspension_depth = 0
         self._set_theme_formats()
 
     def set_enabled(self, enabled: bool) -> None:
+        if self._enabled == enabled:
+            return
         self._enabled = enabled
-        self.rehighlight()
+        self._refresh_highlighting()
 
     def set_corrector_enabled(self, enabled: bool) -> None:
+        if self._corrector_enabled == enabled:
+            return
         self._corrector_enabled = enabled
-        self.rehighlight()
+        self._refresh_highlighting()
 
     def set_dark_mode(self, enabled: bool) -> None:
         if self._dark_mode == enabled:
             return
         self._dark_mode = enabled
         self._set_theme_formats()
-        self.rehighlight()
+        self._refresh_highlighting()
+
+    @contextmanager
+    def suspend_highlighting(self) -> Iterator[None]:
+        """Batch text/settings replacement and highlight only the final document."""
+        self._suspension_depth += 1
+        try:
+            yield
+        finally:
+            self._suspension_depth -= 1
+            self._refresh_highlighting()
+
+    def _refresh_highlighting(self) -> None:
+        if not self._suspension_depth:
+            self.rehighlight()
 
     def _set_theme_formats(self) -> None:
         if self._dark_mode:
@@ -98,6 +121,8 @@ class LTVMarkupHighlighter(QSyntaxHighlighter):
         )
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802 - Qt API name
+        if self._suspension_depth:
+            return
         self.setCurrentBlockState(0)
         if not self._enabled:
             return

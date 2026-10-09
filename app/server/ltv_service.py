@@ -32,7 +32,8 @@ from app.core.settings_manager import (
 )
 from app.core.subtitle_export import export_audiobook_subtitles
 from app.server.engine_host_config import ENGINE_HOST_ADDRESS, internal_engine_host_port
-from app.tts.base import BaseTTSEngine
+from app.tts.base import BaseTTSEngine, TTSCancelled
+from app.utils.atomic_audio import atomic_wav_output
 from app.tts.chatterbox_manager import ChatterboxManager
 from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
 from app.tts.f5_russian_manager import F5RussianManager
@@ -274,7 +275,12 @@ class LocalText2VoiceService:
         with self._synthesis_lock:
             engine = self._get_tts_engine(engine_id, log)
             log(f"Engine host regenerating one segment with cached {engine_id} engine.")
-            engine.synthesize_to_wav(content, destination, config)
+            def check_cancelled() -> None:
+                if engine.cancellation_requested():
+                    raise TTSCancelled("Generation cancelled.")
+
+            with atomic_wav_output(destination, check_cancelled) as temporary_wav:
+                engine.synthesize_to_wav(content, temporary_wav, config)
         if not destination.is_file() or destination.stat().st_size == 0:
             raise ValueError("TTS engine did not create a valid segment WAV file.")
         return destination
@@ -1412,21 +1418,20 @@ def public_settings_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
     """Return settings with secrets removed for tool responses."""
 
     snapshot = copy.deepcopy(settings)
-    server = snapshot.get("local_server")
-    if isinstance(server, dict) and server.get("auth_token"):
-        server["auth_token"] = "***"
-    api_tts = snapshot.get("api_tts")
-    if isinstance(api_tts, dict):
-        for provider in api_tts.values():
-            if isinstance(provider, dict) and provider.get("api_key"):
-                provider["api_key"] = "***"
-    for custom in snapshot.get("custom_tts_engines", []) or []:
-        if isinstance(custom, dict) and custom.get("api_key"):
-            custom["api_key"] = "***"
-    storyboard = snapshot.get("video_storyboard")
-    if isinstance(storyboard, dict):
-        for provider_name in ("litellm_image", "litellm"):
-            provider = storyboard.get(provider_name)
-            if isinstance(provider, dict) and provider.get("api_key"):
-                provider["api_key"] = "***"
+    def redact(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if (key.lower() in {"api_key", "auth_token", "access_token", "refresh_token",
+                                   "password", "secret", "s3_access_key", "s3_secret_key",
+                                   "temporary_storage_token"}
+                    or key.lower().endswith("_encrypted")):
+                    if item:
+                        value[key] = "***"
+                else:
+                    redact(item)
+        elif isinstance(value, list):
+            for item in value:
+                redact(item)
+
+    redact(snapshot)
     return json.loads(json.dumps(snapshot, default=str))

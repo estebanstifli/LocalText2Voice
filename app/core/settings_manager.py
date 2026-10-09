@@ -67,7 +67,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "base_dir": ".",
         "previous_roots": [],
     },
-    "output_dir": "output",
+    "output_dir": "exports",
+    "output_dir_mode": "relative",
     "save_next_to_source": False,
     "use_source_filename": False,
     "projects_dir": "projects",
@@ -1176,6 +1177,8 @@ class SettingsManager:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
                 raise ValueError("The configuration root must be a JSON object.")
+            from .project_output import output_preferences
+            loaded.update(output_preferences(loaded))
             return _migrate_settings(
                 _deep_merge(DEFAULT_SETTINGS, loaded),
                 _settings_version(loaded),
@@ -1185,6 +1188,8 @@ class SettingsManager:
 
     def save(self, values: dict[str, Any] | None = None) -> None:
         if values is not None:
+            from .project_output import output_preferences
+            values = {**values, **output_preferences(values)}
             normalized = _migrate_settings(_deep_merge(DEFAULT_SETTINGS, values))
         else:
             normalized = _migrate_settings(self.settings)

@@ -121,6 +121,7 @@ def configure_environment(cache_dir: str, deps_dir: str) -> None:
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(cache_path)
+    os.environ["HF_HUB_CACHE"] = str(cache_path / "hub")
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(cache_path / "hub")
     os.environ["TRANSFORMERS_CACHE"] = str(cache_path / "transformers")
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -642,6 +643,7 @@ class ChatterboxManager:
             [str(self.dependency_dir), env.get("PYTHONPATH", "")]
         )
         env["HF_HOME"] = str(self.cache_dir)
+        env["HF_HUB_CACHE"] = str(self.cache_dir / "hub")
         env["HUGGINGFACE_HUB_CACHE"] = str(self.cache_dir / "hub")
         env["TRANSFORMERS_CACHE"] = str(self.cache_dir / "transformers")
         runtime_paths = [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -57,11 +58,27 @@ class FakeGenerationService:
 class FakeSegmentEngine:
     def __init__(self) -> None:
         self.configurations: list[dict] = []
+        self.texts: list[str] = []
 
     def synthesize_to_wav(self, text, output_wav, voice_config):
         self.configurations.append(dict(voice_config))
-        Path(output_wav).write_bytes(f"audio:{text}".encode())
+        self.texts.append(text)
+        _write_test_wav(output_wav)
         return Path(output_wav)
+
+    def cancellation_requested(self):
+        return False
+
+
+def _write_test_wav(path):
+    with wave.open(str(path), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        audio.writeframes(b"\x00\x00" * 160)
+
+
+def _assert_test_wav(path):
+    with wave.open(str(path), "rb") as audio:
+        assert audio.getnframes() == 160
 
 
 def _settings(tmp_path: Path) -> SettingsManager:
@@ -121,6 +138,19 @@ def test_public_settings_redact_video_storyboard_api_keys(tmp_path):
     assert public["video_storyboard"]["litellm_image"]["api_key"] == "***"
     assert public["video_storyboard"]["litellm"]["api_key"] == "***"
     assert settings["video_storyboard"]["litellm_image"]["api_key"] == "image-secret"
+
+
+def test_public_settings_redact_nested_provider_credentials_without_mutation():
+    settings = {"video_storyboard": {"profiles": {
+        "litellm": {"litellm_video": {"api_key": "nested-secret", "model": "example"}},
+        "runpod": {"api_key_encrypted": "encrypted-secret", "temporary_storage_token": "token"},
+    }}, "providers": [{"auth_token": "auth-secret", "api_key": ""}]}
+    public = public_settings_snapshot(settings)
+    profiles = public["video_storyboard"]["profiles"]
+    assert profiles["litellm"]["litellm_video"] == {"api_key": "***", "model": "example"}
+    assert profiles["runpod"] == {"api_key_encrypted": "***", "temporary_storage_token": "***"}
+    assert public["providers"] == [{"auth_token": "***", "api_key": ""}]
+    assert settings["video_storyboard"]["profiles"]["runpod"]["api_key_encrypted"] == "encrypted-secret"
 
 
 def test_http_server_protects_non_health_endpoints(tmp_path):
@@ -249,7 +279,8 @@ def test_review_segment_synthesis_reuses_the_host_cached_engine(tmp_path):
     )
 
     assert result == output
-    assert output.read_bytes() == b"audio:Changed line."
+    _assert_test_wav(output)
+    assert engine.texts == ["Changed line."]
     service._get_tts_engine.assert_called_once()
     assert service._get_tts_engine.call_args.args[0] == "qwen"
     assert engine.configurations[0]["model"] == "base_1_7b"
@@ -261,7 +292,7 @@ def test_review_segment_worker_calls_engine_host_not_a_local_tts_engine(tmp_path
     temporary = tmp_path / "candidate.tmp.wav"
 
     def synthesize(payload):
-        Path(payload["output_wav"]).write_bytes(b"candidate")
+        _write_test_wav(payload["output_wav"])
         return {"output_wav": payload["output_wav"]}
 
     client.synthesize_review_segment.side_effect = synthesize
@@ -277,7 +308,7 @@ def test_review_segment_worker_calls_engine_host_not_a_local_tts_engine(tmp_path
 
     worker.run()
 
-    assert candidate.read_bytes() == b"candidate"
+    _assert_test_wav(candidate)
     assert not temporary.exists()
     assert completed == [(42, str(candidate))]
     assert client.synthesize_review_segment.call_args.args[0]["voice_config"]["engine"] == "qwen"
@@ -288,7 +319,7 @@ def test_automatic_retry_uses_engine_host_instead_of_loading_a_local_tts_engine(
     candidate = tmp_path / "candidates" / "retry_001.wav"
 
     def synthesize(payload):
-        Path(payload["output_wav"]).write_bytes(b"candidate")
+        _write_test_wav(payload["output_wav"])
         return {"output_wav": payload["output_wav"]}
 
     client.synthesize_review_segment.side_effect = synthesize
@@ -325,7 +356,7 @@ def test_automatic_retry_uses_engine_host_instead_of_loading_a_local_tts_engine(
         worker._regenerate_candidate(segment, candidate, 1)
 
     factory.assert_not_called()
-    assert candidate.read_bytes() == b"candidate"
+    _assert_test_wav(candidate)
     client.synthesize_review_segment.assert_called_once()
     payload = client.synthesize_review_segment.call_args.args[0]
     assert payload["voice_config"]["engine"] == "chatterbox"

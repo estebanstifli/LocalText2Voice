@@ -2956,6 +2956,8 @@ class AudioMixPreviewPanel(QWidget):
         )
 
     def _play_advanced_full_mix(self) -> None:
+        if getattr(self, "_playback_blocked", False):
+            return
         if self.context is None or self.voice_envelope is None:
             return
         play_position = self.cursor_seconds
@@ -3036,6 +3038,8 @@ class AudioMixPreviewPanel(QWidget):
             self._play_advanced_cached(play_position)
 
     def _play_advanced_cached(self, position_seconds: float | None = None) -> None:
+        if getattr(self, "_playback_blocked", False):
+            return
         if (
             self.advanced_full_render_path is None
             or not self.advanced_full_render_path.is_file()
@@ -3062,6 +3066,8 @@ class AudioMixPreviewPanel(QWidget):
         self._start_pending_player_playback()
 
     def _start_pending_player_playback(self) -> None:
+        if getattr(self, "_playback_blocked", False):
+            return
         if self.pending_player_start_position_ms is None:
             return
         if self.preview_player.mediaStatus() in (
@@ -3142,6 +3148,8 @@ class AudioMixPreviewPanel(QWidget):
         )
 
     def _play_cached_preview(self, position_seconds: float) -> None:
+        if getattr(self, "_playback_blocked", False):
+            return
         if self.preview_render_path is None or not self.preview_render_path.is_file():
             self._mark_preview_dirty(clear_cached_file=True)
             self._play_mix_from(position_seconds)
@@ -3165,6 +3173,8 @@ class AudioMixPreviewPanel(QWidget):
             self.preview_player.setSource(source)
 
         def start_playback() -> None:
+            if getattr(self, "_playback_blocked", False):
+                return
             self.preview_player.setPosition(round(play_position * 1000))
             self.preview_player.play()
 
@@ -3174,6 +3184,8 @@ class AudioMixPreviewPanel(QWidget):
         self._play_mix_from(self.cursor_seconds)
 
     def _play_mix_from(self, start_seconds: float) -> None:
+        if getattr(self, "_playback_blocked", False):
+            return
         if self.context is None:
             return
         self.advanced_playback_active = False
@@ -3446,7 +3458,7 @@ class AudioMixPreviewPanel(QWidget):
 
     def _stop_playback(self) -> None:
         self.preview_player.stop()
-        self.preview_player.setPosition(0)
+        self.preview_player.setSource(QUrl())
         self.pending_player_start_position_ms = None
         self.advanced_playback_active = False
         self.active_audio_event_uids = ()
@@ -3454,7 +3466,17 @@ class AudioMixPreviewPanel(QWidget):
         self.preview_start_seconds = 0.0
         self._set_shared_cursor(0.0)
 
+    def set_playback_blocked(self, blocked: bool) -> None:
+        self._playback_blocked = blocked
+        if blocked:
+            self.pending_advanced_full_play = False
+            self._stop_playback()
+        enabled = self.context is not None and self.voice_envelope is not None
+        self._set_playback_controls_enabled(enabled)
+        self._set_advanced_playback_controls_enabled(enabled)
+
     def _set_playback_controls_enabled(self, enabled: bool) -> None:
+        enabled = enabled and not getattr(self, "_playback_blocked", False)
         for button in (
             self.play_cursor_button,
             self.pause_button,
@@ -3463,6 +3485,7 @@ class AudioMixPreviewPanel(QWidget):
             button.setEnabled(enabled)
 
     def _set_advanced_playback_controls_enabled(self, enabled: bool) -> None:
+        enabled = enabled and not getattr(self, "_playback_blocked", False)
         for button in (
             self.advanced_play_button,
             self.advanced_pause_button,

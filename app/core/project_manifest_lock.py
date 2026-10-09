@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import weakref
+from functools import wraps
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,37 @@ _locks_guard = threading.Lock()
 _locks: weakref.WeakValueDictionary[str, threading.RLock] = (
     weakref.WeakValueDictionary()
 )
+_store_depth = threading.local()
+
+
+@contextmanager
+def store_operation_lock(db_path: Path) -> Iterator[None]:
+    """A reentrant, cross-process lock outside movable project directories."""
+    key = os.path.normcase(str(db_path.resolve()))
+    depths = getattr(_store_depth, "depths", None)
+    if depths is None:
+        depths = _store_depth.depths = {}
+    if depths.get(key, 0):
+        depths[key] += 1
+        try:
+            yield
+        finally:
+            depths[key] -= 1
+        return
+    with project_manifest_lock(db_path.parent / f".{db_path.name}.operations"):
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key)
+
+
+def serialized_project_operation(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with store_operation_lock(self.db_path):
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 @contextmanager

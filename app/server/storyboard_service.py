@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.audiobook_store import AudiobookStore
+from app.core.project_manifest_lock import store_operation_lock
 from app.core.video_storyboard_project import load_storyboard_state, save_storyboard_state, _atomic_json
 from app.core.video_storyboard_source import build_storyboard_narration_timeline
 from app.core.video_storyboard_styles import storyboard_styles
@@ -51,7 +52,7 @@ class StoryboardService:
     def call(self, operation, arguments):
         if not operation.startswith("sb_") or not callable(getattr(self, operation, None)):
             raise ValueError("Unknown storyboard operation")
-        with self.lock:
+        with self.lock, store_operation_lock(self.store.db_path):
             return public(getattr(self, operation)(**arguments))
 
     def book(self, project_id):
@@ -673,7 +674,8 @@ class StoryboardService:
     def job_path(self, project_id, job_id):
         if not job_id.isalnum():
             raise ValueError("Invalid job id")
-        return self.book(project_id).project_dir / "storyboard/jobs" / f"{job_id}.json"
+        book = self.book(project_id)
+        return self.store.project_paths(book.id).resolve(Path("storyboard/jobs") / f"{job_id}.json")
 
     def submit(self, project_id, expected_revision, operation, arguments, idempotency_key):
         book, state = self.read(project_id)

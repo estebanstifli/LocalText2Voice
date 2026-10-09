@@ -109,6 +109,7 @@ class LTVMarkupParser:
         "chapter",
         "cmd",
         "emotion",
+        "vocal",
         "lang",
         "mark",
         "pause",
@@ -269,9 +270,11 @@ class LTVMarkupParser:
             event = cls._parse_voice(modifier, args, raw, position)
         elif command == "emotion":
             from app.tts.indextts_emotions import emotion_preset
+            from app.tts.chatterbox_tags import emotion_name, turbo_emotion
 
             values = ([modifier] if modifier else []) + args
             try:
+                name = emotion_name(values[0]) if values else "off"
                 if values and values[0].casefold() == "custom":
                     if len(values) not in {2, 3} or not values[1].strip():
                         raise ValueError('Use {{emotion custom "Friendly and energetic" 90%}}.')
@@ -283,8 +286,24 @@ class LTVMarkupParser:
                 else:
                     if len(values) > 2:
                         raise ValueError('Use {{emotion sad 70%}}.')
-                    preset = emotion_preset(*(values or ["off"]))
-                event = LTVMarkupEvent("emotion", raw=raw, value=preset, position=position)
+                    # Validate intensity for Turbo-only styles as well as IndexTTS presets.
+                    try:
+                        preset = emotion_preset(*(values or ["off"]))
+                    except ValueError:
+                        if turbo_emotion(name) is None:
+                            raise
+                        preset = {"emo_alpha": emotion_preset("off", values[1] if len(values) == 2 else "1")["emo_alpha"]}
+                event = LTVMarkupEvent("emotion", raw=raw, value=preset,
+                                       attrs={"name": name}, position=position)
+            except ValueError as exc:
+                event = cls._warning(raw, position, str(exc))
+        elif command == "vocal":
+            from app.tts.chatterbox_tags import vocal_tag
+
+            try:
+                values = ([modifier] if modifier else []) + args
+                tag = vocal_tag(" ".join(values))
+                event = LTVMarkupEvent("vocal", raw=raw, value=tag, position=position)
             except ValueError as exc:
                 event = cls._warning(raw, position, str(exc))
         elif command == "speed":
@@ -1095,12 +1114,36 @@ class LTVMarkupCompiler:
                         pending_emotion = None
             elif event.type == "emotion":
                 flush_text()
-                if backend.casefold() == "indextts":
+                pending_emotion = None
+                if backend.casefold() == "indextts" and "emotion_mode" in event.value:
                     pending_emotion = dict(event.value)
+                elif backend.casefold() == "chatterbox":
+                    from app.tts.chatterbox_tags import turbo_emotion
+
+                    name = turbo_emotion(str(event.attrs.get("name", "off")))
+                    intensity = event.value.get("emo_alpha", 1)
+                    if name is not None:
+                        pending_emotion = {"chatterbox_emotion": name if intensity else "off"}
+                        if intensity not in {0, 1} and name != "off":
+                            warnings.append(f"Chatterbox Turbo has no emotion intensity control; percentage ignored: {event.raw}.")
+                    else:
+                        cls._ignore_backend_command(
+                            event, backend, ignored_commands, warnings,
+                            "no equivalent Chatterbox Turbo emotion; Custom requires IndexTTS",
+                        )
                 else:
                     cls._ignore_backend_command(
                         event, backend, ignored_commands, warnings,
-                        "emotion instructions require IndexTTS",
+                        "emotion is not supported by this engine",
+                    )
+            elif event.type == "vocal":
+                if backend.casefold() == "chatterbox":
+                    # Keep the event in the sentence, without consuming pending emotion.
+                    buffer.append(" " + str(event.value) + " ")
+                else:
+                    cls._ignore_backend_command(
+                        event, backend, ignored_commands, warnings,
+                        "vocal events require Chatterbox Turbo",
                     )
             elif event.type == "config_preset":
                 flush_text()

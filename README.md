@@ -31,7 +31,24 @@ LocalText2Voice is a free desktop app for long-form AI voice and video productio
 
 The workflow is designed for long projects: import or write a script, generate narration, review and correct segments, build an audio mix, then use Video Storyboard to plan scenes, generate visuals, assemble motion, and render a long-form MP4. Local engines keep data on the user's computer; cloud providers are optional and clearly configured.
 
-## What's New In 2.2.0: Voice Cloning And Emotions
+## What's New In 2.3.0: Expressive Speech And Safer Projects
+
+- **Chatterbox Turbo markup:** choose emotion/style tags and inline vocal events
+  such as `{{vocal laugh}}` or `{{vocal sigh}}` from the editor. These controls are
+  for Turbo's English model; intensity and Custom descriptions remain IndexTTS features.
+- **Qwen Base voice references:** reuse compatible catalog recordings with their
+  transcripts, keeping cloned references separate from CustomVoice preset speakers.
+- **Project folders that follow their names:** rename a project and its folder
+  together, with collision protection, updated asset paths and interruption recovery.
+  Export to a project-relative folder or a fixed absolute location.
+- **More reliable long projects:** safer WAV replacement, fewer Windows playback
+  file locks, background cache statistics and smoother project loading/highlighting.
+- **Signing preparation:** SignPath test signing has been validated. Production
+  signing is still pending; a test certificate is not a trusted release certificate.
+
+See the [2.3.0 release notes](docs/releases/v2.3.0.md) and [full changelog](CHANGELOG.md).
+
+### Voice Cloning And Emotions With IndexTTS
 
 Clone a voice from a reference recording and direct each passage with **IndexTTS-2.5**, including Spanish narration and CUDA/BF16 inference. Install the optional engine in **Settings → TTS Engines**; compatible WAV references from the voice catalog can be reused.
 
@@ -50,13 +67,12 @@ This passage keeps the emotion of the reference voice.
 
 Presets use fixed vectors without loading QwenEmotion. Custom descriptions are resolved together before narration: QwenEmotion loads once for missing descriptions, then exits before IndexTTS loads. The resulting vectors are saved with the segments and reused when regenerating them. Emotions are optional; without a local or general instruction, narration uses the reference voice's emotion.
 
-Choose emotions in the text editor's **Emotion** menu. IndexTTS settings contain voice, language and runtime options, with synthesis tuning under **Advanced settings**; emotion controls and sample testing live in the editor workflow.
+Choose emotions in the text editor's **Emotion → IndexTTS** menu. **Emotion → Chatterbox** also offers Turbo's ten emotion/style tags and nine inline vocal events (`{{vocal laugh}}`, `{{vocal sigh}}`, and more). Turbo requires English and uses native tags without a QwenEmotion preparation stage; emotion percentages and Custom descriptions remain IndexTTS features. Choosing a submenu does not switch engines. IndexTTS settings contain voice, language and runtime options, with synthesis tuning under **Advanced settings**; emotion controls and sample testing live in the editor workflow.
 
 See the [emotion markup guide](docs/LTV_MARKUP.md#emotions-indextts-25) and [IndexTTS setup, parameters and license](docs/INDEXTTS_2_5.md). The optional model has its own bilibili license and conditions.
 
-Also in this release: a fix for very short Chatterbox inputs, character-based
-generation estimates and configurable Qwen/Chatterbox chunk packing.
-See the [full changelog](CHANGELOG.md#220---2026-10-03).
+IndexTTS support was introduced in 2.2.0, alongside fixes for very short Chatterbox
+inputs, character-based estimates and configurable Qwen/Chatterbox chunk packing.
 
 ## See LocalText2Voice In Action
 
@@ -471,7 +487,9 @@ After generating clean narration, the Audio Mix page lets you produce a podcast-
 LocalText2Voice stores project data in SQLite and a portable project manifest:
 
 - Audiobook/project metadata.
-- Inline, persistent project names (`Project1`, `Project2`, ... by default) without renaming the physical project folder.
+- Inline project names (`Project1`, `Project2`, ... by default) also rename the containing folder using a filesystem-safe name. Existing folders are never overwritten: duplicate names receive a numbered suffix. To synchronize an older folder with its current title, edit the title and press Enter without changing it. Renaming requires idle project tasks and preserves project identity, internal asset paths and unsaved editor text, with recovery after interruption. Jobs for other projects and queued items in paused batches do not block the rename.
+- New path consumers can use `store.project_paths(project_id)` to resolve relative resources against the current directory in SQLite. This resolver follows renames without caching the folder name; external absolute paths remain supported. Legacy absolute references are still remapped during rename for compatibility.
+- **Settings > General > Output folder mode** selects a project-relative folder (default: `exports`) or an absolute folder. Both are editable; browsing outside the project switches to absolute mode. Existing external output locations are preserved when opening older projects. The separate “Save audio next to the imported document” option takes precedence during narration generation when enabled.
 - M4B book metadata, cover art, and named chapter markers; metadata/cover changes can be applied without rerunning TTS.
 - Automatic generated covers or normalized custom cover images, including per-book cover selection in Bulk Audiobooks.
 - Source text.

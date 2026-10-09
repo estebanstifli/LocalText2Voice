@@ -19,7 +19,14 @@ from typing import Any
 from app.utils.paths import app_data_root
 
 from .audio_library import SUPPORTED_AUDIO_EXTENSIONS, resolve_audio_reference
-from .project_manifest_lock import project_manifest_lock
+from .project_manifest_lock import (
+    project_manifest_lock,
+    serialized_project_operation,
+    store_operation_lock,
+)
+from .project_rename import recover_project_rename, rename_project
+from .project_paths import ProjectPaths
+from .project_output import output_preferences, resolve_project_output
 from .text_processor import TextChunk
 
 CURRENT_DB_SCHEMA_VERSION = 6
@@ -130,6 +137,8 @@ class AudiobookStore:
         self._manifest_deferrals: dict[int | None, int] = {}
         self._deferred_projects: set[int] = set()
         self._ensure_schema()
+        with store_operation_lock(self.db_path):
+            recover_project_rename(self)
 
     @contextmanager
     def defer_project_manifests(
@@ -176,6 +185,7 @@ class AudiobookStore:
             or self._manifest_deferrals.get(audiobook_id)
         )
 
+    @serialized_project_operation
     def flush_project_manifest(self, audiobook_id: int, *, force: bool = False) -> None:
         audiobook = self.get_audiobook(audiobook_id)
         if audiobook is None:
@@ -183,6 +193,7 @@ class AudiobookStore:
         with project_manifest_lock(audiobook.project_dir):
             self._publish_project_manifest(audiobook, force=force)
 
+    @serialized_project_operation
     def open_project_manifest(self, manifest_path: Path) -> StoredAudiobook:
         """Reopen a known local project without replacing newer committed progress."""
         content = manifest_path.read_text(encoding="utf-8-sig")
@@ -280,6 +291,19 @@ class AudiobookStore:
         self._write_project_manifest(audiobook)
         return audiobook
 
+    def project_paths(self, audiobook_id: int) -> ProjectPaths:
+        """Resolve the current location by ID without retaining a stale book snapshot."""
+        return ProjectPaths(lambda: self._project_locations(audiobook_id))
+
+    def _project_locations(self, audiobook_id: int) -> tuple[Path, Path]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT project_dir, output_dir FROM audiobooks WHERE id = ?", (audiobook_id,)
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Audiobook project not found: {audiobook_id}")
+        return Path(row["project_dir"]), Path(row["output_dir"])
+
     def get_audiobook(self, audiobook_id: int | None) -> StoredAudiobook | None:
         if audiobook_id is None:
             return None
@@ -365,28 +389,31 @@ class AudiobookStore:
         self._write_project_manifest(audiobook)
         return audiobook
 
+    @serialized_project_operation
     def rename_audiobook(self, audiobook_id: int, title: str) -> StoredAudiobook:
         title = str(title).strip()
         if not title:
             raise ValueError("Project name cannot be empty.")
-        audiobook = self.get_audiobook(audiobook_id)
-        if audiobook is None:
-            raise ValueError(f"Audiobook project not found: {audiobook_id}")
-        settings = self._json_to_dict(audiobook.project_settings_json)
-        book = settings.get("book_metadata", {})
-        if isinstance(book, dict) and bool(book.get("title_follows_project", True)):
-            book = dict(book)
-            book["title"] = title
-            settings["book_metadata"] = book
+        return rename_project(self, audiobook_id, title)
+
+    @serialized_project_operation
+    def update_project_output(self, audiobook_id: int, preferences: dict) -> StoredAudiobook:
+        """Persist output preferences without saving or replacing unsaved source text."""
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE audiobooks SET title = ?, project_settings_json = ?, updated_at = ? WHERE id = ?",
-                (title, json.dumps(settings, ensure_ascii=False), self._now(), audiobook_id),
-            )
-        result = self.get_audiobook(audiobook_id)
-        assert result is not None
-        self._write_project_manifest(result)
-        return result
+            row = connection.execute("SELECT project_dir, project_settings_json FROM audiobooks WHERE id = ?", (audiobook_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Audiobook project not found: {audiobook_id}")
+            root = Path(row["project_dir"])
+            preferences = output_preferences(preferences, root)
+            output = resolve_project_output(preferences, root)
+            settings = self._json_to_dict(row["project_settings_json"])
+            settings.update(preferences)
+            connection.execute("UPDATE audiobooks SET output_dir = ?, project_settings_json = ?, updated_at = ? WHERE id = ?",
+                               (str(output), json.dumps(settings, ensure_ascii=False), self._now(), audiobook_id))
+        book = self.get_audiobook(audiobook_id)
+        assert book is not None
+        self._write_project_manifest(book)
+        return book
 
     def update_project_settings(
         self, audiobook_id: int, project_settings: dict[str, Any]

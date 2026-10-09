@@ -316,7 +316,15 @@ class MainWindowUITests(unittest.TestCase):
 
         window = MainWindow()
         self.addCleanup(window.deleteLater)
-        actions = window.markup_emotion_menu.actions()
+        submenus = [action.menu() for action in window.markup_emotion_menu.actions()]
+        for submenu in submenus:
+            submenu.ensurePolished()
+            self.assertTrue(submenu.sizeHint().isValid())
+        menus = window.markup_emotion_menu.actions()
+        self.assertIsNotNone(window._markup_command_by_name("vocal"))
+        self.assertFalse(any(button.text() == "Vocal" for button in window.findChildren(QPushButton)))
+        self.assertEqual([action.text() for action in menus], ["Chatterbox", "IndexTTS"])
+        actions = menus[1].menu().actions()
         self.assertEqual([a.data() for a in actions], [*EMOTION_PRESETS, "off", "custom"])
         for action in actions[:-1]:
             window.text_editor.clear()
@@ -326,6 +334,14 @@ class MainWindowUITests(unittest.TestCase):
         actions[-1].trigger()
         window.text_editor.insertPlainText("Simpática y enérgica")
         self.assertEqual(window.text_editor.toPlainText(), '{{emotion custom "Simpática y enérgica"}}')
+        from app.tts.chatterbox_tags import EMOTION_TAGS, VOCAL_TAGS
+        turbo_actions = [a for a in menus[0].menu().actions() if not a.isSeparator()]
+        self.assertEqual([a.data() for a in turbo_actions], [*EMOTION_TAGS, "off", *VOCAL_TAGS])
+        for action in turbo_actions:
+            window.text_editor.clear()
+            action.trigger()
+            kind = "vocal" if action.data() in VOCAL_TAGS else "emotion"
+            self.assertEqual(window.text_editor.toPlainText(), "{{" + kind + " " + action.data() + "}}")
 
     def test_markup_play_menu_inserts_the_selected_library_asset(self) -> None:
         window = MainWindow()

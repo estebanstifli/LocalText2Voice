@@ -409,7 +409,8 @@ class TextProcessor:
 
     @staticmethod
     def _split_by_words(text: str, max_chars: int) -> list[str]:
-        words = text.split()
+        # Keep Turbo's only multiword native token intact at chunk boundaries.
+        words = re.findall(r"\[clear throat\]|\S+", text)
         pieces: list[str] = []
         current = ""
 

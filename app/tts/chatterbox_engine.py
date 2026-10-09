@@ -11,6 +11,7 @@ from app.utils.paths import resolve_large_asset_path
 
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
 from .chatterbox_manager import ChatterboxManager
+from .chatterbox_tags import prepare_text
 
 
 class ChatterboxTTSEngine(BaseTTSEngine):
@@ -60,6 +61,10 @@ class ChatterboxTTSEngine(BaseTTSEngine):
         if self._cancel_requested.is_set():
             raise TTSCancelled("Generation cancelled.")
 
+        text = prepare_text(text, voice_config, self.log_callback)
+        if not text.strip():
+            raise TTSEngineError("No speakable text remains; vocal events require Chatterbox Turbo.")
+
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         process = self._ensure_worker(voice_config)
         request_id = self._next_request_id()
@@ -74,8 +79,8 @@ class ChatterboxTTSEngine(BaseTTSEngine):
                 "reference_audio_path": str(
                     voice_config.get("reference_audio_path", "")
                 ).strip(),
-                "exaggeration": float(voice_config.get("exaggeration", 0.5)),
-                "cfg_weight": float(voice_config.get("cfg_weight", 0.5)),
+                "exaggeration": 0.0 if voice_config.get("model") == "turbo" else float(voice_config.get("exaggeration", 0.5)),
+                "cfg_weight": 0.0 if voice_config.get("model") == "turbo" else float(voice_config.get("cfg_weight", 0.5)),
             },
         )
         self._wait_for_response(process, request_id)

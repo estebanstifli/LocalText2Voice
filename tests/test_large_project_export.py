@@ -421,13 +421,14 @@ def test_large_silence_creation_can_be_cancelled(project, tmp_path):
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_pipeline_interruption_keeps_the_last_committed_speech(
+def test_pipeline_interruption_preserves_published_audio(
     project, tmp_path, ffmpeg, cancel
 ):
     from app.core.audio_pipeline import AudioPipelineError
     from app.tts.base import TTSEngineError
 
     store, book, _, _, _ = project
+    previous_audio = Path(store.list_segments(book.id)[0].wav_path).read_bytes()
 
     class InterruptedEngine(FakeTTSEngine):
         def synthesize_to_wav(self, text, output_wav, voice_config):
@@ -448,9 +449,13 @@ def test_pipeline_interruption_keeps_the_last_committed_speech(
     with pytest.raises(GenerationCancelled if cancel else AudioPipelineError):
         pipeline.generate("A book", options)
     manifest = read_manifest(book)
-    assert manifest["segments"][0]["status"] == "rendered"
+    # Cancellation inside synthesis precedes atomic publication. The old WAV
+    # survives, but the newly requested speech must not be marked as rendered.
+    assert manifest["segments"][0]["status"] == ("failed" if cancel else "rendered")
     assert manifest["segments"][1]["status"] == ("pending" if cancel else "failed")
     assert Path(store.list_segments(book.id)[0].wav_path).is_file()
+    if cancel:
+        assert Path(store.list_segments(book.id)[0].wav_path).read_bytes() == previous_audio
 
 
 def test_progress_uses_stage_clock_and_throttles_updates():

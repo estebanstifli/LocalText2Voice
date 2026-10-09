@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.core.storyboard_provider_label import active_provider_label
+from app.core.project_rename import relocate_markup, relocate_paths, safe_project_folder_name
+from app.core.project_output import output_preferences, resolve_project_output
 
 import hashlib
 import math
@@ -12,7 +14,6 @@ import sys
 import tempfile
 import threading
 import time
-import unicodedata
 import wave
 from copy import deepcopy
 from dataclasses import replace
@@ -20,7 +21,7 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QSize, QThread, QTimer, Qt, Slot
+from PySide6.QtCore import QSignalBlocker, QSize, QThread, QTimer, Qt, Slot
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -264,6 +265,8 @@ from .book_properties_dialog import BookPropertiesDialog
 from .clone_voice_dialog import CloneVoiceDialog
 from .icons import ICON_LIGHT, ui_icon
 from .markup_highlighter import LTVMarkupHighlighter
+from .wav_cache_stats import WavCacheStatsController
+from app.core.wav_cache_stats import WavCacheStats, directory_file_stats, temporary_audio_directories
 from .theme import DARK_THEME, DARK_THEME_STYLESHEET, normalize_theme, theme_palette
 from .voice_manager_dialog import VoiceManagerDialog
 from .widgets import FilePicker, LogView, PathPicker
@@ -349,7 +352,16 @@ MARKUP_COMMANDS: tuple[dict[str, str], ...] = (
         "cursor": "{{emotion ",
         "color": "#be185d",
         "background": "#fdf2f8",
-        "help": 'IndexTTS emotion for the next segment. Presets: happy, sad, angry, disgust, fear, surprise, calm, melancholic. Examples: {{emotion tristeza 70%}}, {{emotion off}}, {{emotion custom "Friendly and energetic" 90%}}. Intensity: 0–1 or 0%–100%. Off uses the voice reference. Custom descriptions are converted to vectors together before speech synthesis; QwenEmotion is then unloaded.',
+        "help": 'Choose IndexTTS presets or Custom, or Chatterbox Turbo emotions, styles and vocal events. Emotion applies to the next segment; vocal inserts a sound at the cursor. Turbo uses English tags and does not support intensity percentages or Custom descriptions. Examples: {{emotion happy}}, {{emotion whispering}}, {{vocal laugh}}, {{emotion off}}.',
+    },
+    {
+        "name": "vocal",
+        "label": "Vocal",
+        "template": "{{vocal laugh}}",
+        "cursor": "{{vocal ",
+        "color": "#be185d",
+        "background": "#fdf2f8",
+        "help": 'Chatterbox Turbo (English) vocal sound at this position. Choose it from Emotion > Chatterbox. Values: clear_throat, sigh, shush, cough, groan, sniff, gasp, chuckle, laugh. Example: Hello {{vocal chuckle}} there.',
     },
     {
         "name": "play",
@@ -914,6 +926,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         )
         self.voice_gallery_manager.ensure_seed_loaded()
         self.audiobook_store = AudiobookStore()
+        self.wav_cache_stats_controller = WavCacheStatsController(self)
+        self.wav_cache_stats_controller.ready.connect(self._apply_wav_cache_stats)
+        self.wav_cache_stats_controller.busy.connect(self._wav_cache_stats_busy)
+        self.wav_cache_stats_controller.failed.connect(self._wav_cache_stats_failed)
         self._draft_project_title = self.audiobook_store.next_project_title()
         self.bulk_audiobook_store = BulkAudiobookStore()
         self.bulk_audiobook_worker: BulkAudiobookWorker | None = None
@@ -1875,6 +1891,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             "border-radius: 4px; background: rgba(148,163,184,0.08); }"
         )
         self.project_title_edit.editingFinished.connect(self._commit_project_title)
+        self.project_title_edit.returnPressed.connect(
+            lambda: self._commit_project_title(sync_folder=True)
+        )
         header_layout.addWidget(self.project_title_edit)
         self.project_rename_button = QPushButton()
         self.project_rename_button.setFlat(True)
@@ -2000,6 +2019,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         intro.setObjectName("helperLabel")
         layout.addWidget(intro)
         for command in MARKUP_COMMANDS:
+            if command["name"] == "vocal":
+                continue  # Available inside Emotion > Chatterbox, with context help.
             if command["name"] == "voice":
                 layout.addWidget(self._build_markup_voice_button(command))
                 continue
@@ -2024,6 +2045,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     def _build_markup_emotion_button(self, command: dict[str, str]) -> QPushButton:
         from app.tts.indextts_emotions import EMOTION_PRESETS
+        from app.tts.chatterbox_tags import EMOTION_TAGS, VOCAL_TAGS
 
         button = QPushButton(self.tr("markup_emotion_label", "Emotion"))
         button.setObjectName("markupCommandButton")
@@ -2031,9 +2053,28 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._style_markup_command_button(button, command)
         button.setToolTip(self.tr(
             "markup_emotion_help",
-            "IndexTTS only: direct the next passage with a preset or Custom description. Intensity: 0–100%. Off uses the reference voice's expression. Custom descriptions are prepared before narration.",
-        ) + '\n{{emotion sad 70%}}\n{{emotion custom "Friendly and energetic" 90%}}\n{{emotion off}}')
+            "Choose a menu by engine. IndexTTS: presets, intensity and Custom. Chatterbox Turbo (English): emotions, styles and vocal events; no intensity or Custom. Choosing a menu does not switch the active engine.",
+        ) + '\n{{emotion happy}}\n{{emotion whispering}}\n{{vocal laugh}}\n{{emotion custom "Friendly and energetic" 90%}}')
         menu = QMenu(button)
+        chatterbox_menu = QMenu("Chatterbox", menu)
+        menu.addMenu(chatterbox_menu)
+        chatterbox_menu.setToolTipsVisible(True)
+        chatterbox_menu.addSection(f"Turbo · {self.tr('language_english')}")
+        for name in [*EMOTION_TAGS, "off", *VOCAL_TAGS]:
+            if name == VOCAL_TAGS[0]:
+                chatterbox_menu.addSeparator()
+            kind = "vocal" if name in VOCAL_TAGS else "emotion"
+            template = "{{" + kind + " " + name + "}}"
+            label = self.tr("indextts_emotion_off", "Off") if name == "off" else "[" + name.replace("_", " ") + "]"
+            action = chatterbox_menu.addAction(label)
+            action.setData(name)
+            action.setToolTip(template)
+            item = {**command, "template": template, "cursor": template}
+            action.triggered.connect(
+                lambda _checked=False, entry=item: self._insert_markup_template(entry)
+            )
+        indextts_menu = QMenu("IndexTTS", menu)
+        menu.addMenu(indextts_menu)
         emotion_keys = {"fear": "afraid", "disgust": "disgusted", "surprise": "surprised"}
         for name in [*EMOTION_PRESETS, "off", "custom"]:
             key = emotion_keys.get(name, name)
@@ -2047,13 +2088,14 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 "template": template,
                 "cursor": '{{emotion custom "' if name == "custom" else template,
             }
-            action = menu.addAction(label)
+            action = indextts_menu.addAction(label)
             action.setData(name)
             action.triggered.connect(
                 lambda _checked=False, entry=item: self._insert_markup_template(entry)
             )
         button.setMenu(menu)
         self.markup_emotion_menu = menu
+        self.markup_emotion_submenus = (chatterbox_menu, indextts_menu)
         self.markup_emotion_menu_button = button
         return button
 
@@ -2784,7 +2826,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             return
         QToolTip.showText(
             self.text_editor.mapToGlobal(self.text_editor.cursorRect().bottomRight()),
-            self._markup_help_card(f"{{{{{command['name']}}}}}", command["help"]),
+            self._markup_help_card(
+                f"{{{{{command['name']}}}}}",
+                self.tr(f"markup_{command['name']}_help", command["help"]),
+            ),
             self.text_editor,
         )
 
@@ -3824,7 +3869,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             ),
             "settings",
         )
-        self._refresh_wav_cache_stats()
+        self._refresh_wav_cache_stats(force=False)
 
     def _show_gpu_settings(self, _checked: bool = False) -> None:
         self._show_settings_page()
@@ -5164,7 +5209,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             else None
         )
         root = (
-            audiobook.project_dir / "storyboard"
+            self.audiobook_store.project_paths(audiobook.id).resolve("storyboard")
             if audiobook is not None
             else app_data_root() / "storyboards" / "draft"
         )
@@ -5177,7 +5222,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             else None
         )
         root = (
-            audiobook.project_dir / "storyboard"
+            self.audiobook_store.project_paths(audiobook.id).resolve("storyboard")
             if audiobook is not None
             else app_data_root() / "storyboards" / "draft"
         )
@@ -12001,11 +12046,20 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self._set_markup_corrector_enabled
         )
 
-        output_path = str(resolve_app_path(self.settings.get("output_dir", "output")))
+        preferences = output_preferences(self.settings)
+        output_path = preferences["output_dir"]
+        self.output_mode_combo = QComboBox()
+        self.output_mode_combo.addItem(self.tr("output_relative", "Relative to project folder"), "relative")
+        self.output_mode_combo.addItem(self.tr("output_absolute", "Absolute folder"), "absolute")
+        self.output_mode_combo.setCurrentIndex(0 if preferences["output_dir_mode"] == "relative" else 1)
         self.output_picker = PathPicker(
             self.tr("browse", "Browse"),
             output_path,
         )
+        self.output_picker.browse_button.clicked.disconnect()
+        self.output_picker.browse_button.clicked.connect(self._browse_output_folder)
+        self.output_mode_combo.currentIndexChanged.connect(self._on_output_mode_changed)
+        self.output_picker.path_edit.editingFinished.connect(self._commit_output_preferences)
         self.save_next_to_source_checkbox = QCheckBox(
             self.tr("save_next_to_source", "Save audio next to the imported document")
         )
@@ -12051,6 +12105,13 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.tr("output_folder", "Output folder"),
             self.output_picker,
         )
+        narration_form.insertRow(narration_form.rowCount() - 1,
+            self.tr("output_folder_mode", "Output folder mode"), self.output_mode_combo)
+        output_help = QLabel(self.tr(
+            "output_folder_help", "Relative paths (for example exports or audio/final) follow the project when it is renamed."))
+        output_help.setWordWrap(True)
+        output_help.setObjectName("helperLabel")
+        narration_form.addRow("", output_help)
         narration_form.addRow("", self.save_next_to_source_checkbox)
         narration_form.addRow("", self.use_source_filename_checkbox)
         narration_form.addRow("", self.normalize_checkbox)
@@ -13956,6 +14017,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         rows: list[dict[str, object]],
     ) -> list[dict[str, object]]:
         gallery_voices = self.voice_gallery_manager.list_voices(engine_id)
+        if engine_id == "qwen" and self._qwen_model_kind() != "voice_clone":
+            gallery_voices = [voice for voice in gallery_voices if not voice.is_reference_audio]
         matched: set[str] = set()
         merged: list[dict[str, object]] = []
         for row in rows:
@@ -15345,6 +15408,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._mark_normalization_preview_stale()
 
     def _restore_settings_widgets(self) -> None:
+        preferences = output_preferences(self.settings)
+        with QSignalBlocker(self.output_mode_combo), QSignalBlocker(self.output_picker):
+            self.output_mode_combo.setCurrentIndex(0 if preferences["output_dir_mode"] == "relative" else 1)
+            self.output_picker.set_path(preferences["output_dir"])
         self.projects_picker.set_path(self._default_project_parent())
         self._ensure_default_music_selection()
         self.gpu_device_selection = configure_gpu_device(
@@ -15978,17 +16045,31 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
         return audiobook or self.audiobook_store.latest_audiobook()
 
-    def _refresh_wav_cache_stats(self) -> None:
+    def _refresh_wav_cache_stats(self, *, force: bool = True) -> None:
         if not hasattr(self, "wav_cache_stats_label"):
             return
-        current = self._current_audiobook()
-        current_count, current_bytes = (
-            self.audiobook_store.segment_wav_cache_stats(current.id)
-            if current is not None
-            else (0, 0)
+        self.wav_cache_stats_controller.request(
+            self.audiobook_store,
+            self.current_audiobook_id,
+            Path(tempfile.gettempdir()),
+            self._active_temp_audio_dirs(),
+            force=force,
         )
-        all_count, all_bytes = self.audiobook_store.segment_wav_cache_stats()
-        temp_count, temp_bytes = self._temp_audio_cache_stats()
+
+    def _wav_cache_stats_busy(self) -> None:
+        self.wav_cache_stats_label.setText(self.tr("calculating", "Calculating..."))
+        self.cleanup_current_wavs_button.setEnabled(False)
+        self.cleanup_all_wavs_button.setEnabled(False)
+        self.cleanup_temp_audio_button.setEnabled(False)
+
+    def _wav_cache_stats_failed(self, message: str) -> None:
+        self.wav_cache_stats_label.setText(f'{self.tr("error", "Error")}: {message}')
+        self.log_view.append_event(f"Could not calculate WAV cache statistics: {message}")
+
+    def _apply_wav_cache_stats(self, stats: WavCacheStats) -> None:
+        current_count, current_bytes = stats.current
+        all_count, all_bytes = stats.all_projects
+        temp_count, temp_bytes = stats.temporary
         self.wav_cache_stats_label.setText(
             self.tr(
                 "wav_cache_stats",
@@ -16161,49 +16242,18 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         return count, size
 
     def _temp_audio_cache_dirs(self) -> list[Path]:
-        temp_root = Path(tempfile.gettempdir())
-        active_dirs: set[Path] = set()
+        return temporary_audio_directories(
+            Path(tempfile.gettempdir()), self._active_temp_audio_dirs()
+        )
+
+    def _active_temp_audio_dirs(self) -> tuple[Path, ...]:
         if hasattr(self, "audio_mix_preview_panel"):
-            try:
-                active_dirs.add(
-                    Path(self.audio_mix_preview_panel.temp_dir.name).resolve()
-                )
-            except OSError:
-                pass
-        directories: list[Path] = []
-        try:
-            children = list(temp_root.iterdir())
-        except OSError:
-            return []
-        for child in children:
-            if not child.is_dir():
-                continue
-            if not child.name.startswith("local_text_2_voice_"):
-                continue
-            try:
-                resolved = child.resolve()
-            except OSError:
-                continue
-            if resolved in active_dirs:
-                continue
-            directories.append(child)
-        return sorted(directories)
+            return (Path(self.audio_mix_preview_panel.temp_dir.name),)
+        return ()
 
     @staticmethod
     def _directory_file_stats(directory: Path) -> tuple[int, int]:
-        count = 0
-        size = 0
-        try:
-            files = [path for path in directory.rglob("*") if path.is_file()]
-        except OSError:
-            return 0, 0
-        for path in files:
-            try:
-                size += path.stat().st_size
-            except OSError:
-                continue
-            count += 1
-        return count, size
+        return directory_file_stats(directory)
 
     def _delete_temp_audio_cache_dirs(self, directories: list[Path]) -> tuple[int, int]:
         count = 0
@@ -16237,7 +16287,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.project_title_edit.setFocus()
         self.project_title_edit.selectAll()
 
-    def _commit_project_title(self) -> None:
+    def _commit_project_title(self, *, sync_folder: bool = False) -> None:
         if not hasattr(self, "project_title_edit"):
             return
         previous = self._current_project_title()
@@ -16245,9 +16295,18 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         if not title:
             self.project_title_edit.setText(previous)
             return
+        current = self.audiobook_store.get_audiobook(self.current_audiobook_id)
         if title == previous:
-            return
+            if not sync_folder:
+                return
+            expected = safe_project_folder_name(title)
+            if current is None or re.fullmatch(re.escape(expected) + r"(?: \(\d+\))?", current.project_dir.name, re.IGNORECASE):
+                return
+        original_settings = deepcopy(self.settings)
         try:
+            if current is not None:
+                self._check_project_rename_idle()
+                self._release_audio_previews()
             book = book_metadata_from_settings(self.settings, previous)
             if bool(book.get("title_follows_project", True)):
                 book["title"] = title
@@ -16257,6 +16316,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 audiobook = self.audiobook_store.rename_audiobook(
                     self.current_audiobook_id, title
                 )
+                self._refresh_renamed_project_paths(current.project_dir, audiobook)
                 stored_settings = json.loads(audiobook.project_settings_json or "{}")
                 if isinstance(stored_settings, dict):
                     stored_book = book_metadata_from_settings(stored_settings, title)
@@ -16290,8 +16350,90 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 self.tr("project_renamed", "Project renamed: {title}", title=title)
             )
         except Exception as exc:
-            self.project_title_edit.setText(previous)
+            actual = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+            if actual is not None and current is not None and actual.project_dir != current.project_dir:
+                self._refresh_renamed_project_paths(current.project_dir, actual)
+                self.settings_manager.save(self.settings)
+            elif actual is None or actual.title == previous:
+                self.settings = original_settings
+                self.settings_manager.settings = self.settings
+            self.project_title_edit.setText(actual.title if actual else previous)
             self._show_error(self.tr("rename_project", "Rename project"), str(exc))
+
+    def _check_project_rename_idle(self) -> None:
+        names = (
+            "verification_thread", "asset_storage_thread", "whisper_thread",
+            "video_storyboard_planner_thread", "video_storyboard_frame_thread",
+            "video_storyboard_image_edit_thread", "video_storyboard_video_thread",
+            "video_storyboard_render_thread",
+        )
+        preview = self.audio_mix_preview_panel
+        review_segment = self._selected_review_segment() if hasattr(self, "review_source_detail") else None
+        pending_review_text = review_segment is not None and self.review_source_detail.toPlainText().strip() != review_segment.source_text.strip()
+        busy = self._project_audio_write_in_progress() or any(
+            getattr(self, name, None) is not None for name in names
+        ) or any(getattr(preview, name, None) is not None for name in (
+            "waveform_thread", "sfx_waveform_thread", "render_thread",
+        )) or pending_review_text or bool(preview.dirty_event_uids) or any(dialog.isVisible() for dialog in self.findChildren(QDialog))
+        if busy:
+            raise RuntimeError(self.tr(
+                "project_rename_busy",
+                "Finish active tasks, save pending mix or review edits and close project dialogs before renaming the project.",
+            ))
+
+    def _refresh_renamed_project_paths(self, old_dir: Path, audiobook) -> None:
+        new_dir = audiobook.project_dir
+        absolute_output = self.settings.get("output_dir") if self.settings.get("output_dir_mode") == "absolute" else None
+        self.settings = relocate_paths(self.settings, old_dir, new_dir)
+        if absolute_output is not None:
+            self.settings["output_dir"] = absolute_output
+        self.settings_manager.settings = self.settings
+        for editor in (self.text_editor, self.normalized_text_editor):
+            text = editor.toPlainText()
+            updated = relocate_markup(text, old_dir, new_dir)
+            if updated != text:
+                cursor = editor.textCursor()
+                position = cursor.position()
+                with QSignalBlocker(editor):
+                    cursor.beginEditBlock()
+                    cursor.select(QTextCursor.SelectionType.Document)
+                    cursor.insertText(updated)
+                    cursor.endEditBlock()
+                    cursor.setPosition(min(position, editor.document().characterCount() - 1))
+                    editor.setTextCursor(cursor)
+        # Refresh path-bearing views without reloading the source editor: its
+        # unsaved text, selection and undo history belong to the current session.
+        for picker in self.findChildren(PathPicker) + self.findChildren(FilePicker):
+            if picker is self.output_picker and absolute_output is not None:
+                continue
+            with QSignalBlocker(picker):
+                picker.set_path(relocate_paths(picker.path(), old_dir, new_dir))
+        self.last_output_folder = relocate_paths(self.last_output_folder, old_dir, new_dir)
+        self.review_after_generation_outputs = relocate_paths(self.review_after_generation_outputs, old_dir, new_dir)
+        self.audio_mix_preview_panel.clear_context()
+        if audiobook.clean_audio_path and Path(audiobook.clean_audio_path).is_file():
+            self._set_audio_mix_preview_context(Path(audiobook.clean_audio_path))
+        page = self.video_storyboard_page
+        state = relocate_paths(page.project_state(), old_dir, new_dir)
+        source = state.get("source", {})
+        if source.get("project_id") == audiobook.id:
+            saved_state = load_storyboard_state(new_dir)
+            if saved_state is not None:
+                state["_revision"] = saved_state.get("_revision")
+            with QSignalBlocker(page):
+                page.set_audiobook_source(
+                    audiobook.id, audiobook.title, source.get("text", ""),
+                    source.get("narration_cues", []), source.get("duration_seconds", 0),
+                    source.get("audio_path", ""), source.get("voice_start_offset_seconds") or 0,
+                    str(new_dir),
+                )
+                page.restore_project_state(state)
+        self._refresh_review_page()
+        self._refresh_wav_cache_stats()
+        self.project_title_edit.setToolTip(str(new_dir))
+        self.log_view.append_event(self.tr(
+            "project_folder_renamed", "Project folder: {path}", path=str(new_dir),
+        ))
 
     def _open_book_properties(self) -> None:
         if str(self.audio_format_combo.currentData() or "mp3") != "m4b":
@@ -16419,21 +16561,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     @staticmethod
     def _safe_project_folder_name(title: str) -> str:
-        normalized = unicodedata.normalize("NFKC", str(title or ""))
-        normalized = "".join(
-            character
-            for character in normalized
-            if not unicodedata.category(character).startswith("C")
-        )
-        name = re.sub(r"[<>:\"/\\|?*]+", "-", normalized).strip(" .-")
-        name = re.sub(r"\s+", " ", name)
-        name = name[:80].rstrip(" .-") or "Audiobook"
-        if re.fullmatch(
-            r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?",
-            name,
-        ):
-            name = f"Audiobook - {name}"
-        return name
+        return safe_project_folder_name(title)
 
     def _bulk_generation_settings_snapshot(self) -> dict[str, object]:
         keys = (
@@ -16733,8 +16861,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             for entry in prepared:
                 title = str(entry["title"])
                 project_dir = self._unique_bulk_project_dir(output_parent, title)
-                output_dir = project_dir / "exports"
-                output_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = self._project_output_dir(project_dir)
                 per_project_settings = deepcopy(project_settings)
                 per_project_settings["bulk_task"] = {
                     "title": task_title,
@@ -16869,6 +16996,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.bulk_audiobook_worker = worker
         self.bulk_audiobook_thread = thread
         self.active_bulk_batch_id = batch_id
+        self._update_audio_preview_lock()
         self._refresh_bulk_audiobooks_page()
         thread.start()
 
@@ -16944,6 +17072,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.bulk_audiobook_worker = None
         self.bulk_audiobook_thread = None
         self.active_bulk_batch_id = None
+        self._update_audio_preview_lock()
         self._refresh_bulk_audiobooks_page()
 
     def _open_bulk_audiobook_project(self, audiobook_id: int) -> None:
@@ -17024,9 +17153,63 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         )
 
     def _project_output_dir(self, project_dir: Path) -> Path:
-        output_dir = project_dir / "exports"
+        preferences = self._output_preferences() if hasattr(self, "output_mode_combo") else output_preferences(self.settings)
+        output_dir = resolve_project_output(preferences, project_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
+
+    def _output_preferences(self) -> dict:
+        return {"output_dir_mode": self.output_mode_combo.currentData() or "relative",
+                "output_dir": self.output_picker.path_edit.text().strip() or "exports"}
+
+    def _output_project_root(self) -> Path:
+        if self.current_audiobook_id is not None:
+            return self.audiobook_store.project_paths(self.current_audiobook_id).root
+        return self._default_project_parent() / safe_project_folder_name(self._current_project_title())
+
+    def _on_output_mode_changed(self) -> None:
+        if self._restoring_settings:
+            return
+        value = self.output_picker.path()
+        root = self._output_project_root()
+        if self.output_mode_combo.currentData() == "absolute" and not value.is_absolute():
+            self.output_picker.set_path(root / value)
+        elif self.output_mode_combo.currentData() == "relative" and value.is_absolute():
+            try:
+                value = value.relative_to(root)
+            except ValueError:
+                value = Path("exports")
+            self.output_picker.set_path(value)
+        self._commit_output_preferences()
+
+    def _commit_output_preferences(self) -> None:
+        if self._restoring_settings:
+            return
+        try:
+            preferences = self._output_preferences()
+            resolve_project_output(preferences, self._output_project_root())
+            if self.current_audiobook_id is not None:
+                self.audiobook_store.update_project_output(self.current_audiobook_id, preferences)
+            self._save_settings()
+        except (ValueError, OSError) as exc:
+            self._show_error(self.tr("output_folder", "Output folder"), str(exc))
+
+    def _browse_output_folder(self) -> None:
+        root = self._output_project_root()
+        value = self.output_picker.path()
+        initial = value if value.is_absolute() else root / value
+        selected = QFileDialog.getExistingDirectory(self, self.tr("output_folder", "Output folder"), str(initial))
+        if not selected:
+            return
+        path = Path(selected)
+        if self.output_mode_combo.currentData() == "relative":
+            try:
+                path = path.relative_to(root)
+            except ValueError:
+                with QSignalBlocker(self.output_mode_combo):
+                    self.output_mode_combo.setCurrentIndex(1)
+        self.output_picker.set_path(path)
+        self._commit_output_preferences()
 
     def _materialize_project_book_assets(self, audiobook, settings: dict[str, object]):
         book = book_metadata_from_settings(settings, audiobook.title)
@@ -17042,15 +17225,11 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         try:
             snapshot = self._project_settings_snapshot()
             voice_config = self._project_voice_config_snapshot()
-            output_dir = self.output_picker.path()
-            if not output_dir.is_absolute():
-                output_dir = resolve_app_path(output_dir)
             if self.current_audiobook_id is None:
                 title, project_dir = self._automatic_project_location(
                     self._current_project_title()
                 )
                 output_dir = self._project_output_dir(project_dir)
-                self.output_picker.set_path(output_dir)
                 snapshot = self._project_settings_snapshot()
                 audiobook = self.audiobook_store.create_audiobook(
                     self.text_editor.toPlainText(),
@@ -17063,6 +17242,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                     project_dir,
                 )
             else:
+                project_dir = self.audiobook_store.project_paths(self.current_audiobook_id).root
+                output_dir = self._project_output_dir(project_dir)
                 audiobook = self.audiobook_store.save_audiobook_project(
                     self.current_audiobook_id,
                     self.text_editor.toPlainText(),
@@ -17101,7 +17282,6 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             snapshot = self._project_settings_snapshot()
             voice_config = self._project_voice_config_snapshot()
             output_dir = self._project_output_dir(project_dir)
-            self.output_picker.set_path(output_dir)
             snapshot = self._project_settings_snapshot()
             if self.current_audiobook_id is not None:
                 audiobook = self.audiobook_store.clone_audiobook(
@@ -17154,7 +17334,6 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.audiobook_store.next_project_title()
         )
         output_dir = self._project_output_dir(project_dir)
-        self.output_picker.set_path(output_dir)
         snapshot = self._project_settings_snapshot()
         if snapshot.pop("document_source", None):
             snapshot.pop("book_metadata", None)
@@ -17287,21 +17466,37 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             project_settings = json.loads(audiobook.project_settings_json or "{}")
         except json.JSONDecodeError:
             project_settings = {}
-        if isinstance(project_settings, dict):
-            project_settings.pop("projects_dir", None)
-            project_settings.pop("sidebar_collapsed", None)
-            if self.settings.get("document_source") and "book_metadata" not in project_settings:
-                self.settings.pop("book_metadata", None)
-            self.settings.pop("document_source", None)
-            self.settings.update(project_settings)
-            self.settings["current_project_id"] = audiobook.id
-            self.settings_manager.save(self.settings)
-            self._restore_settings()
-        self._refresh_project_title_header()
+        previous_loading = self._loading_project
         self._loading_project = True
-        self.text_editor.setPlainText(audiobook.source_text)
-        self._loading_project = False
-        self._show_original_text_tab()
+        try:
+            # Keep editor callbacks blocked through the final rehighlight too:
+            # formatting changes can emit textChanged without a user edit.
+            with (
+                QSignalBlocker(self.text_editor),
+                QSignalBlocker(self.normalized_text_editor),
+                QSignalBlocker(self.editor_tabs),
+                self.markup_highlighter.suspend_highlighting(),
+                self.normalized_markup_highlighter.suspend_highlighting(),
+            ):
+                self._show_original_text_tab()
+                self.text_editor.setPlainText(audiobook.source_text)
+                self.normalized_text_editor.clear()
+                if isinstance(project_settings, dict):
+                    project_settings.update(output_preferences(project_settings, audiobook.project_dir, audiobook.output_dir))
+                    project_settings.pop("projects_dir", None)
+                    project_settings.pop("sidebar_collapsed", None)
+                    if self.settings.get("document_source") and "book_metadata" not in project_settings:
+                        self.settings.pop("book_metadata", None)
+                    self.settings.pop("document_source", None)
+                    self.settings.update(project_settings)
+                    self.settings["current_project_id"] = audiobook.id
+                    self.settings_manager.save(self.settings)
+                    self._restore_settings()
+        finally:
+            self._loading_project = previous_loading
+        self._mark_normalization_preview_stale()
+        self._update_markup_editor_assist()
+        self._refresh_project_title_header()
         self.project_dirty = False
         if audiobook.clean_audio_path and Path(audiobook.clean_audio_path).is_file():
             self._set_audio_mix_preview_context(Path(audiobook.clean_audio_path))
@@ -17338,6 +17533,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         if audiobook_id is None:
             self._draft_project_title = self.audiobook_store.next_project_title()
         self._refresh_project_title_header()
+        self._refresh_wav_cache_stats()
 
     def _confirm_project_switch(self) -> bool:
         if not self.project_dirty:
@@ -18211,9 +18407,11 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             normalization_language_hint = self._normalization_language_hint()
         if self.current_audiobook_id is None and not self._save_project():
             return
-        output_dir = self.output_picker.path()
-        if not output_dir.is_absolute():
-            output_dir = resolve_app_path(output_dir)
+        try:
+            output_dir = self._project_output_dir(self._output_project_root())
+        except (ValueError, OSError) as exc:
+            self._show_error(self.tr("output_folder", "Output folder"), str(exc))
+            return
         output_dir = output_directory(
             {**self.settings, "save_next_to_source": self.save_next_to_source_checkbox.isChecked()}, output_dir
         )
@@ -18912,7 +19110,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             play_button.setIcon(ui_icon("play"))
             play_button.setToolTip(self.tr("play", "Play"))
             play_button.setFixedWidth(34)
-            play_button.setEnabled(Path(segment.wav_path).is_file())
+            play_button.setEnabled(
+                not self._project_audio_write_in_progress() and Path(segment.wav_path).is_file()
+            )
             play_button.clicked.connect(
                 lambda _checked=False, path=segment.wav_path: self._play_review_audio(path)
             )
@@ -19161,7 +19361,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             or self.verification_thread is not None
         )
         self.review_save_text_button.setEnabled(not busy)
-        self.review_play_current_button.setEnabled(has_audio)
+        self.review_play_current_button.setEnabled(
+            has_audio and not self._project_audio_write_in_progress()
+        )
         self.review_regenerate_button.setEnabled(not busy)
         self.review_waveform_cut_button.setVisible(tail_tools_visible)
         self.review_waveform_cut_button.setEnabled(has_audio and not busy)
@@ -19231,6 +19433,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self._play_review_audio(segment.wav_path)
 
     def _open_selected_tail_waveform(self) -> None:
+        if self._project_audio_write_in_progress():
+            return
         if not self._tail_review_enabled() or self.audio_tail_cut_thread is not None:
             return
         segment = self._selected_review_segment()
@@ -19371,6 +19575,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         thread.finished.connect(self._clear_audio_tail_cut_worker)
         self.audio_tail_cut_worker = worker
         self.audio_tail_cut_thread = thread
+        self._update_audio_preview_lock()
         self._refresh_review_page()
         thread.start()
 
@@ -19412,6 +19617,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _clear_audio_tail_cut_worker(self) -> None:
         self.audio_tail_cut_worker = None
         self.audio_tail_cut_thread = None
+        self._update_audio_preview_lock()
         self._refresh_review_page()
         if self.review_tail_cut_reverify_pending:
             self.review_tail_cut_reverify_pending = False
@@ -19492,6 +19698,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         thread.finished.connect(self._clear_segment_regeneration_worker)
         self.segment_regeneration_worker = worker
         self.segment_regeneration_thread = thread
+        self._update_audio_preview_lock()
         self._refresh_review_page()
         thread.start()
 
@@ -19635,6 +19842,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _clear_segment_regeneration_worker(self) -> None:
         self.segment_regeneration_worker = None
         self.segment_regeneration_thread = None
+        self._update_audio_preview_lock()
         self.segment_regeneration_uses_preloaded_engine = False
         self._refresh_review_page()
 
@@ -19682,6 +19890,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._refresh_review_page()
 
     def _discard_review_candidate(self) -> None:
+        self._stop_review_audio()
         if self.segment_regeneration_worker is not None:
             self.segment_regeneration_worker.request_cancel()
         candidate = self.review_candidate_wav
@@ -19696,6 +19905,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.review_regeneration_dialog.close()
 
     def _on_review_regeneration_dialog_finished(self) -> None:
+        self._stop_review_audio()
         if self.segment_regeneration_worker is not None:
             self.segment_regeneration_worker.request_cancel()
         candidate = self.review_candidate_wav
@@ -19751,6 +19961,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         thread.finished.connect(self._clear_audiobook_rebuild_worker)
         self.audiobook_rebuild_worker = worker
         self.audiobook_rebuild_thread = thread
+        self._update_audio_preview_lock()
         self._refresh_review_page()
         thread.start()
 
@@ -19902,6 +20113,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _clear_audiobook_rebuild_worker(self) -> None:
         self.audiobook_rebuild_worker = None
         self.audiobook_rebuild_thread = None
+        self._update_audio_preview_lock()
         self._refresh_review_page()
 
     def _refresh_whisper_status(self) -> None:
@@ -20198,6 +20410,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._refresh_review_page()
 
     def _play_review_audio(self, path_text: str) -> None:
+        if self._project_audio_write_in_progress():
+            return
         path = Path(path_text)
         if not path.is_file():
             return
@@ -20210,7 +20424,29 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     def _stop_review_audio(self) -> None:
         self.review_player.stop()
-        self.review_player.setPosition(0)
+        self.review_player.setSource(QUrl())
+
+    def _project_audio_write_in_progress(self) -> bool:
+        return bool(getattr(self, "_audio_generation_running", False)) or any(
+            getattr(self, name, None) is not None
+            for name in (
+                "worker_thread", "bulk_audiobook_thread", "segment_regeneration_thread",
+                "audio_tail_cut_thread", "audiobook_rebuild_thread",
+            )
+        )
+
+    def _release_audio_previews(self) -> None:
+        # Include nested preview dialogs and sample players: stop alone leaves
+        # the media loaded and may retain a Windows file handle.
+        for player in self.findChildren(QMediaPlayer):
+            player.stop()
+            player.setSource(QUrl())
+
+    def _update_audio_preview_lock(self) -> None:
+        blocked = self._project_audio_write_in_progress()
+        self.audio_mix_preview_panel.set_playback_blocked(blocked)
+        if blocked:
+            self._release_audio_previews()
 
     @staticmethod
     def _short_table_text(text: str, limit: int = 120) -> str:
@@ -20218,6 +20454,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         return clean if len(clean) <= limit else clean[: limit - 1] + "..."
 
     def _set_running(self, running: bool) -> None:
+        self._audio_generation_running = running
+        self._update_audio_preview_lock()
         self.generate_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
         self.open_output_button.setEnabled(not running)
@@ -20365,6 +20603,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.f5_russian_chunk_size_spin,
             self.indextts_chunk_size_spin,
             self.output_picker,
+            self.output_mode_combo,
             self.save_next_to_source_checkbox,
             self.use_source_filename_checkbox,
             self.normalize_checkbox,
@@ -20412,11 +20651,12 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _save_settings(self) -> None:
         if self._restoring_settings:
             return
-        output_dir = self.output_picker.path()
+        output_dir = self.output_picker.path_edit.text().strip() or "exports"
         self.settings.pop("kokoro_python", None)
         self.settings.update(
             {
                 "output_dir": str(output_dir),
+                "output_dir_mode": self.output_mode_combo.currentData() or "relative",
                 "ui_language": self.ui_language_combo.currentData() or "en",
                 "ui_theme": self.ui_theme,
                 "gpu_device_index": normalize_gpu_device(

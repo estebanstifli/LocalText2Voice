@@ -44,6 +44,7 @@ def _configure_cache(cache_dir: str | None) -> None:
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(cache_path)
+    os.environ["HF_HUB_CACHE"] = str(cache_path / "hub")
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(cache_path / "hub")
     os.environ["TRANSFORMERS_CACHE"] = str(cache_path / "transformers")
 

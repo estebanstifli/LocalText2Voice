@@ -197,6 +197,7 @@ if /I "%PRESERVE_LOCAL_CONFIG%"=="1" (
 )
 copy /Y "README.md" "%DIST_DIR%\README.md" >nul
 copy /Y "CHANGELOG.md" "%DIST_DIR%\CHANGELOG.md" >nul
+copy /Y "CODE_SIGNING.md" "%DIST_DIR%\CODE_SIGNING.md" >nul
 copy /Y "engine_host.py" "%DIST_DIR%\engine_host.py" >nul
 copy /Y "mcp_stdio_bridge.py" "%DIST_DIR%\mcp_stdio_bridge.py" >nul
 copy /Y "LICENSE" "%DIST_DIR%\LICENSE" >nul

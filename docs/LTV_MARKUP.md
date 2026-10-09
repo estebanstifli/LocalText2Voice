@@ -12,9 +12,67 @@ I do not like this place.
 
 Markup is optional. If your text does not contain `{{...}}` commands, LocalText2Voice works exactly as before.
 
+The **Emotion** button has two engine submenus: **Chatterbox** and **IndexTTS**. Choosing a menu only inserts markup; it does not change the active TTS engine or model. Emotions and delivery styles share `{{emotion ...}}`. Inline vocal sounds use `{{vocal ...}}` from the same button.
+
+## Emotions and vocal events (Chatterbox Turbo)
+
+Select **Chatterbox Turbo** and an English reference voice before generating. The Chatterbox submenu contains all ten native emotion/style tokens, **Off**, and all nine vocal events. The original English and Multilingual models do not support these tags: generation warns and removes them for those models.
+
+| Command | Available values |
+| --- | --- |
+| `emotion` | `angry`, `fear`, `surprised`, `whispering`, `advertisement`, `dramatic`, `narration`, `crying`, `happy`, `sarcastic`, `off` |
+| `vocal` | `clear_throat`, `sigh`, `shush`, `cough`, `groan`, `sniff`, `gasp`, `chuckle`, `laugh` |
+
+```text
+{{emotion happy}}
+We finally did it! {{vocal laugh}} I knew we could get there together.
+
+{{emotion whispering}}
+Stay close to me. {{vocal shush}} Someone might hear us.
+
+{{emotion sarcastic}}
+Wonderful. Another meeting that could have been an email.
+
+{{emotion off}}
+This passage uses the reference delivery without an additional emotion tag.
+```
+
+Emotion applies to the next markup segment and every smaller TTS chunk within it. It is stored with the segment for regeneration. `vocal` stays inside the sentence at its insertion point and does not end the emotion segment. `{{vocal clear_throat}}` becomes the exact native token `[clear throat]`; the quoted form `{{vocal "clear throat"}}` is also accepted. This is synthesized vocal audio, not a library sound effect.
+
+Shared aliases (`alegria`, `enfado`, `miedo`, `sorpresa`) map to Turbo's exact equivalents. There is no automatic sadness-to-crying or calm-to-whispering approximation. Unsupported emotions and Custom descriptions are ignored with a warning. Turbo has no percentage control: nonzero percentages below 100% warn and use the tag without scaling; zero behaves as Off. `{{reset}}` clears pending emotion along with the other usual settings. Off removes markup direction, not the reference recording's natural expression.
+
+Turbo's emotion/style tokens are experimental in perceived quality; a token existing in the vocabulary does not guarantee a particular delivery. No QwenEmotion stage is needed. Native tokens are rendered just before synthesis, and the ignored Turbo `exaggeration` and `cfg_weight` parameters are sent as zero.
+
+Sources: [official token list](https://huggingface.co/ResembleAI/chatterbox-turbo/blob/main/added_tokens.json), [official vocal-event demo](https://huggingface.co/spaces/ResembleAI/chatterbox-turbo-demo/blob/main/app.py).
+
+## Qwen3 TTS Base: reference voices and experimental instructions
+
+Select **Qwen3 TTS Base 1.7B** to clone WAV references. The gallery exposes remote audio entries with an accompanying transcript, including compatible previews from other engines. Preset speakers stay separate in CustomVoice. Cached catalogs are migrated automatically; references keep separate installed copies so uninstalling one engine's voice does not delete another's audio.
+
+Base also accepts gallery names in markup, for example `{{voice asun}}` or `{{voice Abigail}}`. This sets both the reference audio and its transcript. Use `{{lang es}}` / `{{lang en}}` or the selected language in the UI for the target speech.
+
+The official Qwen Base model does **not** offer supported instruction control. However, LocalText2Voice's **faster-qwen3-tts CUDA** backend passes `instruct` into full ICL cloning (`xvec_only=False`). Treat this as an experiment, not as a guaranteed emotion control. The CPU backend ignores Base instructions and reports this in the log. CustomVoice 0.6B does not support instruction control either; the official instructed preset-speaker variant is **CustomVoice 1.7B**, a separate checkpoint from Base.
+
+Use the existing `cmd` command to request a delivery for the next segment:
+
+```text
+{{cmd "instruct": "Speak with clear happiness and warm excitement."}}
+We finally did it! Come here and celebrate with me, because tonight belongs to all of us.
+
+{{cmd "instruct": "Speak with deep sadness, softly and slowly."}}
+Your favorite cup is still beside the window. I know you will never return, but the silence makes me wait for you.
+
+{{cmd "instruct": "Begin with a brief natural laugh, then speak cheerfully and playfully."}}
+I cannot believe we managed to surprise you. Come inside and let us tell you how we planned the whole thing!
+```
+
+The laughter instruction is an experimental request, not a supported discrete vocal event. There is no Turbo-compatible `[laugh]` / `[sniff]` contract in this backend. `{{vocal ...}}` and `{{emotion ...}}` are not implemented for Qwen and produce markup warnings. Do not expect Qwen to interpret raw Turbo tags. Use `{{cmd "instruct": ""}}` for a neutral comparison that explicitly clears any instruction configured in Settings for that segment; `cmd` only applies to the next segment, whereas `preset` persists.
+
+Sources: [official Qwen model capabilities](https://github.com/QwenLM/Qwen3-TTS#released-models-description-and-download), [Base instruction limitation](https://github.com/QwenLM/Qwen3-TTS/issues/25), and [Faster Qwen implementation](https://github.com/andimarafioti/faster-qwen3-tts/blob/main/faster_qwen3_tts/model.py).
+
 ## Emotions (IndexTTS-2.5)
 
-Click **emotion** in the markup toolbar to choose a preset, **Off**, or **Custom**. These instructions apply to the **next markup segment**, including its sentences and any smaller TTS chunks. Repeat the instruction for another segment. They preserve voice and language. Other engines ignore this command with a warning.
+Click **Emotion → IndexTTS** in the markup toolbar to choose a preset, **Off**, or **Custom**. These instructions apply to the **next markup segment**, including its sentences and any smaller TTS chunks. Repeat the instruction for another segment. They preserve voice and language. Chatterbox Turbo accepts the shared emotions described above; other engines ignore this command with a warning.
 
 | Menu / name | Spanish aliases | Behavior |
 | --- | --- | --- |
@@ -184,7 +242,7 @@ Current behavior:
 | Piper | Looks for an installed Piper voice by name, id, or language/name fragment |
 | Kokoro | Looks for a Kokoro voice id or display name |
 | Chatterbox | Looks for an installed reference voice by display name or filename |
-| Qwen3 TTS | Looks for a Qwen speaker by id/display name, or a UI-style `Speaker - Language` alias such as `Serena - Spanish` |
+| Qwen3 TTS | Base: matches a gallery reference and its transcript by id/name. CustomVoice: matches a preset speaker or a `Speaker - Language` alias such as `Serena - Spanish` |
 | Custom HTTP | Sends the literal value to the custom engine config as `voice`, so templates can use `{{voice}}` |
 
 If a voice is not found exactly, LocalText2Voice tries to find the closest
@@ -198,7 +256,7 @@ LTV Markup warning: voice "edu" was not found exactly. Closest voice selected: E
 If no compatible voice can be found, the app writes a warning and keeps using
 the voice selected in the UI.
 
-Qwen note: the UI displays combinations such as `Serena - Spanish`, but Qwen
+Qwen CustomVoice note: the UI displays combinations such as `Serena - Spanish`, but Qwen
 internally receives two separate values: `speaker=Serena` and
 `language=Spanish`. These combinations are accepted in markup:
 

@@ -179,10 +179,12 @@ class AudioTailCutDialog(QDialog):
 
     def done(self, result: int) -> None:
         self.player.stop()
+        self.player.setSource(QUrl())
         super().done(result)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.player.stop()
+        self.player.setSource(QUrl())
         super().closeEvent(event)
 
     def __del__(self) -> None:

@@ -117,6 +117,45 @@ class VoiceGalleryManager:
         self._cancel_requested = threading.Event()
         self._ensure_schema()
         self._ensure_indextts_reference_aliases()
+        self._ensure_qwen_reference_aliases()
+
+    def _ensure_qwen_reference_aliases(self) -> None:
+        """Migrate cached audio+transcript entries without replacing preset speakers."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM voice_gallery_voices").fetchall()
+            source_ids = {str(row["id"]) for row in rows}
+            represented = {
+                (self._row_to_voice(row).metadata or {}).get("compatible_source_id")
+                for row in rows if row["engine"] == "qwen"
+            }
+            for row in rows:
+                voice = self._row_to_voice(row)
+                metadata = dict(voice.metadata or {})
+                if (voice.is_user_import or not voice.ref_text.strip()
+                    or (voice.engine == "qwen" and voice.is_reference_audio)
+                    or voice.voice_id in represented
+                    or metadata.get("compatible_source_id") in source_ids
+                    or not (voice.ref_audio_url or voice.ref_audio_path
+                            or voice.preview_url or voice.preview_path)):
+                    continue
+                values = dict(row)
+                values.update(
+                    id=self._compatible_voice_id("qwen_clone", voice.voice_id),
+                    engine="qwen", install_type="reference_audio", voice_type="Reference voice",
+                    installed_path="", installed_at="",
+                    ref_audio_url=voice.ref_audio_url or (voice.preview_url if not voice.ref_audio_path else ""),
+                    ref_audio_path=voice.ref_audio_path or (voice.preview_path if not voice.ref_audio_url else ""),
+                    engine_voice_id="", speaker_id="", model_id="base_1_7b",
+                    metadata_json=json.dumps({**metadata,
+                        "compatible_source_engine": voice.engine,
+                        "compatible_source_id": voice.voice_id}, ensure_ascii=False),
+                )
+                columns = ", ".join(values)
+                placeholders = ", ".join("?" for _ in values)
+                connection.execute(
+                    f"INSERT OR IGNORE INTO voice_gallery_voices ({columns}) VALUES ({placeholders})",
+                    tuple(values.values()),
+                )
 
     def _ensure_indextts_reference_aliases(self) -> None:
         """Expose audio from catalogs cached before IndexTTS was supported."""
@@ -373,7 +412,7 @@ class VoiceGalleryManager:
         if voice.installed_path and Path(voice.installed_path).is_file():
             return Path(voice.installed_path)
         source = voice.ref_audio_url or voice.ref_audio_path or voice.preview_url or voice.preview_path
-        if voice.engine == "indextts":
+        if voice.engine in {"indextts", "qwen"}:
             source_id = str((voice.metadata or {}).get("compatible_source_id", ""))
             original = self.get_voice(source_id) if source_id else None
             if (
@@ -875,6 +914,21 @@ class VoiceGalleryManager:
             compatible_engines = document.get("compatible_engines", [])
             if not isinstance(compatible_engines, list):
                 compatible_engines = []
+            # Qwen's preset speakers remain separate from Base cloning references.
+            # Base ICL needs the exact transcript as well as an audio asset.
+            if (str(document.get("ref_text", "")).strip()
+                and (document.get("ref_audio") or document.get("preview_audio"))
+                and not document.get("compatible_source_id")
+                and document.get("source") != "user_import"
+                and not (engine == "qwen" and document.get("install_type") == "reference_audio")
+                and "qwen" not in compatible_engines):
+                expanded.append({**document,
+                    "id": self._compatible_voice_id("qwen_clone", voice_id),
+                    "engine": "qwen", "install_type": "reference_audio", "type": "Reference voice",
+                    "ref_audio": document.get("ref_audio") or document.get("preview_audio"),
+                    "engine_voice_id": "", "speaker_id": "", "model_id": "base_1_7b",
+                    "compatible_source_engine": engine, "compatible_source_id": voice_id,
+                })
             if engine != "indextts" and (
                 document.get("ref_audio") or document.get("preview_audio")
             ):
@@ -893,7 +947,9 @@ class VoiceGalleryManager:
                 alias["engine"] = compatible_engine
                 alias["compatible_source_engine"] = engine
                 alias["compatible_source_id"] = voice_id
-                if compatible_engine in {"chatterbox", "indextts"}:
+                if compatible_engine == "qwen" and not str(alias.get("ref_text", "")).strip():
+                    continue
+                if compatible_engine in {"chatterbox", "indextts", "qwen"}:
                     alias["install_type"] = "reference_audio"
                     alias["type"] = "Reference voice"
                     if not str(alias.get("ref_audio", "")).strip():
@@ -906,6 +962,10 @@ class VoiceGalleryManager:
                         alias["engine_voice_id"] = ""
                         alias["speaker_id"] = ""
                         alias["model_id"] = ""
+                    elif compatible_engine == "qwen":
+                        alias["engine_voice_id"] = ""
+                        alias["speaker_id"] = ""
+                        alias["model_id"] = "base_1_7b"
                 expanded.append(alias)
         return expanded
 

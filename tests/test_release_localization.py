@@ -12,7 +12,9 @@ ENGLISH = json.loads((LOCALES / "en.json").read_text(encoding="utf-8-sig"))
 NEW_KEYS = {
     key for key in ENGLISH
     if key.startswith(("indextts_", "h3_", "markup_emotion_", "runpod_metrics_"))
-} | {"runpod_export_metrics", "runpod_job_timing", "generation_stage_time_status"}
+} | {"runpod_export_metrics", "runpod_job_timing", "generation_stage_time_status",
+     "project_rename_busy", "project_folder_renamed", "output_relative",
+     "output_absolute", "output_folder_mode", "output_folder_help", "markup_vocal_help"}
 
 
 @pytest.mark.parametrize("path", sorted(LOCALES.glob("*.json")), ids=lambda p: p.stem)
@@ -33,3 +35,5 @@ def test_example_chunk_limits_match_application_defaults():
 
     example = json.loads((LOCALES.parent / "config.example.json").read_text(encoding="utf-8"))
     assert example["engine_chunk_sizes"] == DEFAULT_SETTINGS["engine_chunk_sizes"]
+    assert example["output_dir"] == DEFAULT_SETTINGS["output_dir"] == "exports"
+    assert example["output_dir_mode"] == DEFAULT_SETTINGS["output_dir_mode"] == "relative"

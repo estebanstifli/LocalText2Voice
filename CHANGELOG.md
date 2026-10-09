@@ -7,6 +7,57 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-09
+
+### Added
+
+- Added Chatterbox Turbo emotion/style direction and nine inline vocal events
+  through `{{emotion ...}}` and `{{vocal ...}}`, with a dedicated editor submenu.
+  These tags target the English Turbo model; percentages and Custom emotion
+  descriptions remain IndexTTS features, and unsupported controls produce warnings.
+- Added Qwen Base reference voices from compatible gallery recordings that have
+  transcripts, including cached-catalog updates, separate local installation,
+  audio reuse and markup reference selection without replacing preset speakers.
+- Added recoverable physical project-folder renaming with collision-safe names,
+  stable project identity, updated SQLite/manifest/storyboard paths, cross-process
+  operation locking and an interruption recovery journal.
+- Added project-relative or absolute output-folder preferences. New projects use
+  `exports` relative to their project; existing external output paths are retained.
+- Added a manual, test-only SignPath CI workflow with pinned build tools, exact
+  product/version restrictions, Windows signature verification and a silent
+  installer test. Production signing remains pending; public releases are not
+  retroactively signed and test certificates are not for end-user trust.
+
+### Changed
+
+- Move WAV cache accounting off the GUI thread, coalesce scans and briefly cache
+  results so large audio libraries do not block Settings.
+- Batch text/settings restoration and syntax highlighting when opening projects,
+  preserving unsaved-edit detection and invalidating stale normalization previews.
+- Extend markup documentation with Chatterbox Turbo emotion/vocal examples and
+  compatibility details, and translate the new project/output controls across
+  all 11 UI languages.
+
+### Fixed
+
+- Select the requested language's Qwen Base reference when several gallery voices
+  share a name, including language suffixes in markup, and log approximate matches.
+- Release Qt media handles and block conflicting playback during audio writes,
+  regeneration, tail trimming and rebuilds to avoid Windows sharing violations.
+- Validate generated WAVs before atomic replacement, retry transient Windows
+  file locks and keep the previous usable audio intact on failure. Retain a valid
+  replacement candidate when Windows still refuses publication.
+- Preserve regeneration cancellation and use the same protected publication path
+  for EngineHost synthesis and Whisper-triggered retry candidates.
+- Keep multiword native vocal tags together during text chunking and prevent
+  unsupported Chatterbox variants from speaking Turbo control tags as text.
+- Force Chatterbox's Hugging Face cache variables to its managed model cache so
+  inherited environment variables cannot hide installed weights.
+- Recursively redact provider credentials, storage tokens and encrypted secret
+  fields from settings returned by the local API/MCP service.
+- Normalize Inno Setup's padded PE product/version strings before signing without
+  moving or changing its compressed payload; refuse to modify signed installers.
+
 ## [2.2.0] - 2026-10-03
 
 ### Added

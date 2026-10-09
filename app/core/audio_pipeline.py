@@ -45,6 +45,7 @@ from app.utils.ffmpeg_utils import (
 )
 
 from .generation_progress import GenerationProgress
+from app.utils.atomic_audio import atomic_wav_output, replace_audio_file
 from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
 from .text_normalization import normalize_text_for_speech
@@ -54,7 +55,7 @@ from .text_processor import TextChunk, TextProcessor
 def _move_file(src: Path, dst: Path) -> None:
     """Move a file even across filesystems."""
     try:
-        os.replace(src, dst)
+        replace_audio_file(src, dst)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
@@ -813,19 +814,20 @@ class AudioPipeline:
                     )
                 block_started = time.perf_counter()
                 try:
-                    self.tts_engine.synthesize_to_wav(
-                        chunk.text,
-                        output_wav,
-                        chunk_voice_config,
-                    )
-                    self._postprocess_chunk_wav(
-                        output_wav,
-                        chunk_voice_config,
-                        runner,
-                        temp_dir,
-                        group_index,
-                        chunk_index,
-                    )
+                    with atomic_wav_output(output_wav, self._check_cancelled) as temporary_wav:
+                        self.tts_engine.synthesize_to_wav(
+                            chunk.text,
+                            temporary_wav,
+                            chunk_voice_config,
+                        )
+                        self._postprocess_chunk_wav(
+                            temporary_wav,
+                            chunk_voice_config,
+                            runner,
+                            temp_dir,
+                            group_index,
+                            chunk_index,
+                        )
                 except Exception as exc:
                     if (
                         segment_id is not None
@@ -995,6 +997,9 @@ class AudioPipeline:
             config.pop("instruct", None)
             config.pop("instructions", None)
             config.update(emotion)
+
+        if engine == "chatterbox" and isinstance(emotion, dict):
+            config["chatterbox_emotion"] = emotion.get("chatterbox_emotion", "off")
 
         if "speed" in state:
             try:
@@ -1317,6 +1322,9 @@ class AudioPipeline:
         voice_value: str,
         voice_language: str = "",
     ) -> None:
+        if config.get("generation_mode") == "voice_clone" or str(config.get("model", "")).startswith("base_"):
+            self._apply_qwen_reference_voice(config, voice_value, voice_language)
+            return
         try:
             from app.tts.qwen_manager import QwenManager
         except Exception as exc:
@@ -1377,6 +1385,52 @@ class AudioPipeline:
         if not match.exact:
             self._warn_fuzzy_voice_match("Qwen3 TTS", voice_value, matched.display_name)
         self._log_markup_voice_once("Qwen3 TTS", matched.display_name)
+
+    def _apply_qwen_reference_voice(self, config, voice_value, voice_language=""):
+        from app.tts.voice_gallery_manager import VoiceGalleryError, VoiceGalleryManager
+
+        manager = self._markup_voice_cache.get("qwen_gallery_manager")
+        if manager is None:
+            manager = VoiceGalleryManager()
+            manager.ensure_seed_loaded()
+            self._markup_voice_cache["qwen_gallery_manager"] = manager
+        voices = [voice for voice in manager.list_voices("qwen")
+                  if voice.is_reference_audio and voice.ref_text.strip()]
+        voice_name, requested_language = self._split_omnivoice_voice_language(
+            voice_value, voice_language,
+        )
+        language_name = self._omnivoice_language_name(requested_language)
+        if language_name:
+            filtered = [voice for voice in voices
+                        if self._gallery_voice_matches_language(voice, language_name)]
+            if filtered:
+                voices = filtered
+            else:
+                self._log_markup_runtime_warning(
+                    f"voice:qwen:language:{self._lookup_key(requested_language)}",
+                    "LTV Markup warning: no Qwen Base gallery voices found for "
+                    f'language "{requested_language}". Searching all languages.',
+                )
+        match = self._match_named_item(voice_name, voices, self._omnivoice_gallery_voice_names)
+        if match is None:
+            self._warn_unknown_voice("Qwen Base", voice_value)
+            return
+        matched = match.item
+        try:
+            path = manager.ensure_voice_audio(matched)
+        except (VoiceGalleryError, OSError) as exc:
+            self._log_markup_runtime_warning("voice:qwen:download", f"Could not load Qwen voice {matched.name}: {exc}")
+            return
+        if path is None or not path.is_file():
+            self._warn_unknown_voice("Qwen Base", voice_value)
+            return
+        config["reference_audio_path"] = str(path)
+        config["reference_text"] = matched.ref_text
+        if requested_language:
+            self._apply_markup_language(config, "qwen", requested_language)
+        if not match.exact:
+            self._warn_fuzzy_voice_match("Qwen Base", voice_value, matched.name)
+        self._log_markup_voice_once("Qwen Base", matched.name)
 
     def _apply_qwen_style_instruction(
         self,

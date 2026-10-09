@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-#define MyAppVersion "2.2.0"
+#define MyAppVersion "2.3.0"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -303,7 +303,8 @@ begin
     '  "storage": {' + #13#10 +
     '    "base_dir": "' + AssetsBaseDir + '"' + #13#10 +
     '  },' + #13#10 +
-    '  "output_dir": "output",' + #13#10 +
+    '  "output_dir": "exports",' + #13#10 +
+    '  "output_dir_mode": "relative",' + #13#10 +
     '  "tts_engine": "' + TtsEngine + '",' + #13#10 +
     '  "review": {' + #13#10 +
     '    "enabled": ' + ReviewEnabled + ',' + #13#10 +

@@ -47,6 +47,7 @@ from app.server.engine_host_client import EngineHostClient, EngineHostClientErro
 from app.tts.engine_registry import create_tts_engine
 from app.tts.python_runtime_manager import PythonRuntimeCancelled, PythonRuntimeError
 from app.utils.ffmpeg_utils import FFmpegCancelled, FFmpegError, FFmpegRunner, find_ffmpeg
+from app.utils.atomic_audio import AudioFileInUseError, replace_audio_file, validate_wav
 from app.verification.faster_whisper_manager import (
     FasterWhisperCancelled,
     FasterWhisperError,
@@ -808,6 +809,12 @@ class SegmentVerificationWorker(QObject):
             self._active_tts_engine = engine
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         temporary_wav = output_wav.with_name(output_wav.stem + ".tmp.wav")
+        retain_candidate = False
+
+        def check_cancelled() -> None:
+            if self._cancel_requested.is_set():
+                raise FasterWhisperCancelled("Verification cancelled.")
+
         started = time.perf_counter()
         self.log.emit(
             f"Segment {segment.sequence_index}: generating retry candidate "
@@ -844,10 +851,20 @@ class SegmentVerificationWorker(QObject):
                 ) if self.engine_host_client is not None else TTSEngineError(
                     "TTS engine did not create a valid retry candidate WAV."
                 )
-            temporary_wav.replace(output_wav)
+            validate_wav(temporary_wav)
+            replace_audio_file(temporary_wav, output_wav, check_cancelled)
+        except AudioFileInUseError as exc:
+            retain_candidate = True
+            raise AudioFileInUseError(
+                f"{exc} New audio is saved at '{temporary_wav}'."
+            ) from exc
         finally:
             self._active_tts_engine = None
-            temporary_wav.unlink(missing_ok=True)
+            if not retain_candidate:
+                try:
+                    temporary_wav.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return round((time.perf_counter() - started) * 1000)
 
     def _voice_config_for_segment(self, segment: StoredSegment) -> dict:
@@ -1036,6 +1053,13 @@ class EngineHostSegmentRegenerationWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        temporary_wav = None
+        retain_candidate = False
+
+        def check_cancelled() -> None:
+            if self._cancel_requested.is_set():
+                raise TTSCancelled("Segment regeneration cancelled.")
+
         try:
             if self._cancel_requested.is_set():
                 self.cancelled.emit()
@@ -1062,14 +1086,26 @@ class EngineHostSegmentRegenerationWorker(QObject):
                 raise EngineHostClientError("Engine host returned an unexpected candidate path.")
             if not temporary_wav.is_file() or temporary_wav.stat().st_size == 0:
                 raise EngineHostClientError("Engine host did not create a valid candidate WAV.")
-            temporary_wav.replace(self.candidate_wav)
+            validate_wav(temporary_wav)
+            replace_audio_file(temporary_wav, self.candidate_wav, check_cancelled)
             self.progress.emit(1, 1, "Segment regenerated.")
             self.finished.emit(self.segment_id, str(self.candidate_wav))
+        except TTSCancelled:
+            self.cancelled.emit()
+        except AudioFileInUseError as exc:
+            retain_candidate = True
+            self.failed.emit(f"{exc} New audio is saved at '{temporary_wav}'.")
         except EngineHostClientError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             traceback.print_exc()
             self.failed.emit(f"Unexpected segment regeneration error: {exc}")
+        finally:
+            if temporary_wav is not None and not retain_candidate:
+                try:
+                    temporary_wav.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def request_cancel(self) -> None:
         # The HTTP request cannot be interrupted safely from this client thread.
