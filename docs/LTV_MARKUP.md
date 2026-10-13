@@ -12,7 +12,22 @@ I do not like this place.
 
 Markup is optional. If your text does not contain `{{...}}` commands, LocalText2Voice works exactly as before.
 
-The **Emotion** button has two engine submenus: **Chatterbox** and **IndexTTS**. Choosing a menu only inserts markup; it does not change the active TTS engine or model. Emotions and delivery styles share `{{emotion ...}}`. Inline vocal sounds use `{{vocal ...}}` from the same button.
+The **Emotion** button offers **Chatterbox**, **IndexTTS**, **Higgs** and **Fish Audio** submenus. Choosing a menu does not change the active engine. IndexTTS uses application emotion commands; Chatterbox Turbo, Higgs and Fish shortcuts insert their native tags. Existing Chatterbox `{{emotion ...}}` and `{{vocal ...}}` commands remain supported.
+
+## Native controls with audio.cpp
+
+Select Higgs or Fish in Settings before using its tags. Higgs examples:
+`<|emotion:elation|>`, `<|style:whispering|>` and `<|prosody:long_pause|>`.
+Fish examples: `[excited]`, `[whisper]` and `[volume down]`.
+These are literal model instructions, not `{{emotion ...}}` commands. Native Fish
+instruction names remain in English in the menu; the surrounding help is localized.
+
+App-level pauses, speed, volume and audio events still work with audio.cpp.
+`{{voice "Name"}}` selects a saved reference. `{{lang ...}}` records language metadata,
+but Higgs/Fish infer the spoken language from text rather than a native language
+parameter. `{{cmd ...}}` and `{{preset ...}}` can set supported generation options
+such as `temperature`, `top_p`, `top_k`, `seed`, `max_tokens` and `text_chunk_size`.
+See the [audio.cpp guide](AUDIOCPP.md) for setup and limitations.
 
 ## Emotions and vocal events (Chatterbox Turbo)
 

@@ -11,6 +11,7 @@ from .api_engines import (
     OpenAITTSEngine,
 )
 from .indextts_engine import IndexTTSTTSEngine
+from .audiocpp_engine import AudioCppTTSEngine
 from .indextts_manager import IndexTTSManager
 from .base import BaseTTSEngine, TTSEngineError
 from .chatterbox_engine import ChatterboxTTSEngine
@@ -41,6 +42,7 @@ TTS_ENGINES: tuple[TTSEngineDefinition, ...] = (
     TTSEngineDefinition("indextts", "IndexTTS-2.5", True),
     TTSEngineDefinition("omnivoice", "OmniVoice", True),
     TTSEngineDefinition("f5_russian", "F5-TTS Russian", True),
+    TTSEngineDefinition("audiocpp", "audio.cpp · Higgs / Fish Q8", True),
     TTSEngineDefinition("openai", "OpenAI TTS (API)", False),
     TTSEngineDefinition("elevenlabs", "ElevenLabs (API)", False),
     TTSEngineDefinition("gemini", "Google Gemini TTS (API)", False),
@@ -53,6 +55,8 @@ def engine_ids() -> set[str]:
 
 
 def create_tts_engine(engine_id: str, piper_path: Path) -> BaseTTSEngine:
+    if engine_id == "audiocpp":
+        return AudioCppTTSEngine()
     if engine_id == "piper":
         return PiperTTSEngine(piper_path)
     if engine_id in {"kokoro", "kokoro_python"}:

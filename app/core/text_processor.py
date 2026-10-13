@@ -409,8 +409,9 @@ class TextProcessor:
 
     @staticmethod
     def _split_by_words(text: str, max_chars: int) -> list[str]:
-        # Keep Turbo's only multiword native token intact at chunk boundaries.
-        words = re.findall(r"\[clear throat\]|\S+", text)
+        # Native controls with spaces must reach the TTS model intact.
+        from app.tts.fish_tags import TAG_PATTERN
+        words = re.findall(r"(?:" + TAG_PATTERN + r"|\[clear throat\]|\S)+", text)
         pieces: list[str] = []
         current = ""
 

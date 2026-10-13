@@ -1,6 +1,7 @@
 """Keep release-facing strings and interpolation fields consistent."""
 
 import json
+import ast
 from pathlib import Path
 from string import Formatter
 
@@ -11,7 +12,8 @@ LOCALES = Path(__file__).resolve().parents[1] / "locales"
 ENGLISH = json.loads((LOCALES / "en.json").read_text(encoding="utf-8-sig"))
 NEW_KEYS = {
     key for key in ENGLISH
-    if key.startswith(("indextts_", "h3_", "markup_emotion_", "runpod_metrics_"))
+    if key.startswith(("indextts_", "h3_", "markup_emotion_", "runpod_metrics_",
+                       "audiocpp_", "higgs_", "fish_", "segment_"))
 } | {"runpod_export_metrics", "runpod_job_timing", "generation_stage_time_status",
      "project_rename_busy", "project_folder_renamed", "output_relative",
      "output_absolute", "output_folder_mode", "output_folder_help", "markup_vocal_help"}
@@ -37,3 +39,26 @@ def test_example_chunk_limits_match_application_defaults():
     assert example["engine_chunk_sizes"] == DEFAULT_SETTINGS["engine_chunk_sizes"]
     assert example["output_dir"] == DEFAULT_SETTINGS["output_dir"] == "exports"
     assert example["output_dir_mode"] == DEFAULT_SETTINGS["output_dir_mode"] == "relative"
+
+
+@pytest.mark.parametrize("relative", ["app/ui/audiocpp_settings.py", "app/ui/segment_detail_dialog.py"])
+def test_new_panels_do_not_rely_on_missing_literal_translation_keys(relative):
+    tree = ast.parse((LOCALES.parent / relative).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        name = getattr(node.func, "attr", "") or getattr(node.func, "id", "")
+        key = node.args[0]
+        if name in {"tr", "tr_text", "translate"} and isinstance(key, ast.Constant):
+            assert key.value in ENGLISH, (relative, key.value)
+
+
+@pytest.mark.parametrize("path", sorted(LOCALES.glob("*.json")), ids=lambda p: p.stem)
+def test_locale_keys_are_unique(path):
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            assert key not in result, (path.name, key)
+            result[key] = value
+        return result
+    json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)

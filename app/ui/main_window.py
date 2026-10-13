@@ -154,6 +154,8 @@ from app.tts.install_logging import install_detail_text, is_install_detail
 from app.tts.indextts_manager import IndexTTSManager
 from app.tts.indextts_config import LICENSE_NOTICE as INDEXTTS_LICENSE_NOTICE, LICENSE_URL as INDEXTTS_LICENSE_URL
 from app.ui.indextts_settings import IndexTTSSettingsMixin
+from app.ui.audiocpp_settings import AudioCppSettingsMixin
+from app.tts.audiocpp_manager import AudioCppManager
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
 from app.tts.russian_normalization_manager import RussianNormalizationManager
@@ -202,6 +204,7 @@ from app.utils.paths import (
     application_root,
     large_assets_root,
     resolve_app_path,
+    resolve_large_asset_path,
     resolve_executable,
     resource_root,
 )
@@ -891,7 +894,7 @@ class OmniVoiceDesignDialog(QDialog):
         }
 
 
-class MainWindow(IndexTTSSettingsMixin, QMainWindow):
+class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.settings_manager = SettingsManager()
@@ -914,6 +917,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
         self.qwen_manager = QwenManager()
         self.indextts_manager = IndexTTSManager()
+        self.audiocpp_manager = AudioCppManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
         self.russian_normalization_manager = RussianNormalizationManager()
@@ -961,6 +965,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.pending_qwen_gallery_voice_id: str | None = None
         self.pending_f5_russian_gallery_voice_id: str | None = None
         self.pending_indextts_gallery_voice_id: str | None = None
+        self.pending_audiocpp_gallery_voice_id: str | None = None
         self.pending_removed_gallery_voice: tuple[str, GalleryVoice] | None = None
         self.qwen_worker: QwenInstallWorker | None = None
         self.qwen_thread: QThread | None = None
@@ -2046,6 +2051,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _build_markup_emotion_button(self, command: dict[str, str]) -> QPushButton:
         from app.tts.indextts_emotions import EMOTION_PRESETS
         from app.tts.chatterbox_tags import EMOTION_TAGS, VOCAL_TAGS
+        from app.tts.higgs_tags import TAG_GROUPS
 
         button = QPushButton(self.tr("markup_emotion_label", "Emotion"))
         button.setObjectName("markupCommandButton")
@@ -2053,28 +2059,39 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._style_markup_command_button(button, command)
         button.setToolTip(self.tr(
             "markup_emotion_help",
-            "Choose a menu by engine. IndexTTS: presets, intensity and Custom. Chatterbox Turbo (English): emotions, styles and vocal events; no intensity or Custom. Choosing a menu does not switch the active engine.",
-        ) + '\n{{emotion happy}}\n{{emotion whispering}}\n{{vocal laugh}}\n{{emotion custom "Friendly and energetic" 90%}}')
+            "Choose a menu by engine. IndexTTS: presets, intensity and Custom. Chatterbox Turbo (English): native emotion, style and vocal tags inserted directly into the text. Higgs and Fish Audio: native emotion, style, prosody and vocal tags inserted directly into the text. Choosing a menu does not switch the active engine.",
+        ) + '\n[happy]\n[whispering]\n[laugh]\n{{emotion custom "Friendly and energetic" 90%}}')
         menu = QMenu(button)
-        chatterbox_menu = QMenu("Chatterbox", menu)
-        menu.addMenu(chatterbox_menu)
+        submenus = []
+
+        def add_submenu(parent, title):
+            # Explicit ownership prevents temporary QAction wrappers from deleting menus.
+            child = QMenu(title, parent)
+            parent.addMenu(child)
+            submenus.append(child)
+            return child
+
+        chatterbox_menu = add_submenu(menu, "Chatterbox")
         chatterbox_menu.setToolTipsVisible(True)
         chatterbox_menu.addSection(f"Turbo · {self.tr('language_english')}")
-        for name in [*EMOTION_TAGS, "off", *VOCAL_TAGS]:
-            if name == VOCAL_TAGS[0]:
-                chatterbox_menu.addSeparator()
-            kind = "vocal" if name in VOCAL_TAGS else "emotion"
-            template = "{{" + kind + " " + name + "}}"
-            label = self.tr("indextts_emotion_off", "Off") if name == "off" else "[" + name.replace("_", " ") + "]"
-            action = chatterbox_menu.addAction(label)
-            action.setData(name)
-            action.setToolTip(template)
-            item = {**command, "template": template, "cursor": template}
-            action.triggered.connect(
-                lambda _checked=False, entry=item: self._insert_markup_template(entry)
-            )
-        indextts_menu = QMenu("IndexTTS", menu)
-        menu.addMenu(indextts_menu)
+        for kind, category, label, names in (
+            ("emotion", "emotion", "Emotions", EMOTION_TAGS),
+            ("vocal", "sfx", "Vocal sounds", VOCAL_TAGS),
+        ):
+            category_menu = add_submenu(chatterbox_menu, self.tr("higgs_category_" + category, label))
+            category_menu.setToolTipsVisible(True)
+            for name in names:
+                template = "[" + name.replace("_", " ") + "]"
+                label = self.tr("indextts_emotion_off", "Off") if name == "off" else name.replace("_", " ").capitalize()
+                action = category_menu.addAction(label)
+                action.setData(name)
+                action.setToolTip(template)
+                item = {**command, "template": template, "cursor": template}
+                action.triggered.connect(
+                    lambda _checked=False, entry=item: self._insert_markup_template(entry)
+                )
+        indextts_menu = add_submenu(menu, "IndexTTS")
+        indextts_emotions_menu = add_submenu(indextts_menu, self.tr("higgs_category_emotion", "Emotions"))
         emotion_keys = {"fear": "afraid", "disgust": "disgusted", "surprise": "surprised"}
         for name in [*EMOTION_PRESETS, "off", "custom"]:
             key = emotion_keys.get(name, name)
@@ -2088,14 +2105,45 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 "template": template,
                 "cursor": '{{emotion custom "' if name == "custom" else template,
             }
-            action = indextts_menu.addAction(label)
+            action = indextts_emotions_menu.addAction(label)
             action.setData(name)
             action.triggered.connect(
                 lambda _checked=False, entry=item: self._insert_markup_template(entry)
             )
+        higgs_menu = add_submenu(menu, "Higgs")
+        higgs_menu.setToolTipsVisible(True)
+        for category, category_label, tags in TAG_GROUPS:
+            category_menu = add_submenu(higgs_menu, self.tr("higgs_category_" + category, category_label))
+            category_menu.setToolTipsVisible(True)
+            for value, label, vocal_text in tags:
+                token = f"<|{category}:{value}|>"
+                template = token + vocal_text + (" " if vocal_text else "")
+                action = category_menu.addAction(self.tr("higgs_tag_" + value, label))
+                action.setData(token)
+                action.setToolTip(template + "\n" + self.tr(
+                    "higgs_native_help",
+                    "Native Higgs tag. Put emotion, style and delivery controls at the start of the sentence; pauses and vocal sounds at the desired position. Vocal sounds include editable vocal text.",
+                ))
+                item = {**command, "template": template, "cursor": template}
+                action.triggered.connect(
+                    lambda _checked=False, entry=item: self._insert_markup_template(entry)
+                )
+        from app.tts.fish_tags import TAG_GROUPS as FISH_TAG_GROUPS
+        fish_menu = add_submenu(menu, "Fish Audio")
+        fish_menu.setToolTipsVisible(True)
+        for category, label, tags in FISH_TAG_GROUPS:
+            category_menu = add_submenu(fish_menu, self.tr("higgs_category_" + category, label))
+            category_menu.setToolTipsVisible(True)
+            for tag in tags:
+                token = "[" + tag + "]"
+                action = category_menu.addAction(tag.capitalize())
+                action.setData(token)
+                action.setToolTip(self.tr("fish_native_help", "Native Fish Audio tag, inserted directly into the text. You can edit the instruction inside the brackets."))
+                item = {**command, "template": token, "cursor": token}
+                action.triggered.connect(lambda _checked=False, entry=item: self._insert_markup_template(entry))
         button.setMenu(menu)
         self.markup_emotion_menu = menu
-        self.markup_emotion_submenus = (chatterbox_menu, indextts_menu)
+        self.markup_emotion_submenus = tuple(submenus)
         self.markup_emotion_menu_button = button
         return button
 
@@ -3546,6 +3594,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         )
         detail_actions.addWidget(self.review_save_text_button)
         detail_actions.addWidget(self.review_play_current_button)
+        self.review_segment_detail_button = QPushButton(self.tr("segment_detail", "Segment detail"))
+        self.review_segment_detail_button.setIcon(ui_icon("edit"))
+        self.review_segment_detail_button.clicked.connect(self._open_review_segment_detail)
+        detail_actions.addWidget(self.review_segment_detail_button)
         detail_actions.addWidget(self.review_waveform_cut_button)
         detail_actions.addWidget(self.review_cut_audio_tail_button)
         detail_actions.addWidget(self.review_regenerate_button)
@@ -7069,6 +7121,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             ("chatterbox", self._build_chatterbox_engine_panel()),
             ("qwen", self._build_qwen_engine_panel()),
             ("indextts", self._build_indextts_engine_panel()),
+            ("audiocpp", self._build_audiocpp_engine_panel()),
             ("omnivoice", self._build_omnivoice_engine_panel()),
             ("f5_russian", self._build_f5_russian_engine_panel()),
             ("openai", self._build_openai_engine_panel()),
@@ -10598,6 +10651,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         if custom_engine is not None:
             return str(custom_engine.get("name", engine_id) or engine_id)
         base_engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
+        if base_engine_id == "audiocpp":
+            from app.tts.audiocpp_config import MODELS
+            return MODELS[qwen_model_id or self._audiocpp_settings()["model"]].name
         if base_engine_id == "qwen" and qwen_model_id:
             return self._qwen_model_display_name(qwen_model_id)
         labels = {
@@ -10623,6 +10679,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     @staticmethod
     def _split_tts_engine_row_id(engine_id: str) -> tuple[str, str | None]:
+        if engine_id.startswith("audiocpp:"):
+            return "audiocpp", engine_id.split(":", 1)[1]
         prefix = "qwen:"
         if engine_id.startswith(prefix):
             model_id = engine_id[len(prefix) :].strip()
@@ -10635,6 +10693,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     def _active_tts_engine_row_id(self) -> str:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if engine_id == "audiocpp":
+            return "audiocpp:" + self._audiocpp_settings()["model"]
         if engine_id == "qwen":
             return self._qwen_tts_engine_row_id(self._selected_qwen_model_id())
         return engine_id
@@ -10942,6 +11002,19 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                     "_selectable": True,
                 }
             )
+        from app.tts.audiocpp_config import MODELS, model_config
+        ac_config = self._audiocpp_settings()
+        position = next(i for i, row in enumerate(rows) if row["engine_id"] == "f5_russian") + 1
+        for offset, spec in enumerate(MODELS.values()):
+            config = model_config(ac_config, spec.id)
+            ready = self.audiocpp_manager.is_installed(spec.id, config["backend"])
+            rows.insert(position + offset, {
+                "engine_id": "audiocpp:" + spec.id, "type": local_type, "name": spec.name,
+                "speed": self.tr("depends", "Depends"), "quality": self.tr("engine_quality_high", "High"),
+                "gpu": self.tr("recommended", "Recommended"),
+                "installed": self.tr("installed", "Installed") if ready else self.tr("not_installed", "Not installed"),
+                "_selectable": True,
+            })
         current_row_id = self._active_tts_engine_row_id()
         for row in rows:
             engine_id = row["engine_id"]
@@ -10959,10 +11032,12 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 )
             elif (
                 self.preloaded_tts_engine_id == base_engine_id
-                or base_engine_id in self.host_loaded_tts_engine_ids
+                or (base_engine_id in self.host_loaded_tts_engine_ids
+                    and (base_engine_id != "audiocpp" or self._audiocpp_model_loaded(_model_id)))
             ):
                 row["selected"] = self.tr("selected_loaded", "Selected / loaded")
             elif base_engine_id in {
+                "audiocpp",
                 "chatterbox",
                 "qwen",
                 "omnivoice",
@@ -11095,7 +11170,30 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             )
         layout.addWidget(select_button)
 
-        if engine_id == "piper":
+        if base_engine_id == "audiocpp":
+            from app.tts.audiocpp_config import model_config
+            config = model_config(self._audiocpp_settings(), qwen_model_id)
+            model = config["model"]
+            ready = self.audiocpp_manager.is_installed(model, config["backend"])
+            detected = self.audiocpp_manager.model_path(model).is_file()
+            busy = getattr(self, "audiocpp_thread", None) is not None or self.preload_thread is not None or self.worker_thread is not None
+            install_button = QPushButton(self._local_engine_install_action(ready, detected, False))
+            install_button.setIcon(ui_icon("apply"))
+            install_button.clicked.connect(lambda _=False, m=model: self._audiocpp_row_action(m, "install"))
+            install_button.setEnabled(not busy and "audiocpp" not in self.host_loaded_tts_engine_ids)
+            layout.addWidget(install_button)
+            if ready or detected:
+                remove_button = QPushButton(self.tr("uninstall", "Uninstall"))
+                remove_button.setIcon(ui_icon("delete"))
+                remove_button.clicked.connect(lambda _=False, m=model: self._audiocpp_row_action(m, "remove"))
+                remove_button.setEnabled(not busy and "audiocpp" not in self.host_loaded_tts_engine_ids)
+                layout.addWidget(remove_button)
+            if ready:
+                load_button = QPushButton()
+                load_button.clicked.connect(lambda _=False, m=model: self._audiocpp_row_action(m, "load"))
+                self._configure_preload_button(load_button, engine_id, not busy)
+                layout.addWidget(load_button)
+        elif engine_id == "piper":
             manage_button = QPushButton(self.tr("manage_voices", "Manage voices"))
             manage_button.setIcon(ui_icon("voice"))
             manage_button.clicked.connect(self._open_voice_manager)
@@ -11418,6 +11516,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _first_installed_tts_engine(self) -> str | None:
         for index in range(self.tts_engine_combo.count()):
             candidate = str(self.tts_engine_combo.itemData(index) or "")
+            if candidate == "audiocpp":
+                config = self._audiocpp_settings()
+                if not self.audiocpp_manager.is_installed(config["model"], config["backend"]):
+                    continue
             if candidate and self._tts_engine_is_installed(candidate):
                 return candidate
         return None
@@ -11436,7 +11538,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             )
             return False
         engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
-        if qwen_model_id and not self._select_qwen_model(qwen_model_id):
+        if engine_id == "audiocpp" and qwen_model_id:
+            combo = self.audiocpp_fields["model"]
+            combo.setCurrentIndex(combo.findData(qwen_model_id))
+        if engine_id == "qwen" and qwen_model_id and not self._select_qwen_model(qwen_model_id):
             return False
         index = self.tts_engine_combo.findData(engine_id)
         if index < 0:
@@ -11450,8 +11555,12 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         return True
 
     def _select_and_install_engine(self, engine_id: str) -> None:
+        if engine_id == "audiocpp" or engine_id.startswith("audiocpp:"):
+            self._select_tts_engine(engine_id)
+            self._install_audiocpp()
+            return
         engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
-        if qwen_model_id and not self._select_qwen_model(qwen_model_id):
+        if engine_id == "qwen" and qwen_model_id and not self._select_qwen_model(qwen_model_id):
             return
         if engine_id == "kokoro":
             self._install_kokoro_python()
@@ -11647,6 +11756,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         russian_dialog = self.russian_normalization_install_dialog
         return (
             tts_install_active
+            or getattr(self, "audiocpp_thread", None) is not None
             or self.indextts_thread is not None
             or self.russian_normalization_thread is not None
             or (
@@ -11661,7 +11771,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         engine_id: str,
         can_load: bool,
     ) -> None:
-        action_in_progress = self.preloading_tts_engine_id == engine_id
+        base_engine, model = self._split_tts_engine_row_id(engine_id)
+        action_in_progress = self.preloading_tts_engine_id == base_engine
         loaded = (
             engine_id in self.host_loaded_tts_engine_ids
             or (
@@ -11669,6 +11780,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 and self.preloaded_tts_engine_id == engine_id
             )
         )
+        if base_engine == "audiocpp":
+            loaded = self._audiocpp_model_loaded(model or self._audiocpp_settings()["model"])
         if action_in_progress:
             is_loading = self.preload_memory_action_load is not False
             button.setText(
@@ -11701,7 +11814,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     def _start_preload_tts_engine(self, engine_id: str) -> None:
         if self.preload_thread is not None:
             return
-        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "indextts", "f5_russian"}:
+        if engine_id not in {"kokoro", "chatterbox", "qwen", "omnivoice", "indextts", "f5_russian", "audiocpp"}:
             return
         # Show a visible acknowledgement before doing any local preparation.
         # Some model configurations take noticeable time to assemble.
@@ -11730,6 +11843,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
     ) -> None:
         if self.preload_thread is not None:
             return
+        if engine_id == "audiocpp" and load and voice_config:
+            self._audiocpp_loading_model = voice_config["model"]
         self.preloading_tts_engine_id = engine_id
         self.preload_memory_action_load = load
         if self.engine_memory_progress_dialog is None:
@@ -11773,6 +11888,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         engine_id: str,
         loaded: bool,
     ) -> None:
+        if engine_id == "audiocpp":
+            self._audiocpp_loaded_model = getattr(self, "_audiocpp_loading_model", None) if loaded else None
         if loaded:
             self.host_loaded_tts_engine_ids.add(engine_id)
             self.loaded_tts_engine_id = engine_id
@@ -11886,6 +12003,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._refresh_all_engine_status()
 
     def _refresh_all_engine_status(self) -> None:
+        self._refresh_audiocpp_status()
         self._update_header_engine_label()
         self._refresh_tts_engine_table()
         self._refresh_generation_voice_combo()
@@ -11911,6 +12029,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             return
         if not isinstance(status, dict):
             return
+        self._audiocpp_loaded_model = status.get("audiocpp", {}).get("model")
         self.host_loaded_tts_engine_ids = {
             str(engine_id)
             for engine_id, details in status.items()
@@ -12351,6 +12470,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             "qwen_thread",
             "qwen_preview_thread",
             "indextts_thread",
+            "audiocpp_thread",
             "omnivoice_thread",
             "omnivoice_preview_thread",
             "f5_russian_thread",
@@ -12551,6 +12671,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.asset_storage_progress_dialog = None
 
     def _reload_asset_managers(self) -> None:
+        self.audiocpp_manager = AudioCppManager()
         self.kokoro_python_manager = KokoroPythonManager()
         self.chatterbox_manager = ChatterboxManager()
         self.chatterbox_reference_voice_manager = ChatterboxReferenceVoiceManager()
@@ -12883,6 +13004,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.kokoro_chunk_size_spin = self._engine_chunk_spin()
         self.piper_chunk_size_spin = self._engine_chunk_spin()
         self.indextts_chunk_size_spin = self._engine_chunk_spin()
+        self.audiocpp_chunk_size_spin = self._engine_chunk_spin()
+        self.fish_chunk_size_spin = self._engine_chunk_spin()
         self.f5_russian_chunk_size_spin = self._engine_chunk_spin()
         splitting_form.addRow(
             self.tr("default_chunk_size", "Default chunk size"),
@@ -12913,6 +13036,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.f5_russian_chunk_size_spin,
         )
         splitting_form.addRow("IndexTTS-2.5", self.indextts_chunk_size_spin)
+        splitting_form.addRow("Higgs Audio v3", self.audiocpp_chunk_size_spin)
+        splitting_form.addRow("Fish Audio S2 Pro", self.fish_chunk_size_spin)
 
         libraries_group = QGroupBox(
             self.tr("audio_library_folders", "Audio library folders")
@@ -12982,6 +13107,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             )
             or "piper"
         )
+        if engine == "audiocpp" and self._audiocpp_settings()["model"] == "fish_audio_s2_pro_q8_0":
+            engine = "audiocpp:fish_audio_s2_pro_q8_0"
         spin_map = {
             "piper": getattr(self, "piper_chunk_size_spin", None),
             "kokoro": getattr(self, "kokoro_chunk_size_spin", None),
@@ -12989,6 +13116,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             "qwen": getattr(self, "qwen_chunk_size_spin", None),
             "omnivoice": getattr(self, "omnivoice_chunk_size_spin", None),
             "indextts": getattr(self, "indextts_chunk_size_spin", None),
+            "audiocpp": getattr(self, "audiocpp_chunk_size_spin", None),
+            "audiocpp:fish_audio_s2_pro_q8_0": getattr(self, "fish_chunk_size_spin", None),
             "f5_russian": getattr(self, "f5_russian_chunk_size_spin", None),
         }
         override = 0
@@ -13605,13 +13734,13 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.voices_manage_button.setIcon(
             ui_icon(
                 "voice"
-                if engine_id in {"chatterbox", "omnivoice", "indextts", "f5_russian"}
+                if engine_id in {"chatterbox", "omnivoice", "indextts", "f5_russian", "audiocpp"}
                 or qwen_cloning
                 else "settings"
             )
         )
         self.voices_manage_button.setEnabled(
-            engine_id in {"piper", "chatterbox", "omnivoice", "indextts", "f5_russian"}
+            engine_id in {"piper", "chatterbox", "omnivoice", "indextts", "f5_russian", "audiocpp"}
             or qwen_cloning
         )
         self.voices_external_libraries_button.setVisible(True)
@@ -13711,7 +13840,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             return self.tr("download_piper_voices", "Download Piper voices")
         if engine_id == "chatterbox":
             return self.tr("clone_voice", "Clone Voice")
-        if engine_id in {"omnivoice", "indextts"}:
+        if engine_id in {"omnivoice", "indextts", "audiocpp"}:
             return self.tr("clone_voice", "Clone Voice")
         if engine_id == "f5_russian":
             return self.tr("clone_voice", "Clone Voice")
@@ -13773,6 +13902,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         )
 
     def _voice_engine_is_ready(self, engine_id: str) -> bool:
+        if engine_id == "audiocpp":
+            config = self._audiocpp_settings()
+            return self.audiocpp_manager.is_installed(config["model"], config["backend"])
         if engine_id == "qwen":
             # The default manager check targets CustomVoice, not the selected
             # model. A Base-only installation must also support library voices.
@@ -13801,6 +13933,15 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         *,
         engine_ready: bool | None = None,
     ) -> list[dict[str, object]]:
+        if engine_id == "audiocpp":
+            config = self._audiocpp_settings()
+            rows = [{"engine": "audiocpp", "id": name, "name": value.get("name", name), "language": "auto",
+                     "type": "Reference WAV", "status": self.tr("installed", "Installed"),
+                     "selected": value["reference_audio_path"] == config["reference_audio_path"],
+                     "installed": True}
+                    for name, value in self.audiocpp_voices.items()
+                    if resolve_large_asset_path(value["reference_audio_path"]).is_file()]
+            return self._merge_voice_gallery_rows(engine_id, rows)
         if engine_id == "piper":
             selected_id = self.voice_combo.currentData()
             rows = [
@@ -14025,7 +14166,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             gallery_voice = self._matching_gallery_voice(engine_id, row, gallery_voices)
             if gallery_voice is not None:
                 row = dict(row)
-                if engine_id == "f5_russian":
+                if engine_id in {"f5_russian", "audiocpp"}:
                     row["id"] = gallery_voice.voice_id
                     row["name"] = gallery_voice.name
                     row["language"] = (
@@ -14066,7 +14207,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         gallery_voices: list[GalleryVoice],
     ) -> GalleryVoice | None:
         for voice in gallery_voices:
-            if engine_id == "qwen":
+            if engine_id == "audiocpp":
+                if row.get("id") == voice.voice_id:
+                    return voice
+            elif engine_id == "qwen":
                 if (
                     str(row.get("speaker_id", "")).casefold()
                     == (voice.speaker_id or voice.engine_voice_id).casefold()
@@ -14146,6 +14290,10 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         return row
 
     def _is_gallery_voice_selected(self, engine_id: str, voice: GalleryVoice) -> bool:
+        if engine_id == "audiocpp":
+            selected = self.audiocpp_fields["reference_audio_path"].path()
+            return bool(selected and voice.installed_path
+                        and resolve_large_asset_path(voice.installed_path).resolve() == selected.resolve())
         if engine_id == "qwen":
             if self._qwen_model_kind() == "voice_clone":
                 selected = self.qwen_reference_picker.path()
@@ -14425,6 +14573,15 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             )
             return
         voice_id = row.get("id")
+        if engine_id == "audiocpp" and not isinstance(row.get("gallery_voice"), GalleryVoice):
+            self.audiocpp_voice_combo.setCurrentIndex(self.audiocpp_voice_combo.findData(voice_id))
+            self._audiocpp_choose_voice()
+            self._save_settings()
+            if refresh:
+                self._refresh_voices_page()
+            else:
+                self._refresh_generation_voice_combo()
+            return
         gallery_voice = row.get("gallery_voice")
         if isinstance(gallery_voice, GalleryVoice):
             if (
@@ -14437,6 +14594,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                     )
                 elif engine_id == "indextts":
                     self.pending_indextts_gallery_voice_id = gallery_voice.voice_id
+                elif engine_id == "audiocpp":
+                    self.pending_audiocpp_gallery_voice_id = gallery_voice.voice_id
                 elif (
                     engine_id == "qwen"
                     and self._qwen_model_kind() == "voice_clone"
@@ -14458,6 +14617,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 self._apply_qwen_gallery_reference(gallery_voice)
             elif engine_id == "indextts":
                 self._apply_indextts_gallery_reference(gallery_voice)
+            elif engine_id == "audiocpp":
+                self._apply_audiocpp_gallery_reference(gallery_voice)
             elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(gallery_voice)
             elif engine_id == "f5_russian":
@@ -14855,7 +15016,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
             return
         if self._is_gallery_voice_selected(engine_id, gallery_voice):
-            if engine_id == "indextts":
+            if engine_id == "audiocpp":
+                self._apply_audiocpp_gallery_reference(voice)
+            elif engine_id == "indextts":
                 self._apply_indextts_gallery_reference(voice)
             elif engine_id == "omnivoice":
                 self._apply_omnivoice_gallery_reference(voice)
@@ -14936,6 +15099,12 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         pending_qwen_voice_id = self.pending_qwen_gallery_voice_id
         self.pending_qwen_gallery_voice_id = None
         pending_indextts_voice_id = self.pending_indextts_gallery_voice_id
+        pending_audiocpp_voice_id = getattr(self, "pending_audiocpp_gallery_voice_id", None)
+        self.pending_audiocpp_gallery_voice_id = None
+        if pending_audiocpp_voice_id:
+            pending_voice = self.voice_gallery_manager.get_voice(pending_audiocpp_voice_id)
+            if pending_voice is not None and self._apply_audiocpp_gallery_reference(pending_voice):
+                self._save_settings()
         self.pending_indextts_gallery_voice_id = None
         if pending_indextts_voice_id:
             pending_voice = self.voice_gallery_manager.get_voice(pending_indextts_voice_id)
@@ -14963,7 +15132,14 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.pending_removed_gallery_voice = None
         if pending_removed is not None:
             engine_id, _voice = pending_removed
-            if engine_id == "indextts":
+            if engine_id == "audiocpp":
+                self.audiocpp_voices.pop(_voice.voice_id, None)
+                index = self.audiocpp_voice_combo.findData(_voice.voice_id)
+                if index >= 0:
+                    self.audiocpp_voice_combo.removeItem(index)
+                self.audiocpp_fields["reference_audio_path"].set_path(None)
+                self.audiocpp_fields["reference_text"].clear()
+            elif engine_id == "indextts":
                 self.indextts_fields["reference_audio_path"].set_path(None)
             elif engine_id == "omnivoice":
                 self.omnivoice_reference_picker.set_path(None)
@@ -14981,6 +15157,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._refresh_voices_page()
 
     def _on_voice_gallery_failed(self, message: str) -> None:
+        self.pending_audiocpp_gallery_voice_id = None
         self.voices_progress_bar.setVisible(False)
         self.pending_indextts_gallery_voice_id = None
         self.pending_qwen_gallery_voice_id = None
@@ -14990,6 +15167,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._show_error(self.tr("generation_failed", "Generation failed"), message)
 
     def _on_voice_gallery_cancelled(self) -> None:
+        self.pending_audiocpp_gallery_voice_id = None
         self.voices_progress_bar.setVisible(False)
         self.pending_indextts_gallery_voice_id = None
         self.pending_qwen_gallery_voice_id = None
@@ -15009,6 +15187,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
 
     def _voices_primary_manage_action(self) -> None:
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
+        if engine_id == "audiocpp":
+            self._import_gallery_reference_voice("audiocpp")
+            return
         if engine_id == "piper":
             self._open_voice_manager()
             self._refresh_voices_page()
@@ -15069,7 +15250,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             values = dialog.values()
             source = Path(values["source"])
             if (
-                engine_id in {"f5_russian", "qwen"}
+                engine_id in {"f5_russian", "qwen", "audiocpp"}
                 and not str(values["ref_text"]).strip()
             ):
                 self._show_error(
@@ -15099,6 +15280,9 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                 self._show_error(self.tr("import_failed", "Import failed"), str(exc))
                 return
         self.log_view.append_event(f"Imported {engine_id} reference voice: {voice.name}")
+        if engine_id == "audiocpp":
+            self._apply_audiocpp_gallery_reference(voice)
+            self._save_settings()
         if engine_id == "indextts":
             self._apply_indextts_gallery_reference(voice)
             self._save_settings()
@@ -15512,6 +15696,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self._ensure_default_qwen_reference(allow_sync=False)
 
         self._load_indextts_settings()
+        self._load_audiocpp_settings()
         omnivoice = self.settings.get("omnivoice", {})
         if not isinstance(omnivoice, dict):
             omnivoice = {}
@@ -15745,6 +15930,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.qwen_chunk_size_spin.setValue(chunk_size_for("qwen"))
         self.omnivoice_chunk_size_spin.setValue(chunk_size_for("omnivoice"))
         self.indextts_chunk_size_spin.setValue(chunk_size_for("indextts"))
+        self.audiocpp_chunk_size_spin.setValue(chunk_size_for("audiocpp"))
+        self.fish_chunk_size_spin.setValue(chunk_size_for("audiocpp:fish_audio_s2_pro_q8_0"))
         self.f5_russian_chunk_size_spin.setValue(chunk_size_for("f5_russian"))
         self._select_combo_data(
             self.audio_format_combo,
@@ -18293,6 +18480,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             return self._qwen_voice_config_for_ui()
         if engine_id == "indextts":
             return self._indextts_voice_config_for_ui()
+        if engine_id == "audiocpp":
+            return self._audiocpp_voice_config_for_ui()
         if engine_id == "omnivoice":
             return self._omnivoice_voice_config_for_ui()
         if engine_id == "f5_russian":
@@ -19365,6 +19554,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             has_audio and not self._project_audio_write_in_progress()
         )
         self.review_regenerate_button.setEnabled(not busy)
+        self.review_segment_detail_button.setEnabled(not busy and self.review_regeneration_dialog is None and not self._project_audio_write_in_progress())
         self.review_waveform_cut_button.setVisible(tail_tools_visible)
         self.review_waveform_cut_button.setEnabled(has_audio and not busy)
         self.review_cut_audio_tail_button.setVisible(tail_tools_visible)
@@ -19386,6 +19576,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.review_save_text_button.setEnabled(False)
         self.review_play_current_button.setEnabled(False)
         self.review_regenerate_button.setEnabled(False)
+        self.review_segment_detail_button.setEnabled(False)
         tail_tools_visible = self._tail_review_enabled()
         self.review_waveform_cut_button.setVisible(tail_tools_visible)
         self.review_waveform_cut_button.setEnabled(False)
@@ -19426,6 +19617,36 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         self.log_view.append_event(f"Edited segment {segment.sequence_index}.")
         self.selected_review_segment_id = segment.id
         self._refresh_review_page()
+
+    def _open_review_segment_detail(self) -> None:
+        if self._project_audio_write_in_progress() or self.verification_thread is not None or self.review_regeneration_dialog is not None:
+            return
+        segment = self._selected_review_segment()
+        if segment is None:
+            return
+        from app.ui.segment_detail_dialog import SegmentDetailDialog
+        book = self.audiobook_store.get_audiobook(segment.audiobook_id)
+        fallback = json.loads(book.engine_config_json or "{}") if book else {}
+        config = self._stored_segment_voice_config(segment, fallback)
+        voices = []
+        engine = str(config.get("engine", "piper"))
+        if engine == "piper":
+            voices = [(v.display_name, v.as_config(float(config.get("speed", 1)))) for v in self.voices]
+        else:
+            for voice in self.voice_gallery_manager.list_voices(engine):
+                path = resolve_large_asset_path(voice.installed_path or voice.ref_audio_path or "")
+                if path.is_file():
+                    voices.append((voice.name, {"voice": voice.voice_id, "reference_audio_path": str(path), "reference_text": voice.ref_text}))
+        dialog = SegmentDetailDialog(self.review_source_detail.toPlainText(), config, voices, self.tr, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        text, config = dialog.values()
+        if text == segment.source_text and config == self._stored_segment_voice_config(segment, fallback):
+            return
+        self.audiobook_store.update_segment_details(segment.id, text, config)
+        self.selected_review_segment_id = segment.id
+        self._refresh_review_page()
+        self.review_status_label.setText(self.tr("segment_detail_saved", "Segment changes saved. Regenerate the segment to hear them."))
 
     def _play_selected_review_audio(self) -> None:
         segment = self._selected_review_segment()
@@ -19653,10 +19874,11 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
         segment = self.audiobook_store.get_segment(segment_id)
         if segment is None:
             return
-        fallback_voice_config = self._current_voice_config()
-        if fallback_voice_config is None:
-            return
+        book = self.audiobook_store.get_audiobook(segment.audiobook_id)
+        fallback_voice_config = json.loads(book.engine_config_json or "{}") if book else {}
         voice_config = self._stored_segment_voice_config(segment, fallback_voice_config)
+        if not voice_config.get("engine"):
+            return
         engine_id = str(voice_config.get("engine", "piper"))
         self.segment_regeneration_uses_preloaded_engine = (
             engine_id in self.host_loaded_tts_engine_ids
@@ -20518,6 +20740,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.qwen_load_button,
             self.qwen_detect_gpu_button,
             self.indextts_panel,
+            self.audiocpp_panel,
             self.omnivoice_model_combo,
             self.omnivoice_mode_combo,
             self.omnivoice_device_combo,
@@ -20602,6 +20825,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
             self.omnivoice_chunk_size_spin,
             self.f5_russian_chunk_size_spin,
             self.indextts_chunk_size_spin,
+            self.audiocpp_chunk_size_spin,
+            self.fish_chunk_size_spin,
             self.output_picker,
             self.output_mode_combo,
             self.save_next_to_source_checkbox,
@@ -20707,6 +20932,8 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                     "qwen": self.qwen_chunk_size_spin.value(),
                     "omnivoice": self.omnivoice_chunk_size_spin.value(),
                     "indextts": self.indextts_chunk_size_spin.value(),
+                    "audiocpp": self.audiocpp_chunk_size_spin.value(),
+                    "audiocpp:fish_audio_s2_pro_q8_0": self.fish_chunk_size_spin.value(),
                     "f5_russian": self.f5_russian_chunk_size_spin.value(),
                 },
                 "normalize_audio": self.normalize_checkbox.isChecked(),
@@ -20806,6 +21033,7 @@ class MainWindow(IndexTTSSettingsMixin, QMainWindow):
                     ),
                 },
                 "indextts": self._indextts_settings(),
+                "audiocpp": self._audiocpp_settings(),
                 "omnivoice": {
                     "model": (
                         self.omnivoice_model_combo.currentData()

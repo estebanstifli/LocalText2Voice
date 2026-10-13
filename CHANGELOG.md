@@ -7,7 +7,53 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-13
+
+Local preparation only: not published and not production-signed. Includes the
+previously unpublished 2.3.0 preparation below; existing engines remain supported.
+
+### Added
+
+- Optional audio.cpp v0.9.1 integration with Higgs Audio v3 TTS 4B Q8 and Fish
+  Audio S2 Pro Q8. Shared native runtimes and pinned GGUF weights are downloaded
+  separately, with SHA-256 validation, resumable downloads and cancellation.
+- Separate model rows, per-model settings, CPU/CUDA/Vulkan Windows packages,
+  GPU index selection, installation/removal and persistent EngineHost inference.
+- Compatible reference voices with transcripts in the gallery and cloning UI.
+- Native Higgs/Fish expression menus; control tags survive text normalization
+  and multiword tags survive chunk splitting.
+- Segment Detail in Review: edit text, reference voice and engine parameters
+  without changing global settings or replacing the current audio before approval.
+- MCP model/backend/reference arguments on existing generation and preload tools,
+  model download/license metadata and actual loaded-model/backend status.
+
+### Changed
+
+- Higgs defaults to 200-character chunks and Fish to 400, with separately saved
+  generation settings and migration of the earlier development defaults.
+- Higgs retries its specific max-tokens-before-EOC error at most twice with a
+  larger token budget, smaller internal chunks and varied deterministic seeds.
+- Complete new UI translations across 11 languages and add English/Spanish
+  audio.cpp documentation, storage figures and limitations.
+
+### Fixed
+
+- Preserve explicit Chatterbox Turbo emotion tags across split text, avoid
+  duplicate metadata tags and omit its native control tags from Whisper comparison.
+- Apply stored speed/volume postprocessing during EngineHost segment regeneration.
+- Invalidate stale verification, word timestamps and audio-event alignment when
+  segment details change; use the saved segment configuration for regeneration.
+
+### Distribution
+
+- No audio.cpp runtime, GGUF weights or extra PyTorch environment in the base
+  installer. Model licenses are separate from the application's license.
+- Retain Windows ICU contamination checks and exact installer metadata checks.
+- Production certificate pending. Do not distribute test-signed artifacts.
+
 ## [2.3.0] - 2026-10-09
+
+Unpublished local preparation, incorporated into 3.0.0.
 
 ### Added
 

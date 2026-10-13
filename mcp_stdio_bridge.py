@@ -250,6 +250,12 @@ def engine_documentation() -> str:
         "engines are loaded in the persistent host, and `preload_engine` before "
         "long jobs when using heavy local engines such as Qwen3 TTS, OmniVoice, "
         "or Chatterbox.\n\n"
+        "audio.cpp is optional: install its runtime and weights in the desktop settings. "
+        "Use engine_id='audiocpp' with model='higgs_audio_tts_4b_q8_0' or "
+        "'fish_audio_s2_pro_q8_0', and backend='cpu', 'cuda', 'vulkan', or 'metal' "
+        "where supported and installed. Pass reference_audio_path (PCM WAV) and "
+        "reference_text, or a saved reference voice name. Higgs requires a reference WAV. "
+        "Both models generate offline WAVs; model licenses apply separately.\n\n"
         "For advanced text control, read `localtext2voice://docs/markup` before "
         "calling `create_audiobook`."
     )
@@ -282,6 +288,8 @@ def preload_engine(
     engine_id: str | None = None,
     voice: str | None = None,
     language: str | None = None,
+    model: str | None = None,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         engine = engine_id or str(_settings_manager.settings.get("tts_engine", "piper"))
@@ -289,6 +297,8 @@ def preload_engine(
             "engine_id": engine,
             "voice": voice,
             "language": language,
+            "model": model,
+            "backend": backend,
         }
         return _request_json("POST", f"/engines/{urllib.parse.quote(engine)}/preload", payload)
 
@@ -373,11 +383,19 @@ def create_audiobook(
     review_policy: str = "default",
     wait_until_complete: bool = False,
     wait_timeout_seconds: int = 0,
+    model: str | None = None,
+    backend: str | None = None,
+    reference_audio_path: str | None = None,
+    reference_text: str | None = None,
 ) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         request = {
             "text": text,
             "title": title,
+            "model": model,
+            "backend": backend,
+            "reference_audio_path": reference_audio_path,
+            "reference_text": reference_text,
             "engine_id": engine_id,
             "voice": voice,
             "language": language,
@@ -415,9 +433,17 @@ def generate_audio(
     background_music: str | None = None,
     mix_policy: str = "always",
     review_policy: str = "default",
+    model: str | None = None,
+    backend: str | None = None,
+    reference_audio_path: str | None = None,
+    reference_text: str | None = None,
 ) -> dict[str, Any]:
     return create_audiobook(
         text=text,
+        model=model,
+        backend=backend,
+        reference_audio_path=reference_audio_path,
+        reference_text=reference_text,
         title=title,
         engine_id=engine_id,
         voice=voice,

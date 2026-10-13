@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": 30,
+  "settings_schema_version": 33,
   "storage": {
     "base_dir": ".",
     "previous_roots": []
@@ -28,7 +28,9 @@
     "qwen": 520,
     "omnivoice": 400,
     "f5_russian": 300,
-    "indextts": 400
+    "indextts": 400,
+    "audiocpp": 200,
+    "audiocpp:fish_audio_s2_pro_q8_0": 400
   },
   "editor_syntax_highlighting": true,
   "show_markup_toolbar": true,

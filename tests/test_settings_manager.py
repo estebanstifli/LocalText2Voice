@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app import __version__
 from app.core.settings_manager import (
     CURRENT_SETTINGS_SCHEMA_VERSION,
@@ -12,10 +14,38 @@ from app.core.settings_manager import (
 from app.core.text_processor import TextProcessor
 
 
+@pytest.mark.parametrize("size,expected", [(200, 200), (400, 200), (500, 500)])
+def test_audiocpp_initial_chunk_defaults_upgrade_once(tmp_path, size, expected):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"settings_schema_version": 30,
+                                "engine_chunk_sizes": {"audiocpp": size},
+                                "audiocpp": {"text_chunk_size": size}}))
+    manager = SettingsManager(path)
+    assert manager.settings["engine_chunk_sizes"]["audiocpp"] == expected
+    assert manager.settings["audiocpp"]["text_chunk_size"] == expected
+    manager.settings["engine_chunk_sizes"]["audiocpp"] = 200
+    manager.settings["audiocpp"]["text_chunk_size"] = 200
+    manager.save()
+    restored = SettingsManager(path).settings
+    assert restored["engine_chunk_sizes"]["audiocpp"] == 200
+    assert restored["audiocpp"]["text_chunk_size"] == 200
+
+
 RUSSIAN_SAMPLE = (
     "Тихий ветер гуляет по улицам старого города. "
     "Скоро наступит вечер, и в окнах зажгутся тёплые огни."
 )
+
+
+@pytest.mark.parametrize("limit,expected", [(1024, 2048), (3072, 3072)])
+def test_audiocpp_token_default_migration_preserves_custom_limits(tmp_path, limit, expected):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"settings_schema_version": 31, "audiocpp": {"max_tokens": limit}}))
+    manager = SettingsManager(path)
+    assert manager.settings["audiocpp"]["max_tokens"] == expected
+    manager.settings["audiocpp"]["max_tokens"] = 1024
+    manager.save()
+    assert SettingsManager(path).settings["audiocpp"]["max_tokens"] == 1024
 
 
 def test_dialogue_grouping_defaults_on_and_preserves_opt_out(tmp_path):
@@ -117,6 +147,8 @@ def test_chunk_defaults_migrate_to_explicit_safe_engine_limits(tmp_path):
     assert settings["split_mode"] == "safe_chunks"
     assert settings["chunk_size"] == 300
     assert settings["engine_chunk_sizes"] == {
+        "audiocpp": 200,
+        "audiocpp:fish_audio_s2_pro_q8_0": 400,
         "piper": 300,
         "kokoro": 300,
         "chatterbox": 400,

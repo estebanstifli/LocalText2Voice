@@ -728,16 +728,31 @@ class AudioPipeline:
         short_policy = cls._short_chunk_policy(options)
         if short_policy:
             target_chars, max_chars, min_chars = short_policy
-            return TextProcessor.split_short_sentence_chunks(
+            chunks = TextProcessor.split_short_sentence_chunks(
                 text,
                 target_chars=target_chars,
                 max_chars=max_chars,
                 min_chars=min_chars,
                 group_short_dialogue=options.group_short_dialogue,
             )
-        return TextProcessor.split_paragraph_chunks(
-            text, options.chunk_size, group_short_dialogue=options.group_short_dialogue
-        )
+        else:
+            chunks = TextProcessor.split_paragraph_chunks(
+                text, options.chunk_size, group_short_dialogue=options.group_short_dialogue
+            )
+        if options.voice_config.get("engine") == "chatterbox" and options.voice_config.get("model") == "turbo":
+            from app.tts.chatterbox_tags import EMOTION_TAG_PATTERN
+            active = ""
+            prepared = []
+            for chunk in chunks:
+                content = chunk.text
+                matches = list(EMOTION_TAG_PATTERN.finditer(content))
+                if active and not EMOTION_TAG_PATTERN.match(content.lstrip()):
+                    content = active + " " + content
+                if matches:
+                    active = matches[-1].group()
+                prepared.append(replace(chunk, text=content))
+            chunks = prepared
+        return chunks
 
     @staticmethod
     def _group_safe_chunks(
@@ -967,6 +982,8 @@ class AudioPipeline:
         base_config: dict[str, Any],
         chunk: TextChunk,
     ) -> dict[str, Any]:
+        if base_config.get("engine") == "audiocpp":
+            base_config = {**base_config, "_postprocess_speed": base_config.get("speed", 1.0)}
         state = chunk.markup_state or {}
         if not state:
             return base_config
@@ -1027,6 +1044,10 @@ class AudioPipeline:
     ) -> None:
         if self._is_default_marker(voice_value):
             return
+        if engine == "audiocpp":
+            from app.tts.audiocpp_config import resolve_voice
+            config.update(resolve_voice(config, voice_value))
+            return
         if engine == "chatterbox":
             self._apply_chatterbox_voice(config, voice_value, voice_language)
         elif engine in {"kokoro", "kokoro_python"}:
@@ -1063,6 +1084,11 @@ class AudioPipeline:
         language_value: str,
     ) -> None:
         if self._is_default_marker(language_value):
+            return
+        if engine == "audiocpp":
+            # These two models infer language from text; never send an unsupported
+            # language control to their native inference implementation.
+            config["language"] = language_value
             return
         if engine == "indextts":
             from app.tts.indextts_config import language_code, LANGUAGES

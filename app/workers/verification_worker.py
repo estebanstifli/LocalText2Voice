@@ -594,6 +594,9 @@ class SegmentVerificationWorker(QObject):
         language_hint: str,
     ) -> tuple[str, str, list[object], bool, bool]:
         source_text = segment.source_text
+        if self._voice_config_for_segment(segment).get("engine") == "chatterbox":
+            from app.tts.chatterbox_tags import _NATIVE_TAG
+            source_text = _NATIVE_TAG.sub("", source_text)
         russian_silero_stress_comparison = self._uses_russian_silero_stress(
             segment,
             language_hint,

@@ -31,8 +31,9 @@ from app.core.video_storyboard_styles import normalize_storyboard_style_id
 from app.core.storyboard_analysis_settings import defaults as continuity_defaults, normalize as normalize_continuity_settings
 
 from app.tts.indextts_config import DEFAULTS as INDEXTTS_DEFAULTS
+from app.tts.audiocpp_config import DEFAULTS as AUDIOCPP_DEFAULTS
 
-CURRENT_SETTINGS_SCHEMA_VERSION = 30
+CURRENT_SETTINGS_SCHEMA_VERSION = 33
 MIN_CHUNK_SIZE = 50
 MAX_CHUNK_SIZE = 5000
 
@@ -75,6 +76,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "voice_id": "",
     "language": "",
     "tts_engine": "piper",
+    "audiocpp": deepcopy(AUDIOCPP_DEFAULTS),
     "speed": 1.0,
     "split_mode": "safe_chunks",
     "export_mode": "single",
@@ -90,6 +92,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "qwen": 520,
         "omnivoice": 400,
         "indextts": 400,
+        "audiocpp": 200,
+        "audiocpp:fish_audio_s2_pro_q8_0": 400,
         "f5_russian": 300,
     },
     "editor_syntax_highlighting": True,
@@ -599,6 +603,23 @@ def _migrate_settings(
         if isinstance(storyboard, dict):
             previous = {k: v for k, v in storyboard.items() if k != "active_profile"}
             storyboard["active_profile"] = infer_profile(previous)
+    if version < 31:
+        # Upgrade the initial audio.cpp defaults once, preserving custom sizes.
+        if result.get("engine_chunk_sizes", {}).get("audiocpp") == 200:
+            result["engine_chunk_sizes"]["audiocpp"] = 400
+        if result.get("audiocpp", {}).get("text_chunk_size") == 200:
+            result["audiocpp"]["text_chunk_size"] = 400
+    if version < 32 and result.get("audiocpp", {}).get("max_tokens") == 1024:
+        result["audiocpp"]["max_tokens"] = 2048
+    if version < 33:
+        chunks = result.setdefault("engine_chunk_sizes", {})
+        legacy_chunk = chunks.get("audiocpp", 400)
+        chunks.setdefault("audiocpp:fish_audio_s2_pro_q8_0", legacy_chunk)
+        if legacy_chunk == 400:
+            chunks["audiocpp"] = 200
+        config = result.setdefault("audiocpp", {})
+        if config.get("model", AUDIOCPP_DEFAULTS["model"]) == AUDIOCPP_DEFAULTS["model"] and config.get("text_chunk_size") == 400:
+            config["text_chunk_size"] = 200
     result["settings_schema_version"] = CURRENT_SETTINGS_SCHEMA_VERSION
     return result
 
@@ -681,6 +702,7 @@ def _sanitize_core_settings(settings: dict[str, Any]) -> None:
 
     for section in (
         "metadata",
+        "audiocpp",
         "kokoro",
         "chatterbox",
         "qwen",

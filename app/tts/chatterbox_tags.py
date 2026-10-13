@@ -17,6 +17,8 @@ VOCAL_TAGS = (
 _NATIVE_TAG = re.compile(
     r"\[(?:" + "|".join(re.escape(tag.replace("_", " ")) for tag in (*EMOTION_TAGS, *VOCAL_TAGS)) + r")\]"
 )
+NATIVE_TAG_PATTERN = _NATIVE_TAG.pattern
+EMOTION_TAG_PATTERN = re.compile(r"\[(?:" + "|".join(EMOTION_TAGS) + r")\]")
 
 
 def emotion_name(value: str) -> str:
@@ -47,4 +49,5 @@ def prepare_text(text: str, config: dict, warn: Callable[[str], None]) -> str:
         if emotion != "off" or _NATIVE_TAG.search(text):
             warn("Emotion and vocal tags require Chatterbox Turbo; ignored for this model.")
         return _NATIVE_TAG.sub("", text).strip()
-    return f"[{emotion}] {text}" if emotion != "off" else text
+    # Explicit, editable native direction takes precedence over legacy segment metadata.
+    return f"[{emotion}] {text}" if emotion != "off" and not EMOTION_TAG_PATTERN.search(text) else text

@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-#define MyAppVersion "2.3.0"
+#define MyAppVersion "3.0.0"
 #endif
 
 #define MyAppName "LocalText2Voice"
@@ -298,7 +298,7 @@ begin
 
   Result :=
     '{' + #13#10 +
-    '  "settings_schema_version": 30,' + #13#10 +
+    '  "settings_schema_version": 33,' + #13#10 +
     '  "ui_language": "' + UiLang + '",' + #13#10 +
     '  "storage": {' + #13#10 +
     '    "base_dir": "' + AssetsBaseDir + '"' + #13#10 +

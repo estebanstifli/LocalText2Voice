@@ -31,7 +31,21 @@ LocalText2Voice is a free desktop app for long-form AI voice and video productio
 
 The workflow is designed for long projects: import or write a script, generate narration, review and correct segments, build an audio mix, then use Video Storyboard to plan scenes, generate visuals, assemble motion, and render a long-form MP4. Local engines keep data on the user's computer; cloud providers are optional and clearly configured.
 
-## What's New In 2.3.0: Expressive Speech And Safer Projects
+## What's New In 3.0: Native TTS With audio.cpp
+
+- **Optional audio.cpp engines:** Higgs Audio v3 TTS 4B Q8 and Fish Audio S2 Pro Q8
+  use a shared native runtime, with CPU, CUDA or Vulkan packages on Windows.
+  Runtime and model weights are downloaded on demand, not bundled in the installer.
+- **A growing native catalog:** audio.cpp is the direction for adding more local
+  models. Each addition will be integrated and tested; upstream models do not
+  automatically become available. Existing Python engines and cloud providers remain.
+- **Native expression controls:** Higgs and Fish menus insert their own emotion,
+  style, prosody and vocal tags. Catalog references with transcripts can be reused.
+- **Per-segment editing:** Review now lets you change a segment's text, reference
+  voice and synthesis parameters without changing global settings. Regenerate and
+  approve the replacement before rebuilding the audiobook.
+- **MCP integration:** select the native model/backend and pass reference audio and
+  transcript through existing generation tools; EngineHost keeps the model loaded.
 
 - **Chatterbox Turbo markup:** choose emotion/style tags and inline vocal events
   such as `{{vocal laugh}}` or `{{vocal sigh}}` from the editor. These controls are
@@ -46,7 +60,9 @@ The workflow is designed for long projects: import or write a script, generate n
 - **Signing preparation:** SignPath test signing has been validated. Production
   signing is still pending; a test certificate is not a trusted release certificate.
 
-See the [2.3.0 release notes](docs/releases/v2.3.0.md) and [full changelog](CHANGELOG.md).
+See the [3.0.0 release notes](docs/releases/v3.0.0.md),
+[audio.cpp guide](docs/AUDIOCPP.md) and [full changelog](CHANGELOG.md).
+The changes prepared locally as 2.3.0 are included in 3.0.0; 2.3.0 was not published.
 
 ### Voice Cloning And Emotions With IndexTTS
 
@@ -75,6 +91,11 @@ IndexTTS support was introduced in 2.2.0, alongside fixes for very short Chatter
 inputs, character-based estimates and configurable Qwen/Chatterbox chunk packing.
 
 ## See LocalText2Voice In Action
+
+Optional audio.cpp integration supports native Higgs Audio v3 TTS 4B Q8 and Fish
+Audio S2 Pro Q8 inference, downloadable from TTS settings. See the
+[setup and testing guide (Spanish)](docs/AUDIOCPP.es.md) for requirements, model
+licenses, MCP parameters and first-delivery limits.
 
 LocalText2Voice has grown from a local long-form audio tool into a complete
 audio-to-video workflow. You can still create only narration, audiobooks and

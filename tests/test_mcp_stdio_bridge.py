@@ -52,6 +52,11 @@ def test_stdio_bridge_exposes_expected_tools():
                     "sb_generate_videos",
                     "sb_render",
                 }.issubset(names)
+                definitions = {tool.name: tool for tool in tools.tools}
+                for name in ("create_audiobook", "generate_audio"):
+                    assert {"model", "backend", "reference_audio_path", "reference_text"}.issubset(
+                        definitions[name].inputSchema["properties"]
+                    )
                 resources = await session.list_resources()
                 resource_uris = {str(resource.uri) for resource in resources.resources}
                 assert "localtext2voice://docs/markup" in resource_uris
@@ -61,6 +66,21 @@ def test_stdio_bridge_exposes_expected_tools():
                 assert not any(name.startswith("sb_analy") for name in names)
 
     anyio.run(run_client)
+
+
+def test_audiocpp_options_forwarded_to_host(monkeypatch):
+    import mcp_stdio_bridge as bridge
+    calls = []
+    def request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"job_id": "native-test"}
+    monkeypatch.setattr(bridge, "_request_json", request)
+    bridge.generate_audio("Hola.", engine_id="audiocpp", model="fish_audio_s2_pro_q8_0",
+                          backend="vulkan", reference_audio_path="voice.wav", reference_text="Hola.")
+    assert calls[-1][1] == "/jobs"
+    assert calls[-1][2]["model"] == "fish_audio_s2_pro_q8_0"
+    assert calls[-1][2]["backend"] == "vulkan"
+    assert calls[-1][2]["reference_text"] == "Hola."
 
 
 def test_stdio_bridge_adds_project_file_uris(tmp_path):

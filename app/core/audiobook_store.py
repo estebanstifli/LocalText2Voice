@@ -1249,6 +1249,35 @@ class AudiobookStore:
             self._invalidate_audio_events_from_segment(connection, segment_id)
         self._write_project_manifest_for_segment(segment_id)
 
+    def update_segment_details(self, segment_id: int, source_text: str, config: dict[str, Any]) -> None:
+        """Save a Review draft atomically; keep the current WAV until candidate approval."""
+        if not source_text.strip() or not config.get("engine"):
+            raise ValueError("Segment text and engine are required.")
+        encoded = json.dumps(config, ensure_ascii=False, allow_nan=False)
+        with self._connect() as connection:
+            row = connection.execute("SELECT markup_state_json FROM audiobook_segments WHERE id = ?", (segment_id,)).fetchone()
+            if row is None:
+                raise ValueError("Segment no longer exists.")
+            state = self._json_to_dict(row["markup_state_json"])
+            # The edited snapshot is authoritative, including during subsequent review.
+            state.pop("emotion", None)
+            state.pop("config_overrides", None)
+            if config["engine"] == "indextts":
+                state["emotion"] = {k: v for k, v in config.items() if k.startswith(("emo_", "emotion_")) or k == "use_random"}
+            connection.execute(
+                """UPDATE audiobook_segments SET source_text = ?, normalized_source_text = ?,
+                   engine_config_json = ?, markup_state_json = ?, voice = ?, language = ?,
+                   status = 'edited', transcript_text = '', normalized_transcript_text = '',
+                   word_timestamps_json = '[]', review_metrics_json = '{}', similarity_score = NULL,
+                   wer = NULL, cer = NULL, verification_status = 'not_verified',
+                   error_message = '', needs_rebuild = 1, updated_at = ? WHERE id = ?""",
+                (source_text, normalize_for_similarity(source_text), encoded,
+                 json.dumps(state, ensure_ascii=False), self._voice_from_config(config),
+                 self._language_from_config(config), self._now(), segment_id),
+            )
+            self._invalidate_audio_events_from_segment(connection, segment_id)
+        self._write_project_manifest_for_segment(segment_id)
+
     def update_segment_pauses(
         self, audiobook_id: int, pauses: list[tuple[int, int | None, int | None]]
     ) -> None:

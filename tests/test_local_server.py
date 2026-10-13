@@ -286,6 +286,26 @@ def test_review_segment_synthesis_reuses_the_host_cached_engine(tmp_path):
     assert engine.configurations[0]["model"] == "base_1_7b"
 
 
+def test_review_segment_applies_saved_postprocessing(tmp_path, monkeypatch):
+    import shutil
+    runner = MagicMock()
+    def process(arguments):
+        assert arguments[arguments.index("-filter:a") + 1] == "atempo=1.500,volume=-6.000dB"
+        shutil.copyfile(arguments[arguments.index("-i") + 1], arguments[-1])
+    runner.run.side_effect = process
+    monkeypatch.setattr("app.core.audio_pipeline.FFmpegRunner", lambda *args: runner)
+    service = LocalText2VoiceService(_settings(tmp_path), keep_engines_alive=True)
+    service._get_tts_engine = MagicMock(return_value=FakeSegmentEngine())
+    try:
+        result = service.synthesize_segment("Hello.", tmp_path / "processed.wav", {
+            "engine": "indextts", "_postprocess_speed": 1.5, "_postprocess_volume_db": -6,
+        })
+        runner.run.assert_called_once()
+        _assert_test_wav(result)
+    finally:
+        service.close()
+
+
 def test_review_segment_worker_calls_engine_host_not_a_local_tts_engine(tmp_path):
     client = MagicMock()
     candidate = tmp_path / "candidate.wav"

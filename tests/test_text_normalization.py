@@ -16,6 +16,41 @@ class _NoopEngine:
         return
 
 
+def test_higgs_native_tags_survive_normalization_and_chunk_preparation(tmp_path):
+    store = TextNormalizationStore(tmp_path / "normalization.sqlite3")
+    store.add_entry("en", "custom", "whispering", "spoken whisper")
+    source = "<|emotion:elation|><|style:whispering|>I have 2 cats <|prosody:pause|> <|sfx:laughter|>Haha."
+    options = AudioGenerationOptions(
+        output_dir=tmp_path, voice_config={"engine": "audiocpp", "language": "en"},
+        ffmpeg_path="ffmpeg", chunk_size=400, text_normalization_enabled=True,
+        text_normalization_language="en", text_normalization_db_path=store.db_path,
+    )
+    groups = AudioPipeline(_NoopEngine())._prepare_groups(source, options)
+    text = " ".join(chunk.text for group in groups for chunk in group.chunks)
+    assert text == source.replace("2", "two")
+
+
+def test_fish_tags_survive_dictionary_and_chunk_boundaries(tmp_path):
+    from app.tts.fish_tags import TAG_GROUPS
+    from app.core.text_processor import TextProcessor
+    store = TextNormalizationStore(tmp_path / "normalization.sqlite3")
+    store.add_entry("en", "custom", "volume", "spoken volume")
+    for _, _, tags in TAG_GROUPS:
+        for tag in tags:
+            token = "[" + tag + "]"
+            source = "word " * 17 + token + "I have 2 cats."
+            options = AudioGenerationOptions(
+                output_dir=tmp_path, voice_config={"engine": "audiocpp", "language": "en"},
+                ffmpeg_path="ffmpeg", chunk_size=100, text_normalization_enabled=True,
+                text_normalization_language="en", text_normalization_db_path=store.db_path,
+            )
+            groups = AudioPipeline(_NoopEngine())._prepare_groups(source, options)
+            chunks = [chunk.text for group in groups for chunk in group.chunks]
+            assert any(token in chunk for chunk in chunks)
+            assert "two cats" in " ".join(chunks)
+    assert "[volume down]" in TextProcessor._split_by_words("Hello[volume down] world", 20)[0]
+
+
 def test_english_dictionary_is_seeded_and_editable(tmp_path: Path) -> None:
     store = TextNormalizationStore(tmp_path / "normalization.sqlite3")
     entries = store.list_entries("en")

@@ -39,6 +39,8 @@ from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
 from app.tts.f5_russian_manager import F5RussianManager
 from app.tts.kokoro_python_manager import KokoroPythonManager
 from app.tts.indextts_manager import IndexTTSManager
+from app.tts.audiocpp_config import DEFAULTS as AUDIOCPP_DEFAULTS, MODELS as AUDIOCPP_MODELS, model_config as audiocpp_model_config, resolve_voice as audiocpp_resolve_voice
+from app.tts.audiocpp_manager import AudioCppManager
 from app.tts.indextts_config import DEFAULTS as INDEXTTS_DEFAULTS, LICENSE_URL as INDEXTTS_LICENSE_URL
 from app.tts.omnivoice_manager import OmniVoiceManager
 from app.tts.qwen_manager import QwenManager
@@ -48,7 +50,7 @@ from app.tts.voice_gallery_manager import (
     VoiceGalleryManager,
 )
 from app.tts.voice_manager import VoiceInfo, VoiceManager
-from app.utils.paths import application_root, resolve_app_path, resolve_executable
+from app.utils.paths import application_root, resolve_app_path, resolve_executable, resolve_large_asset_path
 from app.verification.faster_whisper_manager import (
     FasterWhisperManager,
     FasterWhisperVerifier,
@@ -83,6 +85,7 @@ class LocalText2VoiceService:
         self.chatterbox_manager = ChatterboxManager()
         self.qwen_manager = QwenManager()
         self.indextts_manager = IndexTTSManager()
+        self.audiocpp_manager = AudioCppManager()
         self.omnivoice_manager = OmniVoiceManager()
         self.f5_russian_manager = F5RussianManager()
         self.faster_whisper_manager = FasterWhisperManager()
@@ -172,6 +175,16 @@ class LocalText2VoiceService:
         for engine in engines:
             if engine["id"] == "indextts":
                 engine.update(license="bilibili Model Use License Agreement", license_url=INDEXTTS_LICENSE_URL, commercial_use="conditional")
+            if engine["id"] == "audiocpp":
+                config = {**AUDIOCPP_DEFAULTS, **self._settings_dict("audiocpp")}
+                engine["models"] = [
+                    {"id": spec.id, "name": spec.name, "family": spec.family,
+                     "installed": self.audiocpp_manager.is_installed(spec.id, config["backend"]),
+                     "download_bytes": spec.size, "license_url": spec.license_url,
+                     "license_notice": spec.notice}
+                    for spec in AUDIOCPP_MODELS.values()
+                ]
+                engine["selected_model"] = config["model"]
             if engine["id"] == "f5_russian":
                 engine.update(
                     {
@@ -201,6 +214,7 @@ class LocalText2VoiceService:
                 engine_id: {
                     "loaded": True,
                     "engine_class": engine.__class__.__name__,
+                    **(engine.memory_status() if callable(getattr(engine, "memory_status", None)) else {}),
                 }
                 for engine_id, engine in self._engine_cache.items()
             }
@@ -281,6 +295,14 @@ class LocalText2VoiceService:
 
             with atomic_wav_output(destination, check_cancelled) as temporary_wav:
                 engine.synthesize_to_wav(content, temporary_wav, config)
+                if any(key.startswith("_postprocess_") for key in config):
+                    from tempfile import TemporaryDirectory
+                    from app.core.audio_pipeline import FFmpegRunner
+                    # Review must apply the same segment speed/volume controls as generation.
+                    runner = FFmpegRunner(resolve_executable(str(self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"))))
+                    with TemporaryDirectory(prefix="review-process-", dir=destination.parent) as directory:
+                        pipeline = AudioPipeline(engine, log_callback=log)
+                        pipeline._postprocess_chunk_wav(temporary_wav, config, runner, Path(directory), 0, 0)
         if not destination.is_file() or destination.stat().st_size == 0:
             raise ValueError("TTS engine did not create a valid segment WAV file.")
         return destination
@@ -330,6 +352,22 @@ class LocalText2VoiceService:
         engine = engine_id or str(self.settings.get("tts_engine", "piper") or "piper")
         if engine == "kokoro_python":
             engine = "kokoro"
+        if engine == "audiocpp":
+            rows = []
+            gallery = self.voice_gallery_manager.list_voices("audiocpp")
+            gallery_ids = {voice.voice_id for voice in gallery}
+            for voice in gallery:
+                installed = self.voice_gallery_manager.is_installed(voice)
+                if installed or not installed_only:
+                    rows.append({"id": voice.voice_id, "name": voice.name,
+                                 "language": voice.language_name or voice.language,
+                                 "type": voice.voice_type, "installed": installed})
+            for name, voice in self._settings_dict("audiocpp").get("voices", {}).items():
+                installed = resolve_large_asset_path(voice.get("reference_audio_path", "")).is_file()
+                if name not in gallery_ids and (installed or not installed_only):
+                    rows.append({"id": name, "name": name, "language": "auto",
+                                 "type": "Reference WAV", "installed": installed})
+            return rows
         if engine == "piper":
             return [
                 {
@@ -1029,6 +1067,21 @@ class LocalText2VoiceService:
         speed = float(request.get("speed") or self.settings.get("speed", 1.0))
         voice_hint = str(request.get("voice") or request.get("voice_id") or "").strip()
         language_hint = str(request.get("language") or request.get("lang") or "").strip()
+        if engine_id == "audiocpp":
+            config = audiocpp_model_config(self._settings_dict("audiocpp"), request.get("model"))
+            for key in AUDIOCPP_DEFAULTS:
+                if request.get(key) is not None:
+                    config[key] = request[key]
+            if voice_hint:
+                if voice_hint in config.get("voices", {}):
+                    config = audiocpp_resolve_voice(config, voice_hint)
+                else:
+                    voice = self._match_gallery_voice("audiocpp", voice_hint, language_hint)
+                    if voice is None:
+                        raise ValueError(f"Unknown audio.cpp reference voice: {voice_hint}")
+                    path = self.voice_gallery_manager.ensure_voice_audio(voice)
+                    config.update(reference_audio_path=str(path), reference_text=voice.ref_text)
+            return {**config, "engine": "audiocpp", "speed": speed}
         if engine_id == "piper":
             selected = self._match_piper_voice(voice_hint or str(self.settings.get("voice_id", "")))
             config = selected.as_config(speed) if selected else {"speed": speed}
@@ -1227,7 +1280,7 @@ class LocalText2VoiceService:
     ) -> GalleryVoice | None:
         voices = self.voice_gallery_manager.list_voices(engine)
         installed = [voice for voice in voices if self.voice_gallery_manager.is_installed(voice)]
-        candidates = voices if engine == "indextts" else (installed or voices)
+        candidates = voices if engine in {"indextts", "audiocpp"} else (installed or voices)
         if not candidates or not voice_hint:
             return None
         language_hint = self._normalize_token(language_hint)
@@ -1359,6 +1412,10 @@ class LocalText2VoiceService:
                 return requested
         except (TypeError, ValueError):
             pass
+        if engine_id == "audiocpp":
+            model = request.get("model") or self._settings_dict("audiocpp").get("model", AUDIOCPP_DEFAULTS["model"])
+            if model == "fish_audio_s2_pro_q8_0":
+                engine_id = "audiocpp:" + model
         engine_sizes = self.settings.get("engine_chunk_sizes", {})
         if isinstance(engine_sizes, dict):
             try:
@@ -1370,6 +1427,9 @@ class LocalText2VoiceService:
         return sanitize_chunk_size(self.settings.get("chunk_size"))
 
     def _engine_installed(self, engine_id: str) -> bool | None:
+        if engine_id == "audiocpp":
+            config = {**AUDIOCPP_DEFAULTS, **self._settings_dict("audiocpp")}
+            return self.audiocpp_manager.is_installed(config["model"], config["backend"])
         if engine_id == "piper":
             return resolve_executable(self.settings.get("piper_path", "engines/piper/piper.exe")).is_file()
         if engine_id == "kokoro":

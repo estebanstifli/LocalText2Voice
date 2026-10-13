@@ -12,6 +12,8 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from num2words import num2words
 
+from app.tts.fish_tags import TAG_PATTERN as FISH_TAG_PATTERN
+from app.tts.chatterbox_tags import NATIVE_TAG_PATTERN as CHATTERBOX_TAG_PATTERN
 from app.utils.paths import app_data_root
 
 
@@ -1154,7 +1156,9 @@ def multilingual_ordinal_to_words(value: int, language: str) -> str:
 class TextNormalizer:
     """Apply editable dictionaries and conservative pronunciation rules."""
 
-    _markup_command = re.compile(r"(\{\{.*?\}\})", re.DOTALL)
+    _markup_command = re.compile(
+        r"(\{\{.*?\}\}|<\|(?:emotion|style|prosody|sfx):[a-z_]+\|>|" + FISH_TAG_PATTERN + "|" + CHATTERBOX_TAG_PATTERN + r")", re.DOTALL
+    )
     _percent = re.compile(r"(?<!\w)([-+]?\d[\d,]*(?:\.\d+)?)\s*%")
     _currency = re.compile(
         r"(?<!\w)(?P<sign>[-+]?)\s*(?P<symbol>[$€£₽])\s*"

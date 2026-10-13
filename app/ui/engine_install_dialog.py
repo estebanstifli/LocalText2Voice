@@ -72,6 +72,8 @@ class EngineInstallDialog(QDialog):
         existing_model_detected: bool = False,
         license_notice: str = "",
         license_url: str = "",
+        intro_text: str = "",
+        license_accept_text: str = "",
     ) -> None:
         super().__init__(parent)
         self.engine_name = engine_name
@@ -132,7 +134,7 @@ class EngineInstallDialog(QDialog):
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
 
-        intro = QLabel(
+        intro = QLabel(intro_text or
             (
                 self.tr(
                     "engine_repair_intro",
@@ -224,7 +226,7 @@ class EngineInstallDialog(QDialog):
             license_label.setOpenExternalLinks(True)
             layout.addWidget(license_label)
             self.license_checkbox = QCheckBox(
-                self.tr(
+                license_accept_text or self.tr(
                     "engine_install_accept_noncommercial",
                     "I understand that this model and its generated output are for non-commercial use only.",
                 )

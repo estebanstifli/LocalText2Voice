@@ -118,6 +118,38 @@ class VoiceGalleryManager:
         self._ensure_schema()
         self._ensure_indextts_reference_aliases()
         self._ensure_qwen_reference_aliases()
+        self._ensure_audiocpp_reference_aliases()
+
+    def _ensure_audiocpp_reference_aliases(self) -> None:
+        """Expose cached audio+transcript catalog entries to both native models."""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM voice_gallery_voices").fetchall()
+            source_ids = {str(row["id"]) for row in rows}
+            for row in rows:
+                voice = self._row_to_voice(row)
+                metadata = dict(voice.metadata or {})
+                if (voice.engine == "audiocpp" or voice.is_user_import
+                    or not voice.ref_text.strip()
+                    or metadata.get("compatible_source_id") in source_ids
+                    or not (voice.ref_audio_url or voice.ref_audio_path
+                            or voice.preview_url or voice.preview_path)):
+                    continue
+                values = dict(row)
+                values.update(
+                    id=self._compatible_voice_id("audiocpp", voice.voice_id),
+                    engine="audiocpp", install_type="reference_audio", voice_type="Reference voice",
+                    installed_path="", installed_at="", engine_voice_id="", speaker_id="", model_id="",
+                    ref_audio_url=voice.ref_audio_url or (voice.preview_url if not voice.ref_audio_path else ""),
+                    ref_audio_path=voice.ref_audio_path or (voice.preview_path if not voice.ref_audio_url else ""),
+                    metadata_json=json.dumps({**metadata, "compatible_source_engine": voice.engine,
+                                              "compatible_source_id": voice.voice_id}, ensure_ascii=False),
+                )
+                columns = ", ".join(values)
+                placeholders = ", ".join("?" for _ in values)
+                connection.execute(
+                    f"INSERT OR IGNORE INTO voice_gallery_voices ({columns}) VALUES ({placeholders})",
+                    tuple(values.values()),
+                )
 
     def _ensure_qwen_reference_aliases(self) -> None:
         """Migrate cached audio+transcript entries without replacing preset speakers."""
@@ -412,7 +444,7 @@ class VoiceGalleryManager:
         if voice.installed_path and Path(voice.installed_path).is_file():
             return Path(voice.installed_path)
         source = voice.ref_audio_url or voice.ref_audio_path or voice.preview_url or voice.preview_path
-        if voice.engine in {"indextts", "qwen"}:
+        if voice.engine in {"indextts", "qwen", "audiocpp"}:
             source_id = str((voice.metadata or {}).get("compatible_source_id", ""))
             original = self.get_voice(source_id) if source_id else None
             if (
@@ -935,6 +967,11 @@ class VoiceGalleryManager:
                 compatible_engines = list(
                     dict.fromkeys([*compatible_engines, "indextts"])
                 )
+            if (engine != "audiocpp" and str(document.get("ref_text", "")).strip()
+                and (document.get("ref_audio") or document.get("preview_audio"))
+                and not document.get("compatible_source_id")
+                and document.get("source") != "user_import"):
+                compatible_engines = list(dict.fromkeys([*compatible_engines, "audiocpp"]))
             for compatible_engine_value in compatible_engines:
                 compatible_engine = str(compatible_engine_value).strip()
                 if not compatible_engine or compatible_engine == engine:
@@ -947,9 +984,9 @@ class VoiceGalleryManager:
                 alias["engine"] = compatible_engine
                 alias["compatible_source_engine"] = engine
                 alias["compatible_source_id"] = voice_id
-                if compatible_engine == "qwen" and not str(alias.get("ref_text", "")).strip():
+                if compatible_engine in {"qwen", "audiocpp"} and not str(alias.get("ref_text", "")).strip():
                     continue
-                if compatible_engine in {"chatterbox", "indextts", "qwen"}:
+                if compatible_engine in {"chatterbox", "indextts", "qwen", "audiocpp"}:
                     alias["install_type"] = "reference_audio"
                     alias["type"] = "Reference voice"
                     if not str(alias.get("ref_audio", "")).strip():
@@ -958,7 +995,7 @@ class VoiceGalleryManager:
                     compatibility_tag = f"{compatible_engine}-compatible"
                     if isinstance(tags, list) and compatibility_tag not in tags:
                         alias["tags"] = [*tags, compatibility_tag]
-                    if compatible_engine == "indextts":
+                    if compatible_engine in {"indextts", "audiocpp"}:
                         alias["engine_voice_id"] = ""
                         alias["speaker_id"] = ""
                         alias["model_id"] = ""
