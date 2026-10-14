@@ -649,3 +649,37 @@ Implemented now:
 Planned later:
 
 - Visual markup validation before generation.
+
+## Breeze TTS 2 (audio.cpp)
+
+Choose `breeze_tts_2_q8_0`. `{{emotion happy}}`, `{{emotion off}}`, and
+`{{emotion custom "Speak softly and slowly."}}` set a separate native
+`options.instruction` for the next segment, including its smaller chunks.
+Breeze uses natural-language directions, not IndexTTS emotion vectors. These
+instructions are saved and editable in Review > Segment detail > Emotions.
+Intermediate percentages are ignored with a warning. Instructions should match
+the text language (English or Chinese); application presets use English.
+
+Inline vocal events are literal `(laugh)`, `(cough)`, `(clears throat)`, `(sigh)`
+for English and `[笑]`, `[咳嗽]`, `[清嗓子]`, `[叹气]` for Chinese. The engine
+receives them in the text; do not replace them with `{{vocal ...}}`.
+
+
+## VoxCPM 2 (audio.cpp)
+
+Select `voxcpm2_q8_0`. The Emotion menu offers popular presets, Custom and Off:
+
+```text
+{{emotion happy}}A wonderful day has begun.
+{{emotion custom "quietly, with sadness"}}I will miss you.
+{{emotion off}}No additional direction on this segment.
+```
+
+Like IndexTTS, each command affects the next text segment and its derived chunks.
+The application stores `instruction` separately from spoken text. At synthesis,
+every chunk is prefixed with `(instruction) `, including internal splitting and
+Review regeneration. Off uses no prefix; reset restores base settings. Custom is
+free text without parentheses or markup, up to 1000 characters. Intermediate
+numeric intensity is ignored with a warning; describe intensity in Custom instead.
+These are application natural-language presets, not a closed native vocabulary.
+Review > Segment detail can edit the instruction without adding it to the transcript.

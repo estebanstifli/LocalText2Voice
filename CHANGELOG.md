@@ -7,13 +7,23 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-10-13
+## [3.0.0] - 2026-10-14
 
 Local preparation only: not published and not production-signed. Includes the
 previously unpublished 2.3.0 preparation below; existing engines remain supported.
 
 ### Added
 
+- Extend the optional audio.cpp catalog with Breeze TTS 2 Q8 and VoxCPM 2
+  in Q8, BF16 and Original precision. Each variant has pinned checksums and
+  its own settings; weights remain outside the base installer.
+- Breeze and VoxCPM voice designers: describe a voice, preview it through the
+  shared Engine Host and save the complete recording with its transcript.
+- Model-specific instruction, guidance and diffusion controls, including
+  `{{emotion ...}}` direction for Breeze and VoxCPM and Breeze vocal events.
+- Share locally imported reference recordings across compatible cloning engines
+  without duplicating the WAV; Qwen Base exposes these voices through MCP too.
+- Native crash diagnostic logs alongside the normal application log.
 - Optional audio.cpp v0.9.1 integration with Higgs Audio v3 TTS 4B Q8 and Fish
   Audio S2 Pro Q8. Shared native runtimes and pinned GGUF weights are downloaded
   separately, with SHA-256 validation, resumable downloads and cancellation.
@@ -29,6 +39,10 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 
 ### Changed
 
+- VoxCPM sends independently directed chunks with a consistent seed and validates
+  WAV formats before atomically committing combined output. Breeze defaults to
+  600-character chunks, VoxCPM to 400, with editable per-model controls.
+- MCP generation tools accept instruction, guidance scale and diffusion steps.
 - Higgs defaults to 200-character chunks and Fish to 400, with separately saved
   generation settings and migration of the earlier development defaults.
 - Higgs retries its specific max-tokens-before-EOC error at most twice with a
@@ -38,6 +52,13 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 
 ### Fixed
 
+- Keep the HTTP event loop responsive while the Engine Host synthesizes previews.
+- Restore the selected audio.cpp model and backend during installation and report
+  installation state using each model's backend rather than the current selection.
+- Clear deleted shared voice references across engines and keep their identity
+  consistent in the gallery; exclude Breeze vocal events from Whisper comparison.
+- Randomize Breeze sampling when the seed is set to random instead of silently
+  using the upstream fixed seed. Protect voice-design workers while closing dialogs.
 - Preserve explicit Chatterbox Turbo emotion tags across split text, avoid
   duplicate metadata tags and omit its native control tags from Whisper comparison.
 - Apply stored speed/volume postprocessing during EngineHost segment regeneration.

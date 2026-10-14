@@ -42,7 +42,7 @@ TTS_ENGINES: tuple[TTSEngineDefinition, ...] = (
     TTSEngineDefinition("indextts", "IndexTTS-2.5", True),
     TTSEngineDefinition("omnivoice", "OmniVoice", True),
     TTSEngineDefinition("f5_russian", "F5-TTS Russian", True),
-    TTSEngineDefinition("audiocpp", "audio.cpp · Higgs / Fish Q8", True),
+    TTSEngineDefinition("audiocpp", "audio.cpp · Higgs / Fish / Breeze / VoxCPM 2 GGUF", True),
     TTSEngineDefinition("openai", "OpenAI TTS (API)", False),
     TTSEngineDefinition("elevenlabs", "ElevenLabs (API)", False),
     TTSEngineDefinition("gemini", "Google Gemini TTS (API)", False),

@@ -6,11 +6,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QVBoxLayout, QFormLayout, QLabel, QPlainTextEdit,
     QLineEdit, QComboBox, QCheckBox, QDoubleSpinBox, QSpinBox, QScrollArea,
-    QWidget, QTabWidget, QMessageBox,
+    QWidget, QTabWidget, QMessageBox, QSizePolicy,
 )
 
 from app.tts.indextts_config import DEFAULTS as INDEX_DEFAULTS, EMOTIONS, validated_config as validate_index
-from app.tts.audiocpp_config import MODELS, model_config, validated_config as validate_audiocpp
+from app.tts.audiocpp_config import MODELS, BREEZE_MODEL, BREEZE_FIELDS, VOXCPM_MODELS, model_field_visible, model_config, validated_config as validate_audiocpp
 from app.tts.indextts_emotions import EMOTION_PRESETS
 from app.tts.chatterbox_tags import prepare_text
 from .widgets import FilePicker
@@ -29,6 +29,8 @@ LABELS = {
     "reference_audio_path": "Reference audio", "reference_text": "Reference transcript",
     "emo_text": "Emotion description", "emo_audio_prompt": "Emotion reference audio",
     "emo_alpha": "Emotion intensity", "emotion_mode": "Emotion mode",
+    "instruction": "Voice / emotion instruction",
+    "num_inference_steps": "Diffusion steps", "guidance_scale": "Guidance scale", "depth_temperature": "Depth temperature",
     "instruct": "Voice instructions", "instructions": "Voice instructions",
     "_postprocess_speed": "Playback speed", "_postprocess_volume_db": "Volume (dB)",
     "_postprocess_normalize_lufs": "Normalize (LUFS)", "text_chunk_size": "Internal chunk size",
@@ -60,7 +62,7 @@ class SegmentDetailDialog(QDialog):
         self.config.setdefault("_postprocess_volume_db", 0.0)
         self.fields = {}
         self.setWindowTitle(translate("segment_detail", "Segment detail"))
-        self.resize(720, 760)
+        self.resize(864, 760)
         layout = QVBoxLayout(self)
         names = {"indextts": "IndexTTS-2.5", "chatterbox": "Chatterbox", "qwen": "Qwen3 TTS", "omnivoice": "OmniVoice", "f5_russian": "F5-TTS Russian"}
         title_text = names.get(self.engine, self.engine.capitalize())
@@ -88,11 +90,15 @@ class SegmentDetailDialog(QDialog):
         general_form.addRow(translate("voice", "Voice"), self.voice_combo)
         _, generation_form = self._tab(translate("segment_generation", "Generation"))
         emotion_form = None
-        if self.engine == "indextts":
+        breeze = self.engine == "audiocpp" and self.config.get("model") == BREEZE_MODEL
+        voxcpm = self.engine == "audiocpp" and self.config.get("model") in VOXCPM_MODELS
+        if self.engine == "indextts" or breeze or voxcpm:
             _, emotion_form = self._tab(translate("higgs_category_emotion", "Emotions"))
         general_keys = {"voice", "speaker", "speaker_id", "language", "lang", "locale",
                         "reference_audio_path", "reference_text", "model_path", "config_path"}
         for key, value in self.config.items():
+            if self.engine == "audiocpp" and not model_field_visible(self.config["model"], key):
+                continue
             if key in HIDDEN or (key.startswith('_') and not key.startswith('_postprocess_')):
                 continue
             if self.engine in POST_SPEED_ENGINES and key == "speed":
@@ -101,12 +107,14 @@ class SegmentDetailDialog(QDialog):
                 continue
             if any(secret in key.casefold() for secret in ("password", "token", "secret", "api_key")) and key not in {"max_tokens", "max_mel_tokens", "max_text_tokens_per_segment", "max_new_tokens"}:
                 continue
-            form = emotion_form if emotion_form and (key.startswith("emo_") or key in {"emotion_mode", "use_random"}) else general_form if key in general_keys else generation_form
+            form = emotion_form if emotion_form and (key.startswith("emo_") or key in {"emotion_mode", "use_random", "instruction"}) else general_form if key in general_keys else generation_form
             widget = self._field(key, value)
             form.addRow(translate("segment_param_" + key, LABELS.get(key, key.replace('_', ' ').capitalize())), widget)
+            if isinstance(widget, FilePicker):
+                form.labelForField(widget).setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.fields[key] = widget
         self.vector_fields = []
-        if emotion_form:
+        if self.engine == "indextts":
             self.preset_combo = QComboBox()
             self.preset_combo.addItem(translate("custom", "Custom"), None)
             for name in EMOTION_PRESETS:
@@ -123,6 +131,26 @@ class SegmentDetailDialog(QDialog):
             self.preset_combo.currentIndexChanged.connect(self._preset_changed)
             self.fields["emotion_mode"].currentIndexChanged.connect(self._emotion_mode_changed)
             self._emotion_mode_changed()
+        if breeze or voxcpm:
+            from app.tts.breeze_tags import EMOTION_INSTRUCTIONS, STYLE_INSTRUCTIONS
+            if voxcpm:
+                from app.tts.voxcpm_tags import EMOTION_INSTRUCTIONS
+                STYLE_INSTRUCTIONS = {}
+            self.breeze_preset_combo = QComboBox()
+            self.breeze_preset_combo.addItem(translate("custom", "Custom"), None)
+            self.breeze_preset_combo.addItem(translate("indextts_emotion_off", "Off"), "" if voxcpm else "Speak clearly and naturally.")
+            for name, instruction in {**EMOTION_INSTRUCTIONS, **STYLE_INSTRUCTIONS}.items():
+                label_key = "breeze_style_" + name.lower() if name in STYLE_INSTRUCTIONS else "indextts_emotion_" + name
+                self.breeze_preset_combo.addItem(translate(label_key, name.capitalize()), instruction)
+            self.breeze_preset_combo.currentIndexChanged.connect(
+                lambda: self.fields["instruction"].setPlainText(self.breeze_preset_combo.currentData())
+                if self.breeze_preset_combo.currentData() is not None else None)
+            emotion_form.addRow(translate("preset", "Preset"), self.breeze_preset_combo)
+            help_label = QLabel(translate("breeze_instruction_help", "Describe emotion, pace or voice in the same language as the text (English or Chinese). Instructions are sent separately; vocal events such as (laugh) belong in the text."))
+            if voxcpm:
+                help_label.setText(translate("voxcpm_instruction_help", "Describe the emotion or delivery without parentheses. The instruction is prefixed to every chunk automatically. Off leaves the instruction empty."))
+            help_label.setWordWrap(True)
+            emotion_form.addRow(help_label)
         self.voice_combo.currentIndexChanged.connect(self._voice_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText(translate("segment_save", "Save"))
@@ -135,7 +163,10 @@ class SegmentDetailDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
-        form = QFormLayout(content)
+        content_layout = QVBoxLayout(content)
+        form = QFormLayout()
+        content_layout.addLayout(form)
+        content_layout.addStretch(1)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         scroll.setWidget(content)
@@ -152,7 +183,12 @@ class SegmentDetailDialog(QDialog):
         if key in {"reference_audio_path", "emo_audio_prompt"}:
             picker = FilePicker(self.tr_text("browse", "Browse"), "Audio (*.wav *.mp3 *.flac *.ogg)")
             picker.set_path(value)
+            picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             return picker
+        if key == "instruction":
+            widget = QPlainTextEdit(value)
+            widget.setFixedHeight(widget.fontMetrics().lineSpacing() * 3 + 18)
+            return widget
         if isinstance(value, bool):
             widget = QCheckBox()
             widget.setChecked(value)
@@ -175,6 +211,8 @@ class SegmentDetailDialog(QDialog):
             widget = self.fields.get(key)
             if isinstance(widget, FilePicker):
                 widget.set_path(value)
+            elif isinstance(widget, QPlainTextEdit):
+                widget.setPlainText(str(value))
             elif isinstance(widget, QLineEdit):
                 widget.setText(str(value))
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
@@ -208,6 +246,8 @@ class SegmentDetailDialog(QDialog):
                 value = str(widget.path() or "")
             elif isinstance(widget, QCheckBox):
                 value = widget.isChecked()
+            elif isinstance(widget, QPlainTextEdit):
+                value = widget.toPlainText().strip()
             elif isinstance(widget, QLineEdit):
                 value = widget.text().strip()
             else:

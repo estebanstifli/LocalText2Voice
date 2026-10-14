@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.tts.audiocpp_config import VOXCPM_MODELS
+
 import difflib
 import json
 import math
@@ -974,9 +976,10 @@ class LTVMarkupCompiler:
         text: str,
         backend: str,
         randomizer: random.Random | None = None,
+        model: str | None = None,
     ) -> LTVMarkupCompileResult:
         parsed = LTVMarkupParser.parse(text)
-        return cls.compile_events(parsed, backend, randomizer=randomizer)
+        return cls.compile_events(parsed, backend, randomizer=randomizer, model=model)
 
     @classmethod
     def compile_events(
@@ -984,6 +987,7 @@ class LTVMarkupCompiler:
         parsed: LTVMarkupParseResult,
         backend: str,
         randomizer: random.Random | None = None,
+        model: str | None = None,
     ) -> LTVMarkupCompileResult:
         rng = randomizer or random.Random()
         warnings = list(parsed.warnings)
@@ -1110,13 +1114,21 @@ class LTVMarkupCompiler:
                 flush_text()
                 if isinstance(event.value, dict):
                     pending_config_overrides.update(event.value)
-                    if {"instruct", "emo_text", "emotion_mode", "emo_vector"} & event.value.keys():
+                    if {"instruct", "instruction", "emo_text", "emotion_mode", "emo_vector"} & event.value.keys():
                         pending_emotion = None
             elif event.type == "emotion":
                 flush_text()
                 pending_emotion = None
                 if backend.casefold() == "indextts" and "emotion_mode" in event.value:
                     pending_emotion = dict(event.value)
+                elif backend.casefold() == "audiocpp" and model in {"breeze_tts_2_q8_0", *VOXCPM_MODELS}:
+                    if model in VOXCPM_MODELS:
+                        from app.tts.voxcpm_tags import emotion_instruction
+                    else:
+                        from app.tts.breeze_tags import emotion_instruction
+                    pending_emotion = {"instruction": emotion_instruction(str(event.attrs.get("name", "off")), event.value)}
+                    if event.value.get("emo_alpha", 1) not in {0, 1}:
+                        warnings.append(f"{model} uses natural-language instructions; numeric emotion intensity ignored: {event.raw}.")
                 elif backend.casefold() == "chatterbox":
                     from app.tts.chatterbox_tags import turbo_emotion
 
@@ -1317,9 +1329,10 @@ class LTVMarkupCompiler:
         backend: str,
         available_voices: Iterable[str] | None = None,
         audio_roots: Iterable[Path] | None = None,
+        model: str | None = None,
     ) -> LTVMarkupValidationResult:
         parsed = LTVMarkupParser.parse(text)
-        compiled = cls.compile_events(parsed, backend)
+        compiled = cls.compile_events(parsed, backend, model=model)
         voices = {voice.casefold() for voice in available_voices or []}
         voices_not_found: list[str] = []
         audio_files_not_found: list[str] = []

@@ -94,6 +94,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "indextts": 400,
         "audiocpp": 200,
         "audiocpp:fish_audio_s2_pro_q8_0": 400,
+        "audiocpp:breeze_tts_2_q8_0": 600,
+        "audiocpp:voxcpm2_q8_0": 400,
         "f5_russian": 300,
     },
     "editor_syntax_highlighting": True,

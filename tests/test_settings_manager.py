@@ -149,6 +149,8 @@ def test_chunk_defaults_migrate_to_explicit_safe_engine_limits(tmp_path):
     assert settings["engine_chunk_sizes"] == {
         "audiocpp": 200,
         "audiocpp:fish_audio_s2_pro_q8_0": 400,
+        "audiocpp:breeze_tts_2_q8_0": 600,
+        "audiocpp:voxcpm2_q8_0": 400,
         "piper": 300,
         "kokoro": 300,
         "chatterbox": 400,

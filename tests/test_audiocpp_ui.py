@@ -9,12 +9,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
+from app.tts.audiocpp_config import VOXCPM_MODELS
 from app.core.settings_manager import SettingsManager
 from app.ui.audiocpp_settings import AudioCppInstallWorker
 from app.ui.main_window import MainWindow
+from app.ui.voxcpm_voice_design_dialog import VoxCPMVoiceDesignDialog
 
 
-@pytest.mark.parametrize("model_id", ["higgs_audio_tts_4b_q8_0", "fish_audio_s2_pro_q8_0"])
+@pytest.mark.parametrize("model_id", ["higgs_audio_tts_4b_q8_0", "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0", *sorted(VOXCPM_MODELS)])
 def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path, monkeypatch, model_id):
     application = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALTEXT2VOICE_ASSETS_BASE_DIR", str(tmp_path / "assets"))
@@ -31,8 +33,8 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         assert not window.audiocpp_manager.is_installed()
         assert window.audiocpp_buttons["install"].isEnabled()
         assert not window.audiocpp_buttons["load"].isEnabled()
-        model = window.audiocpp_fields["model"]
-        model.setCurrentIndex(model.findData(model_id))
+        assert "model" not in window.audiocpp_fields
+        assert window._select_tts_engine("audiocpp:" + model_id)
         reference = tmp_path / "voz ñ.wav"
         with wave.open(str(reference), "wb") as wav:
             wav.setnchannels(1)
@@ -44,6 +46,19 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         window.audiocpp_voice_name.setText("Narradora")
         window._audiocpp_save_voice()
         monkeypatch.setattr(window.audiocpp_manager, "is_installed", lambda *args: True)
+        window._refresh_voices_page()
+        assert window.voices_design_button.isHidden() == (model_id not in {"breeze_tts_2_q8_0", *VOXCPM_MODELS})
+        assert window.voices_design_button.isEnabled() == (model_id in {"breeze_tts_2_q8_0", *VOXCPM_MODELS})
+        if model_id in {"breeze_tts_2_q8_0", *VOXCPM_MODELS}:
+            with monkeypatch.context() as scoped:
+                designer = Mock()
+                factory = Mock(return_value=designer)
+                scoped.setattr("app.ui.voxcpm_voice_design_dialog.VoxCPMVoiceDesignDialog" if model_id in VOXCPM_MODELS else "app.ui.breeze_voice_design_dialog.BreezeVoiceDesignDialog", factory)
+                window.voices_design_button.click()
+                factory.assert_called_once()
+                assert factory.call_args.args[2]["model"] == model_id
+                designer.voice_saved.connect.assert_called_once_with(window._on_breeze_designed_voice_saved)
+                designer.exec.assert_called_once()
         rows = window._voice_page_rows("audiocpp", engine_ready=True)
         assert len(rows) == 1
         window._select_voice_page_row_data(rows[0])
@@ -52,13 +67,13 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         assert persisted["model"] == model_id
         assert persisted["voices"]["Narradora"]["reference_audio_path"] == str(reference)
         assert window.audiocpp_chunk_size_spin.value() == 200
-        assert window.audiocpp_fields["text_chunk_size"].value() == (200 if model_id.startswith("higgs") else 400)
+        assert window.audiocpp_fields["text_chunk_size"].value() == (200 if model_id.startswith("higgs") else 600 if model_id.startswith("breeze") else 400)
         from app.tts.audiocpp_config import MODELS
         table_rows = window._engine_table_rows()
         ids = [row["engine_id"] for row in table_rows]
         start = ids.index("f5_russian") + 1
-        assert ids[start:start + 2] == ["audiocpp:" + key for key in MODELS]
-        assert [row["name"] for row in table_rows[start:start + 2]] == [spec.name for spec in MODELS.values()]
+        assert ids[start:start + len(MODELS)] == ["audiocpp:" + key for key in MODELS]
+        assert [row["name"] for row in table_rows[start:start + len(MODELS)]] == [spec.name for spec in MODELS.values()]
         window.audiocpp_fields["text_chunk_size"].setValue(275)
         other = next(key for key in MODELS if key != model_id)
         assert window._select_tts_engine("audiocpp:" + other)
@@ -66,6 +81,9 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         assert window._select_tts_engine("audiocpp:" + model_id)
         assert window.audiocpp_fields["text_chunk_size"].value() == 275
         assert MODELS[model_id].name in window.audiocpp_notice.text()
+        assert "GGUF " + MODELS[model_id].precision in window.audiocpp_notice.text()
+        if model_id in VOXCPM_MODELS:
+            assert window._current_chunk_size() == 400
         assert window._active_tts_engine_row_id() == "audiocpp:" + model_id
         assert window.fish_chunk_size_spin.value() == 400
         # Row callbacks act on their own model even if another model is selected.
@@ -89,7 +107,7 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         window._select_tts_engine("audiocpp:" + model_id)
         from app.tts.higgs_tags import TAG_GROUPS
         menus = window.markup_emotion_menu.actions()
-        assert [action.text() for action in menus] == ["Chatterbox", "IndexTTS", "Higgs", "Fish Audio"]
+        assert [action.text() for action in menus] == ["Chatterbox", "IndexTTS", "Higgs", "Fish Audio", "Breeze TTS 2", "VoxCPM 2"]
         for category_action, (category, _, tags) in zip(menus[2].menu().actions(), TAG_GROUPS):
             for action, (value, _, vocal_text) in zip(category_action.menu().actions(), tags):
                 window.text_editor.setPlainText("Texto para narrar.")
@@ -107,6 +125,35 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
                 action.trigger()
                 assert window.text_editor.toPlainText() == "[" + tag + "]Texto."
                 assert window._current_voice_config()["model"] == model_id
+        from app.tts.breeze_tags import VOCAL_TAGS
+        breeze_menus = menus[4].menu().actions()
+        for action, tag in zip(breeze_menus[2].menu().actions(), VOCAL_TAGS):
+            window.text_editor.setPlainText("Hello.")
+            action.trigger()
+            assert window.text_editor.toPlainText() == tag + "Hello."
+            assert action.text() == tag[1:-1].capitalize()
+        window.text_editor.setPlainText("Hello.")
+        breeze_menus[0].menu().actions()[0].trigger()
+        assert window.text_editor.toPlainText() == '{{emotion happy}}Hello.'
+        assert window.breeze_chunk_size_spin.value() == 600
+        assert window.voxcpm_chunk_size_spin.value() == 400
+        assert window.audiocpp_fields["num_inference_steps"].isHidden() == (model_id not in VOXCPM_MODELS)
+        assert window.audiocpp_fields["temperature"].isHidden() == (model_id in VOXCPM_MODELS)
+        voxcpm_actions = menus[5].menu().actions()[0].menu().actions()
+        for action, expected in ((voxcpm_actions[0], '{{emotion happy}}'), (voxcpm_actions[-1], '{{emotion off}}'), (voxcpm_actions[-2], '{{emotion custom ""}}')):
+            window.text_editor.setPlainText("Hola.")
+            action.trigger()
+            assert window.text_editor.toPlainText() == expected + "Hola."
+
+        if model_id == "breeze_tts_2_q8_0":
+            window.audiocpp_fields["instruction"].setText("Speak with joy.")
+            window.audiocpp_fields["top_k"].setValue(0)
+            window._select_tts_engine("audiocpp:higgs_audio_tts_4b_q8_0")
+            assert window.audiocpp_fields["instruction"].isHidden()
+            window._select_tts_engine("audiocpp:" + model_id)
+            assert not window.audiocpp_fields["instruction"].isHidden()
+            assert window.audiocpp_fields["instruction"].text() == "Speak with joy."
+            assert window.audiocpp_fields["top_k"].value() == 0
         gallery = window.voice_gallery_manager
         gallery._replace_catalog(gallery._expand_compatible_documents([{
             "id": "omnivoice_es_catalogo", "engine": "omnivoice", "name": "Voz del catálogo",

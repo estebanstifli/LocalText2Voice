@@ -30,6 +30,8 @@
     "f5_russian": 300,
     "indextts": 400,
     "audiocpp": 200,
+    "audiocpp:breeze_tts_2_q8_0": 600,
+    "audiocpp:voxcpm2_q8_0": 400,
     "audiocpp:fish_audio_s2_pro_q8_0": 400
   },
   "editor_syntax_highlighting": true,

@@ -252,10 +252,10 @@ def engine_documentation() -> str:
         "or Chatterbox.\n\n"
         "audio.cpp is optional: install its runtime and weights in the desktop settings. "
         "Use engine_id='audiocpp' with model='higgs_audio_tts_4b_q8_0' or "
-        "'fish_audio_s2_pro_q8_0', and backend='cpu', 'cuda', 'vulkan', or 'metal' "
+        "'fish_audio_s2_pro_q8_0', 'breeze_tts_2_q8_0' or 'voxcpm2_q8_0' / 'voxcpm2_bf16' / 'voxcpm2_orig', and backend='cpu', 'cuda', 'vulkan', or 'metal' "
         "where supported and installed. Pass reference_audio_path (PCM WAV) and "
         "reference_text, or a saved reference voice name. Higgs requires a reference WAV. "
-        "Both models generate offline WAVs; model licenses apply separately.\n\n"
+        "Breeze supports English/Chinese, reference-free voice design and cloning with an exact transcript. Use instruction for its voice/emotion direction, and inline (laugh), (cough), (clears throat), (sigh) for vocal events. VoxCPM 2 supports 30 languages including Spanish and voice design. Its instruction or {{emotion}} becomes a parenthesized prefix on every chunk; Off disables it. All models generate offline WAVs; model licenses apply separately.\n\n"
         "For advanced text control, read `localtext2voice://docs/markup` before "
         "calling `create_audiobook`."
     )
@@ -387,6 +387,9 @@ def create_audiobook(
     backend: str | None = None,
     reference_audio_path: str | None = None,
     reference_text: str | None = None,
+    instruction: str | None = None,
+    guidance_scale: float | None = None,
+    num_inference_steps: int | None = None,
 ) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         request = {
@@ -396,6 +399,9 @@ def create_audiobook(
             "backend": backend,
             "reference_audio_path": reference_audio_path,
             "reference_text": reference_text,
+            "instruction": instruction,
+            "guidance_scale": guidance_scale,
+            "num_inference_steps": num_inference_steps,
             "engine_id": engine_id,
             "voice": voice,
             "language": language,
@@ -437,6 +443,9 @@ def generate_audio(
     backend: str | None = None,
     reference_audio_path: str | None = None,
     reference_text: str | None = None,
+    instruction: str | None = None,
+    guidance_scale: float | None = None,
+    num_inference_steps: int | None = None,
 ) -> dict[str, Any]:
     return create_audiobook(
         text=text,
@@ -444,6 +453,9 @@ def generate_audio(
         backend=backend,
         reference_audio_path=reference_audio_path,
         reference_text=reference_text,
+        instruction=instruction,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
         title=title,
         engine_id=engine_id,
         voice=voice,

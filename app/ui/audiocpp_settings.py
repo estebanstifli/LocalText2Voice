@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 import html
+import logging
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel,
                               QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPushButton)
 
-from app.tts.audiocpp_config import DEFAULTS, MODELS, MODEL_SETTING_KEYS, model_config
+from app.tts.audiocpp_config import DEFAULTS, MODELS, MODEL_SETTING_KEYS, BREEZE_MODEL, BREEZE_FIELDS, model_config, model_field_visible
 from app.tts.audiocpp_manager import runtime_key
 from app.tts.base import TTSEngineError
 from app.utils.paths import resolve_large_asset_path
@@ -39,6 +40,28 @@ class AudioCppInstallWorker(QObject):
         self.progress.emit(int(current * 1000 / total) if total else 0, 1000 if total else 0, message)
 
 
+class AudioCppInstallCompletion(QObject):
+    """Keep results and GUI updates on the UI thread, after the worker stops."""
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+        self.result = (False, "audio.cpp installation stopped without a result.")
+
+    @Slot(bool, str)
+    def receive(self, ok, message):
+        self.result = (ok, message)
+        logging.getLogger(__name__).info("audio.cpp install worker result: %s %s", ok, message)
+
+    @Slot()
+    def stopped(self):
+        window = self.window
+        logging.getLogger(__name__).info("audio.cpp install thread stopped; updating interface")
+        window._clear_audiocpp_worker()
+        window._audiocpp_install_finished(*self.result)
+        window._audiocpp_completion = None
+        self.deleteLater()
+
+
 class AudioCppSettingsMixin:
     def _apply_audiocpp_gallery_reference(self, voice):
         path = resolve_large_asset_path(voice.installed_path or voice.ref_audio_path or "")
@@ -60,16 +83,12 @@ class AudioCppSettingsMixin:
         panel = QWidget()
         self.audiocpp_panel = panel
         layout = QVBoxLayout(panel)
-        info = QLabel(self.tr("audiocpp_help", "Download a native runtime once, then install Higgs or Fish Q8. Generation runs locally. For voice cloning, choose a PCM WAV and its transcript. CPU can be slow for these models."))
+        info = QLabel(self.tr("audiocpp_help", "Download a native runtime once, then install Higgs, Fish, Breeze or VoxCPM 2 GGUF. Generation runs locally. For voice cloning, choose a PCM WAV and its transcript. CPU can be slow for these models."))
         info.setWordWrap(True)
         layout.addWidget(info)
         form = QFormLayout()
         layout.addLayout(form)
-        model = QComboBox()
-        for key, spec in MODELS.items():
-            model.addItem(f"{spec.name} ({spec.size / 1e9:.2f} GB)", key)
-        self.audiocpp_fields["model"] = model
-        form.addRow(self.tr("model", "Model"), model)
+        self.audiocpp_form = form
         backend = QComboBox()
         for key, label in (("cpu", "CPU portable"), ("cuda", "NVIDIA / CUDA 12.4"), ("vulkan", "GPU / Vulkan portable"), ("metal", "Apple / Metal")):
             try:
@@ -106,11 +125,22 @@ class AudioCppSettingsMixin:
             ("seed", "Seed (-1: random)", -1, 2147483647, True),
             ("max_tokens", "Maximum tokens", 1, 16384, True),
             ("text_chunk_size", "Internal chunk size", 20, 2048, True),
+            ("num_inference_steps", "Diffusion steps", 1, 100, True),
         ):
             widget = QSpinBox() if integer else QDoubleSpinBox()
             widget.setRange(low, high)
             self.audiocpp_fields[key] = widget
             form.addRow(self.tr("audiocpp_" + key, label), widget)
+        instruction = QLineEdit()
+        instruction.setPlaceholderText("Speak calmly and gently.")
+        self.audiocpp_fields["instruction"] = instruction
+        form.addRow(self.tr("breeze_instruction", "Voice / emotion instruction"), instruction)
+        for key, label, low, high in (("guidance_scale", "Guidance scale", 0, 20),
+                                      ("depth_temperature", "Depth temperature", .01, 1.99)):
+            widget = QDoubleSpinBox()
+            widget.setRange(low, high)
+            self.audiocpp_fields[key] = widget
+            form.addRow(self.tr("breeze_" + key, label), widget)
         self.audiocpp_notice = QLabel()
         self.audiocpp_notice.setWordWrap(True)
         self.audiocpp_notice.setOpenExternalLinks(True)
@@ -135,7 +165,7 @@ class AudioCppSettingsMixin:
             signal = (widget.currentIndexChanged if isinstance(widget, QComboBox) else
                       widget.path_changed if isinstance(widget, FilePicker) else
                       widget.textChanged if isinstance(widget, QLineEdit) else widget.valueChanged)
-            signal.connect(self._audiocpp_model_changed if widget is model else self._audiocpp_changed)
+            signal.connect(self._audiocpp_changed)
         layout.addStretch(1)
         return panel
 
@@ -149,6 +179,10 @@ class AudioCppSettingsMixin:
         for name in self.audiocpp_voices:
             self.audiocpp_voice_combo.addItem(self.audiocpp_voices[name].get("name", name), name)
         self.audiocpp_voice_combo.blockSignals(previous)
+        top_k = self.audiocpp_fields["top_k"]
+        blocked = top_k.blockSignals(True)
+        top_k.setMinimum(0 if config["model"] == BREEZE_MODEL else 1)
+        top_k.blockSignals(blocked)
         for key, widget in self.audiocpp_fields.items():
             previous = widget.blockSignals(True)
             if isinstance(widget, QComboBox):
@@ -174,16 +208,13 @@ class AudioCppSettingsMixin:
         config["model_settings"] = profiles
         return config
 
-    def _audiocpp_model_changed(self, *_):
-        if self._restoring_settings:
-            return
-        target = self.audiocpp_fields["model"].currentData()
-        previous = self._audiocpp_displayed_model
+    def _select_audiocpp_model(self, target):
+        if target not in MODELS:
+            raise ValueError(f"Unknown audio.cpp model: {target}")
         config = self._audiocpp_settings()
-        # The combo already changed; the other widgets still describe the previous model.
-        config["model_settings"] = deepcopy(self.settings.get("audiocpp", {}).get("model_settings", {}))
-        config["model_settings"][previous] = {key: config[key] for key in MODEL_SETTING_KEYS}
-        config["model"] = previous
+        if config["model"] == target:
+            return
+        # Persist the outgoing row's controls before restoring the selected row.
         self.settings["audiocpp"] = model_config(config, target)
         self._load_audiocpp_settings()
         self._audiocpp_changed()
@@ -248,11 +279,13 @@ class AudioCppSettingsMixin:
         license_label = html.escape(self.tr("audiocpp_license_link", "License"))
         self.audiocpp_notice.setText(html.escape(spec.notice) + f' <a href="{spec.license_url}">{license_label}</a>')
         self.audiocpp_notice.setText(
-            f"<b>{html.escape(spec.name)}</b> · audio.cpp {spec.size / 1e9:.2f} GB · GGUF Q8<br>"
+            f"<b>{html.escape(spec.name)}</b> · audio.cpp {spec.size / 1e9:.2f} GB · GGUF {html.escape(spec.precision)}<br>"
             + self.audiocpp_notice.text())
         self.audiocpp_status.setText(self.tr("installed", "Installed") if ready else self.tr("not_installed", "Not installed"))
         for widget in self.audiocpp_fields.values():
             widget.setEnabled(not busy)
+        for key, widget in self.audiocpp_fields.items():
+            self.audiocpp_form.setRowVisible(widget, model_field_visible(spec.id, key))
         for key, button in self.audiocpp_buttons.items():
             button.setEnabled(not busy and (key == "install" or ready))
         self._configure_preload_button(self.audiocpp_buttons["load"], "audiocpp:" + spec.id, ready and not busy)
@@ -279,7 +312,7 @@ class AudioCppSettingsMixin:
             free, volume, self.tr, self, install_path=self.audiocpp_manager.root,
             license_notice=spec.notice, license_url=spec.license_url,
             license_accept_text=self.tr("audiocpp_license_accept", "I have read the model license and will use it only under its permitted terms."),
-            intro_text=self.tr("audiocpp_install_intro", "Downloads the native audio.cpp runtime and the selected Q8 weights. No additional Python environment is installed. Existing verified files are reused."),
+            intro_text=self.tr("audiocpp_install_intro", "Downloads the native audio.cpp runtime and the selected GGUF weights. No additional Python environment is installed. Existing verified files are reused."),
         )
         self.engine_install_dialogs["audiocpp"] = dialog
         dialog.install_requested.connect(lambda: self._start_audiocpp_install(config, dialog))
@@ -288,17 +321,22 @@ class AudioCppSettingsMixin:
         dialog.open()
 
     def _start_audiocpp_install(self, config, dialog):
+        if self.audiocpp_thread is not None:
+            return
+        logging.getLogger(__name__).info("audio.cpp install starting: %s / %s", config["model"], config["backend"])
         self.audiocpp_manager.reset_cancel()
         thread = QThread(self)
         worker = AudioCppInstallWorker(self.audiocpp_manager, config)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(dialog.update_progress)
-        worker.finished.connect(self._audiocpp_install_finished)
+        completion = AudioCppInstallCompletion(self)
+        self._audiocpp_completion = completion
+        worker.finished.connect(completion.receive, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(completion.stopped, Qt.ConnectionType.QueuedConnection)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_audiocpp_worker)
         self.audiocpp_thread, self.audiocpp_worker = thread, worker
         self._refresh_audiocpp_status()
         thread.start()
@@ -314,6 +352,7 @@ class AudioCppSettingsMixin:
         self.audiocpp_thread = self.audiocpp_worker = None
         self._refresh_audiocpp_status()
         self._refresh_tts_engine_table()
+        self._refresh_voices_page()
 
     def _remove_audiocpp(self):
         if self._audiocpp_can_change_files():

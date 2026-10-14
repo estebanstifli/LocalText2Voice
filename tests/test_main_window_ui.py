@@ -323,7 +323,7 @@ class MainWindowUITests(unittest.TestCase):
         menus = window.markup_emotion_menu.actions()
         self.assertIsNotNone(window._markup_command_by_name("vocal"))
         self.assertFalse(any(button.text() == "Vocal" for button in window.findChildren(QPushButton)))
-        self.assertEqual([action.text() for action in menus], ["Chatterbox", "IndexTTS", "Higgs", "Fish Audio"])
+        self.assertEqual([action.text() for action in menus], ["Chatterbox", "IndexTTS", "Higgs", "Fish Audio", "Breeze TTS 2", "VoxCPM 2"])
         actions = menus[1].menu().actions()[0].menu().actions()
         self.assertEqual([a.data() for a in actions], [*EMOTION_PRESETS, "off", "custom"])
         for action in actions[:-1]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.tts.audiocpp_config import VOXCPM_MODELS
+
 import difflib
 import errno
 import json
@@ -551,7 +553,7 @@ class AudioPipeline:
         text = self._normalize_text_for_tts(text, options)
         if LTVMarkupParser.contains_markup(text):
             backend = str(options.voice_config.get("engine", "piper"))
-            markup = LTVMarkupCompiler.compile(text, backend)
+            markup = LTVMarkupCompiler.compile(text, backend, model=options.voice_config.get("model"))
             command_count = len(
                 [event for event in markup.events if event.type != "text"]
             )
@@ -1009,6 +1011,9 @@ class AudioPipeline:
             self._apply_config_overrides(config, overrides)
 
         emotion = state.get("emotion")
+        if engine == "audiocpp" and config.get("model") in {"breeze_tts_2_q8_0", *VOXCPM_MODELS} and isinstance(emotion, dict):
+            if "instruction" in emotion:
+                config["instruction"] = emotion["instruction"]
         if engine == "indextts" and isinstance(emotion, dict):
             # A vector preset overrides textual guidance, including global presets.
             config.pop("instruct", None)

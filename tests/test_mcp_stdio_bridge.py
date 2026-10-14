@@ -54,7 +54,7 @@ def test_stdio_bridge_exposes_expected_tools():
                 }.issubset(names)
                 definitions = {tool.name: tool for tool in tools.tools}
                 for name in ("create_audiobook", "generate_audio"):
-                    assert {"model", "backend", "reference_audio_path", "reference_text"}.issubset(
+                    assert {"model", "backend", "reference_audio_path", "reference_text", "instruction", "guidance_scale", "num_inference_steps"}.issubset(
                         definitions[name].inputSchema["properties"]
                     )
                 resources = await session.list_resources()
@@ -81,6 +81,18 @@ def test_audiocpp_options_forwarded_to_host(monkeypatch):
     assert calls[-1][2]["model"] == "fish_audio_s2_pro_q8_0"
     assert calls[-1][2]["backend"] == "vulkan"
     assert calls[-1][2]["reference_text"] == "Hola."
+    bridge.generate_audio("Hello (laugh).", engine_id="audiocpp", model="breeze_tts_2_q8_0",
+                          instruction="Speak with joy.")
+    assert calls[-1][2]["model"] == "breeze_tts_2_q8_0"
+    assert calls[-1][2]["instruction"] == "Speak with joy."
+    assert calls[-1][2]["text"] == "Hello (laugh)."
+    bridge.generate_audio("{{emotion happy}}Hola.", engine_id="audiocpp", model="voxcpm2_q8_0",
+                          instruction="warm narrator", guidance_scale=2.5, num_inference_steps=15)
+    assert calls[-1][2]["model"] == "voxcpm2_q8_0"
+    assert calls[-1][2]["guidance_scale"] == 2.5
+    assert calls[-1][2]["num_inference_steps"] == 15
+    assert calls[-1][2]["text"] == "{{emotion happy}}Hola."
+
 
 
 def test_stdio_bridge_adds_project_file_uris(tmp_path):

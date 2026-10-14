@@ -286,6 +286,30 @@ def test_review_segment_synthesis_reuses_the_host_cached_engine(tmp_path):
     assert engine.configurations[0]["model"] == "base_1_7b"
 
 
+def test_preview_synthesis_keeps_host_health_responsive(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    app = create_http_app(_settings(tmp_path))
+    def synthesize(text, output, config):
+        entered.set()
+        release.wait(5)
+        return Path(output)
+    app.state.service.synthesize_segment = synthesize
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(client.post, "/review/segments/synthesize",
+                              headers={"Authorization": "Bearer secret-token"},
+                              json={"text": "Sample", "output_wav": str(tmp_path / "preview.wav"),
+                                    "voice_config": {"engine": "audiocpp"}})
+        try:
+            assert entered.wait(2)
+            assert pool.submit(client.get, "/health").result(timeout=2).status_code == 200
+        finally:
+            release.set()
+        assert pending.result(timeout=2).status_code == 200
+
+
 def test_review_segment_applies_saved_postprocessing(tmp_path, monkeypatch):
     import shutil
     runner = MagicMock()

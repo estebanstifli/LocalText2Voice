@@ -39,7 +39,7 @@ from app.tts.engine_registry import TTS_ENGINES, create_tts_engine
 from app.tts.f5_russian_manager import F5RussianManager
 from app.tts.kokoro_python_manager import KokoroPythonManager
 from app.tts.indextts_manager import IndexTTSManager
-from app.tts.audiocpp_config import DEFAULTS as AUDIOCPP_DEFAULTS, MODELS as AUDIOCPP_MODELS, model_config as audiocpp_model_config, resolve_voice as audiocpp_resolve_voice
+from app.tts.audiocpp_config import VOXCPM_MODELS, DEFAULTS as AUDIOCPP_DEFAULTS, MODELS as AUDIOCPP_MODELS, model_config as audiocpp_model_config, resolve_voice as audiocpp_resolve_voice
 from app.tts.audiocpp_manager import AudioCppManager
 from app.tts.indextts_config import DEFAULTS as INDEXTTS_DEFAULTS, LICENSE_URL as INDEXTTS_LICENSE_URL
 from app.tts.omnivoice_manager import OmniVoiceManager
@@ -179,7 +179,7 @@ class LocalText2VoiceService:
                 config = {**AUDIOCPP_DEFAULTS, **self._settings_dict("audiocpp")}
                 engine["models"] = [
                     {"id": spec.id, "name": spec.name, "family": spec.family,
-                     "installed": self.audiocpp_manager.is_installed(spec.id, config["backend"]),
+                     "installed": self.audiocpp_manager.is_installed(spec.id, audiocpp_model_config(config, spec.id)["backend"]),
                      "download_bytes": spec.size, "license_url": spec.license_url,
                      "license_notice": spec.notice}
                     for spec in AUDIOCPP_MODELS.values()
@@ -390,7 +390,7 @@ class LocalText2VoiceService:
                 }
                 for voice in self.kokoro_manager.list_voices()
             ]
-        if engine == "qwen":
+        if engine == "qwen" and self.qwen_manager.model_kind(str(self._settings_dict("qwen").get("model", "custom_voice_0_6b"))) != "voice_clone":
             languages = [language.display_name for language in self.qwen_manager.list_languages()]
             configured_model = str(
                 self._settings_dict("qwen").get(
@@ -410,7 +410,7 @@ class LocalText2VoiceService:
                 for voice in self.qwen_manager.list_voices()
                 for language in languages
             ]
-        if engine in {"chatterbox", "omnivoice", "indextts", "f5_russian"}:
+        if engine in {"chatterbox", "omnivoice", "indextts", "f5_russian", "qwen"}:
             rows = []
             for voice in self.voice_gallery_manager.list_voices(engine):
                 installed = self.voice_gallery_manager.is_installed(voice)
@@ -1131,6 +1131,8 @@ class LocalText2VoiceService:
         if engine_id == "qwen":
             qwen = self._settings_dict("qwen")
             model = str(qwen.get("model", "custom_voice_0_6b"))
+            gallery_voice = self._match_gallery_voice("qwen", voice_hint, language_hint) if self.qwen_manager.model_kind(model) == "voice_clone" else None
+            gallery_path = self.voice_gallery_manager.ensure_voice_audio(gallery_voice) if gallery_voice else None
             speaker = str(qwen.get("speaker", "Serena"))
             language = str(qwen.get("language", "Spanish"))
             if voice_hint:
@@ -1151,10 +1153,12 @@ class LocalText2VoiceService:
                 "instruct": str(request.get("instruct") or qwen.get("instruct", "")),
                 "reference_audio_path": str(
                     request.get("reference_audio_path")
+                    or (str(gallery_path) if gallery_path else "")
                     or qwen.get("reference_audio_path", "")
                 ),
                 "reference_text": str(
                     request.get("reference_text")
+                    or (gallery_voice.ref_text if gallery_voice else "")
                     or qwen.get("reference_text", "")
                 ),
             }
@@ -1414,8 +1418,8 @@ class LocalText2VoiceService:
             pass
         if engine_id == "audiocpp":
             model = request.get("model") or self._settings_dict("audiocpp").get("model", AUDIOCPP_DEFAULTS["model"])
-            if model == "fish_audio_s2_pro_q8_0":
-                engine_id = "audiocpp:" + model
+            if model in AUDIOCPP_MODELS and model != AUDIOCPP_DEFAULTS["model"]:
+                engine_id = "audiocpp:" + ("voxcpm2_q8_0" if model in VOXCPM_MODELS else model)
         engine_sizes = self.settings.get("engine_chunk_sizes", {})
         if isinstance(engine_sizes, dict):
             try:

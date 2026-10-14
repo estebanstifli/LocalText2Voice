@@ -411,7 +411,8 @@ class TextProcessor:
     def _split_by_words(text: str, max_chars: int) -> list[str]:
         # Native controls with spaces must reach the TTS model intact.
         from app.tts.fish_tags import TAG_PATTERN
-        words = re.findall(r"(?:" + TAG_PATTERN + r"|\[clear throat\]|\S)+", text)
+        from app.tts.breeze_tags import TAG_PATTERN as BREEZE_TAG_PATTERN
+        words = re.findall(r"(?:" + TAG_PATTERN + "|" + BREEZE_TAG_PATTERN + r"|\[clear throat\]|\S)+", text)
         pieces: list[str] = []
         current = ""
 

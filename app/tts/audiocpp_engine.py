@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 import json
 import os
+import secrets
 from pathlib import Path
 import socket
 import subprocess
@@ -13,7 +14,7 @@ import urllib.request
 import wave
 
 from app.utils.paths import resolve_large_asset_path
-from .audiocpp_config import MODELS, validated_config
+from .audiocpp_config import MODELS, BREEZE_MODEL, BREEZE_FIELDS, VOXCPM_MODELS, validated_config
 from .audiocpp_manager import AudioCppManager
 from .api_engines import CustomHTTPTTSEngine
 from .base import TTSCancelled, TTSEngineError
@@ -56,8 +57,10 @@ class AudioCppTTSEngine(CustomHTTPTTSEngine):
         config = self._config(voice_config)
         reference = str(config.get("reference_audio_path", "")).strip()
         if MODELS[config["model"]].requires_reference and not reference:
-            raise TTSEngineError("Higgs requires a reference WAV. Choose one in the audio.cpp settings.")
+            raise TTSEngineError(f"{MODELS[config['model']].name} requires a reference WAV. Choose one in the audio.cpp settings.")
         if reference:
+            if config["model"] == BREEZE_MODEL and not str(config.get("reference_text", "")).strip():
+                raise TTSEngineError("Breeze voice cloning requires the exact transcript of the reference WAV.")
             path = resolve_large_asset_path(reference)
             try:
                 with wave.open(str(path), "rb") as audio:
@@ -196,10 +199,18 @@ class AudioCppTTSEngine(CustomHTTPTTSEngine):
             }
             if config["seed"] >= 0:
                 payload["options"]["seed"] = config["seed"]
+            if config["model"] == BREEZE_MODEL:
+                payload["options"].update({key: config[key] for key in BREEZE_FIELDS})
+                # Omitting the seed uses upstream's fixed seed 0, not random sampling.
+                if config["seed"] < 0:
+                    payload["options"]["seed"] = secrets.randbelow(2147483648)
             if config["reference_audio_path"]:
                 payload["voice_ref"] = str(resolve_large_asset_path(config["reference_audio_path"]).resolve())
-                payload["reference_text"] = config["reference_text"]
+                if config["model"] not in VOXCPM_MODELS:
+                    payload["reference_text"] = config["reference_text"]
             try:
+                if config["model"] in VOXCPM_MODELS:
+                    return self._synthesize_voxcpm(text, output_wav, payload, config)
                 audio, _ = self._request_speech(payload, config)
                 self._check_cancel()
                 output_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +225,49 @@ class AudioCppTTSEngine(CustomHTTPTTSEngine):
                 self.close()
                 self._check_cancel()
                 raise
+
+    def _synthesize_voxcpm(self, text, output_wav, payload, config):
+        from app.core.text_processor import TextProcessor
+        from app.utils.atomic_audio import atomic_wav_output, validate_wav
+
+        chunks = TextProcessor.split_safe_chunks(text, config["text_chunk_size"])
+        if not chunks:
+            raise TTSEngineError("VoxCPM 2 requires non-empty text.")
+        instruction = config["instruction"]
+        seed = config["seed"] if config["seed"] >= 0 else secrets.randbelow(2147483648)
+        # Native tag-aware continuation only prefixes its FIRST internal chunk.
+        # Submit independent chunks with the same reference and direction instead.
+        # Keep a fixed seed across chunks to help reference-free voice consistency.
+        options = {key: config[key] for key in ("max_tokens", "guidance_scale", "num_inference_steps")}
+        options.update(seed=seed, chunk_strategy="stateless", text_chunk_mode="default")
+        with atomic_wav_output(output_wav, self._check_cancel) as destination:
+            with tempfile.TemporaryDirectory(prefix="ltv-voxcpm-chunks-") as temporary:
+                part = Path(temporary) / "part.wav"
+                expected = None
+                with wave.open(str(destination), "wb") as combined:
+                    # Allow clean closure if the first request fails or is cancelled.
+                    combined.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+                    for chunk in chunks:
+                        self._check_cancel()
+                        directed = f"({instruction}) {chunk}" if instruction else chunk
+                        # Size covers the ENTIRE request, so C++ cannot split again.
+                        request = {**payload, "input": directed,
+                                   "options": {**options, "text_chunk_size": len(directed) + 1}}
+                        audio, _ = self._request_speech(request, config)
+                        self._check_cancel()
+                        self._write_wav_bytes_compatible(audio, part, config)
+                        validate_wav(part)
+                        with wave.open(str(part), "rb") as wav:
+                            fmt = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
+                            if expected is None:
+                                expected = fmt
+                                combined.setparams(wav.getparams())
+                            elif fmt != expected:
+                                raise TTSEngineError("VoxCPM 2 changed WAV format between chunks.")
+                            while frames := wav.readframes(65536):
+                                self._check_cancel()
+                                combined.writeframesraw(frames)
+        return output_wav
 
     def cancel_current(self):
         super().cancel_current()

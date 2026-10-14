@@ -128,7 +128,8 @@ def create_http_app(
         if not isinstance(voice_config, dict):
             raise HTTPException(status_code=400, detail="voice_config must be an object.")
         try:
-            output = service.synthesize_segment(
+            output = await run_in_threadpool(
+                service.synthesize_segment,
                 str(payload.get("text", "")),
                 str(payload.get("output_wav", "")),
                 voice_config,

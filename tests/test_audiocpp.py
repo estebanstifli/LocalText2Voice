@@ -339,6 +339,25 @@ def test_install_publishes_complete_runtime_model_and_license(tmp_path, monkeypa
     monkeypatch.setitem(MODELS, other.id, other)
     manager.install(other.id, "cpu", lambda *a: None)
     assert manager.is_installed(other.id, "cpu")
+    third = replace(MODELS["breeze_tts_2_q8_0"], size=5)
+    monkeypatch.setitem(MODELS, third.id, third)
+    manager.install(third.id, "cpu", lambda *a: None)
+    assert manager.is_installed(third.id, "cpu")
+    manager.remove_model(third.id)
+    assert not manager.is_installed(third.id, "cpu")
+    assert manager.is_installed(other.id, "cpu") and manager.is_installed(spec.id, "cpu")
+    fourth = replace(MODELS["voxcpm2_q8_0"], size=5)
+    monkeypatch.setitem(MODELS, fourth.id, fourth)
+    manager.install(fourth.id, "cpu", lambda *a: None)
+    assert manager.is_installed(fourth.id, "cpu")
+    manager.remove_model(fourth.id)
+    assert manager.is_installed(other.id, "cpu")
+    for variant in ("voxcpm2_bf16", "voxcpm2_orig"):
+        monkeypatch.setitem(MODELS, variant, replace(MODELS[variant], size=5))
+        manager.install(variant, "cpu", lambda *a: None)
+        assert manager.is_installed(variant, "cpu")
+    manager.remove_model("voxcpm2_bf16")
+    assert manager.is_installed("voxcpm2_orig", "cpu")
     assert len(runtime_downloads) == 1
     # A missing runtime dependency is repaired before installation is reported ready.
     (manager.executable("cpu").parent / "ggml.dll").unlink()
@@ -349,3 +368,111 @@ def test_install_publishes_complete_runtime_model_and_license(tmp_path, monkeypa
     assert not manager.is_installed(spec.id, "cpu")
     assert manager.has_runtime("cpu")
     assert manager.is_installed(other.id, "cpu")
+
+
+def test_breeze_instruction_and_vocal_transport(native_engine, tmp_path):
+    from app.tts.audiocpp_config import BREEZE_MODEL, model_config
+    engine, _, log = native_engine
+    config = model_config({"model": BREEZE_MODEL, "instruction": "Speak softly and sadly.", "seed": 17})
+    engine.synthesize_to_wav("Hello (clears throat).", tmp_path / "design.wav", config)
+    payload = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["model"] == BREEZE_MODEL
+    assert payload["input"] == "Hello (clears throat)."
+    assert payload["options"]["instruction"] == "Speak softly and sadly."
+    assert payload["options"]["depth_temperature"] == .9
+    assert payload["options"]["guidance_scale"] == 1
+    assert payload["options"]["max_tokens"] == 1500
+    assert payload["options"]["text_chunk_size"] == 600
+    assert payload["options"]["seed"] == 17
+    assert "voice_ref" not in payload
+    reference = tmp_path / "reference.wav"
+    with wave.open(str(reference), "wb") as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(24000)
+        wav.writeframes(b"\0\0" * 240)
+    config["reference_audio_path"] = str(reference)
+    with pytest.raises(TTSEngineError, match="exact transcript"):
+        engine.validate(config)
+    config.update(reference_text="Reference transcript.", seed=-1)
+    engine.synthesize_to_wav("Hello (sigh).", tmp_path / "clone.wav", config)
+    payload = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["voice_ref"] == str(reference.resolve())
+    assert payload["reference_text"] == "Reference transcript."
+    assert 0 <= payload["options"]["seed"] <= 2147483647
+    assert config["seed"] == -1
+
+
+def test_breeze_model_settings_are_isolated():
+    from app.tts.audiocpp_config import BREEZE_MODEL, model_config
+    source = {"model": DEFAULTS["model"], "text_chunk_size": 275, "max_tokens": 4096,
+              "instruction": "Unused Higgs instruction", "backend": "cuda",
+              "reference_text": "Shared voice", "model_settings": {BREEZE_MODEL: {"guidance_scale": 1.5}}}
+    breeze = model_config(source, BREEZE_MODEL)
+    assert breeze["backend"] == "cuda" and breeze["reference_text"] == "Shared voice"
+    assert (breeze["text_chunk_size"], breeze["max_tokens"], breeze["top_k"]) == (600, 1500, 50)
+    assert breeze["instruction"] == "Speak clearly and naturally."
+    assert breeze["guidance_scale"] == 1.5
+    assert source["text_chunk_size"] == 275
+    assert validated_config({"model": BREEZE_MODEL, "top_k": 0})["top_k"] == 0
+    for invalid in ({"guidance_scale": -1}, {"depth_temperature": float("nan")}, {"instruction": 5}):
+        with pytest.raises(ValueError):
+            validated_config({"model": BREEZE_MODEL, **invalid})
+
+
+@pytest.mark.parametrize("model_id", ["voxcpm2_q8_0", "voxcpm2_bf16", "voxcpm2_orig"])
+def test_voxcpm_every_chunk_is_directed_and_only_native_options_sent(native_engine, tmp_path, model_id):
+    from app.tts.audiocpp_config import VOXCPM_MODEL, model_config
+    from app.core.text_processor import TextProcessor
+    engine, _, log = native_engine
+    config = model_config({"model": model_id, "instruction": "voz alegre", "text_chunk_size": 30, "seed": 42})
+    source = "Hola a todos. Esta historia tiene varias frases. Vamos a empezar."
+    out = tmp_path / "voxcpm.wav"
+    engine.synthesize_to_wav(source, out, config)
+    payloads = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    chunks = TextProcessor.split_safe_chunks(source, 30)
+    assert len(payloads) == len(chunks) > 1
+    for request, chunk in zip(payloads, chunks):
+        assert request["model"] == model_id
+        assert request["input"] == "(voz alegre) " + chunk
+        assert set(request["options"]) == {"max_tokens", "guidance_scale", "num_inference_steps", "seed", "chunk_strategy", "text_chunk_mode", "text_chunk_size"}
+        assert request["options"]["text_chunk_size"] > len(request["input"])
+        assert request["options"]["guidance_scale"] == 2
+        assert request["options"]["num_inference_steps"] == 10
+        assert request["options"]["max_tokens"] == 4096
+        assert request["options"]["seed"] == 42
+        assert "voice_ref" not in request
+    with wave.open(str(out), "rb") as wav:
+        assert wav.getnframes() == len(chunks) * 240
+    first_process = engine._process
+    # Speaker-reference cloning works without a transcript; never send the
+    # unsupported continuation field on the native speech endpoint.
+    config.update(instruction="", reference_audio_path=str(out), reference_text="Catalog transcript", seed=-1)
+    engine.synthesize_to_wav("Texto (un inciso normal).", tmp_path / "off.wav", config)
+    request = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert request["input"] == "Texto (un inciso normal)."
+    assert request["voice_ref"] == str(out.resolve())
+    assert "reference_text" not in request and "prompt_text" not in request["options"]
+    assert 0 <= request["options"]["seed"] <= 2147483647
+    assert engine._process is first_process
+    assert config["seed"] == -1
+
+
+def test_voxcpm_failed_later_chunk_keeps_previous_audio(native_engine, tmp_path):
+    engine, _, _ = native_engine
+    destination = tmp_path / "old.wav"
+    destination.write_bytes(b"previous audio")
+    with pytest.raises(TTSEngineError, match="GPU out of memory"):
+        engine.synthesize_to_wav("First sentence here. other-error", destination,
+                                 {"model": "voxcpm2_q8_0", "text_chunk_size": 20})
+    assert destination.read_bytes() == b"previous audio"
+    assert not list(tmp_path.glob("*.pending.wav"))
+    assert not engine.memory_status()["loaded"]
+
+
+@pytest.mark.parametrize("values", [
+    {"instruction": "happy (very)"}, {"instruction": "{{emotion happy}}"},
+    {"instruction": None}, {"num_inference_steps": 0}, {"num_inference_steps": 1.5},
+    {"guidance_scale": float("nan")}, {"guidance_scale": -1},
+])
+def test_voxcpm_invalid_controls(values):
+    with pytest.raises((ValueError, TypeError)):
+        validated_config({"model": "voxcpm2_q8_0", **values})

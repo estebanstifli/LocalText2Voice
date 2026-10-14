@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import time
@@ -594,9 +595,13 @@ class SegmentVerificationWorker(QObject):
         language_hint: str,
     ) -> tuple[str, str, list[object], bool, bool]:
         source_text = segment.source_text
-        if self._voice_config_for_segment(segment).get("engine") == "chatterbox":
+        config = self._voice_config_for_segment(segment)
+        if config.get("engine") == "chatterbox":
             from app.tts.chatterbox_tags import _NATIVE_TAG
             source_text = _NATIVE_TAG.sub("", source_text)
+        if config.get("engine") == "audiocpp" and config.get("model") == "breeze_tts_2_q8_0":
+            from app.tts.breeze_tags import TAG_PATTERN
+            source_text = re.sub(TAG_PATTERN, "", source_text)
         russian_silero_stress_comparison = self._uses_russian_silero_stress(
             segment,
             language_hint,

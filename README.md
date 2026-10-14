@@ -33,14 +33,19 @@ The workflow is designed for long projects: import or write a script, generate n
 
 ## What's New In 3.0: Native TTS With audio.cpp
 
-- **Optional audio.cpp engines:** Higgs Audio v3 TTS 4B Q8 and Fish Audio S2 Pro Q8
+- **Optional audio.cpp engines:** Higgs Audio v3 TTS 4B Q8, Fish Audio S2 Pro Q8, Breeze TTS 2 Q8 and VoxCPM 2 (Q8, BF16 or Original GGUF)
   use a shared native runtime, with CPU, CUDA or Vulkan packages on Windows.
   Runtime and model weights are downloaded on demand, not bundled in the installer.
 - **A growing native catalog:** audio.cpp is the direction for adding more local
   models. Each addition will be integrated and tested; upstream models do not
   automatically become available. Existing Python engines and cloud providers remain.
 - **Native expression controls:** Higgs and Fish menus insert their own emotion,
-  style, prosody and vocal tags. Catalog references with transcripts can be reused.
+  style, prosody and vocal tags. Breeze sends emotion instructions separately and
+  keeps vocal events such as `(laugh)` in the text. Catalog references with transcripts can be reused.
+- **Voice design and reuse:** Breeze and VoxCPM can design a voice from a description;
+  preview and save its recording with the transcript. Local reference recordings
+  are shared across compatible cloning engines. VoxCPM direction is applied to
+  every chunk, with guidance and diffusion controls available in the UI and MCP.
 - **Per-segment editing:** Review now lets you change a segment's text, reference
   voice and synthesis parameters without changing global settings. Regenerate and
   approve the replacement before rebuilding the audiobook.
@@ -92,8 +97,8 @@ inputs, character-based estimates and configurable Qwen/Chatterbox chunk packing
 
 ## See LocalText2Voice In Action
 
-Optional audio.cpp integration supports native Higgs Audio v3 TTS 4B Q8 and Fish
-Audio S2 Pro Q8 inference, downloadable from TTS settings. See the
+Optional audio.cpp integration supports native Higgs Audio v3 TTS 4B Q8, Fish
+Audio S2 Pro Q8, Breeze TTS 2 Q8 and VoxCPM 2 (Q8, BF16 or Original GGUF) inference, downloadable from TTS settings. See the
 [setup and testing guide (Spanish)](docs/AUDIOCPP.es.md) for requirements, model
 licenses, MCP parameters and first-delivery limits.
 

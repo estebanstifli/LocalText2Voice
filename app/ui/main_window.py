@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.tts.audiocpp_config import VOXCPM_MODELS
+
 from app.core.storyboard_provider_label import active_provider_label
 from app.core.project_rename import relocate_markup, relocate_paths, safe_project_folder_name
 from app.core.project_output import output_preferences, resolve_project_output
@@ -2141,6 +2143,37 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                 action.setToolTip(self.tr("fish_native_help", "Native Fish Audio tag, inserted directly into the text. You can edit the instruction inside the brackets."))
                 item = {**command, "template": token, "cursor": token}
                 action.triggered.connect(lambda _checked=False, entry=item: self._insert_markup_template(entry))
+        from app.tts.breeze_tags import EMOTION_INSTRUCTIONS, STYLE_INSTRUCTIONS, VOCAL_TAGS
+        breeze_menu = add_submenu(menu, "Breeze TTS 2")
+        emotions_menu = add_submenu(breeze_menu, self.tr("higgs_category_emotion", "Emotions"))
+        styles_menu = add_submenu(breeze_menu, self.tr("higgs_category_style", "Styles"))
+        vocal_menu = add_submenu(breeze_menu, self.tr("higgs_category_sfx", "Vocal sounds"))
+        entries = []
+        for name in [*EMOTION_INSTRUCTIONS, "off", "custom"]:
+            template = '{{emotion custom ""}}' if name == "custom" else '{{emotion ' + name + '}}'
+            label = self.tr("indextts_emotion_" + emotion_keys.get(name, name), name.capitalize())
+            entries.append((emotions_menu, label, template, '{{emotion custom "' if name == "custom" else template))
+        for label, instruction in STYLE_INSTRUCTIONS.items():
+            template = '{{emotion custom "' + instruction + '"}}'
+            entries.append((styles_menu, self.tr("breeze_style_" + label.lower(), label), template, template))
+        for token in VOCAL_TAGS:
+            entries.append((vocal_menu, token[1:-1].capitalize(), token, token))
+        for parent, label, template, cursor in entries:
+            action = parent.addAction(label)
+            action.setToolTip(template)
+            action.setData(template)
+            item = {**command, "template": template, "cursor": cursor}
+            action.triggered.connect(lambda _checked=False, entry=item: self._insert_markup_template(entry))
+        from app.tts.voxcpm_tags import EMOTION_INSTRUCTIONS as VOXCPM_EMOTIONS
+        voxcpm_menu = add_submenu(menu, "VoxCPM 2")
+        emotions_menu = add_submenu(voxcpm_menu, self.tr("higgs_category_emotion", "Emotions"))
+        for name in [*VOXCPM_EMOTIONS, "custom", "off"]:
+            template = '{{emotion custom ""}}' if name == "custom" else '{{emotion ' + name + '}}'
+            action = emotions_menu.addAction(self.tr("indextts_emotion_" + emotion_keys.get(name, name), name.capitalize()))
+            action.setData(template)
+            action.setToolTip(template)
+            item = {**command, "template": template, "cursor": '{{emotion custom "' if name == "custom" else template}
+            action.triggered.connect(lambda _checked=False, entry=item: self._insert_markup_template(entry))
         button.setMenu(menu)
         self.markup_emotion_menu = menu
         self.markup_emotion_submenus = tuple(submenus)
@@ -3664,7 +3697,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.voices_design_button = QPushButton("Design Voice")
         self.voices_design_button.setIcon(ui_icon("render"))
         self.voices_design_button.setIconSize(QSize(18, 18))
-        self.voices_design_button.clicked.connect(self._open_omnivoice_design_dialog)
+        self.voices_design_button.clicked.connect(self._open_voice_design_dialog)
         header.addWidget(self.voices_refresh_button)
         header.addWidget(self.voices_sync_button)
         header.addWidget(self.voices_external_libraries_button)
@@ -11539,8 +11572,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             return False
         engine_id, qwen_model_id = self._split_tts_engine_row_id(engine_id)
         if engine_id == "audiocpp" and qwen_model_id:
-            combo = self.audiocpp_fields["model"]
-            combo.setCurrentIndex(combo.findData(qwen_model_id))
+            self._select_audiocpp_model(qwen_model_id)
         if engine_id == "qwen" and qwen_model_id and not self._select_qwen_model(qwen_model_id):
             return False
         index = self.tts_engine_combo.findData(engine_id)
@@ -13005,6 +13037,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.piper_chunk_size_spin = self._engine_chunk_spin()
         self.indextts_chunk_size_spin = self._engine_chunk_spin()
         self.audiocpp_chunk_size_spin = self._engine_chunk_spin()
+        self.breeze_chunk_size_spin = self._engine_chunk_spin()
+        self.voxcpm_chunk_size_spin = self._engine_chunk_spin()
         self.fish_chunk_size_spin = self._engine_chunk_spin()
         self.f5_russian_chunk_size_spin = self._engine_chunk_spin()
         splitting_form.addRow(
@@ -13038,6 +13072,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         splitting_form.addRow("IndexTTS-2.5", self.indextts_chunk_size_spin)
         splitting_form.addRow("Higgs Audio v3", self.audiocpp_chunk_size_spin)
         splitting_form.addRow("Fish Audio S2 Pro", self.fish_chunk_size_spin)
+        splitting_form.addRow("Breeze TTS 2", self.breeze_chunk_size_spin)
+        splitting_form.addRow("VoxCPM 2", self.voxcpm_chunk_size_spin)
 
         libraries_group = QGroupBox(
             self.tr("audio_library_folders", "Audio library folders")
@@ -13107,8 +13143,10 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             )
             or "piper"
         )
-        if engine == "audiocpp" and self._audiocpp_settings()["model"] == "fish_audio_s2_pro_q8_0":
-            engine = "audiocpp:fish_audio_s2_pro_q8_0"
+        if engine == "audiocpp" and self._audiocpp_settings()["model"] != "higgs_audio_tts_4b_q8_0":
+            engine = "audiocpp:" + self._audiocpp_settings()["model"]
+        if engine.removeprefix("audiocpp:") in VOXCPM_MODELS:
+            engine = "audiocpp:voxcpm2_q8_0"
         spin_map = {
             "piper": getattr(self, "piper_chunk_size_spin", None),
             "kokoro": getattr(self, "kokoro_chunk_size_spin", None),
@@ -13118,6 +13156,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             "indextts": getattr(self, "indextts_chunk_size_spin", None),
             "audiocpp": getattr(self, "audiocpp_chunk_size_spin", None),
             "audiocpp:fish_audio_s2_pro_q8_0": getattr(self, "fish_chunk_size_spin", None),
+            "audiocpp:breeze_tts_2_q8_0": getattr(self, "breeze_chunk_size_spin", None),
+            "audiocpp:voxcpm2_q8_0": getattr(self, "voxcpm_chunk_size_spin", None),
             "f5_russian": getattr(self, "f5_russian_chunk_size_spin", None),
         }
         override = 0
@@ -13744,9 +13784,11 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             or qwen_cloning
         )
         self.voices_external_libraries_button.setVisible(True)
-        self.voices_design_button.setVisible(engine_id == "omnivoice")
+        breeze_design = engine_id == "audiocpp" and self._audiocpp_settings()["model"] in {"breeze_tts_2_q8_0", *VOXCPM_MODELS}
+        self.voices_design_button.setVisible(engine_id == "omnivoice" or breeze_design)
         self.voices_design_button.setEnabled(
-            engine_id == "omnivoice" and self.omnivoice_manager.is_installed()
+            (engine_id == "omnivoice" and self.omnivoice_manager.is_installed())
+            or (breeze_design and self._voice_engine_is_ready(engine_id))
         )
         engine_ready = self._voice_engine_is_ready(engine_id)
         source_rows = self._voice_page_rows(
@@ -14958,9 +15000,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
-        if gallery_voice.is_user_import and self._is_gallery_voice_selected(
-            str(row.get("engine", gallery_voice.engine)), gallery_voice
-        ):
+        if gallery_voice.is_user_import:
             self.pending_removed_gallery_voice = (
                 str(row.get("engine", gallery_voice.engine)),
                 gallery_voice,
@@ -15131,27 +15171,30 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         pending_removed = self.pending_removed_gallery_voice
         self.pending_removed_gallery_voice = None
         if pending_removed is not None:
-            engine_id, _voice = pending_removed
-            if engine_id == "audiocpp":
-                self.audiocpp_voices.pop(_voice.voice_id, None)
-                index = self.audiocpp_voice_combo.findData(_voice.voice_id)
-                if index >= 0:
-                    self.audiocpp_voice_combo.removeItem(index)
-                self.audiocpp_fields["reference_audio_path"].set_path(None)
-                self.audiocpp_fields["reference_text"].clear()
-            elif engine_id == "indextts":
-                self.indextts_fields["reference_audio_path"].set_path(None)
-            elif engine_id == "omnivoice":
-                self.omnivoice_reference_picker.set_path(None)
-                self.omnivoice_reference_text_edit.clear()
-            elif engine_id == "qwen":
-                self.qwen_reference_picker.set_path(None)
-                self.qwen_reference_text_edit.clear()
-            elif engine_id == "f5_russian":
-                self.f5_russian_reference_picker.set_path(None)
-                self.f5_russian_reference_text_edit.clear()
-            elif engine_id == "chatterbox":
-                self.chatterbox_reference_picker.set_path(None)
+            _source_engine, _voice = pending_removed
+            for engine_id in VoiceGalleryManager.REFERENCE_ENGINES:
+                if not self._is_gallery_voice_selected(engine_id, _voice):
+                    continue
+                if engine_id == "audiocpp":
+                    self.audiocpp_voices.pop(_voice.voice_id, None)
+                    index = self.audiocpp_voice_combo.findData(_voice.voice_id)
+                    if index >= 0:
+                        self.audiocpp_voice_combo.removeItem(index)
+                    self.audiocpp_fields["reference_audio_path"].set_path(None)
+                    self.audiocpp_fields["reference_text"].clear()
+                elif engine_id == "indextts":
+                    self.indextts_fields["reference_audio_path"].set_path(None)
+                elif engine_id == "omnivoice":
+                    self.omnivoice_reference_picker.set_path(None)
+                    self.omnivoice_reference_text_edit.clear()
+                elif engine_id == "qwen":
+                    self.qwen_reference_picker.set_path(None)
+                    self.qwen_reference_text_edit.clear()
+                elif engine_id == "f5_russian":
+                    self.f5_russian_reference_picker.set_path(None)
+                    self.f5_russian_reference_text_edit.clear()
+                elif engine_id == "chatterbox":
+                    self.chatterbox_reference_picker.set_path(None)
             self._save_settings()
         self.log_view.append_event(message)
         self._refresh_voices_page()
@@ -15289,6 +15332,35 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         if engine_id == "qwen":
             self._apply_qwen_gallery_reference(voice)
             self._save_settings()
+        self._refresh_voices_page()
+
+    def _open_voice_design_dialog(self) -> None:
+        if self.tts_engine_combo.currentData() == "omnivoice":
+            self._open_omnivoice_design_dialog()
+            return
+        config = self._audiocpp_settings()
+        if self.tts_engine_combo.currentData() != "audiocpp" or config["model"] not in {"breeze_tts_2_q8_0", *VOXCPM_MODELS}:
+            return
+        if not self.audiocpp_manager.is_installed(config["model"], config["backend"]):
+            return
+        from app.ui.breeze_voice_design_dialog import BreezeVoiceDesignDialog
+        self.voices_player.stop()
+        from app.ui.voxcpm_voice_design_dialog import VoxCPMVoiceDesignDialog
+        designer = VoxCPMVoiceDesignDialog if config["model"] in VOXCPM_MODELS else BreezeVoiceDesignDialog
+        dialog = designer(
+            self.engine_host_client, self.voice_gallery_manager, config,
+            self.settings.get("ffmpeg_path", "ffmpeg/ffmpeg.exe"), self.tr, self,
+        )
+        dialog.voice_saved.connect(self._on_breeze_designed_voice_saved)
+        self.breeze_design_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self.breeze_design_dialog = None
+            dialog.deleteLater()
+
+    def _on_breeze_designed_voice_saved(self, voice) -> None:
+        self._apply_audiocpp_gallery_reference(voice)
         self._refresh_voices_page()
 
     def _open_omnivoice_design_dialog(self) -> None:
@@ -15931,6 +16003,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.omnivoice_chunk_size_spin.setValue(chunk_size_for("omnivoice"))
         self.indextts_chunk_size_spin.setValue(chunk_size_for("indextts"))
         self.audiocpp_chunk_size_spin.setValue(chunk_size_for("audiocpp"))
+        self.breeze_chunk_size_spin.setValue(chunk_size_for("audiocpp:breeze_tts_2_q8_0"))
+        self.voxcpm_chunk_size_spin.setValue(chunk_size_for("audiocpp:voxcpm2_q8_0"))
         self.fish_chunk_size_spin.setValue(chunk_size_for("audiocpp:fish_audio_s2_pro_q8_0"))
         self.f5_russian_chunk_size_spin.setValue(chunk_size_for("f5_russian"))
         self._select_combo_data(
@@ -20826,6 +20900,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             self.f5_russian_chunk_size_spin,
             self.indextts_chunk_size_spin,
             self.audiocpp_chunk_size_spin,
+            self.breeze_chunk_size_spin,
+            self.voxcpm_chunk_size_spin,
             self.fish_chunk_size_spin,
             self.output_picker,
             self.output_mode_combo,
@@ -20933,6 +21009,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                     "omnivoice": self.omnivoice_chunk_size_spin.value(),
                     "indextts": self.indextts_chunk_size_spin.value(),
                     "audiocpp": self.audiocpp_chunk_size_spin.value(),
+                    "audiocpp:breeze_tts_2_q8_0": self.breeze_chunk_size_spin.value(),
+                    "audiocpp:voxcpm2_q8_0": self.voxcpm_chunk_size_spin.value(),
                     "audiocpp:fish_audio_s2_pro_q8_0": self.fish_chunk_size_spin.value(),
                     "f5_russian": self.f5_russian_chunk_size_spin.value(),
                 },
@@ -21290,6 +21368,11 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         return "cancel"
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        breeze_dialog = getattr(self, "breeze_design_dialog", None)
+        if breeze_dialog is not None and breeze_dialog.busy:
+            breeze_dialog.raise_()
+            event.ignore()
+            return
         analysis_dialog = getattr(self, "video_storyboard_analysis_dialog", None)
         if analysis_dialog is not None and analysis_dialog._reference_worker is not None:
             analysis_dialog.show_and_raise()

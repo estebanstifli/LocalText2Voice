@@ -47,13 +47,18 @@ def test_catalog_sync_and_service_resolve_reference_and_transcript(tmp_path):
         rows = service.list_voices("audiocpp", installed_only=False)
         assert len(rows) == 1 and not rows[0]["installed"]
         assert not service.list_voices("audiocpp", installed_only=True)
-        for model in ("higgs_audio_tts_4b_q8_0", "fish_audio_s2_pro_q8_0"):
+        for model in ("higgs_audio_tts_4b_q8_0", "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0", "voxcpm2_q8_0", "voxcpm2_bf16", "voxcpm2_orig"):
             config = service._voice_config("audiocpp", {"voice": rows[0]["id"], "model": model})
             assert config["reference_text"] == "Hola, soy Asun."
             assert config["model"] == model
-            expected_chunk = 200 if model.startswith("higgs") else 400
+            expected_chunk = 200 if model.startswith("higgs") else 600 if model.startswith("breeze") else 400
             assert config["text_chunk_size"] == expected_chunk
             assert service._chunk_size("audiocpp", {"model": model}) == expected_chunk
+            if model.startswith("breeze"):
+                directed = service._voice_config("audiocpp", {"model": model, "instruction": "Speak softly."})
+                assert directed["instruction"] == "Speak softly."
+                assert directed["max_tokens"] == 1500
+
         gallery.sync(tmp_path / "catalog.json")
         assert service.list_voices("audiocpp")[0]["installed"]
     finally:

@@ -92,6 +92,7 @@ class VoiceGalleryManager:
         ".aac",
         ".webm",
     }
+    REFERENCE_ENGINES = frozenset({"chatterbox", "qwen", "indextts", "omnivoice", "f5_russian", "audiocpp"})
     DB_FILENAME = "voice-gallery.sqlite3"
     F5_RUSSIAN_REFERENCE_VOICE_IDS = (
         "omnivoice_ru_russian_man",
@@ -318,6 +319,17 @@ class VoiceGalleryManager:
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         voices = [self._row_to_voice(row) for row in rows]
+        if engine in self.REFERENCE_ENGINES:
+            # Keep one identity and one WAV: edits/deletion are shared, not aliases
+            # that get stale after the original reference changes.
+            with self._connect() as connection:
+                imported_rows = connection.execute(
+                    "SELECT * FROM voice_gallery_voices WHERE install_type = 'reference_audio' AND engine != ?",
+                    (engine,),
+                ).fetchall()
+            voices.extend(voice for row in imported_rows
+                          if (voice := self._row_to_voice(row)).is_user_import)
+            voices.sort(key=lambda voice: (voice.name.casefold(), voice.language_name.casefold()))
         if engine == "f5_russian":
             voices = self._with_f5_russian_reference_voices(voices)
         return voices
