@@ -15,6 +15,8 @@ class VideoRequest:
     # Optional compatibility identity for jobs submitted before the shared runner.
     identity: dict | None = field(default=None, repr=False)
     frame_size: tuple[int, int] | None = None
+    preserve_timing: bool = False
+    lead_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -32,5 +34,5 @@ class VideoAdapter(Protocol):
 def error_detail(data):
     error = data.get("error") or data
     if isinstance(error, dict):
-        return " · ".join(str(error[key]) for key in ("type", "code", "message") if error.get(key))
+        return " · ".join(str(error[key]) for key in ("type", "code", "message", "msg") if error.get(key))
     return str(error)

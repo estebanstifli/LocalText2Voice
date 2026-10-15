@@ -168,6 +168,14 @@ def resolve_voice(config: dict[str, Any], name: str) -> dict[str, Any]:
         matches = [value for value in config.get("voices", {}).values()
                    if isinstance(value, dict) and str(value.get("name", "")).casefold() == name.casefold()]
         if len(matches) > 1:
+            # Older project snapshots may retain references deleted from the
+            # gallery. They must not make the remaining voice ambiguous.
+            from app.utils.paths import resolve_large_asset_path
+            available = [value for value in matches if value.get("reference_audio_path")
+                         and resolve_large_asset_path(value["reference_audio_path"]).is_file()]
+            if available:
+                matches = available
+        if len(matches) > 1:
             raise ValueError(f"Ambiguous audio.cpp voice name; use its catalog ID: {name}")
         voice = matches[0] if matches else None
     if not isinstance(voice, dict) or not voice.get("reference_audio_path"):

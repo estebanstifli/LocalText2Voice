@@ -145,6 +145,8 @@ def _run_job(request, adapter, config, scene, settings, target, jobs, fingerprin
     duration = max(.1, float(scene.get("duration_seconds") or measured))
     report("Fitting video to scene")
     size = {"frame_size": request.frame_size} if request.frame_size else {}
+    if request.preserve_timing:
+        size.update(preserve_timing=True, lead_seconds=request.lead_seconds)
     _retime_video(target, duration, settings, source_duration_seconds=measured, preserve_audio=True, **size)
     check()
     record["consumed"] = True

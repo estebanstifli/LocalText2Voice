@@ -203,6 +203,9 @@ class AudioCppSettingsMixin:
                            str(widget.path() or "") if isinstance(widget, FilePicker) else
                            widget.text() if isinstance(widget, QLineEdit) else widget.value())
         config["voices"] = deepcopy(getattr(self, "audiocpp_voices", config["voices"]))
+        config["voices"] = {key: voice for key, voice in config["voices"].items()
+                            if isinstance(voice, dict) and voice.get("reference_audio_path")
+                            and resolve_large_asset_path(voice["reference_audio_path"]).is_file()}
         profiles = deepcopy(config.get("model_settings", {}))
         profiles[config["model"]] = {key: config[key] for key in MODEL_SETTING_KEYS}
         config["model_settings"] = profiles
@@ -238,7 +241,17 @@ class AudioCppSettingsMixin:
                 and getattr(self, "_audiocpp_loaded_model", None) == model)
 
     def _audiocpp_voice_config_for_ui(self):
-        return {**self._audiocpp_settings(), "engine": "audiocpp", "speed": self.speed_spin.value()}
+        config = {**self._audiocpp_settings(), "engine": "audiocpp", "speed": self.speed_spin.value()}
+        # Markup may select any installed catalog voice, even one that has
+        # never been selected in the settings panel.
+        for voice in self.voice_gallery_manager.list_voices("audiocpp"):
+            if voice.is_reference_audio and self.voice_gallery_manager.is_installed(voice):
+                path = resolve_large_asset_path(voice.installed_path or voice.ref_audio_path or "")
+                config["voices"][voice.voice_id] = {
+                    "name": voice.name, "reference_audio_path": str(path),
+                    "reference_text": voice.ref_text,
+                }
+        return config
 
     def _audiocpp_changed(self, *_):
         if self._restoring_settings:

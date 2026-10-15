@@ -570,7 +570,7 @@ The Windows installer is the recommended distribution artifact. Downloadable mod
 
 Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 
-Unsigned build note: early public builds may be unsigned until the open source code-signing process is ready. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
+Code-signing note: the production certificate is still pending. Version 3.0.0 is being prepared for the separate **SignPath test-signing workflow**, not represented as production-signed. A self-signed test certificate does not provide public Windows trust; do not install it as a trusted root on user machines. Download public builds only from the official releases. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
 
 ## Quick Start On Linux
 

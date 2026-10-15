@@ -2185,5 +2185,10 @@
   "language_chinese": "中文",
   "language_hindi": "印地语",
   "language_japanese": "日语",
-  "language_russian": "俄语"
+  "language_russian": "俄语",
+  "voice_conflict_title": "语音已存在",
+  "voice_conflict_overwrite": "名为“{name}”的语音已存在。\n是否用此预览替换？选择“否”以使用其他名称。",
+  "voice_conflict_rename": "名称“{name}”已被使用。请选择其他名称以避免歧义。",
+  "voice_conflict_save": "保存语音",
+  "voice_conflict_name": "新语音名称："
 }

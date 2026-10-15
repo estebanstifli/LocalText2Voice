@@ -662,6 +662,8 @@ class VoiceGalleryManager:
         voice_style: str,
         tags: list[str] | tuple[str, ...] | None = None,
         ffmpeg_path: str | Path = "ffmpeg/ffmpeg.exe",
+        min_duration_seconds: float | None = None,
+        max_duration_seconds: float | None = None,
     ) -> GalleryVoice:
         """Update a user-imported reference voice without changing its identity.
 
@@ -689,6 +691,10 @@ class VoiceGalleryManager:
         metadata = dict(existing.metadata or {})
         minimum = float(metadata.get("duration_min_seconds", self.REFERENCE_MIN_SECONDS))
         maximum = float(metadata.get("duration_max_seconds", self.REFERENCE_MAX_SECONDS))
+        if min_duration_seconds is not None:
+            minimum = float(min_duration_seconds)
+        if max_duration_seconds is not None:
+            maximum = float(max_duration_seconds)
         duration_seconds = self._wav_duration_seconds(destination)
         if source is not None:
             if not source.is_file():

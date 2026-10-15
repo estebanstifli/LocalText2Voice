@@ -13,7 +13,7 @@ ENGLISH = json.loads((LOCALES / "en.json").read_text(encoding="utf-8-sig"))
 NEW_KEYS = {
     key for key in ENGLISH
     if key.startswith(("indextts_", "h3_", "markup_emotion_", "runpod_metrics_",
-                       "audiocpp_", "higgs_", "fish_", "breeze_", "voxcpm_", "segment_"))
+                       "audiocpp_", "higgs_", "fish_", "breeze_", "voxcpm_", "segment_", "voice_conflict_"))
 } | {"runpod_export_metrics", "runpod_job_timing", "generation_stage_time_status",
      "project_rename_busy", "project_folder_renamed", "output_relative",
      "output_absolute", "output_folder_mode", "output_folder_help", "markup_vocal_help"}

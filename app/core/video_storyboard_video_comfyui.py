@@ -1028,6 +1028,8 @@ def _retime_video(
     source_duration_seconds: float | None = None,
     preserve_audio: bool = True,
     frame_size: tuple[int, int] | None = None,
+    preserve_timing: bool = False,
+    lead_seconds: float = 0.0,
 ) -> None:
     """Stretch a generated clip over the complete storyboard scene."""
     config = _video_config(settings)
@@ -1049,6 +1051,9 @@ def _retime_video(
     )
     target_duration = max(0.1, float(duration_seconds))
     speed_factor = target_duration / source_duration
+    if preserve_timing:
+        speed_factor = 1.0
+    lead_seconds = max(0.0, float(lead_seconds)) if preserve_timing else 0.0
     resize = (f"scale={frame_size[0]}:{frame_size[1]}:force_original_aspect_ratio=increase,"
               f"crop={frame_size[0]}:{frame_size[1]},setsar=1,") if frame_size else ""
     temporary = source.with_name(f".{source.stem}.retimed-{uuid.uuid4().hex}.mp4")
@@ -1068,6 +1073,7 @@ def _retime_video(
                 "-vf",
                 (
                     resize + f"setpts={speed_factor:.9f}*(PTS-STARTPTS),"
+                    f"tpad=start_mode=clone:start_duration={lead_seconds:.6f},"
                     f"fps={fps:g},"
                     f"tpad=stop_mode=clone:stop_duration={target_duration:.6f},"
                     f"trim=duration={target_duration:.6f},setpts=PTS-STARTPTS"
@@ -1078,7 +1084,8 @@ def _retime_video(
                 "cfr",
                 "-map", "0:v:0",
                 *(["-map", "0:a:0?", "-af",
-                   f"{tempo_filter(source_duration / target_duration)},apad,atrim=duration={target_duration:.6f}",
+                   (f"adelay={round(lead_seconds * 1000)}:all=1,apad,atrim=duration={target_duration:.6f}" if preserve_timing else
+                    f"{tempo_filter(source_duration / target_duration)},apad,atrim=duration={target_duration:.6f}"),
                    "-c:a", "aac"] if preserve_audio else ["-an"]),
                 "-c:v",
                 "libx264",

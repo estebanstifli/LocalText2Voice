@@ -7,9 +7,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-10-14
+## [3.0.0] - 2026-10-15
 
-Local preparation only: not published and not production-signed. Includes the
+Prepared locally for SignPath test signing; not published yet. Includes the
 previously unpublished 2.3.0 preparation below; existing engines remain supported.
 
 ### Added
@@ -52,6 +52,15 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 
 ### Fixed
 
+- Include audio.cpp and all installed compatible references in the markup voice
+  menu, even when a voice has never been selected in Settings. Discard stale
+  deleted references instead of incorrectly reporting duplicate-name ambiguity.
+- Confirm overwrite, rename or cancellation when saving a designed voice with an
+  existing name; retain the existing voice identity when replacing a local recording.
+- Preserve source timing and leading padding when fitting compatible generated
+  video clips; keep source duration and audio context in Storyboard jobs.
+- Retry briefly when Windows denies a job-status read during atomic replacement,
+  and include provider `msg` details in error reporting.
 - Keep the HTTP event loop responsive while the Engine Host synthesizes previews.
 - Restore the selected audio.cpp model and backend during installation and report
   installation state using each model's backend rather than the current selection.
@@ -70,7 +79,10 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 - No audio.cpp runtime, GGUF weights or extra PyTorch environment in the base
   installer. Model licenses are separate from the application's license.
 - Retain Windows ICU contamination checks and exact installer metadata checks.
-- Production certificate pending. Do not distribute test-signed artifacts.
+- Production certificate pending. Local 3.0.0 builds are inputs for the separate
+  SignPath test-signing workflow, not production-signed release artifacts.
+- Temporary-assets service source supports validated 3–15 second mono PCM WAV
+  uploads in addition to PNG. This local preparation does not deploy that service.
 
 ## [2.3.0] - 2026-10-09
 

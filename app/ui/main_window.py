@@ -2374,16 +2374,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         if not hasattr(self, "tts_engine_combo"):
             return []
         engine_id = str(self.tts_engine_combo.currentData() or "piper")
-        if engine_id not in {
-            "piper",
-            "kokoro",
-            "qwen",
-            "omnivoice",
-            "indextts",
-            "f5_russian",
-            "chatterbox",
-        }:
-            return []
+        # Use the same catalog as Selected voice. Availability is checked per
+        # row below, so new local engines do not need a second allowlist here.
         choices: list[tuple[str, str]] = []
         seen: set[str] = set()
         for row in self._voice_page_rows(engine_id):
@@ -5415,7 +5407,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         thread = QThread(self)
         worker = VideoStoryboardVideoWorker(
             scene,
-            plan,
+            {**plan, "source": self.video_storyboard_page.source_payload()},
             configuration,
             output_path,
             prompt=str(request.get("prompt") or ""),
@@ -15172,14 +15164,16 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.pending_removed_gallery_voice = None
         if pending_removed is not None:
             _source_engine, _voice = pending_removed
+            self.audiocpp_voices.pop(_voice.voice_id, None)
+            index = self.audiocpp_voice_combo.findData(_voice.voice_id)
+            if index >= 0:
+                blocked = self.audiocpp_voice_combo.blockSignals(True)
+                self.audiocpp_voice_combo.removeItem(index)
+                self.audiocpp_voice_combo.blockSignals(blocked)
             for engine_id in VoiceGalleryManager.REFERENCE_ENGINES:
                 if not self._is_gallery_voice_selected(engine_id, _voice):
                     continue
                 if engine_id == "audiocpp":
-                    self.audiocpp_voices.pop(_voice.voice_id, None)
-                    index = self.audiocpp_voice_combo.findData(_voice.voice_id)
-                    if index >= 0:
-                        self.audiocpp_voice_combo.removeItem(index)
                     self.audiocpp_fields["reference_audio_path"].set_path(None)
                     self.audiocpp_fields["reference_text"].clear()
                 elif engine_id == "indextts":
@@ -15517,9 +15511,12 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             return
         metadata = dialog.voice_metadata()
         try:
-            voice = self.voice_gallery_manager.import_reference_voice(
+            from .save_reference_voice import save_designed_voice
+            voice = save_designed_voice(
+                dialog, self.voice_gallery_manager,
                 "omnivoice",
                 dialog.preview_path,
+                translate=self.tr,
                 name=str(metadata["name"]),
                 language=str(metadata["language"]),
                 language_name=str(metadata["language_name"]),
@@ -15535,6 +15532,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             )
         except Exception as exc:
             self._show_error(self.tr("import_failed", "Import failed"), str(exc))
+            return
+        if voice is None:
             return
         dialog.status_label.setText(
             self.tr("omnivoice_design_saved_voice", "Saved voice: {name}", name=voice.name)

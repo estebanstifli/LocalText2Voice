@@ -14,6 +14,11 @@ Test-signed files are CI artifacts, not public releases, and must not be distrib
 as trusted Windows installers. Do not install the test certificate as a trusted
 root on user machines.
 
+Version 3.0.0 is being prepared for **test signing** while the production
+certificate is pending. Local builds are unsigned inputs, not signed artifacts.
+The configured test workflow builds on GitHub Actions and requests SignPath's
+test policy; it does not publish a release. Test signing is not production trust.
+
 ## Responsibilities
 
 - Committer and reviewer: [Esteban](https://github.com/estebanstifli).

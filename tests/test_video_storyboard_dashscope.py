@@ -119,6 +119,25 @@ def test_audio_preference_survives_forced_audio_model():
     panel.close()
 
 
+def test_source_audio_fit_pads_without_tempo_change(tmp_path, monkeypatch):
+    source = tmp_path / 'clip.mp4'
+    source.write_bytes(b'video')
+    commands = []
+    class Runner:
+        def __init__(self, *args): pass
+        def run(self, args):
+            commands.append(args)
+            Path(args[-1]).write_bytes(b'padded')
+    monkeypatch.setattr(router, 'FFmpegRunner', Runner)
+    monkeypatch.setattr(router, 'find_ffmpeg', lambda *args: 'ffmpeg')
+    router._retime_video(source, 16.646, {}, source_duration_seconds=14, preserve_timing=True, lead_seconds=2)
+    args = commands[0]
+    assert 'atempo' not in args[args.index('-af')+1]
+    assert 'adelay=2000' in args[args.index('-af')+1]
+    assert 'setpts=1.000000000*' in args[args.index('-vf')+1]
+    assert 'start_duration=2.000000' in args[args.index('-vf')+1]
+
+
 def test_failed_task_can_retry(tmp_path, setup):
     _, _, calls, replies = setup
     replies["poll"] = {"output": {"task_status": "FAILED", "code": "ContentRejected", "message": "fake-secret"}}

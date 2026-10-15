@@ -2185,5 +2185,10 @@
   "language_chinese": "الصينية",
   "language_hindi": "الهندية",
   "language_japanese": "اليابانية",
-  "language_russian": "الروسية"
+  "language_russian": "الروسية",
+  "voice_conflict_title": "الصوت موجود بالفعل",
+  "voice_conflict_overwrite": "يوجد صوت باسم \"{name}\" بالفعل.\nهل تريد استبداله بهذه المعاينة؟ اختر لا لاستخدام اسم مختلف.",
+  "voice_conflict_rename": "الاسم \"{name}\" مستخدم بالفعل. اختر اسماً مختلفاً لتجنب الالتباس.",
+  "voice_conflict_save": "حفظ الصوت",
+  "voice_conflict_name": "اسم الصوت الجديد:"
 }

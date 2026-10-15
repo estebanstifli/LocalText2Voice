@@ -7,6 +7,7 @@ import math
 import re
 import shutil
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -154,6 +155,8 @@ class StoryboardService:
         """Set text/audio/cues/duration/voice offset explicitly. Existing media are marked stale."""
         def edit(s):
             s["source"].update(deepcopy(source))
+            if "duration_seconds" in source:
+                s["plan"]["source_duration_seconds"] = source["duration_seconds"]
             if "voice_start_offset_seconds" in source:
                 s["plan"]["voice_start_offset_seconds"] = source["voice_start_offset_seconds"]
             if "audio_path" in source:
@@ -728,7 +731,15 @@ class StoryboardService:
 
     def sb_get_job(self, project_id: str, job_id: str) -> dict:
         """Read persistent visual job progress, per-item results and errors. Interrupted jobs need explicit retry."""
-        job = json.loads(self.job_path(project_id, job_id).read_text(encoding="utf-8"))
+        path = self.job_path(project_id, job_id)
+        for attempt in range(50):
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+                break
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(.01)  # Windows may briefly deny reads during atomic replacement.
         if job["status"] in {"queued", "running"} and job_id not in self.events:
             job["status"] = "interrupted"
         return job
@@ -877,7 +888,8 @@ class StoryboardService:
         if op == "videos":
             from app.core.video_storyboard_video_comfyui import generate_storyboard_scene_video, prepare_video_runtime
             prepare_video_runtime(config, status=status)
-            return generate_storyboard_scene_video(scene, state["plan"], config, target, prompt=scene.get("video_prompt", ""), frame_role=scene.get("video_frame_role", "start"), status=status, cancelled=event.is_set)
+            plan = {**state["plan"], "source": state.get("source", {})}
+            return generate_storyboard_scene_video(scene, plan, config, target, prompt=scene.get("video_prompt", ""), frame_role=scene.get("video_frame_role", "start"), status=status, cancelled=event.is_set)
         if op == "render":
             from app.core.video_storyboard_renderer import render_storyboard_video
             return render_storyboard_video(state["scenes"], Path(state["source"]["audio_path"]), target, config, progress=status, cancelled=event.is_set)

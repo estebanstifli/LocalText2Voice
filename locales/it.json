@@ -2185,5 +2185,10 @@
   "language_chinese": "Cinese",
   "language_hindi": "Hindi",
   "language_japanese": "Giapponese",
-  "language_russian": "Russo"
+  "language_russian": "Russo",
+  "voice_conflict_title": "La voce esiste già",
+  "voice_conflict_overwrite": "Esiste già una voce chiamata \"{name}\".\nSostituirla con questa anteprima? Scegli No per usare un altro nome.",
+  "voice_conflict_rename": "Il nome \"{name}\" è già in uso. Scegli un altro nome per evitare ambiguità.",
+  "voice_conflict_save": "Salva voce",
+  "voice_conflict_name": "Nuovo nome della voce:"
 }

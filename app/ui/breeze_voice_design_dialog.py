@@ -261,8 +261,9 @@ class BreezeVoiceDesignDialog(QDialog):
         snapshot = self.generated
         config = snapshot["config"]
         try:
-            voice = self.gallery.import_reference_voice(
-                "audiocpp", self.preview_path, name=name,
+            from .save_reference_voice import save_designed_voice
+            voice = save_designed_voice(
+                self, self.gallery, "audiocpp", self.preview_path, name=name, translate=self.tr_text,
                 language=config["language"], language_name=self.language_combo.currentText(),
                 ref_text=snapshot["text"], short_description=config["instruction"],
                 voice_style=config["instruction"], tags=["designed", self.TAG, "audiocpp"],
@@ -271,6 +272,9 @@ class BreezeVoiceDesignDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, self.tr_text("import_failed", "Import failed"), str(exc))
             return
+        if voice is None:
+            return
+        self.name_edit.setText(voice.name)
         self.saved = True
         self.save_button.setEnabled(False)
         self.status_label.setText(self.tr_text("omnivoice_design_saved_voice", "Saved voice: {name}").format(name=voice.name))

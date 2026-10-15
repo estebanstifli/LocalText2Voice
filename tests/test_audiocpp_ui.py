@@ -61,6 +61,12 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
                 designer.exec.assert_called_once()
         rows = window._voice_page_rows("audiocpp", engine_ready=True)
         assert len(rows) == 1
+        window._populate_markup_voice_menu()
+        voice_action, = window.markup_voice_menu.actions()
+        assert voice_action.isEnabled() and voice_action.text().startswith("Narradora (")
+        window.text_editor.clear()
+        voice_action.trigger()
+        assert window.text_editor.toPlainText() == '{{voice "Narradora"}}'
         window._select_voice_page_row_data(rows[0])
         assert window._current_voice_config()["reference_text"] == "Esta es mi voz."
         persisted = SettingsManager(manager.path).settings["audiocpp"]
@@ -163,6 +169,7 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         catalog_row = next(row for row in rows if row.get("gallery_voice"))
         assert catalog_row["name"] == "Voz del catálogo"
         assert not catalog_row["installed"]
+        assert "Voz del catálogo" not in dict(window._local_markup_voice_choices())
         install = Mock()
         monkeypatch.setattr(window, "_start_voice_gallery_operation", install)
         window._select_voice_page_row_data(catalog_row)
@@ -177,6 +184,7 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         assert config["model"] == model_id
         from app.tts.audiocpp_config import resolve_voice
         assert resolve_voice(config, "Voz del catálogo")["reference_text"] == "Texto del catálogo."
+        assert "Voz del catálogo" in dict(window._local_markup_voice_choices())
         rows = window._voice_page_rows("audiocpp", engine_ready=True)
         assert len(rows) == 2  # Manual voice plus one catalog entry, no alias duplicate.
         catalog_row = next(row for row in rows if row.get("gallery_voice"))
@@ -214,6 +222,16 @@ def test_optional_engine_configuration_voice_selection_and_persistence(tmp_path,
         assert config["reference_text"] == values["ref_text"]
         assert config["reference_audio_path"] == clones[0].installed_path
         assert any(row["id"] == clones[0].voice_id for row in window._generation_voice_rows("audiocpp"))
+        unselected = gallery.import_reference_voice("omnivoice", clone_source,
+            name="Otra voz compartida", ref_text="Otra transcripción.")
+        assert unselected.voice_id not in window.audiocpp_voices
+        assert "Otra voz compartida" in dict(window._local_markup_voice_choices())
+        from app.core.audio_pipeline import AudioPipeline
+        snapshot = window._current_voice_config()
+        AudioPipeline._apply_markup_voice(object.__new__(AudioPipeline), snapshot, "audiocpp", unselected.name)
+        assert snapshot["reference_audio_path"] == unselected.installed_path
+        assert snapshot["reference_text"] == "Otra transcripción."
+        gallery.delete_reference_voice(unselected)
         # A clone without its transcript is rejected before adding another voice.
         values["ref_text"] = ""
         window.voices_manage_button.click()

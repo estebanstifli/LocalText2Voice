@@ -80,6 +80,28 @@ async function boundedBody(request, size) {
   if (offset !== size) fail(400, "Incomplete image upload.");
   return bytes;
 }
+
+export function inspectWav(bytes) {
+  const text = (a, n) => String.fromCharCode(...bytes.subarray(a, a + n));
+  if (bytes.length < 44 || text(0, 4) !== "RIFF" || text(8, 4) !== "WAVE") fail(415, "PCM WAV required.");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(4, true) + 8 !== bytes.length) fail(415, "Invalid WAV size.");
+  let offset = 12, rate = 0, samples = 0;
+  while (offset + 8 <= bytes.length) {
+    const type = text(offset, 4), size = view.getUint32(offset + 4, true), p = offset + 8;
+    if (p + size > bytes.length) fail(415, "Truncated WAV.");
+    if (type === "fmt ") {
+      if (size < 16 || view.getUint16(p, true) !== 1 || view.getUint16(p + 2, true) !== 1 || view.getUint16(p + 14, true) !== 16) fail(415, "Mono 16-bit PCM required.");
+      rate = view.getUint32(p + 4, true);
+      if (rate < 8000 || rate > 48000 || view.getUint16(p + 12, true) !== 2 || view.getUint32(p + 8, true) !== rate * 2) fail(415, "Invalid WAV format.");
+    } else if (type === "data") samples += size / 2;
+    else if (type !== "LIST") fail(415, "Unsupported WAV chunk.");
+    offset = p + size + (size % 2);
+  }
+  const seconds = samples / rate;
+  if (offset !== bytes.length || !rate || !Number.isFinite(seconds) || seconds < 3 || seconds > 15) fail(415, "Audio must last 3–15 seconds.");
+  return { seconds };
+}
 async function smallJson(request) {
   const size = Number(request.headers.get("Content-Length"));
   if (!Number.isInteger(size) || size < 2 || size > 4096) fail(413, "Invalid request size.");
@@ -113,7 +135,7 @@ export class AssetRegistry {
       ON CONFLICT(day, scope) DO UPDATE SET uploads = uploads + excluded.uploads, bytes = bytes + excluded.bytes, reads = reads + excluded.reads`,
     Math.floor(now() / DAY), scope, uploads, bytes, reads);
   }
-  reserve(client, size, ipHash) {
+  reserve(client, size, ipHash, audio = false) {
     // Synchronous transaction: simultaneous requests cannot overbook quotas.
     return this.ctx.storage.transactionSync(() => {
       if (this.one("SELECT paused FROM service_config WHERE id = 1").paused) fail(503, "New uploads are temporarily paused. Existing jobs can finish.");
@@ -126,7 +148,7 @@ export class AssetRegistry {
       }
       if (this.one("SELECT COUNT(*) AS n FROM assets WHERE state = 'uploading' AND upload_deadline > ?", now()).n >= 2) fail(429, "Two images are already uploading. Try again shortly.");
       const id = crypto.randomUUID();
-      const asset = { id, owner: client.id, object_key: `references/${client.id}/${id}.png`, size,
+      const asset = { id, owner: client.id, object_key: `references/${client.id}/${id}.${audio ? 'wav' : 'png'}`, size,
         expires: now() + this.limit("ASSET_TTL_SECONDS") };
       for (const [scope] of limits) this.bump(scope, 1, size);
       this.sql.exec("INSERT INTO assets(id, owner, object_key, size, expires, state, upload_deadline) VALUES (?, ?, ?, ?, ?, 'uploading', ?)",
@@ -208,7 +230,7 @@ export class AssetRegistry {
       const object = request.method === "HEAD" ? await this.env.REFERENCES.head(asset.object_key) : await this.env.REFERENCES.get(asset.object_key);
       if (!object) fail(404, "Temporary image is no longer available.");
       return new Response(request.method === "HEAD" ? null : object.body, { headers: { ...headers,
-        "Content-Type": "image/png", "Content-Length": String(object.size), "Content-Disposition": 'inline; filename="reference.png"' } });
+        "Content-Type": asset.object_key.endsWith('.wav') ? "audio/wav" : "image/png", "Content-Length": String(object.size), "Content-Disposition": `inline; filename="reference.${asset.object_key.endsWith('.wav') ? 'wav' : 'png'}"` } });
     }
     if (!path.startsWith("/v1/") && path !== "/internal/reserve") fail(404, "Not found.");
     if (!bearer(request)) fail(401, "A beta access code is required.");
@@ -240,9 +262,9 @@ export class AssetRegistry {
     if (path === "/v1/status" && request.method === "GET") return reply({ available: !this.one("SELECT paused FROM service_config WHERE id = 1").paused,
       expires: client.expires, usage: this.count(client.id), limits: { image_bytes: this.limit("MAX_IMAGE_BYTES"), daily_uploads: this.limit("CLIENT_DAILY_UPLOADS"), daily_bytes: this.limit("CLIENT_DAILY_BYTES") } });
     if (path === "/internal/reserve" && request.method === "POST") {
-      const { size } = await smallJson(request);
+      const { size, audio } = await smallJson(request);
       if (!Number.isSafeInteger(size) || size <= 0 || size > this.limit("MAX_IMAGE_BYTES")) fail(413, "Image must be at most 15 MB.");
-      const asset = this.reserve(client, size, await hash(request.headers.get("CF-Connecting-IP") || "local"));
+      const asset = this.reserve(client, size, await hash(request.headers.get("CF-Connecting-IP") || "local"), audio === true);
       return reply(asset, 201);
     }
     const owned = /^\/v1\/assets\/([a-f0-9-]{36})$/.exec(path);
@@ -280,17 +302,19 @@ async function publicRequest(request, env) {
         "Authorization": request.headers.get("Authorization") || "", "CF-Connecting-IP": request.headers.get("CF-Connecting-IP") || "local"
       } }));
     };
-    if (url.pathname === "/v1/assets" && request.method === "POST") {
-      if (request.headers.get("Content-Type") !== "image/png") fail(415, "Upload an image/png body.");
+    if (["/v1/assets", "/v1/audio"].includes(url.pathname) && request.method === "POST") {
+      const audio = url.pathname === '/v1/audio';
+      const contentType = audio ? 'audio/wav' : 'image/png';
+      if (request.headers.get("Content-Type") !== contentType) fail(415, "Unsupported media type.");
       const size = Number(request.headers.get("Content-Length"));
       if (!Number.isSafeInteger(size) || size <= 0 || size > Number(env.MAX_IMAGE_BYTES)) fail(413, "Image must be at most 15 MB.");
-      const reserved = await internal("/internal/reserve", { size });
+      const reserved = await internal("/internal/reserve", { size, audio });
       if (!reserved.ok) return reserved;
       const asset = await reserved.json();
       try {
         const bytes = await boundedBody(request, size);
-        inspectPng(bytes);
-        await env.REFERENCES.put(asset.object_key, bytes, { httpMetadata: { contentType: "image/png", cacheControl: "no-store" } });
+        if (audio) inspectWav(bytes); else inspectPng(bytes);
+        await env.REFERENCES.put(asset.object_key, bytes, { httpMetadata: { contentType, cacheControl: "no-store" } });
         const committed = await internal("/internal/commit", { id: asset.id, origin: url.origin });
         if (!committed.ok) {
           await env.REFERENCES.delete(asset.object_key);

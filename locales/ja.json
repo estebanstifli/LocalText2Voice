@@ -2185,5 +2185,10 @@
   "language_chinese": "中国語",
   "language_hindi": "ヒンディー語",
   "language_japanese": "日本語",
-  "language_russian": "ロシア語"
+  "language_russian": "ロシア語",
+  "voice_conflict_title": "音声は既に存在します",
+  "voice_conflict_overwrite": "「{name}」という音声は既に存在します。\nこのプレビューで上書きしますか？別の名前を使うには「いいえ」を選んでください。",
+  "voice_conflict_rename": "「{name}」は既に使われています。混同を避けるため別の名前を選んでください。",
+  "voice_conflict_save": "音声を保存",
+  "voice_conflict_name": "新しい音声名："
 }
