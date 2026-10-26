@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.tts.audiocpp_config import BREEZE_MODEL, model_config, validated_config
-from app.utils.atomic_audio import validate_wav
 
 
 EXAMPLES = {
@@ -38,19 +37,10 @@ class BreezeDesignPreviewWorker(QObject):
     @Slot()
     def run(self):
         try:
-            result = self.client.synthesize_review_segment({
-                "text": self.text, "voice_config": self.config,
-                "output_wav": str(self.output.resolve()),
-            })
-            if Path(result.get("output_wav", "")).resolve() != self.output.resolve():
-                raise ValueError("The engine host returned an unexpected preview path.")
-            validate_wav(self.output)
-            self.completed.emit(str(self.output), "")
+            from .voice_design_client import request_preview
+            self.result = request_preview(self.client, self.text, self.config)
+            self.completed.emit(self.result["output_wav"], "")
         except Exception as exc:
-            try:
-                self.output.unlink(missing_ok=True)
-            except OSError:
-                pass
             self.completed.emit("", str(exc))
 
 
@@ -231,6 +221,7 @@ class BreezeVoiceDesignDialog(QDialog):
         if error:
             self.status_label.setText(self.tr_text("omnivoice_design_preview_failed", "Preview failed: {message}").format(message=error))
             return
+        self.draft_id = self.worker.result["draft_id"]
         self.preview_path = Path(path)
         self.generated = deepcopy(self.pending)
         self.play_button.setEnabled(True)
@@ -262,8 +253,10 @@ class BreezeVoiceDesignDialog(QDialog):
         config = snapshot["config"]
         try:
             from .save_reference_voice import save_designed_voice
+            from .voice_design_client import ServerDesignGallery
+            gallery = ServerDesignGallery(self.client, self.gallery, self.draft_id)
             voice = save_designed_voice(
-                self, self.gallery, "audiocpp", self.preview_path, name=name, translate=self.tr_text,
+                self, gallery, "audiocpp", self.preview_path, name=name, translate=self.tr_text,
                 language=config["language"], language_name=self.language_combo.currentText(),
                 ref_text=snapshot["text"], short_description=config["instruction"],
                 voice_style=config["instruction"], tags=["designed", self.TAG, "audiocpp"],

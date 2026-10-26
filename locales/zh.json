@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "名为“{name}”的语音已存在。\n是否用此预览替换？选择“否”以使用其他名称。",
   "voice_conflict_rename": "名称“{name}”已被使用。请选择其他名称以避免歧义。",
   "voice_conflict_save": "保存语音",
-  "voice_conflict_name": "新语音名称："
+  "voice_conflict_name": "新语音名称：",
+  "segment_engine": "TTS 引擎",
+  "segment_engine_reset": "生成参数使用目标引擎的设置。此更改仅影响当前片段。",
+  "segment_engine_reference": "保留参考音频和转录文本。使用此引擎时声音可能有所不同。",
+  "segment_engine_choose_reference": "请选择参考音频以保留角色声音。",
+  "segment_engine_choose_voice": "请选择此引擎支持的声音。",
+  "segment_engine_emotion_kept": "保留情感描述；其解读取决于新引擎。",
+  "segment_engine_emotion_removed": "无法转移原有的情感控制。请配置下方可用的选项。",
+  "segment_engine_tags_removed": "已从此草稿中移除原引擎的原生发声和情感标签。",
+  "segment_engine_language": "此模型不支持所选语言或要求明确指定语言。请选择兼容的模型或语言。",
+  "segment_engine_voice_language": "请选择与原片段语言一致的声音。",
+  "segment_engine_missing_reference": "请为此声音选择现有的参考音频文件。",
+  "segment_engine_missing_transcript": "请输入参考音频的准确转录文本。",
+  "segment_engine_invalid_wav": "此引擎要求非空的未压缩 PCM WAV 参考音频。"
 }

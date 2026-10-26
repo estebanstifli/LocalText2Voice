@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "Eine Stimme namens \"{name}\" ist bereits vorhanden.\nMit dieser Vorschau überschreiben? Wählen Sie Nein, um einen anderen Namen zu verwenden.",
   "voice_conflict_rename": "Der Name \"{name}\" wird bereits verwendet. Wählen Sie einen anderen Namen, um Mehrdeutigkeiten zu vermeiden.",
   "voice_conflict_save": "Stimme speichern",
-  "voice_conflict_name": "Neuer Stimmenname:"
+  "voice_conflict_name": "Neuer Stimmenname:",
+  "segment_engine": "TTS-Engine",
+  "segment_engine_reset": "Die Generierungsparameter stammen aus den Einstellungen der Ziel-Engine. Diese Änderung betrifft nur dieses Segment.",
+  "segment_engine_reference": "Referenzaudio und Transkript bleiben erhalten. Die Stimme kann mit dieser Engine anders klingen.",
+  "segment_engine_choose_reference": "Wählen Sie Referenzaudio, um die Stimme der Figur beizubehalten.",
+  "segment_engine_choose_voice": "Wählen Sie eine von dieser Engine unterstützte Stimme.",
+  "segment_engine_emotion_kept": "Die Emotionsbeschreibung bleibt erhalten; ihre Interpretation hängt von der neuen Engine ab.",
+  "segment_engine_emotion_removed": "Die bisherigen Emotionssteuerungen können nicht übertragen werden. Konfigurieren Sie die verfügbaren Optionen unten.",
+  "segment_engine_tags_removed": "Native Stimm- und Emotions-Tags der vorherigen Engine wurden aus diesem Entwurf entfernt.",
+  "segment_engine_language": "Dieses Modell unterstützt die gewählte Sprache nicht oder benötigt eine explizite Sprache. Wählen Sie ein kompatibles Modell oder eine Sprache.",
+  "segment_engine_voice_language": "Wählen Sie eine Stimme in der ursprünglichen Segmentsprache.",
+  "segment_engine_missing_reference": "Wählen Sie eine vorhandene Referenzaudiodatei für diese Stimme.",
+  "segment_engine_missing_transcript": "Geben Sie das genaue Transkript des Referenzaudios ein.",
+  "segment_engine_invalid_wav": "Diese Engine benötigt eine nicht leere, unkomprimierte PCM-WAV-Referenz."
 }

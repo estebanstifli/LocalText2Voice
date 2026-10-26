@@ -30,6 +30,8 @@ def test_stdio_bridge_exposes_expected_tools():
                     "unload_engine",
                     "get_markup_help",
                     "list_voices",
+                    "design_voice",
+                    "get_voice",
                     "list_background_music",
                     "list_sfx",
                     "create_audiobook",

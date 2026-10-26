@@ -206,6 +206,17 @@ class LocalText2VoiceService:
                     ),
                 }
             )
+        from app.server.voice_design import SAMPLES, VOX_LANGUAGES, WHISPER_LANGUAGES
+        for engine in engines:
+            engine["supports_voice_design"] = engine["id"] in {"omnivoice", "audiocpp"}
+            if engine["supports_voice_design"]:
+                engine["voice_design_template_languages"] = sorted(SAMPLES)
+                engine["voice_design_requires_whisper"] = True
+                engine["voice_design_languages"] = sorted(WHISPER_LANGUAGES if engine["id"] == "omnivoice" else VOX_LANGUAGES)
+            for model in engine.get("models", []):
+                model["supports_voice_design"] = model["family"] in {"breeze_tts", "voxcpm2"}
+                if model["supports_voice_design"]:
+                    model["voice_design_languages"] = ["en", "zh"] if model["family"] == "breeze_tts" else sorted(VOX_LANGUAGES)
         return engines
 
     def engine_status(self) -> dict[str, dict[str, Any]]:
@@ -1069,6 +1080,17 @@ class LocalText2VoiceService:
         language_hint = str(request.get("language") or request.get("lang") or "").strip()
         if engine_id == "audiocpp":
             config = audiocpp_model_config(self._settings_dict("audiocpp"), request.get("model"))
+            # MCP-created references may not yet be in the desktop settings snapshot.
+            # Markup switches resolve against this per-job catalog, not just the initial voice.
+            config["voices"] = dict(config.get("voices", {}))
+            for reference in self.voice_gallery_manager.list_voices("audiocpp"):
+                if reference.is_reference_audio and self.voice_gallery_manager.is_installed(reference):
+                    path = self.voice_gallery_manager.ensure_voice_audio(reference)
+                    config["voices"][reference.voice_id] = {
+                        "name": reference.name,
+                        "reference_audio_path": str(path),
+                        "reference_text": reference.ref_text,
+                    }
             for key in AUDIOCPP_DEFAULTS:
                 if request.get(key) is not None:
                     config[key] = request[key]
@@ -1283,6 +1305,9 @@ class LocalText2VoiceService:
         language_hint: str = "",
     ) -> GalleryVoice | None:
         voices = self.voice_gallery_manager.list_voices(engine)
+        exact = next((voice for voice in voices if voice.voice_id == voice_hint), None)
+        if exact is not None:
+            return exact
         installed = [voice for voice in voices if self.voice_gallery_manager.is_installed(voice)]
         candidates = voices if engine in {"indextts", "audiocpp"} else (installed or voices)
         if not candidates or not voice_hint:

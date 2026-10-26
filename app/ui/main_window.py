@@ -492,7 +492,7 @@ class ReferenceVoiceImportDialog(QDialog):
         title = QLabel("Edit reference voice" if editing else "Import reference voice")
         title.setObjectName("sectionLabel")
         helper = QLabel(
-            "WAV/MP3 files will be normalized to WAV, mono, 24 kHz. "
+            "Reference audio is saved as mono WAV at both 24 kHz and 48 kHz. "
             "Use a clean voice-only clip between 3 and 20 seconds."
         )
         helper.setObjectName("helperLabel")
@@ -894,6 +894,11 @@ class OmniVoiceDesignDialog(QDialog):
             "voice_style": instruction,
             "tags": tags,
         }
+
+    def done(self, result):
+        if getattr(self, "_design_busy", False):
+            return
+        super().done(result)
 
 
 class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
@@ -12880,8 +12885,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         )
         self.group_short_dialogue_checkbox.setToolTip(self.tr(
             "group_short_dialogue_help",
-            "Group consecutive dialogue turns within the chunk limit, preserving line breaks, "
-            "voice changes and explicit pauses. A paragraph pause is added only after the dialogue group.",
+            "Group short dialogue turns and suppress added silence before and after "
+            "quoted or dash-led speech, including voice changes. This takes priority over pause settings and markup pauses.",
         ))
         pause_form.addRow("", self.group_short_dialogue_checkbox)
 
@@ -15413,11 +15418,12 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             "duration": self.omnivoice_duration_spin.value(),
         }
         thread = QThread(self)
-        worker = OmniVoicePreviewWorker(
-            OmniVoiceManager(),
-            voice_config,
-            sample_text,
-        )
+        from app.ui.voice_design_client import ServerDesignPreviewWorker
+        dialog._design_snapshot = (sample_text, design_instruct, dialog.language_combo.currentData())
+        dialog._design_busy = True
+        dialog.preview_path = None
+        dialog.setEnabled(False)
+        worker = ServerDesignPreviewWorker(self.engine_host_client, voice_config, sample_text)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(lambda path: self._on_omnivoice_design_preview_ready(dialog, path))
@@ -15451,6 +15457,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         dialog: OmniVoiceDesignDialog,
         path: str,
     ) -> None:
+        dialog._design_draft_id = self.omnivoice_design_worker.result["draft_id"]
         preview_path = Path(path)
         self.omnivoice_design_preview_path = preview_path
         dialog.preview_path = preview_path
@@ -15491,6 +15498,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.omnivoice_design_worker = None
         self.omnivoice_design_thread = None
         if self.omnivoice_design_dialog is not None:
+            self.omnivoice_design_dialog._design_busy = False
+            self.omnivoice_design_dialog.setEnabled(True)
             self.omnivoice_design_dialog.generate_button.setEnabled(True)
 
     def _play_omnivoice_design_preview(self, dialog: OmniVoiceDesignDialog) -> None:
@@ -15509,11 +15518,18 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                 ),
             )
             return
+        snapshot = (dialog.sample_text_edit.toPlainText().strip(), dialog.instruction(), dialog.language_combo.currentData())
+        if snapshot != getattr(dialog, "_design_snapshot", None):
+            self._show_error(self.tr("generation_failed", "Generation failed"),
+                             self.tr("breeze_design_changed", "The design has changed. Generate a new preview before saving."))
+            return
         metadata = dialog.voice_metadata()
         try:
             from .save_reference_voice import save_designed_voice
+            from .voice_design_client import ServerDesignGallery
+            gallery = ServerDesignGallery(self.engine_host_client, self.voice_gallery_manager, dialog._design_draft_id)
             voice = save_designed_voice(
-                dialog, self.voice_gallery_manager,
+                dialog, gallery,
                 "omnivoice",
                 dialog.preview_path,
                 translate=self.tr,
@@ -19710,7 +19726,14 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                 path = resolve_large_asset_path(voice.installed_path or voice.ref_audio_path or "")
                 if path.is_file():
                     voices.append((voice.name, {"voice": voice.voice_id, "reference_audio_path": str(path), "reference_text": voice.ref_text}))
-        dialog = SegmentDetailDialog(self.review_source_detail.toPlainText(), config, voices, self.tr, self)
+        from app.ui.segment_engine_options import installed_options
+        from app.core.segment_engine import identity
+        options = installed_options(self)
+        matching = next((o for o in options if identity(o["config"]) == identity(config)), None)
+        if matching is not None:
+            voices = matching["voices"]
+        dialog = SegmentDetailDialog(self.review_source_detail.toPlainText(), config, voices, self.tr, self,
+                                     engine_options=options)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         text, config = dialog.values()

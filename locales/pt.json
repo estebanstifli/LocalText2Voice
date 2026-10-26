@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "Já existe uma voz chamada \"{name}\".\nSubstituí-la por esta prévia? Escolha Não para usar outro nome.",
   "voice_conflict_rename": "O nome \"{name}\" já está em uso. Escolha outro nome para evitar ambiguidades.",
   "voice_conflict_save": "Salvar voz",
-  "voice_conflict_name": "Novo nome da voz:"
+  "voice_conflict_name": "Novo nome da voz:",
+  "segment_engine": "Motor TTS",
+  "segment_engine_reset": "Os parâmetros de geração usam as configurações do motor de destino. Esta alteração afeta apenas este segmento.",
+  "segment_engine_reference": "O áudio de referência e a transcrição são mantidos. A voz pode soar diferente neste motor.",
+  "segment_engine_choose_reference": "Selecione um áudio de referência para manter a voz do personagem.",
+  "segment_engine_choose_voice": "Selecione uma voz compatível com este motor.",
+  "segment_engine_emotion_kept": "A descrição da emoção é mantida; sua interpretação depende do novo motor.",
+  "segment_engine_emotion_removed": "Os controles de emoção anteriores não podem ser transferidos. Configure os controles disponíveis abaixo.",
+  "segment_engine_tags_removed": "As etiquetas vocais e emocionais nativas do motor anterior foram removidas deste rascunho.",
+  "segment_engine_language": "Este modelo não suporta o idioma selecionado ou exige um idioma explícito. Selecione um modelo ou idioma compatível.",
+  "segment_engine_voice_language": "Escolha uma voz no idioma original do segmento.",
+  "segment_engine_missing_reference": "Selecione um arquivo de áudio de referência existente para esta voz.",
+  "segment_engine_missing_transcript": "Digite a transcrição exata do áudio de referência.",
+  "segment_engine_invalid_wav": "Este motor exige uma referência WAV PCM não comprimida e não vazia."
 }

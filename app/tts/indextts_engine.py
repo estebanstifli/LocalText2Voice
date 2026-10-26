@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.utils.atomic_audio import EmptyWavError, validate_wav
 from app.utils.paths import resolve_large_asset_path
 
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
@@ -76,9 +77,9 @@ class IndexTTSTTSEngine(BaseTTSEngine):
         import wave
 
         try:
-            with wave.open(str(output_wav), "rb") as audio:
-                if audio.getnframes() == 0:
-                    raise ValueError("Empty WAV")
+            validate_wav(output_wav)
+        except EmptyWavError:
+            raise
         except (OSError, EOFError, ValueError, wave.Error) as exc:
             raise TTSEngineError(
                 "IndexTTS did not produce a valid, non-empty PCM WAV."

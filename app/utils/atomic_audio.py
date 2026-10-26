@@ -14,6 +14,10 @@ class AudioFileInUseError(PermissionError):
     """A validated replacement is retained for recovery after a sharing violation."""
 
 
+class EmptyWavError(ValueError):
+    """A synthesis result contains no audio samples."""
+
+
 def replace_audio_file(
     source: Path,
     destination: Path,
@@ -43,10 +47,14 @@ def replace_audio_file(
 
 
 def validate_wav(path: Path) -> None:
+    if path.stat().st_size == 0:
+        raise EmptyWavError(f"Generated WAV is empty: {path}")
     with wave.open(str(path), "rb") as audio:
         frames = audio.getnframes()
         if frames <= 0:
-            raise ValueError(f"Generated WAV is empty: {path}")
+            raise EmptyWavError(f"Generated WAV is empty: {path}")
+        if not audio.readframes(1):
+            raise EmptyWavError(f"Generated WAV contains a header but no samples: {path}")
         audio.setpos(frames - 1)
         if len(audio.readframes(1)) != audio.getnchannels() * audio.getsampwidth():
             raise ValueError(f"Generated WAV is truncated: {path}")

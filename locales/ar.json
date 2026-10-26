@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "يوجد صوت باسم \"{name}\" بالفعل.\nهل تريد استبداله بهذه المعاينة؟ اختر لا لاستخدام اسم مختلف.",
   "voice_conflict_rename": "الاسم \"{name}\" مستخدم بالفعل. اختر اسماً مختلفاً لتجنب الالتباس.",
   "voice_conflict_save": "حفظ الصوت",
-  "voice_conflict_name": "اسم الصوت الجديد:"
+  "voice_conflict_name": "اسم الصوت الجديد:",
+  "segment_engine": "محرك TTS",
+  "segment_engine_reset": "تستخدم معلمات التوليد إعدادات المحرك المستهدف. يؤثر هذا التغيير على هذا المقطع فقط.",
+  "segment_engine_reference": "يُحتفظ بالصوت المرجعي ونصه. قد يبدو الصوت مختلفاً مع هذا المحرك.",
+  "segment_engine_choose_reference": "اختر صوتاً مرجعياً للحفاظ على صوت الشخصية.",
+  "segment_engine_choose_voice": "اختر صوتاً يدعمه هذا المحرك.",
+  "segment_engine_emotion_kept": "يُحتفظ بوصف المشاعر؛ ويعتمد تفسيره على المحرك الجديد.",
+  "segment_engine_emotion_removed": "لا يمكن نقل إعدادات المشاعر السابقة. اضبط الخيارات المتاحة أدناه.",
+  "segment_engine_tags_removed": "أُزيلت وسوم الصوت والمشاعر الخاصة بالمحرك السابق من هذه المسودة.",
+  "segment_engine_language": "هذا النموذج لا يدعم اللغة المحددة أو يتطلب تحديد لغة صريحة. اختر نموذجاً أو لغة متوافقة.",
+  "segment_engine_voice_language": "اختر صوتاً بلغة المقطع الأصلية.",
+  "segment_engine_missing_reference": "اختر ملف صوت مرجعي موجوداً لهذا الصوت.",
+  "segment_engine_missing_transcript": "أدخل النص الدقيق للصوت المرجعي.",
+  "segment_engine_invalid_wav": "يتطلب هذا المحرك مرجع WAV PCM غير مضغوط وغير فارغ."
 }

@@ -51,6 +51,49 @@ class FakeTTSEngine(BaseTTSEngine):
 
 
 class AudioPipelineMarkupConfigTests(unittest.TestCase):
+    def test_quoted_dialogue_pause_edges_across_speakers(self) -> None:
+        for opening, closing in [('"', '"'), ('“', '”'), ('«', '»'), ('‘', '’'), ("'", "'")]:
+            for enabled in (True, False):
+                options = AudioGenerationOptions(
+                    Path('unused'), {'engine': 'audiocpp', 'model': 'voxcpm2_bf16'}, 'ffmpeg',
+                    group_short_dialogue=enabled,
+                )
+                source = (
+                    '{{voice "Three Little Pigs - Polly"}}\n'
+                    '{{emotion custom "Startled and mildly indignant."}}\n'
+                    + opening + 'Ouch!' + closing + '\n\n'
+                    '{{voice "Three Little Pigs - Narrator"}}\n{{emotion off}}\nsays Polly.\n\n'
+                    '{{voice "Three Little Pigs - Polly"}}\n'
+                    '{{emotion custom "Startled and mildly indignant."}}\n'
+                    + opening + 'This bed is very small.' + closing
+                )
+                pipeline = AudioPipeline(FakeTTSEngine())
+                groups = pipeline._prepare_groups(source, options)
+                chunks = groups[0].chunks
+                self.assertEqual(len(chunks), 3)
+                self.assertEqual([c.markup_state['voice'] for c in chunks], [
+                    'Three Little Pigs - Polly', 'Three Little Pigs - Narrator', 'Three Little Pigs - Polly',
+                ])
+                self.assertEqual(
+                    [pipeline._dialogue_pause_edges(chunks, i, options) for i in range(3)],
+                    [(enabled, enabled)] * 3,
+                )
+                import random
+                paths = [Path(f'chunk_{i}.wav') for i in range(3)]
+                with patch.object(pipeline, '_rendered_duration_ms', return_value=100), patch.object(
+                    pipeline, '_timeline_silence', return_value=Path('silence.wav'),
+                ) as silence:
+                    timeline, _chapters, duration = pipeline._prepare_timeline(
+                        groups, [paths], options, Path('unused'), random.Random(0),
+                    )
+                if enabled:
+                    self.assertEqual(timeline, paths)
+                    self.assertEqual(duration, 300)
+                    silence.assert_not_called()
+                else:
+                    self.assertEqual(silence.call_count, 2)
+                    self.assertGreater(duration, 300)
+
     def test_dialogue_grouping_option_reaches_every_engine(self) -> None:
         source = '-Hola.\n\n-Adiós.'
         for engine in ('piper', 'kokoro', 'omnivoice', 'f5_russian', 'qwen', 'chatterbox'):
@@ -477,6 +520,50 @@ class AudioPipelineMarkupConfigTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required for this test")
 class AudioPipelineTests(unittest.TestCase):
+    def test_dialogue_pause_priority_in_both_export_modes(self) -> None:
+        from unittest.mock import Mock
+
+        for mode in ('single', 'chapters'):
+            for enabled in (True, False):
+                with self.subTest(mode=mode, enabled=enabled), tempfile.TemporaryDirectory() as folder:
+                    engine = FakeTTSEngine()
+                    pipeline = AudioPipeline(engine)
+                    pipeline._create_silence = Mock(wraps=pipeline._create_silence)
+                    options = AudioGenerationOptions(
+                        Path(folder), {'engine': 'piper'}, shutil.which('ffmpeg'),
+                        export_mode=mode, group_short_dialogue=enabled,
+                        paragraph_pause_min_ms=450, paragraph_pause_max_ms=450,
+                        adaptive_paragraph_pause=False,
+                    )
+                    pipeline.generate(
+                        '\"Ouch!\" {{pause 700}} says Polly. {{pause 450}} \"This bed is very small.\"', options,
+                    )
+                    self.assertEqual(engine.synthesized_texts, [
+                        '\"Ouch!\"', 'says Polly.', '\"This bed is very small.\"',
+                    ])
+                    durations = [call.args[2] for call in pipeline._create_silence.call_args_list]
+                    self.assertEqual(durations, [700, 450])
+
+    def test_dialogue_keeps_leading_trailing_and_voice_change_markup_pauses(self) -> None:
+        from unittest.mock import Mock
+
+        for mode in ('single', 'chapters'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
+                pipeline = AudioPipeline(FakeTTSEngine())
+                pipeline._create_silence = Mock(wraps=pipeline._create_silence)
+                options = AudioGenerationOptions(
+                    Path(folder), {'engine': 'piper'}, shutil.which('ffmpeg'),
+                    export_mode=mode, group_short_dialogue=True,
+                )
+                pipeline.generate(
+                    '{{pause 300}} "Hello." {{pause 700}} {{voice Ryan}} '
+                    '"Goodbye." {{pause 500}}', options,
+                )
+                self.assertEqual(
+                    [call.args[2] for call in pipeline._create_silence.call_args_list],
+                    [300, 700, 500],
+                )
+
     def test_indextts_validates_commands_before_requiring_global_emotion(self) -> None:
         from app.tts.indextts_engine import IndexTTSTTSEngine
 

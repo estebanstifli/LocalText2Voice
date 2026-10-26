@@ -13,6 +13,7 @@ import time
 import urllib.request
 import wave
 
+from app.utils.atomic_audio import EmptyWavError
 from app.utils.paths import resolve_large_asset_path
 from .audiocpp_config import MODELS, BREEZE_MODEL, BREEZE_FIELDS, VOXCPM_MODELS, validated_config
 from .audiocpp_manager import AudioCppManager
@@ -51,6 +52,12 @@ class AudioCppTTSEngine(CustomHTTPTTSEngine):
             raise TTSEngineError(str(exc)) from exc
         if not self.manager.is_installed(config["model"], config["backend"]):
             raise TTSEngineError("Install the selected audio.cpp runtime and model in Settings > TTS Engines.")
+        reference = config.get("reference_audio_path")
+        if reference and config["model"] in {BREEZE_MODEL, *VOXCPM_MODELS}:
+            from app.tts.voice_gallery_manager import VoiceGalleryManager
+            high = VoiceGalleryManager.high_rate_path(resolve_large_asset_path(reference))
+            if VoiceGalleryManager._wav_matches_reference_format(high, 48000):
+                config["reference_audio_path"] = str(high)
         return config
 
     def validate(self, voice_config):
@@ -217,7 +224,7 @@ class AudioCppTTSEngine(CustomHTTPTTSEngine):
                 result = self._write_wav_bytes_compatible(audio, output_wav, config)
                 with wave.open(str(result), "rb") as wav:
                     if wav.getnframes() == 0:
-                        raise TTSEngineError("audio.cpp returned an empty WAV.")
+                        raise EmptyWavError("audio.cpp returned an empty WAV.")
                 self._check_cancel()
                 return result
             except Exception:

@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "「{name}」という音声は既に存在します。\nこのプレビューで上書きしますか？別の名前を使うには「いいえ」を選んでください。",
   "voice_conflict_rename": "「{name}」は既に使われています。混同を避けるため別の名前を選んでください。",
   "voice_conflict_save": "音声を保存",
-  "voice_conflict_name": "新しい音声名："
+  "voice_conflict_name": "新しい音声名：",
+  "segment_engine": "TTS エンジン",
+  "segment_engine_reset": "生成パラメーターには切り替え先のエンジン設定が使われます。この変更はこのセグメントのみに適用されます。",
+  "segment_engine_reference": "参照音声と文字起こしは保持されます。このエンジンでは声が異なって聞こえる場合があります。",
+  "segment_engine_choose_reference": "キャラクターの声を保つため参照音声を選択してください。",
+  "segment_engine_choose_voice": "このエンジンが対応する声を選択してください。",
+  "segment_engine_emotion_kept": "感情の説明は保持されますが、その解釈は新しいエンジンに依存します。",
+  "segment_engine_emotion_removed": "以前の感情設定は引き継げません。以下の利用可能な設定を指定してください。",
+  "segment_engine_tags_removed": "以前のエンジン固有の発声・感情タグをこの下書きから削除しました。",
+  "segment_engine_language": "このモデルは選択した言語に非対応か、言語の明示指定が必要です。対応するモデルまたは言語を選択してください。",
+  "segment_engine_voice_language": "元のセグメントと同じ言語の声を選択してください。",
+  "segment_engine_missing_reference": "この声の既存の参照音声ファイルを選択してください。",
+  "segment_engine_missing_transcript": "参照音声の正確な文字起こしを入力してください。",
+  "segment_engine_invalid_wav": "このエンジンには空でない非圧縮 PCM WAV の参照音声が必要です。"
 }

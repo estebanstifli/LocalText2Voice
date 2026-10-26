@@ -328,6 +328,29 @@ def list_voices(
     )
 
 
+@mcp.tool(description="Design a named voice, verify its 48 kHz master with Whisper and save 24 kHz and 48 kHz WAVs automatically only on transcript match. Supports OmniVoice, Breeze and VoxCPM2. Returns a tracked job; errors are in the job result. Missing sample_text uses a template for es/en/zh; other languages require text.")
+def design_voice(name: str, description: str, language: str,
+                 engine_id: str = "audiocpp", model: str | None = None,
+                 sample_text: str | None = None, idempotency_key: str | None = None,
+                 wait_until_complete: bool = True, wait_timeout_seconds: int = 60) -> dict[str, Any]:
+    def run():
+        payload = dict(name=name, description=description, language=language,
+                       engine_id=engine_id, model=model, sample_text=sample_text, idempotency_key=idempotency_key)
+        job = _request_json("POST", "/voices/design", payload)
+        if wait_until_complete:
+            deadline = time.monotonic() + max(1, min(wait_timeout_seconds, 3600))
+            while job.get("status") not in {"complete", "failed", "cancelled"} and time.monotonic() < deadline:
+                time.sleep(0.5)
+                job = _request_json("GET", "/jobs/" + urllib.parse.quote(job["job_id"], safe=""))
+        return job
+    return _safe(run)
+
+
+@mcp.tool(description="Get a saved voice by exact ID, including reference audio, transcript, model, design parameters and Whisper verification metadata.")
+def get_voice(voice_id: str) -> dict[str, Any]:
+    return _safe(lambda: _request_json("GET", "/voices/" + urllib.parse.quote(voice_id, safe="")))
+
+
 @mcp.tool(description="List background music tracks available for podcast mixes.")
 def list_background_music() -> list[dict[str, Any]] | dict[str, str]:
     return _safe(lambda: _request_json("GET", "/background-music"))

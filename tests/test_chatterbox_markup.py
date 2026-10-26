@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+import wave
 
 import pytest
 
@@ -104,11 +105,19 @@ def test_worker_request_contains_native_tags_and_no_ignored_tuning(tmp_path):
     engine._ensure_worker = Mock(return_value=Mock())
     engine._send_request = Mock()
     output = tmp_path / "audio.wav"
-    engine._wait_for_response = Mock(side_effect=lambda *args: output.write_bytes(b"RIFF"))
+    def write_worker_audio(*args):
+        request = engine._send_request.call_args.args[1]
+        with wave.open(request["output"], "wb") as audio:
+            audio.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            audio.writeframes(bytes(480))
+
+    engine._wait_for_response = Mock(side_effect=write_worker_audio)
     engine.synthesize_to_wav("Hello [chuckle] there.", output, {"model":"turbo", "chatterbox_emotion":"happy"})
     request = engine._send_request.call_args.args[1]
     assert request["text"] == "[happy] Hello [chuckle] there."
     assert request["exaggeration"] == request["cfg_weight"] == 0
+    with wave.open(str(output), "rb") as audio:
+        assert audio.getnframes() == 240
 
 
 def test_inherited_hub_cache_cannot_hide_newly_installed_models(tmp_path, monkeypatch):

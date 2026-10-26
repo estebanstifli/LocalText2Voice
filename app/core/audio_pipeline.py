@@ -2195,6 +2195,33 @@ class AudioPipeline:
         self._markup_runtime_warning_keys.add(key)
         self.log_callback(message)
 
+    @staticmethod
+    def _dialogue_pause_edges(
+        chunks: tuple[TextChunk, ...], index: int, options: AudioGenerationOptions,
+    ) -> tuple[bool, bool]:
+        """Suppress both sides of a dialogue join, even across voice changes.
+
+        Operate on the complete chapter, after markup has separated speakers.
+        Only automatic pauses may be suppressed; explicit markup always wins.
+        """
+        if not options.group_short_dialogue:
+            return False, False
+
+        def starts(text: str) -> bool:
+            return text.lstrip().startswith(('"', '“', '«', '‘', "'")) or TextProcessor._is_dialogue(text)
+
+        def ends(text: str) -> bool:
+            text = text.rstrip()
+            return text.endswith(('"', '”', '»', '’')) or (
+                text.endswith("'") and len(text) > 1 and text[-2] in '.!?…'
+            ) or TextProcessor._is_dialogue(text)
+
+        before = starts(chunks[index].text) or (index > 0 and ends(chunks[index - 1].text))
+        after = ends(chunks[index].text) or (
+            index + 1 < len(chunks) and starts(chunks[index + 1].text)
+        )
+        return before, after
+
     def _prepare_timeline(
         self,
         groups: list[AudioGroup],
@@ -2221,16 +2248,21 @@ class AudioPipeline:
                 self._check_cancelled()
                 chunk = groups[group_index].chunks[chunk_index]
                 segment_id = self._segment_ids.get((group_index + 1, chunk_index + 1))
+                _suppress_before, suppress_after = self._dialogue_pause_edges(
+                    groups[group_index].chunks, chunk_index, options,
+                )
                 before_duration = max(0, chunk.markup_pause_before_ms)
-                if chunk.markup_pause_before_ms > 0:
+                if before_duration > 0:
                     pause_index += 1
-                    total_pause_ms += chunk.markup_pause_before_ms
-                    timeline_ms += chunk.markup_pause_before_ms
+                    total_pause_ms += before_duration
+                    timeline_ms += before_duration
                 timeline_ms += max(1, self._rendered_duration_ms(wav_path))
                 is_last_chunk = chunk_index == len(rendered_chunks) - 1
                 is_last_group = group_index == len(rendered_groups) - 1
                 if chunk.markup_pause_after_ms is not None:
                     duration = chunk.markup_pause_after_ms
+                elif suppress_after:
+                    duration = 0
                 elif is_last_chunk and not is_last_group:
                     duration = options.pause_between_chapters_ms
                 else:
@@ -2454,22 +2486,27 @@ class AudioPipeline:
             for chunk_index, wav_path in enumerate(rendered_chunks):
                 chunk = group.chunks[chunk_index]
                 segment_id = self._segment_ids.get((group_index, chunk_index + 1))
+                _suppress_before, suppress_after = self._dialogue_pause_edges(
+                    group.chunks, chunk_index, options,
+                )
                 before_duration = max(0, chunk.markup_pause_before_ms)
-                if chunk.markup_pause_before_ms > 0:
+                if before_duration > 0:
                     pause_count += 1
-                    total_pause_ms += chunk.markup_pause_before_ms
+                    total_pause_ms += before_duration
                     silence = temp_dir / (
                         f"chapter_{group_index:03d}_pause_{chunk_index:04d}_before.wav"
                     )
                     self._create_silence(
                         wav_path,
                         silence,
-                        chunk.markup_pause_before_ms,
+                        before_duration,
                     )
                     timeline.append(silence)
                 timeline.append(wav_path)
                 if chunk.markup_pause_after_ms is not None:
                     duration = chunk.markup_pause_after_ms
+                elif suppress_after:
+                    duration = 0
                 elif chunk_index < len(rendered_chunks) - 1:
                     duration = self._chunk_pause_ms(
                         chunk,

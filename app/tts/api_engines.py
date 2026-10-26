@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 from urllib.parse import urlparse
 from urllib.parse import quote, urlencode
 
+from app.utils.atomic_audio import EmptyWavError
 from app.utils.ffmpeg_utils import FFmpegError, FFmpegRunner, find_ffmpeg
 
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
@@ -75,7 +76,7 @@ class HttpTTSEngine(BaseTTSEngine):
                 f"{self._extract_error_message(response_body)}"
             )
         if not response_body:
-            raise TTSEngineError("TTS API returned an empty audio response.")
+            raise EmptyWavError("TTS API returned an empty audio response.")
         return response_body, content_type
 
     @staticmethod
@@ -125,7 +126,7 @@ class HttpTTSEngine(BaseTTSEngine):
         sample_rate: int,
     ) -> Path:
         if len(pcm_bytes) < 2:
-            raise TTSEngineError("TTS API returned an empty PCM audio response.")
+            raise EmptyWavError("TTS API returned an empty PCM audio response.")
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(output_wav), "wb") as audio:
             audio.setnchannels(1)
@@ -641,7 +642,7 @@ class CustomHTTPTTSEngine(BaseTTSEngine):
                 f"{HttpTTSEngine._extract_error_message(response_body)}"
             )
         if not response_body:
-            raise TTSEngineError("Custom TTS returned an empty response.")
+            raise EmptyWavError("Custom TTS returned an empty response.")
         return response_body, content_type
 
     def _write_custom_response(

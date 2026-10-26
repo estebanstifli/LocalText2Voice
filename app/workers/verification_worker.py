@@ -1168,6 +1168,16 @@ class AudiobookRebuildWorker(QObject):
                     + ", ".join(str(index) for index in missing[:12])
                 )
 
+            for segment in segments:
+                self._check_cancelled()
+                try:
+                    validate_wav(Path(segment.wav_path))
+                except (ValueError, EOFError, wave.Error) as exc:
+                    raise FFmpegError(
+                        f"Segment {segment.sequence_index} has an empty or invalid WAV. "
+                        "Regenerate it before rebuilding."
+                    ) from exc
+
             self.output_dir.mkdir(parents=True, exist_ok=True)
             runner = FFmpegRunner(find_ffmpeg(self.ffmpeg_path))
             self._runner = runner

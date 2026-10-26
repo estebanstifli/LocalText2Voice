@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from app.utils.atomic_audio import EmptyWavError
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
 
 
@@ -107,7 +108,9 @@ class PiperTTSEngine(BaseTTSEngine):
                 f"Piper failed with exit code {process.returncode}: "
                 f"{error_text or 'No error details were returned.'}"
             )
-        if not output_wav.is_file() or output_wav.stat().st_size == 0:
+        if output_wav.is_file() and output_wav.stat().st_size == 0:
+            raise EmptyWavError("TTS returned an empty WAV.")
+        if not output_wav.is_file():
             raise TTSEngineError(
                 "Piper completed but did not create a valid WAV file."
             )

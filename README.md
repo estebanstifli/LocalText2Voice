@@ -1024,6 +1024,84 @@ SignPath Foundation onboarding is in progress using a test certificate.
 See our [Code signing policy](CODE_SIGNING.md). Test-signed CI artifacts are not
 public releases; existing installers have not been retroactively signed.
 
+## Automatic voice design (MCP and desktop)
+
+`design_voice(name, description, language, engine_id="audiocpp", model=None,
+sample_text=None, idempotency_key=None, wait_until_complete=True,
+wait_timeout_seconds=60)` submits a server job that generates, verifies and saves
+a reusable voice. `get_voice(voice_id)` returns the catalog record, audio URI,
+reference transcript and verification metadata. No separate save tool is needed.
+
+Supported design engines are OmniVoice and audio.cpp Breeze TTS 2 / VoxCPM 2.
+The default model is `voxcpm2_q8_0`; OmniVoice uses `model="omnivoice"`.
+Both the selected TTS model and Faster Whisper small must already be installed.
+`list_engines` advertises the supported design models and verification languages.
+Breeze supports English and Chinese. A missing sample uses a versioned template
+for `es`, `en` or `zh`; other languages require explicit sample text (up to 600
+characters, without LocalText2Voice markup). There is no fallback to English.
+
+The shared service is `app/server/voice_design.py`, which imports no Qt modules.
+The original OmniVoice, Breeze and VoxCPM designer dialogs retain their controls
+and Generate Preview / Play Preview / Save as Voice buttons. They submit
+`POST /voices/design/preview`; the host generates and verifies a 48 kHz preview
+without publishing a catalog voice. After listening, Save as Voice calls
+`POST /voices/design/previews/{job_id}/save`. The host checks the verified audio
+hash and publishes that exact preview, without synthesizing again. Rename and
+explicit overwrite prompts remain in the UI; the server performs the writes.
+Preview WAVs are held in the server's `design-previews` cache. The MCP's
+`POST /voices/design` remains the automatic generate/verify/save operation.
+`GET /voices/{voice_id}` retrieves saved voices. The existing job queue supplies `get_job`, `get_jobs`
+and `cancel_job`. A timeout returns the current job; it does not cancel work.
+Cancellation is cooperative between stages, so an ongoing synthesis or ASR call
+may finish before cancellation is observed. Once publication commits, the job
+reports the saved voice even if a cancellation arrives immediately afterward.
+
+The server verifies the mono PCM16 48 kHz master WAV using Whisper on
+CPU/int8 (beam size 5), without prompting Whisper with the expected transcript.
+Comparison ignores Unicode case, punctuation and repeated whitespace but retains
+accents, symbols and word differences. A mismatch fails rather than silently
+replacing the requested transcript. This is an ASR consistency check, not a
+measurement of how accurately the voice follows its description.
+
+The verified WAV, exact requested transcript, raw ASR transcript, description,
+model, effective generation parameters, hash and verification policy are saved
+together. Names cannot overwrite another voice in the same engine. Retrying the
+same `idempotency_key` and request returns the same job; changing its parameters
+returns a conflict. Use a new key for an intentional new attempt.
+
+Failures have `status="failed"` and a structured `result` with `code`, `stage`,
+`message` and `saved=false`. Transcript mismatches also include both texts and
+word differences. Success has job status `complete` and `result.status="saved"`,
+with `voice_id`, `name` and the saved record. Pass that exact ID as `voice` to
+`generate_audio` or `create_audiobook`.
+
+Restart the local engine host and reconnect the MCP bridge after updating to
+load the new routes and tool definitions.
+
+Imported, cloned reference and newly designed voices store two mono PCM16 WAVs,
+at 24 kHz and 48 kHz, generated independently from the input audio. The catalog
+keeps one voice name and transcript, with per-rate filenames and SHA-256 hashes.
+Breeze TTS 2 and VoxCPM 2 automatically use the 48 kHz companion when available;
+other engines retain the standard 24 kHz reference. Existing references without
+a companion remain usable. Recreate or reimport from the original recording to
+retain high-frequency detail: upsampling an old 24 kHz reference cannot restore it.
+Both files are rolled back on failed import/replacement and removed on voice deletion.
+
+## Review Engine Switching And Audio Validation
+
+Review's segment details can switch to another installed local engine/model without
+changing the global selection. Only compatible semantic controls are transferred;
+engine-specific sampling settings come from the destination. Check the notices,
+choose a compatible voice/reference and language, then regenerate and approve.
+
+All engines validate WAV output and retry empty audio at most twice using the same
+engine instance. Existing audio is replaced only after a valid result. Rebuild
+rejects empty or invalid segment WAVs instead of silently omitting them.
+
+When short-dialogue grouping is enabled, dialogue boundaries suppress automatic
+pauses, even across voice changes. Explicit `{{pause ...}}` commands are always
+preserved, including pauses at the beginning or end of a dialogue.
+
 ## Author
 
 Created by [Esteban](https://andromedanova.com) at [AndromedaNova.com](https://andromedanova.com).

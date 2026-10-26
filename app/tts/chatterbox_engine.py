@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from app.utils.atomic_audio import EmptyWavError
 from app.utils.paths import resolve_large_asset_path
 
 from .base import BaseTTSEngine, TTSCancelled, TTSEngineError
@@ -84,7 +85,9 @@ class ChatterboxTTSEngine(BaseTTSEngine):
             },
         )
         self._wait_for_response(process, request_id)
-        if not output_wav.is_file() or output_wav.stat().st_size == 0:
+        if output_wav.is_file() and output_wav.stat().st_size == 0:
+            raise EmptyWavError("TTS returned an empty WAV.")
+        if not output_wav.is_file():
             raise TTSEngineError(
                 "Chatterbox completed but did not create a valid WAV file."
             )

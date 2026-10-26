@@ -771,7 +771,10 @@ class QwenManagerTests(unittest.TestCase):
                             emit({"type": "shutdown"})
                             break
                         output = Path(request["output"])
-                        output.write_bytes(b"fake wav")
+                        import wave
+                        with wave.open(str(output), "wb") as audio:
+                            audio.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                            audio.writeframes(bytes(480))
                         emit({
                             "type": "timing",
                             "id": request["id"],

@@ -5,12 +5,13 @@ import json
 import shutil
 import sqlite3
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import wave
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -417,6 +418,10 @@ class VoiceGalleryManager:
         return False
 
     def preview_source(self, voice: GalleryVoice) -> str:
+        if (voice.metadata or {}).get("audio_versions") and voice.installed_path:
+            high = self.high_rate_path(Path(voice.installed_path))
+            if high.is_file():
+                return str(high)
         for candidate in (voice.preview_path, voice.installed_path, voice.ref_audio_path):
             if candidate and Path(candidate).is_file():
                 return str(Path(candidate))
@@ -512,6 +517,8 @@ class VoiceGalleryManager:
             )
             if value
         }
+        if (existing.metadata or {}).get("audio_versions"):
+            paths.add(self.high_rate_path(Path(existing.installed_path)))
         for path in paths:
             resolved = path.resolve()
             if root not in resolved.parents:
@@ -523,6 +530,67 @@ class VoiceGalleryManager:
             connection.execute(
                 "DELETE FROM voice_gallery_voices WHERE id = ?", (existing.voice_id,)
             )
+
+    def save_verified_design(self, source, request, metadata, *, replace_voice_id=None, labels=None, ffmpeg_path="ffmpeg/ffmpeg.exe"):
+        """Publish a verified WAV and catalog row together, without Qt or overwrite."""
+        import uuid
+        from datetime import datetime, timezone
+        from app.server.voice_design import VoiceDesignError
+        voice_id = replace_voice_id or str(uuid.uuid4())
+        destination = self.files_root / "imported" / request["engine_id"] / (str(uuid.uuid4()) + ".wav")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        values = dict(id=voice_id, engine=request["engine_id"], name=request["name"],
+            language=request["language"], language_name=request["language"],
+            voice_type="Designed reference", install_type="reference_audio",
+            preview_url=str(destination), preview_path=str(destination), ref_audio_path=str(destination),
+            installed_path=str(destination), ref_text=request["sample_text"], model_id=request["model"],
+            short_description=request["description"], voice_style=request["description"],
+            tags_json=json.dumps(["designed", request["engine_id"], request["model"]]),
+            metadata_json=json.dumps(metadata, ensure_ascii=False), installed_at=now, updated_at=now)
+        for key in ("language_name", "gender", "age_style", "voice_style", "short_description"):
+            if isinstance((labels or {}).get(key), str):
+                values[key] = labels[key]
+        if isinstance((labels or {}).get("tags"), list) and all(isinstance(tag, str) for tag in labels["tags"]):
+            values["tags_json"] = json.dumps(labels["tags"])
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if metadata.get("draft_id"):
+                    for row in connection.execute("SELECT * FROM voice_gallery_voices WHERE engine = ?", (request["engine_id"],)):
+                        existing = self._row_to_voice(row)
+                        if (existing.metadata or {}).get("draft_id") == metadata["draft_id"]:
+                            return existing
+                if replace_voice_id:
+                    row = connection.execute("SELECT * FROM voice_gallery_voices WHERE id = ?", (replace_voice_id,)).fetchone()
+                    existing = self._row_to_voice(row) if row else None
+                    if existing is None or not existing.is_user_import or existing.engine != request["engine_id"]:
+                        raise VoiceDesignError("INVALID_REPLACEMENT", "save", "Only a user reference in the same engine may be replaced.")
+                names = connection.execute("SELECT name FROM voice_gallery_voices WHERE engine = ? AND id != ?",
+                                           (request["engine_id"], voice_id)).fetchall()
+                if any(row[0].strip().casefold() == request["name"].casefold() for row in names):
+                    raise VoiceDesignError("NAME_CONFLICT", "save", "A voice with this name already exists.")
+                if hashlib.sha256(source.read_bytes()).hexdigest() != metadata["audio_sha256"]:
+                    raise VoiceGalleryError("Saved WAV checksum does not match verified audio.")
+                _duration, versions = self._write_design_versions(source, destination, metadata, ffmpeg_path)
+                values["metadata_json"] = json.dumps({**metadata, **versions}, ensure_ascii=False)
+                if replace_voice_id:
+                    connection.execute("DELETE FROM voice_gallery_voices WHERE id = ?", (replace_voice_id,))
+                connection.execute("INSERT INTO voice_gallery_voices (" + ",".join(values) +
+                    ") VALUES (" + ",".join("?" for _ in values) + ")", tuple(values.values()))
+                row = connection.execute("SELECT * FROM voice_gallery_voices WHERE id = ?", (voice_id,)).fetchone()
+                voice = self._row_to_voice(row)
+            return voice
+        except Exception:
+            destination.unlink(missing_ok=True)
+            self.high_rate_path(destination).unlink(missing_ok=True)
+            raise
+
+    def _write_design_versions(self, source, destination, metadata, ffmpeg_path):
+        with self._reference_versions(source, destination, ffmpeg_path,
+                                      metadata.get("duration_min_seconds", 1),
+                                      metadata.get("duration_max_seconds", 60)) as result:
+            return result
 
     def import_reference_voice(
         self,
@@ -562,7 +630,6 @@ class VoiceGalleryManager:
         destination = self._unique_destination(
             destination_dir / f"{self._safe_part(display_name)}.wav"
         )
-        temporary = destination.with_suffix(destination.suffix + ".tmp.wav")
         minimum = (
             self.REFERENCE_MIN_SECONDS
             if min_duration_seconds is None
@@ -573,79 +640,73 @@ class VoiceGalleryManager:
             if max_duration_seconds is None
             else float(max_duration_seconds)
         )
-        duration_seconds = self._normalize_reference_audio(
-            source,
-            temporary,
-            ffmpeg_path,
-            minimum,
-            maximum,
-        )
-        temporary.replace(destination)
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        normalized_language = language.strip() or "reference"
-        normalized_language_name = (
-            language_name.strip()
-            or (normalized_language.title() if normalized_language != "reference" else "Reference")
-        )
-        normalized_tags = [
-            str(tag).strip()
-            for tag in (tags or ["imported", engine, "reference"])
-            if str(tag).strip()
-        ]
-        metadata = {
-            "source": "user_import",
-            "original_file": str(source),
-            "normalized_format": (
-                f"wav pcm_s16le mono {self.REFERENCE_SAMPLE_RATE}hz"
-            ),
-            "duration_seconds": duration_seconds,
-            "duration_min_seconds": minimum,
-            "duration_max_seconds": maximum,
-        }
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO voice_gallery_voices (
-                    id, engine, name, language, language_name, voice_type,
-                    install_type, preview_url, preview_path, ref_audio_url,
-                    ref_audio_path, ref_text, engine_voice_id, speaker_id,
-                    model_id, short_description, gender, age_style, voice_style,
-                    tags_json, metadata_json, source_base,
-                    installed_path, installed_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    voice_id,
-                    engine,
-                    display_name,
-                    normalized_language,
-                    normalized_language_name,
-                    "Imported reference",
-                    "reference_audio",
-                    str(destination),
-                    str(destination),
-                    "",
-                    str(destination),
-                    ref_text,
-                    "",
-                    "",
-                    "",
-                    short_description.strip(),
-                    gender.strip(),
-                    age_style.strip(),
-                    voice_style.strip(),
-                    json.dumps(normalized_tags, ensure_ascii=False),
-                    json.dumps(metadata, ensure_ascii=False),
-                    "",
-                    str(destination),
-                    now,
-                    now,
-                ),
+        with self._reference_versions(source, destination, ffmpeg_path, minimum, maximum) as (duration_seconds, versions):
+            now = time.strftime("%Y-%m-%dT%H:%M:%S")
+            normalized_language = language.strip() or "reference"
+            normalized_language_name = (
+                language_name.strip()
+                or (normalized_language.title() if normalized_language != "reference" else "Reference")
             )
-        voice = self.get_voice(voice_id)
-        if voice is None:
-            raise VoiceGalleryError("Imported voice could not be saved.")
-        return voice
+            normalized_tags = [
+                str(tag).strip()
+                for tag in (tags or ["imported", engine, "reference"])
+                if str(tag).strip()
+            ]
+            metadata = {
+                "source": "user_import",
+                "original_file": str(source),
+                "normalized_format": (
+                    f"wav pcm_s16le mono {self.REFERENCE_SAMPLE_RATE}hz"
+                ),
+                "duration_seconds": duration_seconds,
+                "duration_min_seconds": minimum,
+                "duration_max_seconds": maximum,
+            }
+            metadata.update(versions)
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO voice_gallery_voices (
+                        id, engine, name, language, language_name, voice_type,
+                        install_type, preview_url, preview_path, ref_audio_url,
+                        ref_audio_path, ref_text, engine_voice_id, speaker_id,
+                        model_id, short_description, gender, age_style, voice_style,
+                        tags_json, metadata_json, source_base,
+                        installed_path, installed_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        voice_id,
+                        engine,
+                        display_name,
+                        normalized_language,
+                        normalized_language_name,
+                        "Imported reference",
+                        "reference_audio",
+                        str(destination),
+                        str(destination),
+                        "",
+                        str(destination),
+                        ref_text,
+                        "",
+                        "",
+                        "",
+                        short_description.strip(),
+                        gender.strip(),
+                        age_style.strip(),
+                        voice_style.strip(),
+                        json.dumps(normalized_tags, ensure_ascii=False),
+                        json.dumps(metadata, ensure_ascii=False),
+                        "",
+                        str(destination),
+                        now,
+                        now,
+                    ),
+                )
+            voice = self.get_voice(voice_id)
+            if voice is None:
+                raise VoiceGalleryError("Imported voice could not be saved.")
+            return voice
 
     def update_reference_voice(
         self,
@@ -701,77 +762,116 @@ class VoiceGalleryManager:
                 raise VoiceGalleryError(f"Reference audio file not found: {source}")
             if source.suffix.lower() not in {".wav", ".mp3"}:
                 raise VoiceGalleryError("Reference audio must be a WAV or MP3 file.")
-            temporary = destination.with_suffix(destination.suffix + ".tmp")
-            duration_seconds = self._normalize_reference_audio(
-                source,
-                temporary,
-                ffmpeg_path,
-                minimum,
-                maximum,
-            )
-            temporary.replace(destination)
-            metadata["original_file"] = str(source)
+        publication = (
+            self._reference_versions(source, destination, ffmpeg_path, minimum, maximum)
+            if source is not None else nullcontext((duration_seconds, {}))
+        )
+        with publication as (duration_seconds, versions):
+            metadata.update(versions)
+            if source is not None:
+                metadata["original_file"] = str(source)
 
-        normalized_language = language.strip() or "reference"
-        normalized_language_name = (
-            language_name.strip()
-            or (
-                normalized_language.title()
-                if normalized_language != "reference"
-                else "Reference"
+            normalized_language = language.strip() or "reference"
+            normalized_language_name = (
+                language_name.strip()
+                or (
+                    normalized_language.title()
+                    if normalized_language != "reference"
+                    else "Reference"
+                )
             )
-        )
-        normalized_tags = [
-            str(tag).strip()
-            for tag in (tags or ["imported", existing.engine, "reference"])
-            if str(tag).strip()
-        ]
-        metadata.update(
-            {
-                "source": "user_import",
-                "normalized_format": (
-                    f"wav pcm_s16le mono {self.REFERENCE_SAMPLE_RATE}hz"
-                ),
-                "duration_seconds": round(duration_seconds, 3),
-                "duration_min_seconds": minimum,
-                "duration_max_seconds": maximum,
-            }
-        )
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE voice_gallery_voices
-                SET name = ?, language = ?, language_name = ?, ref_text = ?,
-                    short_description = ?, gender = ?, age_style = ?,
-                    voice_style = ?, tags_json = ?, metadata_json = ?,
-                    preview_path = ?, ref_audio_path = ?, installed_path = ?,
-                    installed_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    name.strip() or existing.name,
-                    normalized_language,
-                    normalized_language_name,
-                    ref_text.strip(),
-                    short_description.strip(),
-                    gender.strip(),
-                    age_style.strip(),
-                    voice_style.strip(),
-                    json.dumps(normalized_tags, ensure_ascii=False),
-                    json.dumps(metadata, ensure_ascii=False),
-                    str(destination),
-                    str(destination),
-                    str(destination),
-                    now,
-                    now,
-                    voice_id,
-                ),
+            normalized_tags = [
+                str(tag).strip()
+                for tag in (tags or ["imported", existing.engine, "reference"])
+                if str(tag).strip()
+            ]
+            metadata.update(
+                {
+                    "source": "user_import",
+                    "normalized_format": (
+                        f"wav pcm_s16le mono {self.REFERENCE_SAMPLE_RATE}hz"
+                    ),
+                    "duration_seconds": round(duration_seconds, 3),
+                    "duration_min_seconds": minimum,
+                    "duration_max_seconds": maximum,
+                }
             )
-        updated = self.get_voice(voice_id)
-        if updated is None:
-            raise VoiceGalleryError("Updated reference voice could not be loaded.")
-        return updated
+            now = time.strftime("%Y-%m-%dT%H:%M:%S")
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE voice_gallery_voices
+                    SET name = ?, language = ?, language_name = ?, ref_text = ?,
+                        short_description = ?, gender = ?, age_style = ?,
+                        voice_style = ?, tags_json = ?, metadata_json = ?,
+                        preview_path = ?, ref_audio_path = ?, installed_path = ?,
+                        installed_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        name.strip() or existing.name,
+                        normalized_language,
+                        normalized_language_name,
+                        ref_text.strip(),
+                        short_description.strip(),
+                        gender.strip(),
+                        age_style.strip(),
+                        voice_style.strip(),
+                        json.dumps(normalized_tags, ensure_ascii=False),
+                        json.dumps(metadata, ensure_ascii=False),
+                        str(destination),
+                        str(destination),
+                        str(destination),
+                        now,
+                        now,
+                        voice_id,
+                    ),
+                )
+            updated = self.get_voice(voice_id)
+            if updated is None:
+                raise VoiceGalleryError("Updated reference voice could not be loaded.")
+            return updated
+
+    @staticmethod
+    def high_rate_path(path: Path) -> Path:
+        return path.with_name(path.stem + ".48k.wav")
+
+    @contextmanager
+    def _reference_versions(self, source, destination, ffmpeg_path, minimum, maximum):
+        """Publish both rates from the original; roll back files if catalog commit fails."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        targets = {24000: destination, 48000: self.high_rate_path(destination)}
+        with tempfile.TemporaryDirectory(prefix="voice-rates-", dir=destination.parent) as directory:
+            staging = Path(directory)
+            backups = {}
+            published = []
+            try:
+                for rate, target in targets.items():
+                    duration = self._normalize_reference_audio(
+                        source, staging / f"{rate}.wav", ffmpeg_path, minimum, maximum, sample_rate=rate,
+                    )
+                    if target.exists():
+                        backup = staging / f"{rate}.backup.wav"
+                        shutil.copy2(target, backup)
+                        backups[target] = backup
+                hashes = {str(rate): hashlib.sha256((staging / f"{rate}.wav").read_bytes()).hexdigest()
+                          for rate in targets}
+                for rate, target in targets.items():
+                    (staging / f"{rate}.wav").replace(target)
+                    published.append(target)
+                yield duration, {
+                    "audio_versions": {str(rate): target.name for rate, target in targets.items()},
+                    "audio_sha256_by_rate": hashes,
+                    "audio_sha256": hashes["24000"],
+                    "normalized_format": "wav pcm_s16le mono 24000hz",
+                }
+            except BaseException:
+                for target in reversed(published):
+                    if target in backups:
+                        backups[target].replace(target)
+                    else:
+                        target.unlink(missing_ok=True)
+                raise
 
     def _normalize_reference_audio(
         self,
@@ -780,10 +880,11 @@ class VoiceGalleryManager:
         ffmpeg_path: str | Path,
         minimum_seconds: float,
         maximum_seconds: float,
+        sample_rate: int = 24000,
     ) -> float:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._remove_path(destination)
-        if source.suffix.lower() == ".wav" and self._wav_matches_reference_format(source):
+        if source.suffix.lower() == ".wav" and self._wav_matches_reference_format(source, sample_rate):
             shutil.copy2(source, destination)
         else:
             try:
@@ -800,7 +901,7 @@ class VoiceGalleryManager:
                         "-ac",
                         "1",
                         "-ar",
-                        str(self.REFERENCE_SAMPLE_RATE),
+                        str(sample_rate),
                         "-sample_fmt",
                         "s16",
                         "-acodec",
@@ -826,16 +927,16 @@ class VoiceGalleryManager:
         return round(duration, 3)
 
     @classmethod
-    def _wav_matches_reference_format(cls, path: Path) -> bool:
+    def _wav_matches_reference_format(cls, path: Path, sample_rate: int = 24000) -> bool:
         try:
             with wave.open(str(path), "rb") as audio:
                 return (
                     audio.getnchannels() == 1
                     and audio.getsampwidth() == 2
-                    and audio.getframerate() == cls.REFERENCE_SAMPLE_RATE
+                    and audio.getframerate() == sample_rate
                     and audio.getnframes() > 0
                 )
-        except (OSError, wave.Error):
+        except (OSError, EOFError, wave.Error):
             return False
 
     @staticmethod

@@ -42,6 +42,27 @@ def make_dialog(tmp_path, monkeypatch, dialog_class=BreezeVoiceDesignDialog, mod
         write_wav(payload["output_wav"])
         return {"output_wav": payload["output_wav"]}
     client.synthesize_review_segment.side_effect = synthesize
+    from types import SimpleNamespace
+    from app.server.voice_design import VoiceDesignService
+    host = SimpleNamespace(voice_gallery_manager=gallery, settings={},
+                           faster_whisper_manager=Mock(), audiocpp_manager=Mock(), omnivoice_manager=Mock())
+    verifier = Mock()
+    def server_synthesize(text, path, config):
+        verifier.transcribe.return_value = {"text": text}
+        client.synthesize_review_segment({"text": text, "voice_config": config, "output_wav": str(path)})
+    host.synthesize_segment = server_synthesize
+    service = VoiceDesignService(host, lambda _: verifier)
+    drafts = {}
+    def http(method, path, payload=None):
+        if path == "/voices/design/preview":
+            result = service.run({**payload, "name": "Preview", "preview_only": True}, threading.Event())
+            draft_id = str(len(drafts) + 1)
+            drafts[draft_id] = result
+            return {"job_id": draft_id, "status": "complete", "result": result}
+        draft_id = path.split("/")[-2]
+        return service.save_preview(drafts[draft_id], payload["name"],
+                                    labels=payload["labels"], replace_voice_id=payload.get("replace_voice_id"), draft_id=draft_id)
+    client.request_json.side_effect = http
     config = model_config({"model": model_id, "reference_audio_path": "existing.wav",
                            "reference_text": "Existing transcript", "voice": "old", "speed": 2,
                            "_postprocess_speed": 2, "backend": "cuda"})
@@ -85,7 +106,7 @@ def test_design_sample_save_and_reuse_exact_reference(application, tmp_path, mon
     assert len(saved) == 1  # Double-click cannot duplicate an import.
     preview = dialog.preview_path
     dialog.reject()
-    assert not preview.exists() and Path(voice.installed_path).is_file()
+    assert preview.exists() and Path(voice.installed_path).is_file()  # Server owns the preview cache.
     # A fresh service/gallery instance finds the durable sample, not the temp preview.
     service = LocalText2VoiceService(SettingsManager(tmp_path / "settings.json"))
     service.voice_gallery_manager = VoiceGalleryManager(db_path=gallery.db_path, files_root=tmp_path / "voices")
@@ -191,12 +212,12 @@ def test_failure_allows_retry_and_close_waits_for_worker(application, tmp_path, 
     dialog.reject()
 
 
-def test_worker_rejects_invalid_audio_and_foreign_output(tmp_path):
-    for result in ({"output_wav": str(tmp_path / "foreign.wav")}, {"output_wav": str(tmp_path / "sample.wav")}):
-        client = Mock()
-        client.synthesize_review_segment.return_value = result
-        worker = BreezeDesignPreviewWorker(client, "Hello", {}, tmp_path / "sample.wav")
-        outcomes = []
-        worker.completed.connect(lambda path, error: outcomes.append((path, error)))
-        worker.run()
-        assert outcomes[0][0] == "" and outcomes[0][1]
+def test_worker_reports_server_verification_error(tmp_path):
+    client = Mock()
+    client.request_json.return_value = {"job_id": "failed", "status": "failed", "result": {
+        "code": "TRANSCRIPT_MISMATCH", "message": "Transcript differs", "asr_transcript": "wrong words"}}
+    worker = BreezeDesignPreviewWorker(client, "Hello", {"engine": "audiocpp", "language": "en"}, tmp_path / "sample.wav")
+    outcomes = []
+    worker.completed.connect(lambda path, error: outcomes.append((path, error)))
+    worker.run()
+    assert outcomes[0][0] == "" and "wrong words" in outcomes[0][1]

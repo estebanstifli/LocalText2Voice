@@ -7,13 +7,22 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-10-15
+## [3.0.0] - 2026-10-26
 
 Prepared locally for SignPath test signing; not published yet. Includes the
 previously unpublished 2.3.0 preparation below; existing engines remain supported.
 
 ### Added
 
+- Review can switch an individual segment to another installed local engine/model,
+  without changing global defaults. Compatible reference, language and playback
+  controls are retained; incompatible controls are reset with explanatory notices.
+- Headless voice design shared by the desktop and MCP, with `design_voice` and
+  `get_voice` tools, tracked jobs, idempotency keys and structured failures.
+  OmniVoice, Breeze and VoxCPM designs require Whisper small and an exact normalized
+  transcript match before saving; desktop previews are saved without regenerating.
+- Imported/cloned/designed voices store independent 24 kHz and 48 kHz PCM versions
+  with hashes. Breeze/VoxCPM prefer the 48 kHz companion when available.
 - Extend the optional audio.cpp catalog with Breeze TTS 2 Q8 and VoxCPM 2
   in Q8, BF16 and Original precision. Each variant has pinned checksums and
   its own settings; weights remain outside the base installer.
@@ -39,6 +48,12 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 
 ### Changed
 
+- With short-dialogue grouping enabled, dialogue boundaries suppress automatic
+  pauses across voice changes. Explicit `{{pause ...}}` commands always take
+  priority, including leading/trailing pauses and chapter exports.
+- Voice-design verification checks the 48 kHz master on CPU/int8; mismatches do not
+  publish a voice. Missing sample text uses templates only for English, Spanish
+  and Chinese; other languages require explicit text.
 - VoxCPM sends independently directed chunks with a consistent seed and validates
   WAV formats before atomically committing combined output. Breeze defaults to
   600-character chunks, VoxCPM to 400, with editable per-model controls.
@@ -52,6 +67,14 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 
 ### Fixed
 
+- All TTS engines validate WAV output before atomic replacement and retry empty
+  output at most twice using the same engine instance. Cancellation is preserved;
+  truncated/invalid WAV errors do not trigger the empty-audio retry policy.
+- Rebuilding an audiobook rejects empty/invalid segments with an actionable error.
+- Preserve dual-rate reference audio during replacement, roll back failed writes
+  and remove both versions on deletion; existing single-rate references still work.
+- Resolve catalog voice IDs exactly and include newly designed references in the
+  host's per-job audio.cpp voice snapshot for markup switching.
 - Include audio.cpp and all installed compatible references in the markup voice
   menu, even when a voice has never been selected in Settings. Discard stale
   deleted references instead of incorrectly reporting duplicate-name ambiguity.

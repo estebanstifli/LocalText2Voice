@@ -20,6 +20,7 @@ from app.core.audio_pipeline import (
     GenerationCancelled,
 )
 from app.server.ltv_service import LocalText2VoiceService
+from app.server.voice_design import VoiceDesignCancelled
 from app.utils.paths import app_data_root
 
 
@@ -139,12 +140,22 @@ class LocalServerJobManager:
 
     def submit(self, request: dict[str, Any]) -> ServerJob:
         text = str(request.get("text", "")).strip()
-        if not text:
+        if not text and request.get("job_kind") != "voice_design":
             raise ValueError("Text is required.")
         job_id = str(uuid.uuid4())
         now = self._now()
         title = str(request.get("title") or "Audiobook").strip() or "Audiobook"
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            key = request.get("idempotency_key") if request.get("job_kind") == "voice_design" else None
+            if key:
+                row = connection.execute("SELECT job_id FROM voice_design_requests WHERE request_key = ?", (str(key),)).fetchone()
+                if row:
+                    existing = self.get_job(row["job_id"])
+                    if existing is None or json.loads(existing.request_json) != request:
+                        raise ValueError("IDEMPOTENCY_CONFLICT: key already used with different parameters.")
+                    return existing
+                connection.execute("INSERT INTO voice_design_requests VALUES (?, ?)", (str(key), job_id))
             connection.execute(
                 """
                 INSERT INTO server_jobs (
@@ -312,13 +323,17 @@ class LocalServerJobManager:
                 self._cancel_operation(pipeline)
 
         try:
-            result = self.service.generate_audio(
-                request,
-                progress_callback=progress,
-                log_callback=log,
-                on_pipeline=on_pipeline,
-            )
-            if cancel_event.is_set():
+            if request.get("job_kind") == "voice_design":
+                from app.server.voice_design import VoiceDesignService
+                result = VoiceDesignService(self.service).run(request, cancel_event, progress)
+            else:
+                result = self.service.generate_audio(
+                    request,
+                    progress_callback=progress,
+                    log_callback=log,
+                    on_pipeline=on_pipeline,
+                )
+            if cancel_event.is_set() and not result.get("saved"):
                 self._finish_job(job_id, "cancelled", message="Generation cancelled.")
                 return
             self._update_job(
@@ -342,9 +357,11 @@ class LocalServerJobManager:
                 audiobook_id=result.get("audiobook_id"),
                 result_json=json.dumps(result, ensure_ascii=False, default=str),
             )
-        except GenerationCancelled:
+        except (GenerationCancelled, VoiceDesignCancelled):
             self._finish_job(job_id, "cancelled", message="Generation cancelled.")
         except (AudioPipelineError, ValueError, OSError) as exc:
+            if hasattr(exc, "payload"):
+                self._update_job(job_id, result_json=json.dumps(exc.payload, ensure_ascii=False))
             self._finish_job(job_id, "failed", message=str(exc), error_message=str(exc))
         except Exception as exc:  # pragma: no cover - defensive guard for background jobs
             traceback.print_exc()
@@ -424,6 +441,7 @@ class LocalServerJobManager:
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS voice_design_requests (request_key TEXT PRIMARY KEY, job_id TEXT NOT NULL)")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS server_meta (

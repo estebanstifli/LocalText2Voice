@@ -2190,5 +2190,18 @@
   "voice_conflict_overwrite": "Une voix nommée \"{name}\" existe déjà.\nLa remplacer par cet aperçu ? Choisissez Non pour utiliser un autre nom.",
   "voice_conflict_rename": "Le nom \"{name}\" est déjà utilisé. Choisissez un autre nom pour éviter toute ambiguïté.",
   "voice_conflict_save": "Enregistrer la voix",
-  "voice_conflict_name": "Nouveau nom de voix :"
+  "voice_conflict_name": "Nouveau nom de voix :",
+  "segment_engine": "Moteur TTS",
+  "segment_engine_reset": "Les paramètres de génération proviennent du moteur cible. Ce changement ne concerne que ce segment.",
+  "segment_engine_reference": "L’audio de référence et sa transcription sont conservés. La voix peut sonner différemment avec ce moteur.",
+  "segment_engine_choose_reference": "Sélectionnez un audio de référence pour conserver la voix du personnage.",
+  "segment_engine_choose_voice": "Sélectionnez une voix prise en charge par ce moteur.",
+  "segment_engine_emotion_kept": "La description de l’émotion est conservée ; son interprétation dépend du nouveau moteur.",
+  "segment_engine_emotion_removed": "Les anciens contrôles d’émotion ne peuvent pas être transférés. Configurez les contrôles disponibles ci-dessous.",
+  "segment_engine_tags_removed": "Les balises vocales et émotionnelles natives du moteur précédent ont été retirées de ce brouillon.",
+  "segment_engine_language": "Ce modèle ne prend pas en charge la langue choisie ou exige une langue explicite. Choisissez un modèle ou une langue compatible.",
+  "segment_engine_voice_language": "Choisissez une voix dans la langue du segment original.",
+  "segment_engine_missing_reference": "Sélectionnez un fichier audio de référence existant pour cette voix.",
+  "segment_engine_missing_transcript": "Saisissez la transcription exacte de l’audio de référence.",
+  "segment_engine_invalid_wav": "Ce moteur exige une référence WAV PCM non compressée et non vide."
 }

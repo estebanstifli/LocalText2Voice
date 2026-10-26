@@ -145,6 +145,45 @@ def create_http_app(
     ) -> list[dict[str, Any]]:
         return service.list_voices(engine_id, installed_only=installed_only)
 
+    @app.post("/voices/design")
+    async def design_voice(request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        payload.update(job_kind="voice_design", title=str(payload.get("name", "Voice design")))
+        try:
+            job = manager.submit(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _job_response(job, settings_manager, base_url=base_url)
+
+    @app.post("/voices/design/preview")
+    async def preview_voice(request: Request) -> dict[str, Any]:
+        payload = await _json_object(request)
+        payload.update(job_kind="voice_design", preview_only=True, name="Preview", title="Voice preview")
+        return _job_response(manager.submit(payload), settings_manager, base_url=base_url)
+
+    @app.post("/voices/design/previews/{job_id}/save")
+    async def save_voice_preview(job_id: str, request: Request) -> dict[str, Any]:
+        from app.server.voice_design import VoiceDesignService, VoiceDesignError
+        import json
+        payload = await _json_object(request)
+        job = manager.get_job(job_id)
+        if job is None or job.status != "complete":
+            raise HTTPException(status_code=409, detail="Verified preview is not ready.")
+        try:
+            return await run_in_threadpool(VoiceDesignService(service).save_preview,
+                json.loads(job.result_json), payload.get("name", ""),
+                replace_voice_id=payload.get("replace_voice_id"), labels=payload.get("labels"), draft_id=job_id)
+        except VoiceDesignError as exc:
+            raise HTTPException(status_code=409, detail=exc.payload) from exc
+
+    @app.get("/voices/{voice_id}")
+    def get_voice(voice_id: str) -> dict[str, Any]:
+        from app.server.voice_design import VoiceDesignService, VoiceDesignError
+        try:
+            return VoiceDesignService(service).get_voice(voice_id)
+        except VoiceDesignError as exc:
+            raise HTTPException(status_code=404, detail=exc.payload) from exc
+
     @app.get("/background-music")
     def http_list_background_music() -> list[dict[str, Any]]:
         return service.list_background_music()
