@@ -1,6 +1,7 @@
-# Windows installer and future code signing
+# Windows installer and code signing
 
-This document records the current LocalText2Voice Windows installer setup so it can be resumed later when code signing is available.
+This document records the LocalText2Voice Windows installer setup. For local
+Certum signing commands, see [Windows local signing](WINDOWS_LOCAL_SIGNING.md).
 
 ## Current status
 
@@ -15,12 +16,11 @@ This document records the current LocalText2Voice Windows installer setup so it 
   - `.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe`
   - `.util_instalador_y_firmas/output/LocalText2Voice-Setup.exe.sha256`
 
-The installer is not signed yet.
-
-SignPath Foundation onboarding has now started with a test certificate. See
-[SignPath setup](SIGNPATH_SETUP.md) and the [Code signing policy](../CODE_SIGNING.md)
-for the isolated manual CI test workflow. Public releases remain unchanged until
-production signing has been reviewed and approved.
+Local builds can be signed with the maintainer's purchased Certum cloud certificate.
+SimplySign is connected and real application signing has been verified. Complete
+signed packages require their own verification; old installers remain unsigned.
+The former SignPath CI test workflow is retired; public releases remain unchanged.
+See the [code signing policy](../CODE_SIGNING.md).
 
 ## Why the local tooling folder is ignored
 
@@ -258,25 +258,20 @@ Expected config:
 "ui_language": "es"
 ```
 
-## Code signing plan
+## Code signing
 
 The installer is the primary artifact for Windows distribution.
 
-Recommended signing order when a certificate is available:
+The local `-Sign` build uses this order:
 
-1. Sign `dist/LocalText2Voice/LocalText2Voice.exe`.
-2. Build the Inno Setup installer.
-3. Sign `LocalText2Voice-Setup.exe`.
+1. Sign the three project EXEs: GUI, Engine Host and MCP.
+2. Build Inno Setup with signed-uninstaller support and the signing callback.
+3. Normalize the outer installer's metadata before signing it.
+4. Verify every signature, signer and timestamp; then generate checksums.
 
-Signing only the installer is workable for early distribution, but signing both is more professional because the installed EXE still has publisher identity if Windows Defender, SmartScreen, or antivirus inspects it directly.
-
-For open source signing, SignPath Foundation is the preferred future path:
-
-- Public GitHub repository.
-- OSI-approved license.
-- GitHub Actions build.
-- Release artifacts produced by CI.
-- SignPath signing policy.
-- Manual approval of signed releases.
-
-Until the certificate/signing flow is ready, distribute the unsigned installer through GitHub Releases and clearly label it as unsigned.
+Signing requires an active SimplySign session. `.sign/signing.json` is ignored by
+Git; no private key or PIN is stored in the repository. No GitHub Actions build is
+required. A failed signing request aborts the build without unsigned fallback.
+Unsigned builds still work without `-Sign` and must be clearly identified as such.
+The old SignPath configuration is retained only in Git history and
+[historical notes](SIGNPATH_SETUP.md).

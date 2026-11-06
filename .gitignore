@@ -5,6 +5,7 @@ __pycache__/
 .venv-kokoro/
 .venv-chatterbox/
 .util_instalador_y_firmas/
+.sign/
 venv/
 build/
 dist/

@@ -62,8 +62,9 @@ The workflow is designed for long projects: import or write a script, generate n
   Export to a project-relative folder or a fixed absolute location.
 - **More reliable long projects:** safer WAV replacement, fewer Windows playback
   file locks, background cache statistics and smoother project loading/highlighting.
-- **Signing preparation:** SignPath test signing has been validated. Production
-  signing is still pending; a test certificate is not a trusted release certificate.
+- **Signed Windows distribution:** the 3.0.0 installer, uninstaller, application,
+  Engine Host and MCP executable carry verified production Certum signatures with
+  SHA-256 and RFC 3161 timestamps. Publisher: **ESTEBAN GARCIA PEREZ**.
 
 See the [3.0.0 release notes](docs/releases/v3.0.0.md),
 [audio.cpp guide](docs/AUDIOCPP.md) and [full changelog](CHANGELOG.md).
@@ -570,7 +571,7 @@ The Windows installer is the recommended distribution artifact. Downloadable mod
 
 Installed Windows builds check the latest stable GitHub Release at most once every 24 hours. You can also run a check at any time from **Help > Check for updates**. Before an installer can be opened, both `LocalText2Voice-Setup.exe` and `LocalText2Voice-Setup.exe.sha256` are downloaded and the SHA-256 checksum must match.
 
-Code-signing note: the production certificate is still pending. Version 3.0.0 is being prepared for the separate **SignPath test-signing workflow**, not represented as production-signed. A self-signed test certificate does not provide public Windows trust; do not install it as a trusted root on user machines. Download public builds only from the official releases. See [Windows installer and future code signing](docs/WINDOWS_INSTALLER_AND_SIGNING.md).
+Code-signing note: the 3.0.0 Windows installer and project executables are signed with the maintainer's production Certum certificate, using SHA-256 and RFC 3161 timestamps. Publisher: **ESTEBAN GARCIA PEREZ**. Existing unsigned packages have not been retroactively signed, and a valid signature does not guarantee the absence of SmartScreen/antivirus warnings. The old SignPath test workflow is retired. Download public builds only from the official releases. See [local Windows signing](docs/WINDOWS_LOCAL_SIGNING.md).
 
 ## Quick Start On Linux
 
@@ -1020,9 +1021,9 @@ Third-party engines, models, voices, FFmpeg, Qt/PySide6, music files, and API pr
 
 ## Code signing policy
 
-SignPath Foundation onboarding is in progress using a test certificate.
-See our [Code signing policy](CODE_SIGNING.md). Test-signed CI artifacts are not
-public releases; existing installers have not been retroactively signed.
+Windows signing uses Certum SimplySign and Microsoft SignTool locally. See our
+[Code signing policy](CODE_SIGNING.md). Each signed package requires verification;
+existing unsigned installers have not been retroactively signed.
 
 ## Automatic voice design (MCP and desktop)
 

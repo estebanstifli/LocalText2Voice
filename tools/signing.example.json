@@ -1,0 +1,6 @@
+{
+  "thumbprint": "REPLACE_WITH_CERTIFICATE_SHA1_THUMBPRINT",
+  "store": "CurrentUser",
+  "timestamp_url": "http://time.certum.pl",
+  "signtool_path": ""
+}

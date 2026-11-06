@@ -7,10 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-10-26
+## [3.0.0] - 2026-11-06
 
-Prepared locally for SignPath test signing; not published yet. Includes the
-previously unpublished 2.3.0 preparation below; existing engines remain supported.
+Includes the previously unpublished 2.3.0 preparation below; existing engines
+remain supported. The Windows installer and project executables are now signed
+with the maintainer's production Certum certificate.
 
 ### Added
 
@@ -102,8 +103,13 @@ previously unpublished 2.3.0 preparation below; existing engines remain supporte
 - No audio.cpp runtime, GGUF weights or extra PyTorch environment in the base
   installer. Model licenses are separate from the application's license.
 - Retain Windows ICU contamination checks and exact installer metadata checks.
-- Production certificate pending. Local 3.0.0 builds are inputs for the separate
-  SignPath test-signing workflow, not production-signed release artifacts.
+- Replace the SignPath test-only CI integration with local Certum signing for
+  the three application EXEs, Inno uninstaller and installer. All five signatures
+  are verified with SHA-256 and RFC 3161 timestamps; failed signing aborts the build.
+- Isolate the Inno signing callback from inherited PowerShell module paths and
+  retain a verified copy of the signed uninstaller plus signing/checksum evidence.
+- Earlier unsigned releases remain unchanged. A valid production signature does
+  not guarantee SmartScreen reputation or antivirus results.
 - Temporary-assets service source supports validated 3–15 second mono PCM WAV
   uploads in addition to PNG. This local preparation does not deploy that service.
 
@@ -127,8 +133,8 @@ Unpublished local preparation, incorporated into 3.0.0.
   `exports` relative to their project; existing external output paths are retained.
 - Added a manual, test-only SignPath CI workflow with pinned build tools, exact
   product/version restrictions, Windows signature verification and a silent
-  installer test. Production signing remains pending; public releases are not
-  retroactively signed and test certificates are not for end-user trust.
+  installer test. This development-only workflow was retired in 3.0.0 in favor of
+  production Certum signing; test certificates are not for end-user trust.
 
 ### Changed
 
@@ -729,7 +735,9 @@ Unpublished local preparation, incorporated into 3.0.0.
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.2.0...v3.0.0
+[2.3.0]: https://github.com/estebanstifli/LocalText2Voice/blob/v3.0.0/docs/releases/v2.3.0.md
 [2.2.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.0...v2.1.1

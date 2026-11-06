@@ -1,47 +1,43 @@
 # Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by
-[SignPath Foundation](https://signpath.org).
-
 ## Current status
 
-The project has been accepted into the SignPath Foundation program. Application
-and installer signing have been validated with a **self-signed test certificate**,
-including Windows signature verification and a CI installation smoke test.
-Production certificate issuance is pending SignPath's review. Previously published releases
-remain unsigned; this page does not claim that they have been signed retroactively.
-Test-signed files are CI artifacts, not public releases, and must not be distributed
-as trusted Windows installers. Do not install the test certificate as a trusted
-root on user machines.
+The maintainer uses a purchased Certum Code Signing certificate through SimplySign
+Desktop and Microsoft SignTool. The private key remains with the cloud provider;
+a public .cer/.pem file alone cannot sign. Local production signing is available.
+Every candidate must pass signature and package verification before publication.
+Existing releases have not been retroactively signed. Check each release's status.
 
-Version 3.0.0 is being prepared for **test signing** while the production
-certificate is pending. Local builds are unsigned inputs, not signed artifacts.
-The configured test workflow builds on GitHub Actions and requests SignPath's
-test policy; it does not publish a release. Test signing is not production trust.
+The 3.0.0 Windows installer, uninstaller, GUI, Engine Host and MCP executable have
+verified production signatures. The certificate publisher is ESTEBAN GARCIA PEREZ.
+
+The former SignPath Foundation test integration is retired. No GitHub Actions or
+SignPath approval is required by the new local workflow. Historical test artifacts
+must not be distributed as production-signed installers or trusted on user PCs.
 
 ## Responsibilities
 
-- Committer and reviewer: [Esteban](https://github.com/estebanstifli).
-- Signing approver: [Esteban](https://github.com/estebanstifli).
-- CI submitter: the dedicated SignPath **CI builds** user, limited to the relevant
-  signing policies; its token is stored in GitHub Actions secrets.
-
-Maintainers must use multi-factor authentication for GitHub and SignPath. External
-contributions and changes to build/signing workflows require maintainer review.
-Production signing requires explicit approval by the designated approver.
+- Committer, reviewer and signing approver: [Esteban](https://github.com/estebanstifli).
+- Publisher identity is the legal name on the purchased certificate.
+- Maintainer review is required for release inputs and changes to signing scripts.
+- Use MFA for the provider and GitHub. Never commit certificates, keys, PINs, tokens
+  or personal signing configuration; `.sign/` is excluded from Git and packaging.
 
 ## Build and signing scope
 
-Signing candidates must be built from this repository on GitHub-hosted runners.
-We sign only our own application, EngineHost and MCP executables and the installer;
-third-party runtimes and libraries retain their original signatures and licenses.
-Artifact configurations restrict filenames, product name and product version.
-Installers are packaged after application signing; checksums are generated after
-the final signature. Production publishing must verify signatures and must not
-fall back silently to an unsigned or test-signed package.
+Build a clean candidate locally from reviewed sources. Sign only the project's
+three EXEs (application, Engine Host and MCP), then the Inno uninstaller and Setup.
+Third-party executables retain their own signatures and licenses.
 
-See [SignPath setup](docs/SIGNPATH_SETUP.md) for the current test workflow and the
-remaining production requirements, including Inno Setup uninstaller signing.
+Use SHA-256 and RFC 3161 timestamping. Verify Windows Authenticode trust, the exact
+configured signer and the timestamp. Normalize installer metadata before signing;
+never alter signed binaries. Calculate checksums only after verification. A failed
+signature or missing timestamp aborts the signed build, with no unsigned fallback.
+Signing does not publish releases. Publication requires a separate review and
+explicit approval; signatures do not guarantee SmartScreen reputation or AV results.
+
+See [local Windows signing](docs/WINDOWS_LOCAL_SIGNING.md) for setup, commands and
+verification limits, and [retired SignPath notes](docs/SIGNPATH_SETUP.md) for history.
 
 ## Privacy and network activity
 

@@ -12,7 +12,9 @@
 #ifndef UserDataDir
   #define UserDataDir "{localappdata}\LocalText2Voice"
 #endif
-#define OutputDir "..\.util_instalador_y_firmas\output"
+#ifndef OutputDir
+  #define OutputDir "..\.util_instalador_y_firmas\output"
+#endif
 
 [Setup]
 AppId={{B05DB7EE-3D2B-4E5D-9F4B-A0A7DE187C4F}
@@ -42,6 +44,11 @@ VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=LocalText2Voice installer
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
+#ifdef SignedBuild
+SignTool=ltv
+SignedUninstaller=yes
+SignedUninstallerDir={#SignedUninstallerDir}
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
