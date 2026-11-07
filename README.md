@@ -203,93 +203,6 @@ isolated dependencies, including PyTorch runtimes, are downloaded on demand.
 Generated projects and exported audio require additional space beyond the
 figures above.
 
-## What's New In 2.1.2
-
-- Automate the complete Video Storyboard workflow through local MCP: 57 new
-  storyboard tools, 76 tools in total, from timed narration and scene editing
-  to reference images, clips and the final MP4. The desktop UI can stay closed.
-- Review generated candidates and resume visual jobs with persistent results,
-  cancellation, retries and safeguards against concurrent project edits.
-- Export large audiobooks more efficiently by batching project snapshots and
-  pause updates while keeping each generated segment saved in SQLite.
-- See the actual generation/export phase and its progress, instead of an
-  apparently stuck 99% encoding message. Addresses
-  [issue #27](https://github.com/estebanstifli/LocalText2Voice/issues/27).
-- MCP now uses **stdio only**; the internal HTTP API continues to connect the
-  app and EngineHost. See the [MCP storyboard guide](docs/MCP_STORYBOARD.md).
-
-## What's New In 2.1.1
-
-- Import or edit a complete timed storyboard from TXT, SRT or VTT prompts,
-  validate the timeline, preserve unchanged media, and undo or redo the edit.
-- Make long-form analysis safer with source-passage validation, reliable handling
-  of repeated dialogue, visible timing provenance and resumable analysis.
-- Resume interrupted visual work without regenerating already saved prompts or
-  media when the source and settings still match.
-- Configure cancellable retry budgets for temporary Ollama and LiteLLM failures.
-- Choose quality for supported image models and use a dedicated render dialog
-  with progress, cancellation and CPU-thread controls.
-- Improve local TTS chunking and optionally keep consecutive short dialogue
-  turns together so voices, pauses and line breaks feel more natural.
-
-## What's New In 2.1.0
-
-- Expand Video Storyboard from a narration visualizer into a broader long-form
-  video workflow for documentaries, films, educational videos and animation.
-- Add structured storyboard analysis for scenes, characters, locations, eras and
-  important objects, including reviewable context and appearance states.
-- Add persistent visual references, richer prompt construction, image editing,
-  scene continuity improvements, batch image/video generation, cancellation and
-  recovery for long-running provider jobs.
-- Add direct video provider integrations for Alibaba Cloud Wan, LTX and
-  BytePlus Seedance, while retaining ComfyUI, Runpod and LiteLLM routes.
-- Add shared async job handling, provider capability validation, media fitting,
-  audio preservation and clearer diagnostics for video generation failures.
-- Fix a Qwen3 TTS runtime compatibility path by registering its Transformers
-  architecture before model loading, retrying safely with the official loader
-  when the accelerated loader cannot recognize the model, and logging package
-  versions and runtime paths.
-- Refresh Video Storyboard settings, dialogs, transitions, scene controls and
-  localization strings, with focused regression tests for the new workflow.
-
-## What's New In 2.0.2
-
-- Fixed a Windows startup issue caused by an incompatible Poppler ICU DLL being
-  picked up by Qt during the v2.0.1 build.
-- Hardened the Windows packaging pipeline with isolated DLL search paths and a
-  bundle validation check.
-- Upgrading from v2.0.1 removes the conflicting ICU files without deleting
-  settings, projects, downloaded models or generated audio.
-
-## What's New In 2.0.1
-
-- Import DRM-free EPUB 2/3 books in reading order, preserve book metadata and
-  cover art, and export structured M4B audiobooks.
-- Add the Video Storyboard beta: analyze narration, discover characters and
-  locations, generate or import images, create video clips, edit the timeline,
-  and render an MP4 with the audiobook audio.
-- Use 50 built-in visual styles, customizable prompts, scene review, continuity
-  profiles, image editing, ComfyUI workflows and optional Runpod providers.
-- Keep long-form projects portable with atomic storyboard persistence, project
-  media references, temporary storage controls and resumable workflows.
-- Reuse the persistent Engine Host when regenerating Review segments and fix
-  Qwen voice selection from the Voice Library.
-- Add LiteLLM-compatible analysis, optional Pillow image handling and S3/R2
-  compatible temporary reference storage.
-
-## What's New In 1.5.1
-
-- Keep non-looping background music from extending the final mix beyond the
-  narration and configured music tail.
-- Name rendered mixes from the audiobook project, with filesystem-safe names
-  and automatic numbering that prevents overwrites.
-- Match exact voice IDs and names before generic tags, avoiding ambiguous
-  selections such as a voice tagged `teacher` winning over the voice named
-  `Teacher`.
-- Use Hindi or enter any language name or ISO code supported by OmniVoice.
-- Start with one more bundled ambient track: `To the gates of Eleusis` by
-  SamuelFJohanns.
-
 See the complete release history in the [changelog](CHANGELOG.md).
 
 > **Resumen en español:** LocalText2Voice es una aplicación gratuita y open source para convertir libros, cursos y textos largos en audiolibros o podcasts M4B, MP3, M4A, Opus, FLAC u OGG usando IA de voz. Puede funcionar 100% local/offline con modelos descargables, sin suscripciones ni enviar tus textos a la nube. Las APIs externas son opcionales.
@@ -362,6 +275,10 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | OmniVoice | Local GPU/CPU | Multilingual zero-shot TTS with voice design and cloning | Downloaded on demand; pretrained model is CC-BY-NC |
 | IndexTTS-2.5 | Optional local GPU/CPU | Voice cloning with text, audio and vector emotion controls | CUDA/BF16 recommended; [setup and model license](docs/INDEXTTS_2_5.md) |
 | F5-TTS Russian | Optional local GPU/CPU | Russian voice cloning with automatic stress marks | F5TTS_v1_Base_v2; **non-commercial only (CC BY-NC 4.0)** |
+| Higgs Audio v3 TTS 4B (audio.cpp) | Optional local CPU/CUDA/Vulkan | Reference-voice cloning with native emotion, style and prosody tags | Q8 GGUF; reference audio required; [model and license](https://huggingface.co/bosonai/higgs-tts-3-4b) |
+| Fish Audio S2 Pro (audio.cpp) | Optional local CPU/CUDA/Vulkan | Expressive narration with optional voice cloning and native vocal tags | Q8 GGUF; [model and license](https://huggingface.co/fishaudio/s2-pro); Built with Fish Audio |
+| Breeze TTS 2 (audio.cpp) | Optional local CPU/CUDA/Vulkan | English/Chinese voice design and cloning with emotion instructions | Q8 GGUF; cloning requires a reference WAV and exact transcript; [model and license](https://huggingface.co/BreezeBlue/Breeze-TTS-2) |
+| VoxCPM 2 (audio.cpp) | Optional local CPU/CUDA/Vulkan | Multilingual voice design and controllable speaker-reference cloning | Q8, BF16 and Original GGUF; [model and license](https://huggingface.co/openbmb/VoxCPM2) |
 | OpenAI TTS | Cloud API | High-quality remote TTS | Optional API key |
 | ElevenLabs | Cloud API | Commercial voices and voice design workflows | Optional API key |
 | Google Gemini TTS | Cloud API | Gemini voices and style prompts | Optional API key |
@@ -369,6 +286,11 @@ LocalText2Voice supports multiple voice generation engines through a modular TTS
 | Custom HTTP TTS | Local or remote HTTP | Connect private servers such as local TTS APIs | URL, headers, body template, and response format are configurable |
 
 The base app stays lightweight. Heavy models and isolated Python dependencies are installed on demand into local application storage.
+
+The audio.cpp models share a native runtime, with CPU, CUDA and Vulkan packages
+available on Windows. Runtime and GGUF downloads are optional and managed from
+**Settings > TTS Engines**. See the [audio.cpp guide](docs/AUDIOCPP.md) for setup,
+reference-voice requirements, platform limits and each model's license terms.
 
 F5-TTS Russian is never included in the base installation. When the user accepts
 its non-commercial license and installs the engine, LocalText2Voice creates a
@@ -986,6 +908,10 @@ Special thanks also to
 [Eugene Schelakov](https://www.youtube.com/@AyiTheDeer) for his help with the
 Russian localization of the LocalText2Voice user interface and for creating a
 detailed video about the project for the Russian-speaking community.
+
+Special thanks to [audio.cpp](https://github.com/0xShug0/audio.cpp) and its
+contributors for the shared native runtime that powers our Higgs Audio v3,
+Fish Audio S2 Pro, Breeze TTS 2 and VoxCPM 2 integration.
 
 ## TTS Engine And Model Credits
 
