@@ -66,17 +66,21 @@ has the same strength or reliability in every language.
 
 ## Storage and platform limits
 
-Runtime v0.9.1 and the model revision are pinned in `audiocpp_assets.py` and
+Runtime v0.9.5 and the model revision are pinned in `audiocpp_assets.py` and
 `audiocpp_config.py`. Downloaded packages and GGUFs are SHA-256 verified. Failed
 downloads retain resumable `.part` files when possible. Verified files are reused.
+
+After upgrading from an older audio.cpp runtime, use **Install** for the model
+in Settings to fetch the new runtime. Existing valid GGUF weights are checked
+and reused; the versioned runtime directory is separate from the model files.
 
 Files live in `data/audiocpp/{runtime,models,downloads}` under the configured AI
 storage root, not in the source tree. Removing a model keeps the shared runtime,
 other models and download cache. Unload it before changing installed files.
 
-Windows runtime downloads: CPU 26.95 MB, Vulkan 61.73 MB, CUDA 1.07 GB (two ZIPs).
-The measured CUDA runtime expands to 2.08 GB. Higgs and Fish plus CUDA and retained
-download ZIPs occupy about 14.56 GB. Figures use decimal units and are not RAM/VRAM
+Windows v0.9.5 runtime downloads: CPU 33.66 MB, Vulkan 85.46 MB, CUDA 1.08 GB (two ZIPs).
+Allow additional space for extraction and retained download archives.
+Figures use decimal units and are not RAM/VRAM
 requirements. None of these optional assets are bundled in the base installer.
 
 Linux CPU/Vulkan and macOS CPU/Metal packages are mapped, but real distribution
@@ -87,7 +91,7 @@ or performance on every GPU. No GPU driver is installed by LocalText2Voice.
 ## MCP
 
 Existing tools support `engine_id="audiocpp"`, `model`, `backend`, reference WAV and
-transcript. `list_engines` exposes all six packages and licenses; `engine_memory` reports
+transcript. `list_engines` exposes all packages and licenses; `engine_memory` reports
 the loaded model/backend. Installation is performed through desktop settings.
 
 ```json
@@ -113,14 +117,14 @@ Model terms are independent of the application/runtime license. Read the actual
 installation/use. Quantization does not remove those conditions. Upstream legal
 notices are retained, including "Built with Fish Audio".
 
-The 3.0.0 preparation is local and unsigned while the production signing
-certificate is pending. It must not ask users to trust the test certificate.
+Windows releases from 3.0.0 use the maintainer's production Certum certificate.
+No test certificate needs to be installed. See the [signing policy](../CODE_SIGNING.md).
 
 ## Breeze instructions and vocal events
 
 Breeze supports **English and Chinese**, with reference-free voice design or
 reference-guided voice cloning/direction. Spanish is not a declared language.
-Its Q8 weights use the existing v0.9.1 runtime and pinned, SHA-256 checked downloads.
+Its Q8 weights use the existing v0.9.5 runtime and pinned, SHA-256 checked downloads.
 The [BreezeBlue model license](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE)
 limits weights and self-hosted outputs to research and non-commercial use.
 
@@ -144,7 +148,7 @@ model; reference voices are shared. Seed -1 generates a random request seed.
 MCP `create_audiobook` and `generate_audio` accept `instruction` alongside
 `model="breeze_tts_2_q8_0"` and optional reference audio/transcript.
 
-See [audio.cpp's pinned model guide](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/models/breeze_tts.md)
+See [audio.cpp's pinned model guide](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/docs/models/breeze_tts.md)
 and the [official Breeze repository](https://github.com/breezeblue-ai/breeze-tts).
 Integration tests cover simulated downloads/runtime reuse, HTTP payloads, UI,
 markup, normalization and Review persistence/regeneration. Actual Q8 audio
@@ -168,7 +172,7 @@ renaming does not. Closing removes temporary previews, not saved voices.
 
 ## VoxCPM 2 Q8
 
-The fourth optional row uses the same pinned v0.9.1 runtime and a SHA-256 verified
+The fourth optional row uses the same pinned v0.9.5 runtime and a SHA-256 verified
 2.96 GB GGUF. VoxCPM 2 provides 30 languages including Spanish, 48 kHz output,
 natural-language voice design and speaker-reference cloning under Apache-2.0.
 Download size is not a RAM/VRAM or speed benchmark.
@@ -205,7 +209,7 @@ Transport, chunking, persistence and UI have automated coverage with a simulated
 native process. Real Q8 audio quality/performance still needs a local inference test.
 See the [complete Spanish analysis](AUDIOCPP.es.md#voxcpm-2-q8-análisis-e-integración)
 and primary sources: [OpenBMB](https://github.com/OpenBMB/VoxCPM),
-[audio.cpp contract](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/model_specs/voxcpm2.json).
+[audio.cpp contract](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/model_specs/voxcpm2.json).
 
 
 ### VoxCPM 2 precision comparison

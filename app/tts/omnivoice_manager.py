@@ -17,6 +17,7 @@ from app.utils.gpu_detection import (
     gpu_runtime_environment,
 )
 from app.utils.paths import engine_dependencies_root, models_root
+from app.utils.huggingface_auth import huggingface_runtime_environment
 
 from .install_logging import (
     ProcessOutputCallback,
@@ -606,7 +607,7 @@ class OmniVoiceManager:
         return [str(self.python_runtime.python_exe), str(self.cli_path)]
 
     def runtime_environment(self) -> dict[str, str]:
-        env = gpu_runtime_environment()
+        env = huggingface_runtime_environment(gpu_runtime_environment())
         env["PYTHONUTF8"] = "1"
         env["PYTHONPATH"] = str(self.dependency_dir)
         env["HF_HOME"] = str(self.cache_dir)

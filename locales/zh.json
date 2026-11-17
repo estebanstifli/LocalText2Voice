@@ -2203,5 +2203,11 @@
   "segment_engine_voice_language": "请选择与原片段语言一致的声音。",
   "segment_engine_missing_reference": "请为此声音选择现有的参考音频文件。",
   "segment_engine_missing_transcript": "请输入参考音频的准确转录文本。",
-  "segment_engine_invalid_wav": "此引擎要求非空的未压缩 PCM WAV 参考音频。"
+  "segment_engine_invalid_wav": "此引擎要求非空的未压缩 PCM WAV 参考音频。",
+  "generation_existing_audio": "此项目已有音频",
+  "generation_existing_audio_message": "继续生成会复用文本、声音和设置仍然匹配的有效片段，并生成待处理、失败或已修改的片段。如果所有片段均匹配，音频已准备就绪，只需重新导出。\n\n全部重新生成会再次生成每个片段。在替换成功之前，将保留原有音频。",
+  "generation_continue": "继续生成",
+  "generation_regenerate_all": "全部重新生成",
+  "hf_token_label": "访问令牌（可选）",
+  "hf_token_help": "使用只读令牌下载 Hugging Face 模型。令牌保存在本地 config.json 中，并应用于新的下载进程。留空则使用 HF_TOKEN 或引擎缓存文件夹中已有的 Hugging Face 登录信息。"
 }

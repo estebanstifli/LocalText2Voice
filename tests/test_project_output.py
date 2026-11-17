@@ -32,6 +32,87 @@ def test_default_and_legacy_output_preferences(tmp_path):
     assert SettingsManager(config).settings["output_dir"] == "audio/final"
 
 
+@pytest.mark.parametrize("save_values", [False, True])
+def test_legacy_project_output_can_wait_for_context_across_save_and_reload(tmp_path, save_values):
+    config = tmp_path / "config.json"
+    old_output = str(tmp_path / "ProjectA" / "exports")
+    config.write_text(json.dumps({"current_project_id": 1, "output_dir": old_output}))
+    manager = SettingsManager(config)
+    assert "output_dir_mode" not in manager.settings
+    manager.settings["ui_theme"] = "dark"
+    manager.save(dict(manager.settings) if save_values else None)
+    reloaded = SettingsManager(config).settings
+    assert reloaded["ui_theme"] == "dark"
+    assert "output_dir_mode" not in reloaded
+    assert output_preferences(reloaded, tmp_path / "ProjectA") == {
+        "output_dir_mode": "relative", "output_dir": "exports",
+    }
+
+
+@pytest.mark.parametrize("case", [
+    "legacy_internal", "legacy_nested", "legacy_external", "explicit_absolute",
+    "explicit_relative", "already_migrated_absolute", "missing_project",
+])
+def test_upgrade_startup_then_new_project_uses_correct_output(tmp_path, monkeypatch, case):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setenv("LOCALTEXT2VOICE_ASSETS_BASE_DIR", str(tmp_path / "assets"))
+    store = AudiobookStore(tmp_path / "books.sqlite3")
+    project_a, project_b = tmp_path / "ProjectA", tmp_path / "ProjectB"
+    old_output = project_a / ("audio/final" if case == "legacy_nested" else "exports")
+    book = store.create_audiobook("Existing source", {}, old_output,
+                                 "safe_chunks", "single", "ProjectA", {}, project_a)
+    raw = {"current_project_id": book.id, "output_dir": str(old_output),
+           "save_next_to_source": False}
+    expected_mode, expected_value = "relative", "audio/final" if case == "legacy_nested" else "exports"
+    if case == "legacy_external":
+        raw["output_dir"] = str(tmp_path / "External")
+        expected_mode, expected_value = "absolute", raw["output_dir"]
+    elif case in {"explicit_absolute", "already_migrated_absolute", "missing_project"}:
+        expected_mode, expected_value = "absolute", str(old_output)
+        if case == "missing_project":
+            raw["current_project_id"] = book.id + 999
+        else:
+            raw["output_dir_mode"] = "absolute"
+            raw["settings_schema_version"] = 33 if case == "already_migrated_absolute" else 32
+    elif case == "explicit_relative":
+        raw.update(output_dir_mode="relative", output_dir="audio/new")
+        expected_value = "audio/new"
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(raw), encoding="utf-8")
+    manager = SettingsManager(config)
+    with (
+        patch("app.ui.main_window.SettingsManager", return_value=manager),
+        patch("app.ui.main_window.AudiobookStore", return_value=store),
+        patch("app.ui.main_window.BulkAudiobookStore", return_value=BulkAudiobookStore(tmp_path / "bulk.sqlite3")),
+        patch.object(MainWindow, "_migrate_legacy_duplicate_asset_root"),
+        patch.object(MainWindow, "_maybe_check_for_updates"),
+        patch.object(MainWindow, "_sync_engine_host_memory_state"),
+        patch.object(MainWindow, "_refresh_local_server_status"),
+        patch.object(MainWindow, "_automatic_project_location", return_value=("ProjectB", project_b)),
+        patch.object(MainWindow, "_show_error") as error,
+    ):
+        window = MainWindow()
+        try:
+            assert window.output_mode_combo.currentData() == expected_mode
+            assert window.output_picker.path() == Path(expected_value)
+            if case != "missing_project":
+                assert window.current_audiobook_id == book.id
+                assert window.text_editor.toPlainText() == "Existing source"
+            window._create_new_project()
+            created = store.get_audiobook(window.current_audiobook_id)
+            assert created.project_dir == project_b
+            assert created.output_dir == (project_b / expected_value if expected_mode == "relative" else Path(expected_value))
+            assert store.get_audiobook(book.id).source_text == "Existing source"
+            assert store.get_audiobook(book.id).output_dir == old_output
+            persisted = SettingsManager(config).settings
+            assert persisted["output_dir_mode"] == expected_mode
+            assert persisted["output_dir"] == expected_value
+            error.assert_not_called()
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 @pytest.mark.parametrize("mode,value", [("relative", "../outside"), ("absolute", "exports"), ("relative", "C:/absolute" if os.name == "nt" else "/absolute")])
 def test_invalid_mode_and_path_combinations_are_rejected(tmp_path, mode, value):
     with pytest.raises(ValueError):

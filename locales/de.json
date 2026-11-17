@@ -2203,5 +2203,11 @@
   "segment_engine_voice_language": "Wählen Sie eine Stimme in der ursprünglichen Segmentsprache.",
   "segment_engine_missing_reference": "Wählen Sie eine vorhandene Referenzaudiodatei für diese Stimme.",
   "segment_engine_missing_transcript": "Geben Sie das genaue Transkript des Referenzaudios ein.",
-  "segment_engine_invalid_wav": "Diese Engine benötigt eine nicht leere, unkomprimierte PCM-WAV-Referenz."
+  "segment_engine_invalid_wav": "Diese Engine benötigt eine nicht leere, unkomprimierte PCM-WAV-Referenz.",
+  "generation_existing_audio": "Dieses Projekt enthält bereits Audio",
+  "generation_existing_audio_message": "Generierung fortsetzen verwendet gültige Segmente wieder, deren Text, Stimme und Einstellungen weiterhin übereinstimmen, und erzeugt ausstehende, fehlgeschlagene oder geänderte Segmente. Wenn alles übereinstimmt, ist das Audio bereits fertig und nur der Export wird neu erstellt.\n\nAlles neu generieren erzeugt jedes Segment erneut. Das bisherige Audio bleibt erhalten, bis der Ersatz erfolgreich erstellt wurde.",
+  "generation_continue": "Generierung fortsetzen",
+  "generation_regenerate_all": "Alles neu generieren",
+  "hf_token_label": "Zugriffstoken (optional)",
+  "hf_token_help": "Verwenden Sie ein Lesetoken für Modelldownloads von Hugging Face. Es wird lokal in config.json gespeichert und gilt für neue Downloadprozesse. Leer lassen, um HF_TOKEN oder eine vorhandene Hugging-Face-Anmeldung im Cache-Ordner der Engine zu verwenden."
 }

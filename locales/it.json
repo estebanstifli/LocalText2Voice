@@ -2203,5 +2203,11 @@
   "segment_engine_voice_language": "Scegli una voce nella lingua originale del segmento.",
   "segment_engine_missing_reference": "Seleziona un file audio di riferimento esistente per questa voce.",
   "segment_engine_missing_transcript": "Inserisci la trascrizione esatta dell’audio di riferimento.",
-  "segment_engine_invalid_wav": "Questo motore richiede un riferimento WAV PCM non compresso e non vuoto."
+  "segment_engine_invalid_wav": "Questo motore richiede un riferimento WAV PCM non compresso e non vuoto.",
+  "generation_existing_audio": "Questo progetto contiene già audio",
+  "generation_existing_audio_message": "Continua generazione riutilizza i segmenti validi il cui testo, voce e impostazioni corrispondono ancora, e genera quelli in attesa, non riusciti o modificati. Se tutto corrisponde, l’audio è pronto e viene ricreata solo l’esportazione.\n\nRigenera tutto genera nuovamente ogni segmento. L’audio precedente viene mantenuto finché la sostituzione non riesce.",
+  "generation_continue": "Continua generazione",
+  "generation_regenerate_all": "Rigenera tutto",
+  "hf_token_label": "Token di accesso (facoltativo)",
+  "hf_token_help": "Usa un token di lettura per scaricare modelli da Hugging Face. Viene salvato localmente in config.json e applicato ai nuovi processi di download. Lascia vuoto per usare HF_TOKEN o un accesso Hugging Face già presente nella cartella cache del motore."
 }

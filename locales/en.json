@@ -1,4 +1,10 @@
 {
+  "generation_existing_audio": "This project already has audio",
+  "generation_existing_audio_message": "Continue generation reuses valid segments whose text, voice and settings still match, and generates pending, failed or changed segments. If everything already matches, the audio is ready and only the export is rebuilt.\n\nRegenerate all generates every segment again. Previous audio is kept until its replacement succeeds.",
+  "generation_continue": "Continue generation",
+  "generation_regenerate_all": "Regenerate all",
+  "hf_token_label": "Access token (optional)",
+  "hf_token_help": "Use a read token for Hugging Face model downloads. Saved locally in config.json; applies to new download processes. Leave empty to use HF_TOKEN or an existing Hugging Face login in the engine's cache folder.",
   "segment_engine": "TTS engine",
   "segment_engine_reset": "Generation parameters use the destination engine settings. This change affects only this segment.",
   "segment_engine_reference": "The reference audio and transcript are retained. The voice may sound different with this engine.",

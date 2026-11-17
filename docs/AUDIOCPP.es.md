@@ -60,8 +60,11 @@ esas plataformas aún requieren una prueba real de distribución e inferencia.
 
 ## Descargas y almacenamiento
 
-- Runtime fijado a audio.cpp **v0.9.1**, desde sus releases de GitHub. En Windows,
+- Runtime fijado a audio.cpp **v0.9.5**, desde sus releases de GitHub. En Windows,
   CUDA descarga tanto los binarios como el paquete separado de dependencias CUDA.
+  Si tenías una versión anterior del runtime, pulsa **Instalar** en la fila del
+  modelo para descargar la nueva. Los pesos GGUF válidos se verifican y reutilizan;
+  no se descargan de nuevo. El runtime tiene su propio directorio por versión.
 - Pesos GGUF del repositorio `audio-cpp/audio.cpp-gguf` de Hugging Face, fijados
   a una revisión. Cada archivo de runtime y pesos se verifica con SHA-256.
 - Se guardan bajo `data/audiocpp` en el almacenamiento de IA configurado:
@@ -170,13 +173,14 @@ de preparación para las comprobaciones realizadas sobre el paquete Windows.
 ## Espacio y distribución
 
 Los pesos ocupan 5,10 GB (Higgs), 6,32 GB (Fish) y 5,08 GB (Breeze). El runtime Windows se descarga
-aparte: CPU 26,95 MB, Vulkan 61,73 MB o CUDA 1,07 GB comprimidos. Con Higgs y Fish,
-CUDA descomprimido y los ZIP conservados se midieron 14,56 GB en disco. No son
+aparte: CPU 33,66 MB, Vulkan 85,46 MB o CUDA 1,08 GB comprimidos en v0.9.5.
+Reserva espacio adicional para descomprimir y conservar los ZIP. No son
 medidas de RAM/VRAM. Desinstalar pesos conserva el runtime y su caché de descargas.
 Ninguno de estos paquetes grandes se incluye en el instalador base.
 
-La versión 3.0.0 está preparada en local y sin firma de producción, pendiente del
-certificado. No se solicita instalar ni confiar en certificados de prueba.
+Las versiones Windows desde la 3.0.0 usan el certificado de producción Certum del
+mantenedor. No es necesario instalar certificados de prueba. Consulta la
+[política de firma](../CODE_SIGNING.md).
 
 ## Breeze TTS 2 Q8: instrucciones y efectos vocales
 
@@ -220,7 +224,7 @@ MCP admite `model="breeze_tts_2_q8_0"` e `instruction="Speak calmly."` en
 La descarga está fijada a 5.079.668.352 bytes y SHA-256
 `0de52d61560f9f6b2dfeca79f9100f8fce0c2b17c52ec30622e23e150df1ad88`.
 
-Fuentes revisadas: [integración audio.cpp v0.9.1](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/models/breeze_tts.md),
+Fuentes revisadas: [integración audio.cpp v0.9.5](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/docs/models/breeze_tts.md),
 [repositorio oficial Breeze](https://github.com/breezeblue-ai/breeze-tts),
 [pesos GGUF](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5/Breeze-TTS-2-GGUF)
 y [licencia BreezeBlue](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE).
@@ -262,7 +266,7 @@ volver a sintetizar. Cerrar elimina las muestras temporales; las voces guardadas
 se conservan en la biblioteca.
 
 Referencias: [diseño oficial de Breeze](https://huggingface.co/BreezeBlue/Breeze-TTS-2#-voice-design)
-y [opciones de audio.cpp v0.9.1](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/models/breeze_tts.md).
+y [opciones de audio.cpp v0.9.5](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/docs/models/breeze_tts.md).
 La prueba automatizada recorre generación con host simulado, escucha habilitada,
 guardado real del WAV en el catálogo y recuperación desde un servicio nuevo.
 La calidad de la voz sintética requiere escuchar una generación real.
@@ -285,7 +289,7 @@ las demás filas. El paquete se obtiene de `audio-cpp/audio.cpp-gguf`, revisión
 `f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5`, archivo
 `VoxCPM2-GGUF/voxcpm2-q8_0.gguf`. SHA-256:
 `c8e01ab4416011e12a28f24ede298a1aa5ce64b43f8e8aaad53b1e2fe7c96432`.
-El runtime audio.cpp v0.9.1 ya tiene soporte y se reutiliza si está instalado para
+El runtime audio.cpp v0.9.5 ya tiene soporte y se reutiliza si está instalado para
 ese backend. Se conserva el texto Apache-2.0 del repositorio oficial junto a los pesos.
 
 ### Emociones y fragmentación
@@ -309,7 +313,7 @@ ejemplo, `(happy and cheerful tone) ¡Qué buena noticia!`. **Off** envía texto
 prefijo; `reset` recupera la configuración de base. Las intensidades numéricas
 intermedias generan una advertencia: el matiz se describe con Custom.
 
-En v0.9.1, el chunking nativo de VoxCPM solo antepone la instrucción al primer
+En v0.9.5, el chunking nativo de VoxCPM solo antepone la instrucción al primer
 fragmento. Por ello, el adaptador divide primero el texto respetando frases y
 palabras, antepone la instrucción a cada parte y evita una segunda división nativa.
 Usa peticiones independientes con la misma referencia y semilla dentro del
@@ -345,7 +349,7 @@ modelos compatibles del catálogo. Una edición de los controles exige regenerar
 antes de guardar para que el audio y la transcripción correspondan.
 
 Las voces existentes y **Clone Voice** también están disponibles. La ruta nativa
-`/v1/audio/speech` de v0.9.1 expone `voice_ref`, que VoxCPM utiliza como referencia
+`/v1/audio/speech` de v0.9.5 expone `voice_ref`, que VoxCPM utiliza como referencia
 de identidad. Esta ruta no expone el audio de continuación (`audio_input`), así
 que **no se implementa “Ultimate Cloning”** con audio + transcripción. La
 transcripción se conserva para el catálogo y otros motores, pero no se envía como
@@ -364,9 +368,9 @@ Reinicia la aplicación desde fuentes y el EngineHost antes de probarlo.
 
 Fuentes: [VoxCPM oficial](https://github.com/OpenBMB/VoxCPM),
 [modelo oficial](https://huggingface.co/openbmb/VoxCPM2),
-[contrato de audio.cpp v0.9.1](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/model_specs/voxcpm2.json),
-[chunking y referencias en el código nativo](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/src/models/voxcpm2/session.cpp),
-[endpoint de síntesis](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/app/server/runtime.cpp),
+[contrato de audio.cpp v0.9.5](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/model_specs/voxcpm2.json),
+[chunking y referencias en el código nativo](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/src/models/voxcpm2/session.cpp),
+[endpoint de síntesis](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/app/server/runtime.cpp),
 [pesos Q8 fijados](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5/VoxCPM2-GGUF).
 
 
@@ -397,7 +401,7 @@ audible. Estos tamaños son de descarga, no estimaciones de memoria en ejecució
 Las pruebas automatizadas verifican las tres rutas; queda pendiente la comparación
 acústica con los pesos reales. Reinicia la app y EngineHost para ver las nuevas filas.
 
-Fuente: [paquetes de VoxCPM 2 en audio.cpp v0.9.1](https://github.com/0xShug0/audio.cpp/blob/v0.9.1/model_specs/voxcpm2.json).
+Fuente: [paquetes de VoxCPM 2 en audio.cpp v0.9.5](https://github.com/0xShug0/audio.cpp/blob/v0.9.5/model_specs/voxcpm2.json).
 
 
 ### Voces locales compartidas y diagnóstico de instalación

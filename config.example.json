@@ -1,4 +1,5 @@
 {
+  "hf_token": "",
   "settings_schema_version": 33,
   "storage": {
     "base_dir": ".",

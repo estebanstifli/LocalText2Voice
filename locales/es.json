@@ -1,4 +1,10 @@
 {
+  "generation_existing_audio": "Este proyecto ya tiene audio",
+  "generation_existing_audio_message": "Continuar generación reutiliza los fragmentos válidos cuyo texto, voz y ajustes siguen coincidiendo, y genera los pendientes, fallidos o modificados. Si todo coincide, el audio ya está generado y solo se reconstruye la exportación.\n\nRegenerar todo vuelve a generar cada fragmento. El audio anterior se conserva hasta que su sustituto se genere correctamente.",
+  "generation_continue": "Continuar generación",
+  "generation_regenerate_all": "Regenerar todo",
+  "hf_token_label": "Token de acceso (opcional)",
+  "hf_token_help": "Usa un token de lectura para descargar modelos de Hugging Face. Se guarda localmente en config.json y se aplica a los nuevos procesos de descarga. Déjalo vacío para usar HF_TOKEN o una sesión de Hugging Face guardada en la carpeta de caché del motor.",
   "segment_engine": "Motor TTS",
   "segment_engine_reset": "Los parámetros de generación se toman del motor de destino. El cambio afecta solo a este segmento.",
   "segment_engine_reference": "Se conservan el audio de referencia y su transcripción. La voz puede sonar distinta con este motor.",

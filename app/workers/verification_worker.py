@@ -1157,6 +1157,12 @@ class AudiobookRebuildWorker(QObject):
                 raise FFmpegError(
                     "There are edited segments that must be regenerated before rebuilding."
                 )
+            incomplete = [s.sequence_index for s in segments if s.status not in {"rendered", "verified"}]
+            if incomplete:
+                raise FFmpegError(
+                    "Cannot rebuild until all segments have valid generated audio. Pending/failed segments: "
+                    + ", ".join(str(index) for index in incomplete[:12])
+                )
             missing = [
                 segment.sequence_index
                 for segment in segments

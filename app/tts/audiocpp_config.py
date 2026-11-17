@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 import math
 from typing import Any
 
-VERSION = "v0.9.1"
+VERSION = "v0.9.5"
 WEIGHTS_REVISION = "f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5"
 
 

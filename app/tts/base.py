@@ -56,9 +56,10 @@ class BaseTTSEngine(ABC):
                         if attempt == 2:
                             raise TTSEngineError(
                                 f"{type(self).__name__} returned empty WAV audio after 3 attempts "
-                                "(2 retries). The segment was not rendered."
+                                "(2 retries). The segment was not rendered. "
+                                "These are synthesis retries, independent of transcript-review retries."
                             ) from exc
-                        message = f"{type(self).__name__}: empty WAV; retry {attempt + 1}/2."
+                        message = f"{type(self).__name__}: empty WAV; synthesis retry {attempt + 1}/2."
                         logging.getLogger(__name__).warning(message)
                         callback = getattr(self, "_log_callback", None) or getattr(self, "log_callback", None)
                         if callable(callback):

@@ -2203,5 +2203,11 @@
   "segment_engine_voice_language": "元のセグメントと同じ言語の声を選択してください。",
   "segment_engine_missing_reference": "この声の既存の参照音声ファイルを選択してください。",
   "segment_engine_missing_transcript": "参照音声の正確な文字起こしを入力してください。",
-  "segment_engine_invalid_wav": "このエンジンには空でない非圧縮 PCM WAV の参照音声が必要です。"
+  "segment_engine_invalid_wav": "このエンジンには空でない非圧縮 PCM WAV の参照音声が必要です。",
+  "generation_existing_audio": "このプロジェクトには既に音声があります",
+  "generation_existing_audio_message": "生成を続行すると、テキスト・声・設定が一致する有効なセグメントを再利用し、未処理・失敗・変更済みのセグメントを生成します。すべて一致している場合、音声は既に準備できているため、書き出しのみを再実行します。\n\nすべて再生成すると、各セグメントを作り直します。置き換えに成功するまで、以前の音声は保持されます。",
+  "generation_continue": "生成を続行",
+  "generation_regenerate_all": "すべて再生成",
+  "hf_token_label": "アクセストークン（任意）",
+  "hf_token_help": "Hugging Face モデルのダウンロードには読み取り専用トークンを使用してください。ローカルの config.json に保存され、新しいダウンロードプロセスに適用されます。空欄の場合、HF_TOKEN またはエンジンのキャッシュフォルダーにある既存の Hugging Face ログイン情報を使用します。"
 }

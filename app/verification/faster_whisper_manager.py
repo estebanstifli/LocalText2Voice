@@ -19,6 +19,7 @@ from app.tts.python_runtime_manager import (
 )
 from app.tts.model_cache import huggingface_model_is_cached
 from app.utils.paths import engine_dependencies_root, models_root
+from app.utils.huggingface_auth import huggingface_runtime_environment
 
 
 class FasterWhisperError(RuntimeError):
@@ -308,7 +309,7 @@ class FasterWhisperManager:
         return [str(self.python_runtime.python_exe), str(self.cli_path)]
 
     def runtime_environment(self) -> dict[str, str]:
-        env = gpu_runtime_environment()
+        env = huggingface_runtime_environment(gpu_runtime_environment())
         env["PYTHONUTF8"] = "1"
         env["PYTHONPATH"] = str(self.dependency_dir)
         env["HF_HOME"] = str(self.cache_dir)

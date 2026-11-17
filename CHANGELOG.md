@@ -7,6 +7,43 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-17
+
+### Added
+
+- Continue generation or explicitly regenerate all audio in an existing project.
+  Resume validates saved WAVs and matches text, effective voice/model settings,
+  reference-file metadata and segment postprocessing before reusing a recording.
+- Persist render signatures in SQLite and portable project manifests. Successful
+  segments survive failures/cancellation and reopening; unchanged projects can
+  rebuild their export without synthesizing speech again.
+- Optional Hugging Face read token in Advanced Settings for Chatterbox, Qwen,
+  OmniVoice, F5-TTS Russian, IndexTTS and Faster Whisper child processes.
+  New processes read the current configuration, including with a running Host.
+  The token remains local, is excluded from project settings and is redacted in
+  server/MCP settings responses. Clearing it preserves external authentication.
+
+### Changed
+
+- Update pinned audio.cpp runtimes to v0.9.5, with verified sizes and SHA-256
+  digests for Windows, Linux and macOS downloads. Existing GGUF weights are reused;
+  no optional AI models or native runtimes are added to the base installer.
+- Clarify that empty-audio synthesis retries (three attempts total) are separate
+  from configurable Whisper review retries.
+- Translate the new generation choices and download-token help in all 11 UI languages.
+
+### Fixed
+
+- Preserve matching segment identities and WAVs when text is inserted or reordered;
+  invalidate incompatible recordings before synthesis so a later failure cannot
+  expose stale audio as ready to export.
+- Preserve previous valid audio and its review metadata if replacement synthesis
+  fails. Review rebuild rejects pending/failed segments instead of using old WAVs.
+- Resolve legacy output folders against the restored project before loading or
+  saving UI settings. New projects use their own relative export directory;
+  explicitly configured absolute destinations remain unchanged.
+- Correct outdated audio.cpp documentation about pending signing certificates.
+
 ## [3.0.0] - 2026-11-06
 
 Includes the previously unpublished 2.3.0 preparation below; existing engines
@@ -735,7 +772,8 @@ Unpublished local preparation, incorporated into 3.0.0.
 - Improved uninstall behavior so downloaded AI assets can be removed while
   projects, exports, settings, music, and logs are preserved.
 
-[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/estebanstifli/LocalText2Voice/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/estebanstifli/LocalText2Voice/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.2.0...v3.0.0
 [2.3.0]: https://github.com/estebanstifli/LocalText2Voice/blob/v3.0.0/docs/releases/v2.3.0.md
 [2.2.0]: https://github.com/estebanstifli/LocalText2Voice/compare/v2.1.2...v2.2.0

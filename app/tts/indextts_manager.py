@@ -12,6 +12,7 @@ from typing import Callable
 
 from app.utils.gpu_detection import gpu_runtime_environment
 from app.utils.paths import engine_dependencies_root, models_root
+from app.utils.huggingface_auth import huggingface_runtime_environment
 from .indextts_cli import INDEXTTS_CLI
 from .indextts_config import validated_config
 from .install_logging import communicate_with_live_output, progress_output_callback
@@ -119,7 +120,7 @@ class IndexTTSManager:
         return self.has_runtime()
 
     def runtime_environment(self):
-        env = gpu_runtime_environment()
+        env = huggingface_runtime_environment(gpu_runtime_environment())
         for key in (
             "PYTHONPATH",
             "PYTHONHOME",

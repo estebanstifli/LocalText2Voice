@@ -981,6 +981,7 @@ class LocalText2VoiceService:
         render_mix = mix_policy not in {"off", "none", "clean_only", "clean-only"}
         background_path = self._resolve_music_path(request.get("background_music", ""))
         project_settings = copy.deepcopy(settings)
+        project_settings.pop("hf_token", None)
         project_settings["server_request"] = {
             key: value
             for key, value in request.items()
@@ -1055,6 +1056,7 @@ class LocalText2VoiceService:
             ),
             project_audiobook_id=self._project_audiobook_id(request),
             project_settings=project_settings,
+            generation_mode=str(request.get("generation_mode", "resume")),
         )
 
     @staticmethod
@@ -1510,7 +1512,7 @@ def public_settings_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
     def redact(value: Any) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
-                if (key.lower() in {"api_key", "auth_token", "access_token", "refresh_token",
+                if (key.lower() in {"api_key", "auth_token", "access_token", "refresh_token", "hf_token",
                                    "password", "secret", "s3_access_key", "s3_secret_key",
                                    "temporary_storage_token"}
                     or key.lower().endswith("_encrypted")):

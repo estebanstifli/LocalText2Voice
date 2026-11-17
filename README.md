@@ -31,7 +31,23 @@ LocalText2Voice is a free desktop app for long-form AI voice and video productio
 
 The workflow is designed for long projects: import or write a script, generate narration, review and correct segments, build an audio mix, then use Video Storyboard to plan scenes, generate visuals, assemble motion, and render a long-form MP4. Local engines keep data on the user's computer; cloud providers are optional and clearly configured.
 
-## What's New In 3.0: Native TTS With audio.cpp
+## What's New In 3.0.1
+
+- **Resume interrupted narration:** continue an existing project without repeating
+  valid, unchanged segments, or explicitly regenerate everything. Failed, missing
+  and changed segments are generated again; incomplete audio cannot be exported.
+- **audio.cpp v0.9.5:** updated, checksum-verified native runtime downloads while
+  retaining the existing GGUF model weights. Optional models stay outside the installer.
+- **Optional Hugging Face token:** configure download authentication in Advanced
+  Settings. The token stays local and is excluded from portable project settings.
+- **Safer output folders:** older project-relative export paths are resolved before
+  creating a new project, without changing explicitly chosen absolute destinations.
+
+See the [3.0.1 release notes](docs/releases/v3.0.1.md) and [changelog](CHANGELOG.md).
+
+## Version 3.0: Native TTS With audio.cpp
+
+The shared runtime is pinned to **audio.cpp v0.9.5**, reusing existing GGUF weights.
 
 - **Optional audio.cpp engines:** Higgs Audio v3 TTS 4B Q8, Fish Audio S2 Pro Q8, Breeze TTS 2 Q8 and VoxCPM 2 (Q8, BF16 or Original GGUF)
   use a shared native runtime, with CPU, CUDA or Vulkan packages on Windows.
@@ -292,6 +308,20 @@ available on Windows. Runtime and GGUF downloads are optional and managed from
 **Settings > TTS Engines**. See the [audio.cpp guide](docs/AUDIOCPP.md) for setup,
 reference-voice requirements, platform limits and each model's license terms.
 
+For Hugging Face downloads, an optional read token can be saved under
+**Settings > Advanced > Hugging Face**. It is stored locally in `config.json`
+and overrides `HF_TOKEN` for new Chatterbox, Qwen, OmniVoice, F5-TTS Russian,
+IndexTTS and Faster Whisper processes, including those started by an existing
+Engine Host. Clear the field to keep using environment-based authentication.
+The token is masked in the UI, redacted from server/MCP settings responses and
+excluded from portable project settings. It is not encrypted in `config.json`.
+Public models can still be downloaded without a token; authentication provides
+higher request limits, not faster speech generation. Existing releases without
+this field can use a user environment variable named `HF_TOKEN`; restart the
+application and any background Engine Host after setting it. A normal
+`hf auth login` may use a different token location because each engine has its
+own `HF_HOME` cache directory.
+
 F5-TTS Russian is never included in the base installation. When the user accepts
 its non-commercial license and installs the engine, LocalText2Voice creates a
 separate runtime containing F5-TTS and Silero Stress and downloads
@@ -378,6 +408,25 @@ Voice gallery architecture: [docs/VOICE_GALLERY.md](docs/VOICE_GALLERY.md)
 
 Optional text normalization prepares a pronunciation-friendly copy before generation without changing the source text. Settings includes editable SQLite-backed starter dictionaries for Arabic, Chinese, English, French, German, Hindi, Italian, Japanese, Portuguese, Russian, and Spanish. Russian normalization includes numbers, ordinals, percentages, ruble amounts, common abbreviations, and units. When Russian is selected, the user can explicitly install the optional shared Silero Stress runtime from this tab; it runs after the generic rules, restores `Ё`, and is shown in the Normalized preview. F5-TTS Russian receives Silero's `+` stress notation, while other engines receive the safe spelling with `Ё` only. Dictionaries can be created, reset, enabled entry by entry, and imported or exported as JSON for external editing. Automatic rules have a global switch and individual controls for numbers, ordinals, dates, currencies, percentages, measurements, and Roman numerals. Disabling automatic rules does not disable dictionary replacements.
 
+### Resuming Audio Generation
+
+When a project already contains generated audio, **Generate** offers **Continue
+generation**, **Regenerate all**, and **Cancel**. Continue validates saved WAVs and
+reuses segments whose text, voice, synthesis and segment postprocessing settings
+still match. Only pending, failed, changed, missing or invalid segments are
+synthesized. If all segments match, generation reuses the audio and rebuilds the
+export with the current export settings.
+
+Successful segments survive a later failure and can be resumed after reopening
+the project. Regenerating a segment publishes its replacement only after the new
+audio is valid; a failed replacement leaves the previous WAV intact. Incomplete
+projects cannot be exported or rebuilt from Review.
+
+Empty WAV synthesis has a fixed limit of three attempts (two retries). This is
+separate from Whisper transcript-review retries; changing `review.max_retries`
+does not change the empty-audio retry limit. EngineHost generation requests accept
+`generation_mode: "resume"` (default) or `"regenerate"`.
+
 ### Whisper Review And Quality Control
 
 Optional Faster Whisper review can validate generated segments:
@@ -439,6 +488,7 @@ LocalText2Voice stores project data in SQLite and a portable project manifest:
 - Inline project names (`Project1`, `Project2`, ... by default) also rename the containing folder using a filesystem-safe name. Existing folders are never overwritten: duplicate names receive a numbered suffix. To synchronize an older folder with its current title, edit the title and press Enter without changing it. Renaming requires idle project tasks and preserves project identity, internal asset paths and unsaved editor text, with recovery after interruption. Jobs for other projects and queued items in paused batches do not block the rename.
 - New path consumers can use `store.project_paths(project_id)` to resolve relative resources against the current directory in SQLite. This resolver follows renames without caching the folder name; external absolute paths remain supported. Legacy absolute references are still remapped during rename for compatibility.
 - **Settings > General > Output folder mode** selects a project-relative folder (default: `exports`) or an absolute folder. Both are editable; browsing outside the project switches to absolute mode. Existing external output locations are preserved when opening older projects. The separate “Save audio next to the imported document” option takes precedence during narration generation when enabled.
+- On upgrade, legacy output paths inside the restored active project become relative before the interface loads, so **New Project** uses its own export folder. Explicit absolute destinations remain fixed. If an earlier release already saved an incorrect absolute mode, select relative mode and enter `exports`; existing exports are not moved.
 - M4B book metadata, cover art, and named chapter markers; metadata/cover changes can be applied without rerunning TTS.
 - Automatic generated covers or normalized custom cover images, including per-book cover selection in Bulk Audiobooks.
 - Source text.

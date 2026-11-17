@@ -61,6 +61,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ui_theme": "light",
     "sidebar_collapsed": False,
     "gpu_device_index": "auto",
+    "hf_token": "",
     "current_project_id": None,
     "storage": {
         # New portable runs use <application>/data. Schema migration writes an
@@ -654,6 +655,8 @@ def _sanitize_choice(
 
 
 def _sanitize_core_settings(settings: dict[str, Any]) -> None:
+    token = settings.get("hf_token")
+    settings["hf_token"] = token.strip() if isinstance(token, str) else ""
     _sanitize_choice(settings, "ui_language", SUPPORTED_UI_LANGUAGES)
     _sanitize_choice(settings, "ui_theme", SUPPORTED_UI_THEMES)
     _sanitize_choice(settings, "split_mode", SUPPORTED_SPLIT_MODES)
@@ -1201,22 +1204,32 @@ class SettingsManager:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
                 raise ValueError("The configuration root must be a JSON object.")
-            from .project_output import output_preferences
-            loaded.update(output_preferences(loaded))
-            return _migrate_settings(
-                _deep_merge(DEFAULT_SETTINGS, loaded),
-                _settings_version(loaded),
-            )
+            return self._normalize(loaded, _settings_version(loaded))
         except (OSError, json.JSONDecodeError, ValueError):
             return deepcopy(DEFAULT_SETTINGS)
 
+    @staticmethod
+    def _normalize(values: dict[str, Any], source_version: int | None = None) -> dict[str, Any]:
+        from .project_output import output_preferences
+
+        # An old absolute path may be the active project's own export folder.
+        # Preserve the missing mode until startup has that project's directory;
+        # otherwise an unrelated save makes our guess look like a user choice.
+        needs_project_context = (
+            values.get("output_dir_mode") not in {"relative", "absolute"}
+            and values.get("current_project_id") is not None
+            and Path(str(values.get("output_dir") or "").strip()).expanduser().is_absolute()
+        )
+        preferences = output_preferences(values)
+        normalized = _migrate_settings(
+            _deep_merge(DEFAULT_SETTINGS, {**values, **preferences}), source_version,
+        )
+        if needs_project_context:
+            normalized.pop("output_dir_mode", None)
+        return normalized
+
     def save(self, values: dict[str, Any] | None = None) -> None:
-        if values is not None:
-            from .project_output import output_preferences
-            values = {**values, **output_preferences(values)}
-            normalized = _migrate_settings(_deep_merge(DEFAULT_SETTINGS, values))
-        else:
-            normalized = _migrate_settings(self.settings)
+        normalized = self._normalize(self.settings if values is None else values)
         # Keep references held by the UI valid after every normalization/save.
         self.settings.clear()
         self.settings.update(normalized)

@@ -28,7 +28,8 @@ from app.core.audio_formats import (
     normalize_audio_quality,
 )
 from app.core.audio_mix import ducking_filter
-from app.core.audiobook_store import AudiobookStore, StoredAudiobook
+from app.core.audiobook_store import AudiobookStore, StoredAudiobook, StoredSegment
+from app.core.segment_recovery import render_signature
 from app.core.book_metadata import (
     apply_m4b_tags,
     book_metadata_from_settings,
@@ -47,7 +48,7 @@ from app.utils.ffmpeg_utils import (
 )
 
 from .generation_progress import GenerationProgress
-from app.utils.atomic_audio import atomic_wav_output, replace_audio_file
+from app.utils.atomic_audio import atomic_wav_output, replace_audio_file, validate_wav
 from .ltv_markup import LTVMarkupCompiler, LTVMarkupParser, LTVNarrationSection
 from .subtitle_export import export_audiobook_subtitles
 from .text_normalization import normalize_text_for_speech
@@ -123,6 +124,7 @@ class AudioGenerationOptions:
     russian_silero_enabled: bool = False
     project_audiobook_id: int | None = None
     project_settings: dict[str, Any] = field(default_factory=dict)
+    generation_mode: str = "resume"
 
 
 @dataclass(frozen=True)
@@ -175,12 +177,18 @@ class AudioPipeline:
         self._markup_voice_cache: dict[str, Any] = {}
         self._active_audiobook: StoredAudiobook | None = None
         self._segment_ids: dict[tuple[int, int], int] = {}
+        self._stored_segments: dict[int, StoredSegment] = {}
+        self._recoverable_segments: set[int] = set()
         self._wav_headers: dict[Path, tuple[int, int, int, str, str, int]] = {}
         self._progress = GenerationProgress(self.progress_callback, self.stage_callback)
 
     def generate(self, text: str, options: AudioGenerationOptions) -> list[Path]:
         self._progress = GenerationProgress(self.progress_callback, self.stage_callback)
         self._wav_headers.clear()
+        self._active_audiobook = None
+        self._segment_ids.clear()
+        self._stored_segments.clear()
+        self._recoverable_segments.clear()
         scope = (
             self.audiobook_store.defer_project_manifests()
             if self.audiobook_store
@@ -275,7 +283,9 @@ class AudioPipeline:
                 self._segment_ids = self.audiobook_store.replace_segments(
                     self._active_audiobook,
                     groups,
+                    preserve_existing=existing is not None,
                 )
+                self._prepare_segment_recovery(groups, options)
                 self.audiobook_store.flush_project_manifest(self._active_audiobook.id)
                 for audio_event in self.audiobook_store.list_audio_events(
                     self._active_audiobook.id
@@ -388,7 +398,7 @@ class AudioPipeline:
                     "cancelled",
                 )
             raise
-        except (TTSEngineError, FFmpegError, OSError, wave.Error) as exc:
+        except (TTSEngineError, FFmpegError, OSError, wave.Error, ValueError, EOFError) as exc:
             if self.audiobook_store is not None and self._active_audiobook is not None:
                 self.audiobook_store.fail_audiobook(self._active_audiobook.id)
             raise AudioPipelineError(str(exc)) from exc
@@ -777,6 +787,49 @@ class AudioPipeline:
             groups.append(current)
         return groups
 
+    def _prepare_segment_recovery(
+        self, groups: list[AudioGroup], options: AudioGenerationOptions,
+    ) -> None:
+        assert self.audiobook_store is not None and self._active_audiobook is not None
+        self._stored_segments = {
+            segment.id: segment
+            for segment in self.audiobook_store.list_segments(self._active_audiobook.id)
+        }
+        pending: list[int] = []
+        legacy_signatures: list[tuple[str, int]] = []
+        for group_index, group in enumerate(groups, 1):
+            for chunk_index, chunk in enumerate(group.chunks, 1):
+                segment = self._stored_segments[self._segment_ids[(group_index, chunk_index)]]
+                config = self._voice_config_for_chunk(options.voice_config, chunk)
+                signature = render_signature(chunk.text, config)
+                # Older projects have the full effective config, but no file signature.
+                try:
+                    matches = (
+                        segment.render_signature == signature if segment.render_signature
+                        else json.loads(segment.engine_config_json or "{}") == config
+                    )
+                except (TypeError, ValueError):
+                    matches = False
+                usable = segment.status in {"rendered", "verified"} and matches
+                if usable:
+                    try:
+                        validate_wav(Path(segment.wav_path))
+                    except (OSError, ValueError, EOFError, wave.Error):
+                        usable = False
+                if usable:
+                    self._recoverable_segments.add(segment.id)
+                    if not segment.render_signature:
+                        legacy_signatures.append((signature, segment.id))
+                        self._stored_segments[segment.id] = replace(segment, render_signature=signature)
+                else:
+                    pending.append(segment.id)
+        # Invalidate every incompatible segment before synthesis, including those
+        # after a possible failure, so Review cannot export stale audio.
+        self.audiobook_store.mark_segments_pending(pending)
+        self.audiobook_store.record_segment_signatures(legacy_signatures)
+        if options.generation_mode == "resume" and len(self._recoverable_segments) == len(self._stored_segments):
+            self.log_callback("All segments are already generated with matching settings; reusing audio for export.")
+
     def _render_groups(
         self,
         groups: list[AudioGroup],
@@ -820,6 +873,27 @@ class AudioPipeline:
                     chunk,
                 )
                 segment_id = self._segment_ids.get((group_index, chunk_index))
+                previous = self._stored_segments.get(segment_id)
+                signature = render_signature(chunk.text, chunk_voice_config)
+                reusable = (
+                    segment_id in self._recoverable_segments
+                    and previous is not None and previous.render_signature == signature
+                )
+                if reusable:
+                    try:
+                        validate_wav(output_wav)
+                    except (OSError, ValueError, EOFError, wave.Error):
+                        reusable = False
+                if options.generation_mode == "resume" and reusable:
+                    rendered_chunks.append(output_wav)
+                    completed_characters += len(chunk.text)
+                    status = f"Reusing block {completed}/{total_chunks}: {group.title}"
+                    self.log_callback(status)
+                    self._progress.emit(
+                        "synthesis", completed, total_chunks, status, unit="blocks",
+                        completed_characters=completed_characters, total_characters=total_characters,
+                    )
+                    continue
                 total_block_started = time.perf_counter()
                 if (
                     segment_id is not None
@@ -850,10 +924,10 @@ class AudioPipeline:
                         segment_id is not None
                         and self.audiobook_store is not None
                     ):
-                        self.audiobook_store.mark_segment_failed(
-                            segment_id,
-                            str(exc),
-                        )
+                        if reusable and previous is not None:
+                            self.audiobook_store.restore_segment_after_failed_render(previous, str(exc))
+                        else:
+                            self.audiobook_store.mark_segment_failed(segment_id, str(exc))
                     raise
                 block_duration = time.perf_counter() - block_started
                 self._read_wav_header(output_wav)
@@ -867,6 +941,7 @@ class AudioPipeline:
                         output_wav,
                         self._rendered_duration_ms(output_wav),
                         round(block_duration * 1000),
+                        render_signature=signature,
                     )
                     if (
                         completed % max(1, (total_chunks + 3) // 4) == 0
@@ -972,6 +1047,9 @@ class AudioPipeline:
         chunk_index: int,
     ) -> Path:
         if self._active_audiobook is not None and self.audiobook_store is not None:
+            segment = self._stored_segments.get(self._segment_ids.get((group_index, chunk_index)))
+            if segment is not None:
+                return Path(segment.wav_path)
             return self.audiobook_store.segment_wav_path(
                 self._active_audiobook,
                 group_index,
@@ -3114,6 +3192,8 @@ class AudioPipeline:
 
     @staticmethod
     def _validate_options(options: AudioGenerationOptions) -> None:
+        if options.generation_mode not in {"resume", "regenerate"}:
+            raise AudioPipelineError(f"Unknown generation mode: {options.generation_mode}")
         if options.split_mode not in {"safe_chunks", "chapters"}:
             raise AudioPipelineError(f"Unknown split mode: {options.split_mode}")
         if options.export_mode not in {"single", "chapters"}:

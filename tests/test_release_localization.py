@@ -16,7 +16,9 @@ NEW_KEYS = {
                        "audiocpp_", "higgs_", "fish_", "breeze_", "voxcpm_", "segment_", "voice_conflict_"))
 } | {"runpod_export_metrics", "runpod_job_timing", "generation_stage_time_status",
      "project_rename_busy", "project_folder_renamed", "output_relative",
-     "output_absolute", "output_folder_mode", "output_folder_help", "markup_vocal_help"}
+     "output_absolute", "output_folder_mode", "output_folder_help", "markup_vocal_help",
+     "generation_existing_audio", "generation_existing_audio_message",
+     "generation_continue", "generation_regenerate_all", "hf_token_label", "hf_token_help"}
 
 
 @pytest.mark.parametrize("path", sorted(LOCALES.glob("*.json")), ids=lambda p: p.stem)
@@ -26,6 +28,11 @@ def test_release_strings_present_and_placeholders_match(path):
     for key in NEW_KEYS:
         text = messages[key]
         assert text.strip() and "\ufffd" not in text, (path.name, key)
+        if path.stem != "en" and key in {
+            "generation_existing_audio", "generation_existing_audio_message",
+            "generation_continue", "generation_regenerate_all", "hf_token_label", "hf_token_help",
+        }:
+            assert text != ENGLISH[key], (path.name, key, "Untranslated release string")
         fields = lambda value: {
             field for _, field, _, _ in Formatter().parse(value) if field is not None
         }

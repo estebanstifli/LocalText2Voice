@@ -948,6 +948,14 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self.active_bulk_batch_id: int | None = None
         self.faster_whisper_manager = FasterWhisperManager()
         self.current_audiobook_id = self._stored_project_id()
+        # Resolve legacy output preferences before widgets or saves can turn an
+        # inferred absolute path into an explicit choice inherited by New Project.
+        active_project = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+        self.settings.update(output_preferences(
+            self.settings,
+            active_project.project_dir if active_project is not None else None,
+            active_project.output_dir if active_project is not None else None,
+        ))
         self.project_dirty = False
         self._loading_project = False
         self.voices: list[VoiceInfo] = []
@@ -13096,10 +13104,29 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         libraries_help.setWordWrap(True)
         libraries_form.addRow("", libraries_help)
 
-        grid.addWidget(pause_group, 0, 0)
-        grid.addWidget(podcast_group, 0, 1)
-        grid.addWidget(splitting_group, 1, 0, 1, 2)
-        grid.addWidget(libraries_group, 2, 0, 1, 2)
+        huggingface_group = QGroupBox("Hugging Face")
+        huggingface_form = QFormLayout(huggingface_group)
+        self.hf_token_edit = self._password_edit()
+        self.hf_token_edit.setPlaceholderText("hf_...")
+        self.hf_token_edit.editingFinished.connect(self._save_settings)
+        huggingface_form.addRow(
+            self.tr("hf_token_label", "Access token (optional)"), self.hf_token_edit
+        )
+        huggingface_help = QLabel(self.tr(
+            "hf_token_help",
+            "Use a read token for Hugging Face model downloads. Saved locally in config.json; "
+            "applies to new download processes. Leave empty to use HF_TOKEN or an existing "
+            "Hugging Face login in the engine's cache folder.",
+        ))
+        huggingface_help.setObjectName("helperLabel")
+        huggingface_help.setWordWrap(True)
+        huggingface_form.addRow(huggingface_help)
+
+        grid.addWidget(huggingface_group, 0, 0, 1, 2)
+        grid.addWidget(pause_group, 1, 0)
+        grid.addWidget(podcast_group, 1, 1)
+        grid.addWidget(splitting_group, 2, 0, 1, 2)
+        grid.addWidget(libraries_group, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         scroll = QScrollArea()
@@ -15679,6 +15706,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         self._mark_normalization_preview_stale()
 
     def _restore_settings_widgets(self) -> None:
+        self.hf_token_edit.setText(str(self.settings.get("hf_token") or ""))
         preferences = output_preferences(self.settings)
         with QSignalBlocker(self.output_mode_combo), QSignalBlocker(self.output_picker):
             self.output_mode_combo.setCurrentIndex(0 if preferences["output_dir_mode"] == "relative" else 1)
@@ -16802,6 +16830,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         snapshot = json.loads(json.dumps(self.settings))
         snapshot.pop("projects_dir", None)
         snapshot.pop("sidebar_collapsed", None)
+        snapshot.pop("hf_token", None)
         snapshot["current_project_id"] = self.current_audiobook_id
         return snapshot
 
@@ -17129,6 +17158,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             return
         project_settings = json.loads(json.dumps(self.settings, default=str))
         project_settings.pop("current_project_id", None)
+        project_settings.pop("hf_token", None)
         task_title = str(payload.get("title", "")).strip() or self.tr(
             "bulk_audiobooks", "Bulk Audiobooks"
         )
@@ -17761,6 +17791,8 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                     project_settings.update(output_preferences(project_settings, audiobook.project_dir, audiobook.output_dir))
                     project_settings.pop("projects_dir", None)
                     project_settings.pop("sidebar_collapsed", None)
+                    # Download authentication belongs to this installation, not a book.
+                    project_settings.pop("hf_token", None)
                     if self.settings.get("document_source") and "book_metadata" not in project_settings:
                         self.settings.pop("book_metadata", None)
                     self.settings.pop("document_source", None)
@@ -18632,6 +18664,44 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
         )
         return None
 
+    def _choose_generation_mode(self) -> str | None:
+        if self.current_audiobook_id is None:
+            return "resume"
+        segments = self.audiobook_store.list_segments(self.current_audiobook_id)
+        audiobook = self.audiobook_store.get_audiobook(self.current_audiobook_id)
+        has_audio = any(s.wav_path and Path(s.wav_path).is_file() for s in segments)
+        has_export = audiobook is not None and any(
+            path and Path(path).is_file()
+            for path in (audiobook.clean_audio_path, audiobook.mix_audio_path)
+        )
+        if not has_audio and not has_export:
+            return "resume"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(self.tr("generation_existing_audio", "This project already has audio"))
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setText(self.tr(
+            "generation_existing_audio_message",
+            "Continue generation reuses valid segments whose text, voice and settings still match, "
+            "and generates pending, failed or changed segments. If everything already matches, "
+            "the audio is ready and only the export is rebuilt.\n\n"
+            "Regenerate all generates every segment again. Previous audio is kept until its replacement succeeds.",
+        ))
+        resume = dialog.addButton(
+            self.tr("generation_continue", "Continue generation"), QMessageBox.ButtonRole.AcceptRole,
+        )
+        regenerate = dialog.addButton(
+            self.tr("generation_regenerate_all", "Regenerate all"), QMessageBox.ButtonRole.ActionRole,
+        )
+        cancel = dialog.addButton(self.tr("cancel", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(resume)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        if dialog.clickedButton() is resume:
+            return "resume"
+        if dialog.clickedButton() is regenerate:
+            return "regenerate"
+        return None
+
     def _start_generation(self) -> None:
         if self.worker_thread is not None:
             return
@@ -18685,6 +18755,9 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             normalization_language_hint = self._normalization_language_hint()
         if self.current_audiobook_id is None and not self._save_project():
             return
+        generation_mode = self._choose_generation_mode()
+        if generation_mode is None:
+            return
         try:
             output_dir = self._project_output_dir(self._output_project_root())
         except (ValueError, OSError) as exc:
@@ -18729,6 +18802,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             "generation_settings": self._project_settings_snapshot(),
             "chunk_size": self._current_chunk_size(engine_id),
             "project_audiobook_id": self.current_audiobook_id,
+            "generation_mode": generation_mode,
             # The desktop UI owns the interactive Review and Audio Mix transitions.
             "review_policy": "off",
             "mix_policy": "clean_only",
@@ -20884,6 +20958,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
             self.whisper_remove_button,
             self.whisper_load_button,
             self.openai_api_key_edit,
+            self.hf_token_edit,
             self.openai_model_combo,
             self.openai_voice_combo,
             self.openai_instructions_edit,
@@ -20982,6 +21057,7 @@ class MainWindow(AudioCppSettingsMixin, IndexTTSSettingsMixin, QMainWindow):
                 "output_dir_mode": self.output_mode_combo.currentData() or "relative",
                 "ui_language": self.ui_language_combo.currentData() or "en",
                 "ui_theme": self.ui_theme,
+                "hf_token": self.hf_token_edit.text().strip(),
                 "gpu_device_index": normalize_gpu_device(
                     self.gpu_device_combo.currentData()
                 ),

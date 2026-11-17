@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import time
 import uuid
+from collections import defaultdict, deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ from .project_paths import ProjectPaths
 from .project_output import output_preferences, resolve_project_output
 from .text_processor import TextChunk
 
-CURRENT_DB_SCHEMA_VERSION = 6
+CURRENT_DB_SCHEMA_VERSION = 7
 PROJECT_MANIFEST_NAME = "project.localtext2voice.json"
 LEGACY_PROJECT_MANIFEST_NAME = "project.json"
 _LOCKED_LEGACY_MANIFESTS: set[Path] = set()
@@ -93,6 +94,7 @@ class StoredSegment:
     attempt_count: int = 0
     error_message: str = ""
     needs_rebuild: bool = False
+    render_signature: str = ""
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,8 @@ class AudiobookStore:
         project_dir: Path | None = None,
     ) -> StoredAudiobook:
         audiobook_uuid = str(uuid.uuid4())
+        project_settings = dict(project_settings or {})
+        project_settings.pop("hf_token", None)
         project_dir = project_dir or self.root_dir / audiobook_uuid
         project_dir.mkdir(parents=True, exist_ok=True)
         now = self._now()
@@ -358,6 +362,8 @@ class AudiobookStore:
         title: str,
         project_settings: dict[str, Any] | None = None,
     ) -> StoredAudiobook:
+        project_settings = dict(project_settings or {})
+        project_settings.pop("hf_token", None)
         now = self._now()
         with self._connect() as connection:
             connection.execute(
@@ -418,6 +424,8 @@ class AudiobookStore:
     def update_project_settings(
         self, audiobook_id: int, project_settings: dict[str, Any]
     ) -> StoredAudiobook:
+        project_settings = dict(project_settings)
+        project_settings.pop("hf_token", None)
         with self._connect() as connection:
             connection.execute(
                 "UPDATE audiobooks SET project_settings_json = ?, updated_at = ? WHERE id = ?",
@@ -536,7 +544,7 @@ class AudiobookStore:
                        word_timestamps_json, review_metrics_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
-                       error_message, needs_rebuild
+                       error_message, needs_rebuild, render_signature
                 FROM audiobook_segments
                 WHERE audiobook_id = ?
                 ORDER BY sequence_index
@@ -564,9 +572,9 @@ class AudiobookStore:
                         word_timestamps_json, review_metrics_json,
                         similarity_score, wer, cer, verification_status,
                         synthesis_ms, transcription_ms, engine_config_json,
-                        error_message, needs_rebuild, created_at, updated_at
+                        error_message, needs_rebuild, render_signature, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         clone.id,
@@ -602,6 +610,7 @@ class AudiobookStore:
                         row["engine_config_json"],
                         row["error_message"],
                         row["needs_rebuild"],
+                        row["render_signature"],
                         now,
                         now,
                     ),
@@ -665,6 +674,7 @@ class AudiobookStore:
         title = str(data.get("title") or "Audiobook")
         engine_config = self._json_to_dict(data.get("engine_config", {}))
         project_settings = self._json_to_dict(data.get("project_settings", {}))
+        project_settings.pop("hf_token", None)
         output_dir = self._path_from_manifest(data.get("output_dir"), project_dir)
         if not str(output_dir) or str(output_dir) == ".":
             output_dir = project_dir / "exports"
@@ -783,9 +793,9 @@ class AudiobookStore:
                             word_timestamps_json, review_metrics_json,
                             similarity_score, wer, cer, verification_status,
                             synthesis_ms, transcription_ms, engine_config_json,
-                            error_message, needs_rebuild, created_at, updated_at
+                            error_message, needs_rebuild, render_signature, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             audiobook_id,
@@ -841,6 +851,7 @@ class AudiobookStore:
                             ),
                             str(segment.get("error_message") or ""),
                             1 if bool(segment.get("needs_rebuild")) else 0,
+                            str(segment.get("render_signature") or ""),
                             now,
                             now,
                         ),
@@ -875,27 +886,81 @@ class AudiobookStore:
         self,
         audiobook: StoredAudiobook,
         groups: list[Any],
+        *,
+        preserve_existing: bool = False,
     ) -> dict[tuple[int, int], int]:
         mapping: dict[tuple[int, int], int] = {}
         now = self._now()
         sequence = 0
         with self._connect() as connection:
+            previous = connection.execute(
+                "SELECT id, sequence_index, source_text, markup_state_json, wav_path FROM audiobook_segments "
+                "WHERE audiobook_id = ? ORDER BY sequence_index", (audiobook.id,),
+            ).fetchall() if preserve_existing else []
+            available = defaultdict(deque)
+            for row in previous:
+                key = (row["source_text"], json.dumps(
+                    self._json_to_dict(row["markup_state_json"]), sort_keys=True,
+                ))
+                available[key].append(int(row["id"]))
+            retained: set[int] = set()
+            previous_by_sequence = {int(row["sequence_index"]): row for row in previous}
+            # Reserve matches before allocating paths: an inserted chunk must not
+            # overwrite a recording that moves to a later position in the script.
+            matches: dict[tuple[int, int], int] = {}
+            for chapter_index, group in enumerate(groups, start=1):
+                for chunk_index, chunk in enumerate(group.chunks, start=1):
+                    key = (chunk.text, json.dumps(chunk.markup_state, sort_keys=True))
+                    if available[key]:
+                        segment_id = available[key].popleft()
+                        matches[(chapter_index, chunk_index)] = segment_id
+                        retained.add(segment_id)
             connection.execute(
                 "DELETE FROM audio_events WHERE audiobook_id = ?",
                 (audiobook.id,),
             )
-            connection.execute(
-                "DELETE FROM audiobook_segments WHERE audiobook_id = ?",
-                (audiobook.id,),
-            )
+            if not preserve_existing:
+                connection.execute(
+                    "DELETE FROM audiobook_segments WHERE audiobook_id = ?",
+                    (audiobook.id,),
+                )
             for chapter_index, group in enumerate(groups, start=1):
                 for chunk_index, chunk in enumerate(group.chunks, start=1):
                     sequence += 1
+                    segment_id = matches.get((chapter_index, chunk_index))
+                    if segment_id is not None:
+                        connection.execute(
+                            """UPDATE audiobook_segments SET sequence_index = ?,
+                                chapter_index = ?, chapter_title = ?, paragraph_index = ?,
+                                paragraph_length = ?, ends_paragraph = ?,
+                                markup_pause_before_ms = ?, markup_pause_after_ms = ?,
+                                updated_at = ? WHERE id = ?""",
+                            (sequence, chapter_index, str(group.title), chunk.paragraph_number,
+                             chunk.paragraph_length, int(chunk.ends_paragraph),
+                             chunk.markup_pause_before_ms, chunk.markup_pause_after_ms,
+                             now, segment_id),
+                        )
+                        mapping[(chapter_index, chunk_index)] = segment_id
+                        for audio_event in getattr(chunk, "markup_audio_events", ()):
+                            self._insert_audio_event(
+                                connection, audiobook, segment_id, sequence, audio_event, now,
+                            )
+                        continue
                     wav_path = self.segment_wav_path(
                         audiobook,
                         chapter_index,
                         chunk_index,
                     )
+                    if preserve_existing:
+                        previous_at_position = previous_by_sequence.get(sequence)
+                        if (previous_at_position is not None
+                                and int(previous_at_position["id"]) not in retained
+                                and previous_at_position["wav_path"]):
+                            # Keep changed speech's previous WAV available until
+                            # atomic publication succeeds, but its row stays pending.
+                            wav_path = Path(previous_at_position["wav_path"])
+                        else:
+                            wav_path = wav_path.with_name(f"segment_{uuid.uuid4().hex}.wav")
                     cursor = connection.execute(
                         """
                         INSERT INTO audiobook_segments (
@@ -945,6 +1010,9 @@ class AudiobookStore:
                             audio_event,
                             now,
                         )
+            for row in previous:
+                if int(row["id"]) not in retained:
+                    connection.execute("DELETE FROM audiobook_segments WHERE id = ?", (row["id"],))
             connection.execute(
                 "UPDATE audiobooks SET status = ?, mix_audio_path = '', "
                 "mix_mp3_path = '', "
@@ -1177,13 +1245,14 @@ class AudiobookStore:
         wav_path: Path,
         duration_ms: int,
         synthesis_ms: int,
+        render_signature: str = "",
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE audiobook_segments
                 SET status = ?, wav_path = ?, duration_ms = ?,
-                    synthesis_ms = ?, attempt_count = attempt_count + 1,
+                    synthesis_ms = ?, render_signature = ?, attempt_count = attempt_count + 1,
                     transcript_text = '', normalized_transcript_text = '',
                     word_timestamps_json = '[]', review_metrics_json = '{}',
                     similarity_score = NULL, wer = NULL, cer = NULL,
@@ -1196,6 +1265,7 @@ class AudiobookStore:
                     str(wav_path),
                     duration_ms,
                     synthesis_ms,
+                    render_signature,
                     self._now(),
                     segment_id,
                 ),
@@ -1229,7 +1299,7 @@ class AudiobookStore:
                 """
                 UPDATE audiobook_segments
                 SET source_text = ?, normalized_source_text = ?,
-                    status = ?, transcript_text = '',
+                    status = ?, render_signature = '', transcript_text = '',
                     normalized_transcript_text = '', word_timestamps_json = '[]',
                     review_metrics_json = '{}',
                     similarity_score = NULL,
@@ -1266,7 +1336,7 @@ class AudiobookStore:
                 state["emotion"] = {k: v for k, v in config.items() if k.startswith(("emo_", "emotion_")) or k == "use_random"}
             connection.execute(
                 """UPDATE audiobook_segments SET source_text = ?, normalized_source_text = ?,
-                   engine_config_json = ?, markup_state_json = ?, voice = ?, language = ?,
+                   engine_config_json = ?, markup_state_json = ?, render_signature = '', voice = ?, language = ?,
                    status = 'edited', transcript_text = '', normalized_transcript_text = '',
                    word_timestamps_json = '[]', review_metrics_json = '{}', similarity_score = NULL,
                    wer = NULL, cer = NULL, verification_status = 'not_verified',
@@ -1374,7 +1444,7 @@ class AudiobookStore:
                        word_timestamps_json, review_metrics_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
-                       attempt_count, error_message, needs_rebuild
+                       attempt_count, error_message, needs_rebuild, render_signature
                 FROM audiobook_segments
                 WHERE id = ?
                 """,
@@ -1391,6 +1461,33 @@ class AudiobookStore:
                 WHERE id = ?
                 """,
                 ("failed", error_message, self._now(), segment_id),
+            )
+
+    def restore_segment_after_failed_render(
+        self, segment: StoredSegment, error_message: str,
+    ) -> None:
+        """Keep the last usable audio and its review state after a failed replacement."""
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE audiobook_segments SET status = ?, engine_config_json = ?,
+                    voice = ?, language = ?, error_message = ?, updated_at = ? WHERE id = ?""",
+                (segment.status, segment.engine_config_json, segment.voice, segment.language,
+                 error_message, self._now(), segment.id),
+            )
+
+    def mark_segments_pending(self, segment_ids: list[int]) -> None:
+        with self._connect() as connection:
+            connection.executemany(
+                "UPDATE audiobook_segments SET status = 'pending', updated_at = ? WHERE id = ?",
+                [(self._now(), segment_id) for segment_id in segment_ids],
+            )
+
+    def record_segment_signatures(self, signatures: list[tuple[str, int]]) -> None:
+        """Upgrade validated older recordings without discarding their review state."""
+        with self._connect() as connection:
+            connection.executemany(
+                "UPDATE audiobook_segments SET render_signature = ? WHERE id = ?",
+                signatures,
             )
 
     def complete_audiobook(self, audiobook_id: int, output_paths: list[Path]) -> None:
@@ -1513,7 +1610,7 @@ class AudiobookStore:
                        word_timestamps_json, review_metrics_json,
                        voice, language,
                        markup_state_json, engine_config_json, duration_ms,
-                       attempt_count, error_message, needs_rebuild
+                       attempt_count, error_message, needs_rebuild, render_signature
                 FROM audiobook_segments
                 WHERE audiobook_id = ?
                 ORDER BY sequence_index
@@ -1951,6 +2048,7 @@ class AudiobookStore:
             "needs_rebuild": "INTEGER DEFAULT 0",
             "word_timestamps_json": "TEXT DEFAULT '[]'",
             "review_metrics_json": "TEXT DEFAULT '{}'",
+            "render_signature": "TEXT DEFAULT ''",
         }
         for name, definition in columns.items():
             if name not in existing:
@@ -2058,6 +2156,7 @@ class AudiobookStore:
             attempt_count=int(row["attempt_count"] or 0),
             error_message=str(row["error_message"] or ""),
             needs_rebuild=bool(row["needs_rebuild"]),
+            render_signature=str(row["render_signature"] or ""),
         )
 
     @staticmethod
@@ -2197,7 +2296,7 @@ class AudiobookStore:
                        word_timestamps_json, review_metrics_json,
                        similarity_score, wer, cer, verification_status,
                        synthesis_ms, transcription_ms, engine_config_json,
-                       error_message, needs_rebuild
+                       error_message, needs_rebuild, render_signature
                 FROM audiobook_segments
                 WHERE audiobook_id = ?
                 ORDER BY sequence_index
@@ -2272,6 +2371,7 @@ class AudiobookStore:
                     "engine_config": self._json_to_dict(row["engine_config_json"]),
                     "error_message": str(row["error_message"] or ""),
                     "needs_rebuild": bool(row["needs_rebuild"]),
+                    "render_signature": str(row["render_signature"] or ""),
                 }
             )
         audio_events = [
@@ -2308,6 +2408,7 @@ class AudiobookStore:
         ]
         project_settings = self._json_to_dict(audiobook.project_settings_json)
         project_settings.pop("current_project_id", None)
+        project_settings.pop("hf_token", None)
         manifest = {
             "schema": "localtext2voice.project",
             "version": 2,
